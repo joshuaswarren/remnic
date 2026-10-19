@@ -1750,6 +1750,13 @@
             "type": "number",
             "minimum": 1,
             "description": "Hours a planned correction stays applicable. Default 24."
+          },
+          "classifyTimeoutMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300000,
+            "default": 45000,
+            "description": "Per-attempt timeout in milliseconds for correction classification. The local attempt and the gateway fallback each get this budget. Caller abort cancels the in-flight attempt. Default 45000."
           }
         }
       },
@@ -1807,6 +1814,13 @@
         "minimum": 1,
         "default": 24,
         "description": "Hours a pending correction plan remains valid before it expires and must be re-planned. Invalid values (0/negative/non-numeric) are rejected."
+      },
+      "correctionClassifyTimeoutMs": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 300000,
+        "default": 45000,
+        "description": "Flat legacy key for correction.classifyTimeoutMs. Per-attempt timeout in milliseconds for correction classification (local, then gateway fallback). Integer 1..300000. Default 45000. Invalid values are rejected."
       },
       "creationMemoryEnabled": {
         "type": "boolean",

@@ -7,9 +7,11 @@
  *      error, rule 34). Else: search via the injected search path scoped to
  *      the caller's readable namespaces, plus 1-hop entity-graph neighbors of
  *      top hits. Cap candidates at `maxAffected`.
- *   2. CLASSIFY + DRAFT via one LLM call (Responses API only, gotcha 1). On
- *      LLM failure → deterministic fallback plan (rule 13): classification
- *      `outdated`, `confidence: 0`, empty actions, warning set.
+ *   2. CLASSIFY + DRAFT via one LLM call (Responses API only, gotcha 1),
+ *      unless `duplicateOf` is set — that path skips the LLM and drafts one
+ *      recoverable supersede. On LLM failure → deterministic fallback plan
+ *      (rule 13): classification `outdated`, `confidence: 0`, empty actions.
+ *      A caller abort throws instead of falling back.
  *   3. RENDER DIFF by materializing what each action would do, using the
  *      injected diff renderer (page-versioning — reuse, don't fork).
  *   4. PERSIST the plan atomically under
@@ -82,6 +84,16 @@ export interface PlannerDeps {
     namespaces: readonly string[];
   }): Promise<PlannerCandidate[]>;
   /**
+   * Inspect one memory for duplicate-mode validation. Absent means "not
+   * found" (including outside the readable namespaces). A missing method
+   * falls back to {@link resolveTargets}, which reports inactive memories
+   * as not found.
+   */
+  inspectMemory?(request: {
+    memoryId: string;
+    namespaces: readonly string[];
+  }): Promise<PlannerMemoryInspection | null>;
+  /**
    * One-hop entity-graph neighbors of the supplied candidates. Returns the
    * union (deduped by memoryId); neighbors not already in `seedIds` only.
    */
@@ -99,6 +111,7 @@ export interface PlannerDeps {
   classifyAndDraft(request: {
     text: string;
     candidates: PlannerCandidate[];
+    abortSignal?: AbortSignal;
   }): Promise<LlmClassificationResult>;
   /**
    * Render a human-readable diff preview for the planned actions, using
@@ -118,6 +131,13 @@ export interface PlannerDeps {
   readonly planTtlHours: number;
   /** Injected clock for deterministic tests. */
   now(): Date;
+}
+
+/** One memory inspected for an explicit duplicate supersede. */
+export interface PlannerMemoryInspection {
+  candidate: PlannerCandidate;
+  /** Omitted status is treated as active (older files leave it unset). */
+  status?: string;
 }
 
 /** Result of the single LLM classify+draft call. */
@@ -177,10 +197,15 @@ export class CorrectionPlanner {
       );
     }
 
-    // 1. LOCATE
-    const located = await this.locateCandidates(cleaned, namespaces, abortSignal);
+    // 1. LOCATE — duplicateOf skips search and the classifier.
+    const explicitDuplicate = cleaned.duplicateOf
+      ? await this.planExplicitDuplicate(cleaned, namespaces, abortSignal)
+      : null;
+    const located = explicitDuplicate
+      ? { candidates: [explicitDuplicate.loser] }
+      : await this.locateCandidates(cleaned, namespaces, abortSignal);
     throwIfAborted(abortSignal, "correction planning aborted");
-    if (located.candidates.length === 0) {
+    if (!explicitDuplicate && located.candidates.length === 0) {
       // No candidates AND no explicit targets → empty plan is valid (the user
       // can still discard). But explicit-target-not-found was already raised
       // inside locateCandidates (rule 34).
@@ -191,10 +216,13 @@ export class CorrectionPlanner {
     }
 
     // 2. CLASSIFY + DRAFT
-    const llm = await this.deps.classifyAndDraft({
-      text: cleaned.text,
-      candidates: located.candidates,
-    });
+    const llm = explicitDuplicate
+      ? explicitDuplicate.llm
+      : await this.deps.classifyAndDraft({
+          text: cleaned.text,
+          candidates: located.candidates,
+          abortSignal,
+        });
     throwIfAborted(abortSignal, "correction planning aborted");
 
     // Validate every action shape before persisting — the adapter is trusted
@@ -288,6 +316,71 @@ export class CorrectionPlanner {
 
     throwIfAborted(abortSignal, "correction planning aborted");
     return this.persist(plan, abortSignal);
+  }
+
+  private async planExplicitDuplicate(
+    request: CorrectionRequest,
+    namespaces: readonly string[],
+    abortSignal?: AbortSignal,
+  ): Promise<{ loser: PlannerCandidate; llm: LlmClassificationResult }> {
+    const winnerId = request.duplicateOf;
+    if (!winnerId || !request.targetIds || request.targetIds.length !== 1) {
+      throw new CorrectionContractError(
+        "CorrectionRequest.duplicateOf requires exactly one targetIds entry (the duplicate memory).",
+      );
+    }
+    if (request.targetIds[0] === winnerId) {
+      throw new CorrectionContractError(
+        "CorrectionRequest.duplicateOf must be a different memory from targetIds.",
+      );
+    }
+    const loserId = request.targetIds[0];
+    const loser = await this.inspectDuplicateParty(loserId, namespaces, "target");
+    throwIfAborted(abortSignal, "correction planning aborted");
+    await this.inspectDuplicateParty(winnerId, namespaces, "duplicateOf");
+    throwIfAborted(abortSignal, "correction planning aborted");
+    return {
+      loser,
+      llm: {
+        classification: "outdated",
+        confidence: 1,
+        actions: [{ kind: "supersede", loserId, winnerId }],
+        relevance: [{
+          memoryId: loserId,
+          why: `duplicate of ${winnerId}; recoverable supersede`,
+        }],
+        warnings: [],
+      },
+    };
+  }
+
+  private async inspectDuplicateParty(
+    memoryId: string,
+    namespaces: readonly string[],
+    role: "target" | "duplicateOf",
+  ): Promise<PlannerCandidate> {
+    const notFound = role === "target"
+      ? `target memory not found: ${memoryId}`
+      : `duplicateOf memory not found: ${memoryId}`;
+    const inactive = (status: string) => role === "target"
+      ? `target memory is not active: ${memoryId} (${status})`
+      : `duplicateOf memory is not active: ${memoryId} (${status})`;
+    if (this.deps.inspectMemory) {
+      const found = await this.deps.inspectMemory({ memoryId, namespaces });
+      if (!found) throw new CorrectionContractError(notFound);
+      const status = found.status && found.status.length > 0 ? found.status : "active";
+      if (status !== "active") throw new CorrectionContractError(inactive(status));
+      return found.candidate;
+    }
+    try {
+      const resolved = await this.deps.resolveTargets({ targetIds: [memoryId], namespaces });
+      const candidate = resolved.find((item) => item.memoryId === memoryId) ?? resolved[0];
+      if (!candidate) throw new CorrectionContractError(notFound);
+      return candidate;
+    } catch (err) {
+      if (err instanceof CorrectionContractError) throw new CorrectionContractError(notFound);
+      throw err;
+    }
   }
 
   private async locateCandidates(

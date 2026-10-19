@@ -51,7 +51,7 @@ field, and `remnic query --json` includes it in the serialized recall response.
 
 **Corrections**
 
-- `POST /engram/v1/correction/plan` — plan a natural-language memory correction
+- `POST /engram/v1/correction/plan` — plan a natural-language memory correction. Optional `duplicateOf` with exactly one `targetIds` entry skips classification and drafts a recoverable supersede of that duplicate (no hard delete), recording the winner on `supersededBy` and the lineage.
 - `POST /engram/v1/correction/apply` — apply a planned correction
 - `GET /engram/v1/correction/pending` — list pending corrections
 

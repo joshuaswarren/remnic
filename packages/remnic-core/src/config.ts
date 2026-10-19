@@ -28,6 +28,7 @@ import type {
 import { parseBackgroundGeneration } from "./background-generation-config.js";
 import { parseSearchBackend } from "./config-search-backend.js";
 import { parseLocalLlmConfig } from "./local-llm-config.js";
+import { parseCorrectionConfig } from "./correction/correction-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
 import { parseExternalWikiRecallGuard } from "./external-wiki-guard.js";
 import { log } from "./logger.js";
@@ -1854,66 +1855,9 @@ export function parseConfig(
     // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: coerceBool(cfg.temporalBiTemporal) ?? false,
     temporalExpiredInInjection: coerceBool(cfg.temporalExpiredInInjection) ?? false,
-    // Correction Contract (issue #1580). Parsed here so operators can actually
-    // set the documented toggles/limits (review thread Txp): parseConfig builds
-    // an explicit output, so without these lines the raw `correction` block /
-    // flat legacy keys are dropped and the runtime always sees defaults. Nested
-    // `correction.<key>` wins; flat `correction<Key>` is the legacy fallback.
-    correctionEnabled: (() => {
-      const nested = (cfg.correction as Record<string, unknown> | undefined)?.enabled;
-      const raw = nested !== undefined ? nested : cfg.correctionEnabled;
-      if (raw === undefined || raw === null) return true;
-      const v = coerceBool(raw);
-      if (v === undefined) {
-        throw new Error(`Invalid correction.enabled: expected a boolean, got ${JSON.stringify(raw)}`);
-      }
-      return v;
-    })(),
-    correctionApplyRequiresConfirm: (() => {
-      const nested = (cfg.correction as Record<string, unknown> | undefined)?.applyRequiresConfirm;
-      const raw = nested !== undefined ? nested : cfg.correctionApplyRequiresConfirm;
-      if (raw === undefined || raw === null) return true;
-      const v = coerceBool(raw);
-      if (v === undefined) {
-        throw new Error(`Invalid correction.applyRequiresConfirm: expected a boolean, got ${JSON.stringify(raw)}`);
-      }
-      return v;
-    })(),
-    correctionMaxAffected: (() => {
-      const rawNested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
-      const raw = rawNested !== undefined ? rawNested : cfg.correctionMaxAffected;
-      if (raw === undefined || raw === null) return 10;
-      const n = coerceNumber(raw);
-      // #1678 (thread Oiup6): the error message says "integer" — enforce it
-      // with Number.isInteger so 3.7 is rejected rather than silently floored.
-      if (n === undefined || !Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
-        throw new Error(`Invalid correction.maxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
-      }
-      return n;
-    })(),
-    correctionPlanTtlHours: (() => {
-      const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
-      const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
-      if (fromNested !== undefined && fromNested >= 1) return fromNested;
-      // #1678 (threads Ohtvi/Ohyvf): reject invalid (0/negative/non-numeric)
-      // instead of silently defaulting to 24h — completes the config-reject
-      // class already enforced for enabled/applyRequiresConfirm/maxAffected.
-      if (nested !== undefined && fromNested === undefined) {
-        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
-      }
-      if (fromNested !== undefined && fromNested < 1) {
-        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
-      }
-      const fromFlat = coerceNumber(cfg.correctionPlanTtlHours);
-      if (fromFlat !== undefined && fromFlat >= 1) return fromFlat;
-      if (cfg.correctionPlanTtlHours !== undefined && fromFlat === undefined) {
-        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
-      }
-      if (fromFlat !== undefined && fromFlat < 1) {
-        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
-      }
-      return 24;
-    })(),
+    // Correction Contract (#1580). Nested `correction.<key>` wins over flat
+    // `correction<Key>`. Parser lives in correction/correction-config.ts.
+    ...parseCorrectionConfig(cfg),
     // Passive correction capture (issue #1581). Parsed from
     // `correctionCapture.<key>` (nested) or flat legacy keys. Default "off" —
     // operators opt in (rule 48). Invalid mode → rejected listing options (rule 51).

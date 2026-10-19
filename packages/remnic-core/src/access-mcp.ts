@@ -1,4 +1,5 @@
 import { sharedContextMcpTools } from "./access-mcp-shared-context-tools.js";
+import { correctionMcpTools } from "./access-mcp-correction-tools.js";
 import { randomUUID } from "node:crypto";
 import {
   MCP_ADMIN_OPS_MIGRATED_OPERATIONS,
@@ -2133,56 +2134,10 @@ export class EngramMcpServer {
       this.tools = [...this.tools, ...deltaTools];
     }
     if (this.correctionVisible) {
-      // Correction Contract (issue #1580) — one plan/apply pipeline for every
-      // memory correction. Both tools dispatch through the boundary operations
-      // (memory_correct_plan / memory_correct_apply) which delegate to the
-      // CorrectionService.
-      const planTool = withToolAliases(
-        {
-          name: "engram.memory_correct_plan",
-          description:
-            "Plan a memory correction from a plain-language statement (issue #1580). Returns a CorrectionPlan with a diff preview; apply via memory_correct_apply.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              text: {
-                type: "string",
-                description: 'The natural-language correction (e.g. "we migrated to MySQL in March").',
-              },
-              targetIds: {
-                type: "array",
-                items: { type: "string" },
-                description: "Optional explicit target memory ids. When omitted, the planner searches.",
-              },
-              sessionKey: { type: "string", description: "Session identifier for namespace resolution." },
-              namespace: { type: "string", description: "Optional explicit namespace (validated by policy)." },
-            },
-            required: ["text"],
-            additionalProperties: false,
-          },
-        },
-        this.emitLegacyTools
+      const correctionTools = correctionMcpTools.flatMap((tool) =>
+        withToolAliases(tool, this.emitLegacyTools),
       );
-      const applyTool = withToolAliases(
-        {
-          name: "engram.memory_correct_apply",
-          description:
-            "Apply a planned memory correction by planId (issue #1580). Requires confirm: true when correction.applyRequiresConfirm is on (default).",
-          inputSchema: {
-            type: "object",
-            properties: {
-              planId: { type: "string", description: "The plan id returned by memory_correct_plan." },
-              confirm: { type: "boolean", description: "Must be true to apply (safety guard, rule 48)." },
-              sessionKey: { type: "string", description: "Session identifier for namespace resolution." },
-              namespace: { type: "string", description: "Optional explicit namespace (validated by policy)." },
-            },
-            required: ["planId"],
-            additionalProperties: false,
-          },
-        },
-        this.emitLegacyTools
-      );
-      this.tools = [...this.tools, ...planTool, ...applyTool];
+      this.tools = [...this.tools, ...correctionTools];
     }
     if (this.chatVisible) {
       const chatTools = withToolAliases(

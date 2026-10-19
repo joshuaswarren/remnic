@@ -38,6 +38,8 @@ interface StubState {
   writeReplacementCalls: number;
   propagateCalls: number;
   retireCalls: number;
+  statusById?: Map<string, string>;
+  classifyCalls?: number;
 }
 
 function makeCandidate(over: Partial<PlannerCandidate> & { memoryId: string }): PlannerCandidate {
@@ -72,12 +74,18 @@ function makeDeps(stateDir: string, state: StubState, opts: { maxAffected?: numb
       }
       return out;
     },
+    inspectMemory: async ({ memoryId }) => {
+      const candidate = state.candidatesById.get(memoryId);
+      if (!candidate) return null;
+      return { candidate, status: state.statusById?.get(memoryId) ?? "active" };
+    },
     expandNeighbors: async ({ seedIds }) => {
       // No neighbors in the stub; return the seeds themselves so neighbor
       // expansion is exercised but produces no surprises.
       return seedIds.map((id) => state.candidatesById.get(id)).filter((c): c is PlannerCandidate => c !== undefined);
     },
     classifyAndDraft: async ({ text, candidates }) => {
+      state.classifyCalls = (state.classifyCalls ?? 0) + 1;
       return typeof state.llmResult === "function"
         ? state.llmResult(text, candidates)
         : state.llmResult;
@@ -785,5 +793,85 @@ test("#1713: recoverStaleApplyingPlans recovers pre-fix plans immediately at exp
       now: new Date(planJson.expiresAt),
     });
     assert.equal(recovered.length, 1, "pre-fix plan at expiry must be recovered immediately");
+  });
+});
+
+test("duplicateOf skips the LLM and drafts one recoverable supersede linked to the winner", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-loser", makeCandidate({ memoryId: "mem-loser", content: "duplicate fact" })],
+        ["mem-winner", makeCandidate({ memoryId: "mem-winner", content: "canonical fact" })],
+      ]),
+      llmResult: () => {
+        throw new Error("classifyAndDraft must not run in duplicate mode");
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const plan = await new CorrectionPlanner(makeDeps(dir, state)).plan(
+      { text: "mem-loser duplicates mem-winner", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+      ["default"],
+    );
+    assert.equal(state.classifyCalls ?? 0, 0);
+    assert.equal(plan.actions.length, 1);
+    assert.deepEqual(plan.actions[0], { kind: "supersede", loserId: "mem-loser", winnerId: "mem-winner" });
+    assert.equal(plan.classification, "outdated");
+    assert.equal(plan.confidence, 1);
+    assert.equal(plan.affected.length, 1);
+    assert.equal(plan.affected[0]?.memoryId, "mem-loser");
+    assert.equal(plan.request.duplicateOf, "mem-winner");
+  });
+});
+
+test("duplicateOf rejects same id, missing memories, inactive memories, and a target list that is not exactly one", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-loser", makeCandidate({ memoryId: "mem-loser" })],
+        ["mem-winner", makeCandidate({ memoryId: "mem-winner" })],
+        ["mem-old", makeCandidate({ memoryId: "mem-old" })],
+      ]),
+      statusById: new Map([["mem-old", "superseded"]]),
+      llmResult: { classification: "outdated", confidence: 1, actions: [], relevance: [], warnings: [] },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    await assert.rejects(
+      () => planner.plan({ text: "same", targetIds: ["mem-loser"], duplicateOf: "mem-loser" }, ["default"]),
+      /different memory from targetIds/,
+    );
+    await assert.rejects(
+      () => planner.plan({ text: "missing loser", targetIds: ["missing"], duplicateOf: "mem-winner" }, ["default"]),
+      /target memory not found: missing/,
+    );
+    await assert.rejects(
+      () => planner.plan({ text: "missing winner", targetIds: ["mem-loser"], duplicateOf: "missing-winner" }, ["default"]),
+      /duplicateOf memory not found: missing-winner/,
+    );
+    await assert.rejects(
+      () => planner.plan({ text: "inactive loser", targetIds: ["mem-old"], duplicateOf: "mem-winner" }, ["default"]),
+      /target memory is not active: mem-old \(superseded\)/,
+    );
+    state.statusById = new Map([["mem-winner", "forgotten"]]);
+    await assert.rejects(
+      () => planner.plan({ text: "inactive winner", targetIds: ["mem-loser"], duplicateOf: "mem-winner" }, ["default"]),
+      /duplicateOf memory is not active: mem-winner \(forgotten\)/,
+    );
+    await assert.rejects(
+      () => planner.plan({ text: "no target", duplicateOf: "mem-winner" }, ["default"]),
+      /exactly one targetIds entry/,
+    );
+    await assert.rejects(
+      () => planner.plan(
+        { text: "two targets", targetIds: ["mem-loser", "mem-winner"], duplicateOf: "mem-winner" },
+        ["default"],
+      ),
+      /exactly one targetIds entry/,
+    );
+    assert.equal(state.classifyCalls ?? 0, 0);
   });
 });

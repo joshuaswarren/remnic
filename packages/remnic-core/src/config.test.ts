@@ -2463,6 +2463,32 @@ test("parseConfig rejects invalid correction.planTtlHours instead of silently de
   assert.equal(parseConfig({}).correctionPlanTtlHours, 24, "absent → documented default");
 });
 
+test("parseConfig correction.classifyTimeoutMs defaults to 45000 and rejects invalid values", () => {
+  assert.equal(parseConfig({}).correctionClassifyTimeoutMs, 45_000);
+  assert.equal(parseConfig({ correction: { classifyTimeoutMs: 12000 } }).correctionClassifyTimeoutMs, 12_000);
+  assert.equal(
+    parseConfig({
+      correction: { classifyTimeoutMs: 8000 },
+      correctionClassifyTimeoutMs: 1000,
+    }).correctionClassifyTimeoutMs,
+    8000,
+    "nested correction.classifyTimeoutMs wins",
+  );
+  assert.equal(parseConfig({ correctionClassifyTimeoutMs: 15000 }).correctionClassifyTimeoutMs, 15_000);
+  for (const value of [0, -1, 3.7, "abc", 300_001, true]) {
+    assert.throws(
+      () => parseConfig({ correctionClassifyTimeoutMs: value } as Record<string, unknown>),
+      /Invalid correction\.classifyTimeoutMs/,
+      `correctionClassifyTimeoutMs=${JSON.stringify(value)} should throw`,
+    );
+    assert.throws(
+      () => parseConfig({ correction: { classifyTimeoutMs: value } } as Record<string, unknown>),
+      /Invalid correction\.classifyTimeoutMs/,
+      `nested classifyTimeoutMs=${JSON.stringify(value)} should throw`,
+    );
+  }
+});
+
 test("parseConfig correction.maxAffected rejects non-integers (Number.isInteger, #1678)", () => {
   // The error message says "integer" — 3.7 must be rejected, not silently floored to 3.
   for (const value of [3.7, 2.5, "1.5", 0.99]) {

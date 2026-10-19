@@ -384,6 +384,7 @@ const memoryCorrectPlanSchema = z.preprocess(
   z.object({
     text: z.string().trim().min(1).max(10_000),
     targetIds: z.array(z.string().trim().min(1).max(512)).optional(),
+    duplicateOf: z.string().trim().min(1).max(512).optional(),
     sessionKey: z.string().trim().max(512).optional(),
     namespace: z.string().trim().max(256).optional(),
   }),
@@ -392,6 +393,7 @@ const memoryCorrectPlanSchema = z.preprocess(
 export interface MemoryCorrectPlanInput {
   text: string;
   targetIds?: string[];
+  duplicateOf?: string;
   sessionKey?: string;
   namespace?: string;
 }
@@ -414,6 +416,7 @@ export const memoryCorrectPlanOperation = defineOperation<
         {
           text: input.text,
           ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+          ...(input.duplicateOf ? { duplicateOf: input.duplicateOf } : {}),
           ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
           ...(input.namespace ? { namespace: input.namespace } : {}),
           ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),

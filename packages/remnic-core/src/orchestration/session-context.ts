@@ -632,21 +632,6 @@ export class SessionContextCoordinator {
         const principal = req.principal || resolvePrincipal(req.sessionKey, this.deps.config);
         return canWriteNamespace(principal, req.namespace, this.deps.config);
       },
-      llmComplete: async ({ system, user }) => {
-        const llmResult = await this.deps.localLlm.chatCompletion(
-          [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          { operation: "correction-classify", priority: "background" },
-        );
-        if (!llmResult) {
-          throw new Error(
-            "passive correction classify+draft: local LLM unavailable (disabled or in cooldown)",
-          );
-        }
-        return llmResult.content;
-      },
     });
     return this.deps._passiveCorrectionService;
   }

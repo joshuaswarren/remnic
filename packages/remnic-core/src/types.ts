@@ -914,33 +914,16 @@ export interface PluginConfig
    * deployments prefer the older (always-inject) behavior. Default `false`.
    */
   temporalExpiredInInjection: boolean;
-  /**
-   * Correction Contract (issue #1580) — one plan/apply pipeline for memory
-   * corrections. Master visibility + enforcement gate for the
-   * `memory_correct_plan` / `memory_correct_apply` tools. Default `true`:
-   * planning is read-only (locates candidates + drafts a pending plan file)
-   * and safe to ship on; `false` hides the tools and rejects runtime calls so
-   * the surface cannot drift out of sync. Parsed from `correction.enabled`
-   * (nested) or `correctionEnabled` (flat legacy).
-   */
+  /** Correction Contract (#1580). `correction.enabled` / `correctionEnabled`. Default true. */
   correctionEnabled: boolean;
-  /**
-   * Whether `memory_correct_apply` requires an explicit `confirm: true` to
-   * mutate memories. Default `true` (least-privileged). Parsed from
-   * `correction.applyRequiresConfirm` / `correctionApplyRequiresConfirm`.
-   */
+  /** Apply requires `confirm: true`. `correction.applyRequiresConfirm`. Default true. */
   correctionApplyRequiresConfirm: boolean;
-  /**
-   * Max memories a single correction plan may touch; over-limit plans are
-   * rejected, never silently truncated (review thread). Default `10`. Parsed
-   * from `correction.maxAffected` / `correctionMaxAffected`.
-   */
+  /** Max memories one plan may touch. `correction.maxAffected`. Default 10. */
   correctionMaxAffected: number;
-  /**
-   * Plan time-to-live in hours; expired plans are rejected at apply. Default
-   * `24`. Parsed from `correction.planTtlHours` / `correctionPlanTtlHours`.
-   */
+  /** Plan TTL hours. `correction.planTtlHours`. Default 24. */
   correctionPlanTtlHours: number;
+  /** Per-attempt classify timeout (ms, 1..300000). `correction.classifyTimeoutMs`. Default 45000. */
+  correctionClassifyTimeoutMs: number;
   /**
    * Passive correction capture (issue #1581) — detects corrections expressed
    * passively in conversation turns during extraction and routes them to the

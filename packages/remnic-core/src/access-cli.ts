@@ -207,6 +207,7 @@ function usage(): string {
     "Correct options (issue #1580 — one plan/apply pipeline for all corrections):",
     "  --text \"<correction>\"          plan a correction from natural language",
     "  --id <memoryId> (repeatable)   explicit target memory ids",
+    "  --duplicate-of <memoryId>      winner id; requires exactly one --id (skips the classifier)",
     "  --apply                        apply a pending plan (requires --plan-id + --confirm)",
     "  --plan-id <id>                 the plan to apply or discard",
     "  --confirm                      confirm the apply (safety guard, rule 48)",
@@ -297,6 +298,7 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     valueOptions: new Set([
       "text",
       "id",
+      "duplicate-of",
       "plan-id",
       "namespace",
       "session-key",
@@ -830,6 +832,7 @@ async function runCorrect(args: ParsedArgs, preferredId?: string): Promise<void>
   // so schema validation + namespace policy reach this path (same as MCP/HTTP).
   const text = requireOption(args, "text");
   const targetIds = getAllOptions(args, "id");
+  const duplicateOf = getLastOption(args, "duplicate-of");
   const planOp = getOperation("memory_correct_plan");
   if (!planOp) {
     throw new Error("access-boundary: operation not registered: memory_correct_plan");
@@ -838,6 +841,7 @@ async function runCorrect(args: ParsedArgs, preferredId?: string): Promise<void>
     {
       text,
       ...(targetIds.length > 0 ? { targetIds } : {}),
+      ...(duplicateOf ? { duplicateOf } : {}),
       ...(sessionKey ? { sessionKey } : {}),
       ...(namespace ? { namespace } : {}),
     },

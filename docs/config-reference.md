@@ -2,7 +2,7 @@
 
 All settings live in `openclaw.json` under `plugins.entries.openclaw-remnic.config`. (Installs created before the rename may still use the legacy `openclaw-engram` entry key; Remnic reads either.)
 
-Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key. Remnic ships 751 schema-validated top-level options plus 4 tuning presets, so treat the appendix as the source of truth and reach for a preset before hand-tuning individual keys.
+Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key. Remnic ships 752 schema-validated top-level options plus 4 tuning presets, so treat the appendix as the source of truth and reach for a preset before hand-tuning individual keys.
 
 ## Core
 
@@ -1001,6 +1001,8 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `taskLlmFallback` | `true` | When the local LLM path fails or is unavailable, use the gateway/task LLM chain. |
 | `localLlmFallback` | `true` | Legacy alias for `taskLlmFallback`. Read only when `taskLlmFallback` is absent. |
 | `localLlmTimeoutMs` | `180000` | Timeout for a single attempt at a primary local extraction/consolidation call. 5xx retries and their backoff can push one logical completion past this value. Also sizes the HTTP connection's header/body inactivity budget, so values above 300s take effect instead of being capped by undici's default (issue #2148). Exception: when the host process installs its own global dispatcher (a `ProxyAgent`, `MockAgent`, or other custom transport), Remnic leaves it in place rather than displacing it, and that dispatcher's own budget — undici's 300s default unless it was built with a wider one — governs instead. Raising this value past 300s on such a setup requires widening the host dispatcher too. Legacy alias for `taskLlmTimeoutMs` on the gateway/task chain when that key is absent. |
+| `correction.classifyTimeoutMs` | `45000` | Per-attempt timeout for correction classification. The local attempt and the gateway/fallback attempt each get this budget, and a caller abort or disconnect cancels whichever attempt is in flight. Integer from 1 to 300000. Nested `correction.classifyTimeoutMs` wins over `correctionClassifyTimeoutMs`. |
+| `correctionClassifyTimeoutMs` | `45000` | Flat legacy key for `correction.classifyTimeoutMs`. |
 | `localLlmRetry5xxCount` | `1` | Retry count for transient 5xx responses from the local endpoint |
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
@@ -2226,6 +2228,8 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `localLmsBinDir` | (unset) | (unset) |
 | `taskLlmTimeoutMs` | `180000` | `180000` |
 | `localLlmTimeoutMs` | `180000` | `180000` |
+| `correctionClassifyTimeoutMs` | `45000` | `45000` |
+| `correction.classifyTimeoutMs` | `45000` | Per-attempt correction classify timeout. Nested form wins over `correctionClassifyTimeoutMs`. |
 | `slowLogEnabled` | `false` | `false` |
 | `slowLogThresholdMs` | `30000` | `30000` |
 | `traceRecallContent` | `false` | `false` |

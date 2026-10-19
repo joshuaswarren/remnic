@@ -39,7 +39,7 @@ function extractToolNames(response: unknown): Set<string> {
 }
 
 interface MockCalls {
-  planRequests: Array<{ text: string; targetIds?: string[]; principal?: string; abortSignal?: AbortSignal }>;
+  planRequests: Array<{ text: string; targetIds?: string[]; duplicateOf?: string; principal?: string; abortSignal?: AbortSignal }>;
   applyRequests: Array<{ planId: string; confirm: boolean; principal?: string; abortSignal?: AbortSignal }>;
 }
 
@@ -54,6 +54,7 @@ function makeMockService(
       req: {
         text: string;
         targetIds?: string[];
+        duplicateOf?: string;
         principal?: string;
       },
       opts?: { abortSignal?: AbortSignal },
@@ -128,6 +129,26 @@ test("tools/list gate: correction tools present when correctionVisible on (defau
   assert.equal(names.has("engram.memory_correct_apply"), true, "apply tool must be present by default");
   assert.equal(names.has("remnic_memory_correct_plan"), true, "plan alias must be present");
   assert.equal(names.has("remnic_memory_correct_apply"), true, "apply alias must be present");
+  const tools = (response as { result?: { tools?: Array<{ name?: string; inputSchema?: { properties?: Record<string, unknown> } }> } }).result?.tools ?? [];
+  const planTool = tools.find((tool) => tool.name === "engram.memory_correct_plan");
+  assert.ok(planTool?.inputSchema?.properties?.duplicateOf, "plan schema must advertise duplicateOf");
+});
+
+test("MCP surface: memory_correct_plan forwards duplicateOf", async () => {
+  const { service, calls } = makeMockService(STUB_PLAN, STUB_OUTCOME);
+  const server = new EngramMcpServer(service, { emitLegacyTools: true, correctionVisible: true });
+  await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/call",
+    params: {
+      name: "engram.memory_correct_plan",
+      arguments: { text: "duplicate", targetIds: ["mem-loser"], duplicateOf: "mem-winner" },
+    },
+  });
+  assert.equal(calls.planRequests.length, 1);
+  assert.deepEqual(calls.planRequests[0]?.targetIds, ["mem-loser"]);
+  assert.equal(calls.planRequests[0]?.duplicateOf, "mem-winner");
 });
 
 // ---------------------------------------------------------------------------

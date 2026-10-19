@@ -68,6 +68,9 @@ export interface ExecutorMemory {
   entityRef?: string;
   /** Raw content used for the tombstone hash (rule 23). */
   rawContent: string;
+  /** Frontmatter status. Absent is treated as active. */
+  status?: string;
+  lineage?: string[];
 }
 
 export interface ExecutorDeps {
@@ -109,6 +112,8 @@ export interface ExecutorDeps {
       status: "superseded" | "retracted";
       supersededBy?: string;
       validUntil?: string;
+      /** Appended to the loser's lineage when recording an existing winner. */
+      lineage?: string[];
     },
     abortSignal?: AbortSignal
   ): Promise<void>;
@@ -486,13 +491,30 @@ export class CorrectionExecutor {
         if (action.replacement && !replacementResult) {
           continue;
         }
+        if (action.winnerId && !action.replacement) {
+          const winner = await this.deps.getMemory(namespace, action.winnerId, abortSignal);
+          const winnerStatus = winner ? (winner.status ?? "active") : undefined;
+          if (!winner || winnerStatus !== "active") {
+            results.push({
+              action,
+              status: "failed",
+              error: winner
+                ? `supersede winner is not active: ${action.winnerId} (${winnerStatus})`
+                : `supersede winner not found: ${action.winnerId}`,
+            });
+            continue;
+          }
+        }
         await this.retireAndTombstone(
           namespace,
           action,
           "supersession",
           results,
           appliedTouched,
-          { supersededBy: replacementResult?.memoryId },
+          {
+            supersededBy: replacementResult?.memoryId ?? action.winnerId,
+            ...(action.winnerId && !action.replacement ? { lineage: [action.winnerId] } : {}),
+          },
           abortSignal
         );
         if (results.at(-1)?.status === "applied") {
@@ -665,7 +687,7 @@ export class CorrectionExecutor {
     reason: "supersession" | "retraction",
     results: CorrectionActionResult[],
     appliedTouched: string[],
-    opts: { supersededBy?: string } = {},
+    opts: { supersededBy?: string; lineage?: string[] } = {},
     abortSignal?: AbortSignal
   ): Promise<void> {
     const memoryId = action.kind === "supersede" ? action.loserId : action.kind === "retract" ? action.memoryId : null;
@@ -716,6 +738,7 @@ export class CorrectionExecutor {
         {
           status: reason === "supersession" ? "superseded" : "retracted",
           ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
+          ...(opts.lineage && opts.lineage.length > 0 ? { lineage: opts.lineage } : {}),
           ...(validUntil ? { validUntil } : {}),
         },
         tombstoneId === null ? abortSignal : undefined

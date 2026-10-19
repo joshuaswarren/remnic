@@ -21,7 +21,7 @@
  */
 
 import path from "node:path";
-import { throwIfAborted } from "../abort-error.js";
+import { abortError, isAbortError, throwIfAborted } from "../abort-error.js";
 import { composeMemoryEnvelope, isMemoryCategory } from "../write-envelope.js";
 import { log } from "../logger.js";
 import { createHash } from "node:crypto";
@@ -48,6 +48,7 @@ import {
 } from "./correction-planner.js";
 import { type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
 import { CorrectionService, type CorrectionServiceDeps } from "./correction-service.js";
+import { completeCorrectionClassify } from "./correction-classify.js";
 import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
@@ -90,6 +91,7 @@ export interface CorrectionAccessWiring {
   llmComplete?(request: {
     system: string;
     user: string;
+    abortSignal?: AbortSignal;
   }): Promise<string>;
 }
 
@@ -144,10 +146,12 @@ function makePlannerDeps(
       searchMemories(wiring, text, namespaces, limit),
     resolveTargets: async ({ targetIds, namespaces }) =>
       resolveTargetMemories(wiring, targetIds, namespaces),
+    inspectMemory: async ({ memoryId, namespaces }) =>
+      inspectCorrectionMemory(wiring, memoryId, namespaces),
     expandNeighbors: async ({ seedIds, namespaces, limit }) =>
       expandEntityNeighbors(wiring, seedIds, namespaces, limit),
-    classifyAndDraft: async ({ text, candidates }) =>
-      classifyAndDraft(wiring, text, candidates),
+    classifyAndDraft: async ({ text, candidates, abortSignal }) =>
+      classifyAndDraft(wiring, text, candidates, abortSignal),
     renderDiff: async ({ candidates, actions }) =>
       renderCorrectionDiff(wiring, candidates, actions),
     storageDir: async (namespace) => (await wiring.orchestrator.getStorage(namespace)).dir,
@@ -294,20 +298,52 @@ async function classifyAndDraft(
   wiring: CorrectionAccessWiring,
   text: string,
   candidates: PlannerCandidate[],
+  abortSignal?: AbortSignal,
 ): Promise<LlmClassificationResult> {
-  // Route through the injected LLM callback (Responses API only — gotcha 1).
-  // On any failure (or when no callback is wired), return the deterministic
-  // fallback (rule 13) — the planner never throws on an LLM outage.
+  // Injected llmComplete stays as a test override. Production uses
+  // completeCorrectionClassify: short timeout, caller abort, gateway fallback.
+  // Abort throws. Every other failure is the deterministic empty-action plan.
   try {
-    if (!wiring.llmComplete) {
-      return fallbackClassification(candidates, "no LLM client available");
-    }
+    throwIfAborted(abortSignal, "correction classify aborted");
     const user = buildClassifyPrompt(text, candidates);
-    const raw = await wiring.llmComplete({ system: CLASSIFY_SYSTEM_PROMPT, user });
+    const raw = wiring.llmComplete
+      ? await wiring.llmComplete({ system: CLASSIFY_SYSTEM_PROMPT, user, abortSignal })
+      : await completeCorrectionClassify(
+          [
+            { role: "system", content: CLASSIFY_SYSTEM_PROMPT },
+            { role: "user", content: user },
+          ],
+          { config: wiring.orchestrator.config, localLlm: wiring.orchestrator.localLlm },
+          abortSignal,
+        );
+    if (raw == null) return fallbackClassification(candidates, "correction classify unavailable");
+    throwIfAborted(abortSignal, "correction classify aborted");
     return parseClassifyResponse(raw, candidates);
   } catch (err) {
+    if (isAbortError(err) || abortSignal?.aborted) {
+      throw isAbortError(err) ? err : abortError("correction classify aborted");
+    }
     return fallbackClassification(candidates, `LLM unavailable: ${errMsg(err)}`);
   }
+}
+
+async function inspectCorrectionMemory(
+  wiring: CorrectionAccessWiring,
+  memoryId: string,
+  namespaces: readonly string[],
+): Promise<{ candidate: PlannerCandidate; status: string } | null> {
+  for (const ns of namespaces) {
+    const storage = await wiring.orchestrator.getStorage(ns);
+    const memory = await storage.getMemoryByIdIncludingArchived(memoryId);
+    if (!memory || memory.frontmatter.id !== memoryId) continue;
+    const candidate = toCandidate(memory, ns, 1);
+    if (isSupportPassportPrivateMemory(memory)) return { candidate, status: "ineligible" };
+    if (typeof memory.frontmatter.archivedAt === "string" && memory.frontmatter.archivedAt.length > 0) {
+      return { candidate, status: "archived" };
+    }
+    return { candidate, status: memory.frontmatter.status ?? "active" };
+  }
+  return null;
 }
 
 async function renderCorrectionDiff(
@@ -339,7 +375,10 @@ async function renderCorrectionDiff(
 function describeAfterState(action: CorrectionAction): string {
   switch (action.kind) {
     case "supersede":
-      return action.replacement?.content ?? "(superseded without replacement)";
+      return action.replacement?.content
+        ?? (action.winnerId
+          ? `(superseded by ${action.winnerId}; recoverable)`
+          : "(superseded without replacement)");
     case "edit":
       return action.patch;
     case "retract":
@@ -509,7 +548,7 @@ async function retireMemoryFn(
   wiring: CorrectionAccessWiring,
   namespace: string,
   memoryId: string,
-  opts: { status: "superseded" | "retracted"; supersededBy?: string; validUntil?: string },
+  opts: { status: "superseded" | "retracted"; supersededBy?: string; validUntil?: string; lineage?: string[] },
   abortSignal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(abortSignal, "correction apply aborted");
@@ -519,12 +558,14 @@ async function retireMemoryFn(
   throwIfAborted(abortSignal, "correction apply aborted");
   if (!memory) throw new CorrectionContractError(`memory not found for retire: ${memoryId}`);
   const storageStatus: MemoryStatus = opts.status === "retracted" ? "forgotten" : "superseded";
+  const lineage = mergeLineage(memory.frontmatter.lineage, opts.lineage);
   throwIfAborted(abortSignal, "correction apply aborted");
   await storage.writeMemoryFrontmatter(memory, {
     status: storageStatus,
     ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
     ...(opts.status === "superseded" ? { supersededAt: new Date().toISOString() } : {}),
     ...(opts.validUntil ? { invalid_at: opts.validUntil } : {}),
+    ...(lineage ? { lineage } : {}),
   });
 }
 
@@ -899,7 +940,18 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
     ...(typeof fm.contentHash === "string" && fm.contentHash.length > 0
       ? { contentHash: fm.contentHash }
       : {}),
+    status: fm.status ?? "active",
+    ...(fm.lineage && fm.lineage.length > 0 ? { lineage: [...fm.lineage] } : {}),
   } satisfies ExecutorMemory;
+}
+
+function mergeLineage(existing: string[] | undefined, added: string[] | undefined): string[] | undefined {
+  if (!added || added.length === 0) return undefined;
+  const merged: string[] = [];
+  for (const id of [...(existing ?? []), ...added]) {
+    if (id.length > 0 && !merged.includes(id)) merged.push(id);
+  }
+  return merged.length > 0 ? merged : undefined;
 }
 
 /**
@@ -987,6 +1039,7 @@ Given a correction statement and candidate memories, respond with a JSON object:
 
 Action shapes:
 - {"kind":"supersede","loserId":"<id>","replacement":{"content":"<new fact>"}}
+- {"kind":"supersede","loserId":"<id>","winnerId":"<existing id>"}
 - {"kind":"edit","memoryId":"<id>","patch":"<new full content>"}
 - {"kind":"retract","memoryId":"<id>"}
 - {"kind":"rescope","memoryId":"<id>","toNamespace":"<ns>"}
