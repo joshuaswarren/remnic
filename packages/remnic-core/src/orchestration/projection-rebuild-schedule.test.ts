@@ -18,6 +18,7 @@ import {
   forkProjectionRebuild,
   maybeRebuildMemoryProjectionScheduled,
   projectionRebuildChildEnv,
+  projectionRebuildForkTimeoutMs,
   terminateScheduledProjectionRebuilds,
   type ProjectionRebuildForkRequest,
   type ProjectionRebuildForkResult,
@@ -63,6 +64,15 @@ function config(memoryDir: string, overrides: Record<string, unknown> = {}): Plu
 
 function quietHeap() {
   return { used_heap_size: 1, heap_size_limit: 100 };
+}
+
+/** Windows reports TerminateProcess as an exit code, not SIGKILL. */
+function assertChildKilled(child: { signalCode: NodeJS.Signals | null; exitCode: number | null }): void {
+  if (process.platform === "win32") {
+    assert.notEqual(child.exitCode, null);
+    return;
+  }
+  assert.equal(child.signalCode, "SIGKILL");
 }
 
 /** A storage stand-in whose corpus reads fail the test if the daemon calls them. */
@@ -113,7 +123,7 @@ test("shutting down the parent kills the projection rebuild child", async () => 
   );
   terminateScheduledProjectionRebuilds();
   await assert.rejects(pending, /exited/);
-  assert.equal(child.signalCode, "SIGKILL");
+  assertChildKilled(child);
 });
 
 test("a disconnected parent does not let the rebuild child publish", async () => {
@@ -156,7 +166,13 @@ test("a hung projection rebuild child is killed at the timeout", async () => {
     if (child.exitCode !== null || child.signalCode !== null) resolve();
     else child.once("exit", () => resolve());
   });
-  assert.equal(child.signalCode, "SIGKILL");
+  assertChildKilled(child);
+});
+
+test("the fork hang cap follows a long interval and stays at least 30 minutes", () => {
+  assert.equal(projectionRebuildForkTimeoutMs(60_000), 30 * 60 * 1000);
+  assert.equal(projectionRebuildForkTimeoutMs(6 * 60 * 60 * 1000), 6 * 60 * 60 * 1000);
+  assert.equal(projectionRebuildForkTimeoutMs(Number.NaN), 30 * 60 * 1000);
 });
 
 test("projection rebuild child env keeps locators and drops secrets", () => {
@@ -177,6 +193,7 @@ test("projection rebuild child env keeps locators and drops secrets", () => {
 test("scheduled projection rebuild forks and does not read the corpus in the daemon", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-fork-"));
   const calls: ProjectionRebuildForkRequest[] = [];
+  const timeouts: number[] = [];
   try {
     const state = createProjectionRebuildScheduleState();
     await maybeRebuildMemoryProjectionScheduled({
@@ -184,12 +201,14 @@ test("scheduled projection rebuild forks and does not read the corpus in the dae
       getStorage: () => corpusGuard(memoryDir),
       state,
       heapStatistics: quietHeap,
-      forkRebuild: async (request) => {
+      forkRebuild: async (request, options) => {
         calls.push(request);
+        if (options?.timeoutMs !== undefined) timeouts.push(options.timeoutMs);
         return { currentRows: 4, timelineRows: 5, entityMentionRows: 6 };
       },
     });
     assert.equal(calls.length, 1);
+    assert.deepEqual(timeouts, [6 * 60 * 60 * 1000]);
     assert.equal(calls[0]?.memoryDir, memoryDir);
     assert.equal(calls[0]?.defaultNamespace, "ns-schedule");
     assert.equal(state.inFlight, false);

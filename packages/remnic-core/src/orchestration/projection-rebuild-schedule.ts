@@ -79,9 +79,16 @@ export interface ProjectionRebuildForkResult {
  * rebuild off every maintenance tick. */
 const FAILURE_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 
-/** A hung child must not leave `inFlight` set until the daemon restarts.
- * Generous: a full-corpus rebuild of a large ledger is minutes, not seconds. */
+/** Floor for a hung child. A short interval must not make this tighter:
+ * a large corpus can legitimately run longer than 30 minutes. When the
+ * configured interval is longer, the child may use that whole interval. */
 const FORK_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** Hang cap for one scheduled fork. At least 30 minutes, otherwise the interval. */
+export function projectionRebuildForkTimeoutMs(intervalMs: number): number {
+  if (!Number.isFinite(intervalMs) || intervalMs < FORK_TIMEOUT_MS) return FORK_TIMEOUT_MS;
+  return intervalMs;
+}
 
 const activeProjectionRebuildChildren = new Set<ChildProcess>();
 let parentExitHookInstalled = false;
@@ -262,7 +269,10 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
   getStorage?: () => InjectedStorage | undefined;
   state: ProjectionRebuildScheduleState;
   /** Test seam. Production forks {@link forkProjectionRebuild}. */
-  forkRebuild?: (request: ProjectionRebuildForkRequest) => Promise<ProjectionRebuildForkResult>;
+  forkRebuild?: (
+    request: ProjectionRebuildForkRequest,
+    options?: { timeoutMs?: number },
+  ) => Promise<ProjectionRebuildForkResult>;
   /** Test seam. Production reads `v8.getHeapStatistics()`. */
   heapStatistics?: () => HeapLimitStatistics;
 }): Promise<void> {
@@ -318,7 +328,7 @@ export async function maybeRebuildMemoryProjectionScheduled(opts: {
         memoryDir,
         defaultNamespace: config.defaultNamespace || "default",
         now: new Date(now),
-      });
+      }, { timeoutMs: projectionRebuildForkTimeoutMs(intervalMs) });
     state.lastRebuildAtMs = Date.now();
     const lag = Number.isFinite(rebuiltAtMs)
       ? `${Math.max(0, Math.round((now - rebuiltAtMs) / 60_000))}m stale`
