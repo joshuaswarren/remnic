@@ -412,7 +412,9 @@ test("correctionPlan: a handle in duplicateOf is resolved before planning", asyn
           sessionKey: SESSION,
         }),
       (err: unknown) =>
-        err instanceof EngramAccessInputError && /not found/i.test((err as Error).message),
+        err instanceof EngramAccessInputError &&
+        /not found/i.test((err as Error).message) &&
+        (err as Error).message.includes("[m:dead]"),
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

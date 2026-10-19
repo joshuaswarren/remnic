@@ -82,11 +82,10 @@ export interface CorrectionAccessWiring {
     principal?: string;
   }): Promise<boolean>;
   /**
-   * Optional LLM-complete callback (Responses API only — gotcha 1). When
-   * absent, the planner's classify+draft step falls back to deterministic
-   * mode (rule 13). The access-service wires the orchestrator's extraction
-   * LLM here once it exposes a public accessor; until then the contract
-   * ships with the safe fallback.
+   * Optional test override for classify+draft. Production leaves this unset
+   * and uses completeCorrectionClassify: a short per-attempt timeout, caller
+   * abort, then the gateway/fallback model. A caller abort propagates; every
+   * other failure becomes the deterministic empty-action plan.
    */
   llmComplete?(request: {
     system: string;

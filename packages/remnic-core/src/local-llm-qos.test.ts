@@ -188,6 +188,42 @@ test("LocalLlmClient allows recall-critical work to run while background work is
   }
 });
 
+test("LocalLlmClient drops a queued background request when its signal aborts", async () => {
+  const client = new LocalLlmClient(createConfig());
+  let runs = 0;
+  let releaseHeld: (() => void) | undefined;
+  (client as any).runChatCompletionRequest = async () => {
+    runs += 1;
+    await new Promise<void>((resolve) => {
+      releaseHeld = resolve;
+    });
+    return {
+      content: "held",
+      usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+    };
+  };
+
+  const held = client.chatCompletion(
+    [{ role: "user", content: "hold" }],
+    { operation: "hold", priority: "background" },
+  );
+  await tick();
+  assert.equal(runs, 1);
+
+  const controller = new AbortController();
+  const queued = client.chatCompletion(
+    [{ role: "user", content: "queued" }],
+    { operation: "queued", priority: "background", signal: controller.signal },
+  );
+  controller.abort();
+  assert.equal(await queued, null);
+  assert.equal(runs, 1);
+  assert.equal((client as any).requestQueues.background.length, 0);
+
+  releaseHeld?.();
+  assert.equal((await held)?.content, "held");
+});
+
 test("LocalLlmClient skips queued work once a cooldown is activated", async () => {
   const client = new LocalLlmClient(createConfig());
   const executionOrder: string[] = [];
