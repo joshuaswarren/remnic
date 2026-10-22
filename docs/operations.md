@@ -327,8 +327,10 @@ remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>
   machine-readable `ConvergeWatchOutcome`, including `lastExcludedNamespaces`.
 - A census or snapshot failure for one namespace — for example HTTP 400 because that namespace is
   not readable — excludes it from the plan on both sides. It is not treated as an empty corpus, so
-  the cycle pushes nothing to it and deletes nothing from it. Stderr names the namespace, side, and
-  error. The other namespaces still converge. The cycle status is `partial` when that is the only
+  the cycle pushes nothing to it and deletes nothing from it. Names that share one physical root
+  (namespaces disabled, so `default` and `shared` are the same directory) are excluded together:
+  a refusal of one alias does not leave the others planned against an empty local side. Stderr
+  names the namespace, side, and error. The other namespaces still converge. The cycle status is `partial` when that is the only
   problem. If every namespace census fails, the cycle fails closed instead of reporting convergence.
   A peer timeout or connection failure is not an exclusion: the cycle fails as soon as the transport
   fails, so one hung snapshot or file-content download does not wait out every remaining namespace.

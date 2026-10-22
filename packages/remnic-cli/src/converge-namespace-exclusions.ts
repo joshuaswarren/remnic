@@ -104,6 +104,24 @@ export function recordNamespaceCensusFailure(
   excluded.set(namespace, { namespace, side, error: message, cause: error });
 }
 
+/**
+ * A shared physical root is one census. Dropping only the representative
+ * leaves the other names to be planned with an empty local side.
+ */
+export function excludeNamespaceGroup(
+  excluded: Map<string, ConvergeNamespaceFailure>,
+  namespaces: readonly string[],
+  side: "local" | "peer",
+  error: unknown,
+  signal: AbortSignal | undefined,
+  drop: (namespace: string) => void
+): void {
+  for (const namespace of namespaces) {
+    recordNamespaceCensusFailure(excluded, namespace, side, error, signal);
+    drop(namespace);
+  }
+}
+
 function compareNamespaceSide(left: ConvergeNamespaceExclusion, right: ConvergeNamespaceExclusion): number {
   if (left.namespace < right.namespace) return -1;
   if (left.namespace > right.namespace) return 1;

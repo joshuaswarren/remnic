@@ -38,9 +38,9 @@ import { planLocalNamespaceCensus } from "./converge-local-census.js";
 import {
   type ConvergeNamespaceExclusion,
   type ConvergeNamespaceFailure,
+  excludeNamespaceGroup,
   finishConvergeApplyResult,
   listNamespaceExclusions,
-  recordNamespaceCensusFailure,
   throwIfEveryNamespaceCensusFailed,
 } from "./converge-namespace-exclusions.js";
 import { planPeerNamespaceCensus } from "./converge-peer-census.js";
@@ -181,6 +181,7 @@ export async function computeConvergePlan(
   const localManifests = new Map<string, ReconcileManifest>();
   const peerManifests = new Map<string, ReconcileManifest>();
   const excluded = new Map<string, ConvergeNamespaceFailure>();
+  const sharedRootAliases = new Map<string, readonly string[]>();
   let peerPlatform: string | undefined;
 
   // Drop both sides. A failed census must not be planned as an empty corpus:
@@ -288,6 +289,7 @@ export async function computeConvergePlan(
       }
       for (const [rootIndex, rootInfo] of roots.entries()) {
         namespacesToPlan.add(rootInfo.namespace);
+        for (const alias of rootInfo.namespaces) sharedRootAliases.set(alias, rootInfo.namespaces);
         try {
           const census = await planLocalNamespaceCensus({
             rootDir: rootInfo.rootDir,
@@ -306,10 +308,7 @@ export async function computeConvergePlan(
           localManifests.set(rootInfo.namespace, census.manifest);
           localTombstones.set(rootInfo.namespace, census.tombstones);
         } catch (error) {
-          for (const namespace of rootInfo.namespaces) {
-            recordNamespaceCensusFailure(excluded, namespace, "local", error, options.signal);
-            dropPlannedNamespace(namespace);
-          }
+          excludeNamespaceGroup(excluded, rootInfo.namespaces, "local", error, options.signal, dropPlannedNamespace);
         }
       }
     }
@@ -364,8 +363,8 @@ export async function computeConvergePlan(
           peerManifests.set(ns, census.manifest);
           peerTombstones.set(ns, census.tombstones);
         } catch (error) {
-          recordNamespaceCensusFailure(excluded, ns, "peer", error, options.signal);
-          dropPlannedNamespace(ns);
+          const aliases = sharedRootAliases.get(ns) ?? [ns];
+          excludeNamespaceGroup(excluded, aliases, "peer", error, options.signal, dropPlannedNamespace);
         }
       }
     }

@@ -482,3 +482,90 @@ test("converge plan: a shared-root local census failure excludes every alias", a
   assert.equal(requested.includes("shared"), false);
   assert.equal(requested.includes("default"), false);
 });
+
+test("converge plan: a peer refusal drops every alias of a shared root", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-peer-alias-"));
+  const requested: string[] = [];
+  try {
+    await fs.mkdir(path.join(memoryDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "facts/local.md"), "local fact\n");
+    await assert.rejects(
+      computeConvergePlan({
+        config: parseConfig({
+          memoryDir,
+          namespacesEnabled: false,
+          defaultNamespace: "default",
+          sharedNamespace: "shared",
+        }),
+        peerUrl: "https://peer.example.test",
+        fetchImpl: async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+          if (!url.pathname.endsWith("/offline-sync/snapshot")) return new Response(null, { status: 404 });
+          const namespace = url.searchParams.get("namespace") ?? "";
+          requested.push(namespace);
+          if (namespace === "default") {
+            return Response.json({ error: "namespace is not readable: default" }, { status: 400 });
+          }
+          return Response.json({
+            files: [{ path: "facts/peer.md", sha256: "ab".repeat(32), bytes: 1, mtimeMs: 1 }],
+            tombstones: [],
+          });
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /every namespace census failed/);
+        assert.match(error.message, /default \(peer\)/);
+        assert.match(error.message, /shared \(peer\)/);
+        return true;
+      }
+    );
+    assert.equal(requested.includes("default"), true);
+    assert.equal(requested.includes("shared"), false);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("converge plan: a later alias refusal drops the shared root that already succeeded", async () => {
+  const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-peer-alias-later-"));
+  const requested: string[] = [];
+  try {
+    await fs.mkdir(path.join(memoryDir, "facts"), { recursive: true });
+    await fs.writeFile(path.join(memoryDir, "facts/local.md"), "local fact\n");
+    await assert.rejects(
+      computeConvergePlan({
+        config: parseConfig({
+          memoryDir,
+          namespacesEnabled: false,
+          defaultNamespace: "default",
+          sharedNamespace: "shared",
+        }),
+        peerUrl: "https://peer.example.test",
+        fetchImpl: async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+          if (!url.pathname.endsWith("/offline-sync/snapshot")) return new Response(null, { status: 404 });
+          const namespace = url.searchParams.get("namespace") ?? "";
+          requested.push(namespace);
+          if (namespace === "shared") {
+            return Response.json({ error: "namespace is not readable: shared" }, { status: 400 });
+          }
+          return Response.json({ files: [], tombstones: [] });
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /every namespace census failed/);
+        assert.match(error.message, /default \(peer\)/);
+        assert.match(error.message, /shared \(peer\)/);
+        return true;
+      }
+    );
+    assert.equal(requested.includes("default"), true);
+    assert.equal(requested.includes("shared"), true);
+  } finally {
+    await fs.rm(memoryDir, { recursive: true, force: true });
+  }
+});
