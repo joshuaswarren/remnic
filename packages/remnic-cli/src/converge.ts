@@ -14,9 +14,7 @@ import {
   normalizeConvergePeerRequestTimeoutMs,
   parseConfig,
   resolveAgentAccessAuthToken,
-  resolveConvergeCaptureWriteLockBackoff,
 } from "@remnic/core";
-import { isTombstoneBlockedCaptureWriteLockBusy } from "@remnic/core/capture-write-lock-backoff.js";
 
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
@@ -74,7 +72,7 @@ import {
 } from "./converge-report.js";
 import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
 import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
-import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { createConvergeStorageIoOpener, handleConvergeTransferResults } from "./converge-capture-lock.js";
 
 export type { ConvergePlanProgressEvent } from "./converge-plan-cache.js";
 export type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
@@ -519,9 +517,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     envConvergePeerRequestTimeoutMs() ??
     DEFAULT_PEER_REQUEST_TIMEOUT_MS;
 
-  const captureWriteLockBackoff = resolveConvergeCaptureWriteLockBackoff(config?.converge);
-  const openStorageIo = (rootDir: string) =>
-    createOfflineStorageIo(rootDir, undefined, undefined, captureWriteLockBackoff, options.signal);
+  const openStorageIo = createConvergeStorageIoOpener(config?.converge, options.signal);
   const rootMap = new Map<string, string>();
   if (config) {
     try {
@@ -899,24 +895,9 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     options.signal?.throwIfAborted();
     const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
     const results = await Promise.allSettled(batch.map((entry) => executeTransferEntry(entry)));
-    for (let index = 0; index < results.length; index += 1) {
-      const result = results[index];
-      if (!result || result.status === "fulfilled") continue;
-      // A capture lock that stays busy fails this transfer only. Other
-      // entries in the batch, and later batches, still run. Census
-      // isolation (a separate change) is not required for this.
-      if (isTombstoneBlockedCaptureWriteLockBusy(result.reason)) {
-        actualTransfers.failed += 1;
-        const entry = batch[index];
-        const namespace = entry?.namespace ?? "unknown";
-        const entryPath = entry?.path ?? "";
-        process.stderr.write(
-          `converge: tombstone-blocked capture write lock remained busy for ${namespace} ${entryPath}; continuing the cycle\n`
-        );
-        continue;
-      }
-      throw result.reason;
-    }
+    handleConvergeTransferResults(results, batch, () => {
+      actualTransfers.failed += 1;
+    });
   }
   options.signal?.throwIfAborted();
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
