@@ -3,7 +3,7 @@
 Evaluation blocked on 2026-10-22. Zero of 15 tasks attempted. No Remnic or no-memory score exists.
 
 - Plan: [eval-plan.md](eval-plan.md).
-- Draft PR: pending creation; this field will be replaced after GitHub returns its URL.
+- Draft PR: [#3211](https://github.com/joshuaswarren/remnic/pull/3211), held draft.
 - Results: [Markdown](results-2026-10-22.md) and [JSON](results-2026-10-22.json).
 
 ## Blockers
@@ -29,3 +29,9 @@ No harness checkout, adapter, temporary daemon, memory store, or benchmark worke
 For Remnic plus no-memory, the provisional task-only estimate is $23.10 to $84.00. Generation, embeddings, sandboxes, references, and retries cost extra. Thirty trials need an assumed 2.5 to 15 hours on one worker; adding the allowed generation maximum gives 8.5 to 21 hours. Neither runtime nor Remnic cost has been measured. The plan explains the arithmetic and separate reference rerun requirements.
 
 Keep the PR draft. Do not self-merge or mark it ready.
+
+## Publication checks
+
+Document validation passed: 15 unique task IDs, null scores, valid local links, and no real home paths.
+
+`npm run check:pre-push` passed eight checks and failed only `branch-shape`. That check rejects the explicitly required `eval/frontiermemory-1.0` branch name. No check was disabled or changed. This draft is not review-clean.
