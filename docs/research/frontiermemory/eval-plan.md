@@ -1,111 +1,145 @@
 # FrontierMemory 1.0 evaluation plan
 
-## Execution state
+## What the benchmark measures
 
-Blocked before setup or task execution on 2026-10-22. No benchmark score exists for Remnic from this evaluation.
+[FrontierMemory](https://www.frontiermemory.com/blog/v1/) measures whether memory learned from prior agent work helps an agent finish new tasks. Its score is downstream full-pass rate, rather than recall accuracy or the number of memories written.
 
-The public [benchmark site](https://www.frontiermemory.com/) links “Run the benchmark” to a [contact-only submission page](https://www.frontiermemory.com/submit/). That page supplies no harness repository, README, task bundle, or runner command. GitHub repository search for `FrontierMemory` returned `total_count: 0`. This does not prove that no private harness exists.
+The design has two stages:
 
-The current process has no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LETTA_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`. Execution stops here. Do not retrieve credentials from another process, account store, service, or host.
+1. A memory system reads the supplied trajectories during the dream stage and produces a memory folder. Keep each appended `# Verifier result` message and its `PASS` or `FAIL` line.
+2. A fixed task agent uses that folder to attempt 15 targets. The published model comparison uses Letta Code with Opus 5.5 or GPT-6 Sol. Harness comparisons also include each system's native task agent.
 
-## Versions and setup
+The published board reports the better full-pass rate of the two task models at maximum effort. Keep each task-model score separate in any submission. Do not compare a startup check or memory count with a downstream score.
 
-| Component | Observed version or state |
-| --- | --- |
-| Remnic source | `main` at `4cd7e54c70e94b1899ead3cd95285c183ca8638a` |
-| `@remnic/core` | `10.0.7` |
-| `@remnic/server` | `10.0.7` |
-| Node.js | `v22.23.1` |
-| Workspace package manager | `pnpm@10.32.1` |
-| FrontierMemory | Public 1.0 descriptions; executable release and SHA unavailable |
-| QMD | No executable on this process's PATH; no index opened |
-| Docker | No executable on this process's PATH |
-| Harness checkout | Not created; no verified download URL |
-| Standalone daemon | Not started because credentials are missing |
+## What is available
 
-After access is supplied, install the harness outside the Remnic checkout and follow its actual README. Pin its commit, dataset checksum, container images, model identifiers, and runner versions before execution. Do not substitute another memory benchmark.
+The [dream corpus card](https://huggingface.co/datasets/letta-ai/frontier-memory-corpus) describes 674 trajectories: 184 passing and 490 failing. Its files include 558 JSON and 116 JSONL trajectories. Public metadata identifies revision `67250357405072066498c061f9af0eccfdac20c0`.
 
-## Remnic configuration under test
+The card defines the corpus digest as the SHA-256 of `SHA256SUMS`:
 
-Use standalone core/server from the pinned main commit. Keep all recall settings at their defaults. Do not override recall scope, result counts, token budgets, planner mode, or recall deadlines.
+```text
+c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1
+```
 
-Use a new `mktemp -d` root, a new local authentication token, and a loopback port distinct from the normal daemon. Every trial condition gets fresh state. Never reuse an existing daemon, memory directory, token, or QMD index. Disable access to operator services through a minimal child environment.
+Access is gated. The terms restrict use to evaluation and prohibit training, fine-tuning, or republication outside a gated repository. The data has a training canary. Do not copy the canary, trajectories, or derived memory contents into this public repository. The root `.gitignore` excludes reserved corpus and memory output directories. The actual attempt used a separate temporary directory outside the checkout.
 
-QMD is unavailable in this environment. The planned alternative is the built-in Orama backend, documented in [search backends](../../search-backends.md#orama). Configure only `searchBackend: "orama"` plus storage isolation. Without an embedding provider, Orama uses BM25; record that limitation if it occurs. Do not label BM25 as hybrid retrieval. Backend selection is the sole retrieval-related departure from defaults allowed by this plan.
+The card links to a `letta-ai/frontier-memory` GitHub repository and tells users to install `frontier-memory` from it. No usable runner checkout was obtained. Task descriptions and board results are public, but the 15 adapted task environments, hidden filename mapping, and FrontierMemory verifiers were not obtained. The [submission page](https://frontiermemory.com/submit/) directs contributors to `research@letta.com`. No contact message was sent.
 
-The isolated config will contain a `remnic` block with `memoryDir`, `workspaceDir`, `searchBackend: "orama"`, and `oramaDbPath`, all rooted under the temporary directory. The `server` block will bind `127.0.0.1:14319`. Pass the new token through `REMNIC_AUTH_TOKEN` rather than committing it. Set `HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, and `XDG_DATA_HOME` under the same temporary root. Pass only the explicitly selected model provider's key.
+## Corpus access attempt
 
-These are source-confirmed launch and probe forms, not commands executed in this evaluation:
+These commands ran with the existing authentication state and one download worker:
 
 ```bash
-node scripts/pnpm.mjs --filter @remnic/core build
-node scripts/pnpm.mjs --filter @remnic/server build
-node packages/remnic-server/bin/remnic-server.js \
+RUN_ROOT=$(mktemp -d /tmp/remnic-frontiermemory.XXXXXX)
+hf auth whoami
+hf download letta-ai/frontier-memory-corpus --repo-type dataset \
+  --local-dir "$RUN_ROOT/corpus" --max-workers 1
+```
+
+`hf auth whoami` returned `Not logged in`. The download obtained the README but then exited with `GatedRepoError: 401`. It reported that authenticated access was required. No sign-in or terms acceptance was attempted.
+
+Inspection found zero trajectory files and no `SHA256SUMS`. The download progress counter did not represent 676 downloaded trajectories. Neither file checksums nor the expected corpus digest could be verified.
+
+Once access exists, verify the manifest before ingestion:
+
+```bash
+cd "$RUN_ROOT/corpus"
+printf '%s  %s\n' \
+  c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1 \
+  SHA256SUMS | sha256sum --check --strict
+sha256sum --check --strict SHA256SUMS
+```
+
+Those checksum commands are planned and were not run against absent files. Also check the file count and PASS/FAIL totals against the card before extraction.
+
+## Remnic source and isolated configuration
+
+The smoke used core/server `10.0.7`, from main commit `4cd7e54c70e94b1899ead3cd95285c183ca8638a`. Node.js was `v22.23.1`; the workspace pins `pnpm@10.32.1`.
+
+An isolated standalone daemon started from this worktree's source. Its config placed `memoryDir`, `workspaceDir`, and `oramaDbPath` under the temporary root. The child received a minimal environment, a separate local-only token, and isolated `HOME` and XDG directories. It bound only `127.0.0.1:14319`.
+
+QMD was unavailable. The smoke used built-in Orama, which supports lexical search without an embedding provider. It did not use any existing QMD index. All recall scope, budget, result-count, planner, and deadline settings retained their defaults.
+
+The smoke additionally set `modelSource: "plugin"`, `openaiApiKey: false`, `localLlmEnabled: false`, and `taskLlmFallback: false`. These prevent an empty startup test from using cloud or gateway fallback. No extraction model was configured because corpus access and local model probes failed. This is startup configuration, not a completed dream-stage configuration.
+
+After writing that config, the source launch used this form:
+
+```bash
+env -i PATH=/usr/bin:/bin \
+  HOME="$RUN_ROOT/home" XDG_CONFIG_HOME="$RUN_ROOT/config" \
+  XDG_CACHE_HOME="$RUN_ROOT/cache" XDG_DATA_HOME="$RUN_ROOT/data" \
+  REMNIC_AUTH_TOKEN="$SMOKE_TOKEN" \
+  node --conditions=remnic-source --import tsx \
+  packages/remnic-server/src/index.ts \
   --config "$RUN_ROOT/remnic.config.json" --host 127.0.0.1 --port 14319
-curl --fail --max-time 15 http://127.0.0.1:14319/engram/v1/health \
-  -H "Authorization: Bearer $REMNIC_AUTH_TOKEN"
 ```
 
-Launch only after constructing the isolated environment and config described above. Confirm the selected backend and storage roots from the actual instance. Stop the owned process and remove its temporary data after exporting permitted results. No daemon-management command that could target a normal installation belongs in this evaluation.
+The protected health request returned `ok: true`, `searchBackend: "orama"`, and QMD mode `not-selected`. It showed no pending turns and no extraction timestamp. The daemon then stopped. No production service, shared memory directory, external model router, or normal daemon-management command was used.
 
-## Experimental design
+## Local model and dream-stage outcome
 
-1. Obtain the official trajectories, task environments, verifier, and runner README. Keep verifier answers and gold memories out of memory generation.
-2. Run the official no-memory condition with a fresh task environment. Use the same task model, effort, seed, and verifier for Remnic.
-3. Feed the supplied trajectories through Remnic's normal observation and extraction paths. Persist the memory before task execution and retain default recall behavior.
-4. Run matched Remnic trials, initially one worker. At most two workers may run. Order tasks by official resource and cost metadata, cheapest first.
-5. Export every attempted task, including errors, failed verifications, timeouts, usage, and costs. Compare only matched conditions and report partial coverage explicitly.
+No standard local model service answered on the three tested standard ports. Two existing local development endpoints returned empty model lists. A four-token completion probe to each endpoint timed out after 10 seconds with no response bytes. No successful local completion or model identity was established. No new model server started.
 
-The adapter is not implemented. Its ingestion, flush, recall injection, and task boundaries must follow the obtained harness contract. Do not invent a runner CLI or claim an integration exists before exercising it.
+The health field `llmReachable: true` was not accepted as proof of a working extraction model. The direct completion probes did not succeed.
 
-During generation and task execution, disable browsing and online solution lookup. Public task descriptions and published memories must not become evaluation inputs. This preparation inspected the Word2Vec results page for cost context; the task agent must receive only official permitted inputs.
+The dream stage did not run. Corpus access is the first blocker. A successful local extraction route is also missing. If direct OpenAI extraction is selected instead, the exact missing variable is `OPENAI_API_KEY`, for the OpenAI provider. No cloud key was requested or retrieved.
 
-## Baselines and comparison
+| Measurement | Observed state |
+| --- | --- |
+| Trajectories downloaded and ingested | 0 and 0 |
+| Extraction calls | 0 |
+| Dream-stage time | Not measured; stage did not start |
+| Dream input/output tokens | Not measured; stage did not start |
+| Dream provider charge | $0.00 |
+| Generated memories, corrections, entities | Unmeasured; no dream output |
+| Empty smoke directory files: facts, corrections, entities | 0, 0, 0 |
+| Task-agent memory export | Not produced |
 
-The [release report](https://www.frontiermemory.com/blog/v1/) defines full-pass rate across 15 tasks, one attempt each. It reports the better of two task-model scores at maximum effort. Preserve individual task-model results rather than silently selecting a favorable partial subset.
+The two local probe requests have no returned token usage. Do not report their usage as zero. Empty smoke directories are not a memory export and do not constitute benchmark results.
 
-| Published reference condition | Full-pass rate |
-| --- | ---: |
-| Letta Dream, Opus memory/task pair | 73.3% |
-| Prime Agent, Opus memory/task pair | 60.0% |
-| Claude Managed Agents, Opus memory/task pair | 33.3% |
-| Hermes Agent, Opus memory/task pair | 26.7% |
-| Letta Dream, Sol memory/task pair | 60.0% |
-| OpenAI Agents SDK, Sol memory/task pair | 40.0% |
-| Hermes Agent, Sol memory/task pair | 20.0% |
-| Prime Agent, Sol memory/task pair | 13.3% |
+When access and a model become available, ingest every trajectory through Remnic's normal observe/extract path. Retain all user, assistant, and tool content plus the appended verifier message. Preserve trajectory boundaries, drain extraction, and record persistence failures before exporting. The format adapter is not implemented because no input trajectory could be read. Do not substitute manually written memories or reference-system dream output.
 
-These are external reference scores, not local baseline runs. No local no-memory score exists. Obtain the harness's no-memory switch and reference-system commands before rerunning them. A partial Remnic score cannot establish a ranking against these complete 15-task results.
+The intended handoff is the resulting memory folder or a supported export, with file counts and a local checksum. Keep its contents private or gated unless the benchmark authors permit publication. Record elapsed time, model identity, token usage, provider charge, and category counts. Use one worker initially and never exceed two.
 
-## Cost and runtime estimates
+## Published board baselines
 
-No provider call or paid benchmark resource was used. Benchmark provider spend is $0.00.
+These rates come from [Letta's release report](https://www.frontiermemory.com/blog/v1/). They were not reproduced locally.
 
-The release report lists $0.77 mean task cost for its Sol memory/Letta configuration and $2.80 for its Opus configuration. It excludes memory generation. Multiplying those published means gives the following planning estimates, not quotes or observed Remnic costs:
+| Memory harness | Opus pair | Sol pair |
+| --- | ---: | ---: |
+| Letta Dream | 73.3% | 60.0% |
+| OpenAI Agents SDK | Not reported | 40.0% |
+| Claude Managed Agents | 33.3% | Not reported |
+| Hermes Agent | 26.7% | 20.0% |
+| Prime Agent | 60.0% | 13.3% |
 
-| Scope | Task cost estimate, USD |
-| --- | ---: |
-| One task, one condition | 0.77 to 2.80 |
-| One matched task, no-memory plus Remnic | 1.54 to 5.60 |
-| Fifteen tasks, one condition | 11.55 to 42.00 |
-| Fifteen matched tasks, two conditions | 23.10 to 84.00 |
+No Remnic or local no-memory score exists. All 15 downstream task rows remain `not_run` in the result export.
 
-Memory generation, embedding, sandbox hosting, reference reruns, and retries are extra and currently unpriced. No-memory costs may differ from memory-assisted costs. The [Word2Vec page](https://www.frontiermemory.com/tasks/build-word2vec-pipeline/) reports $0.05 for one max-effort Sol task using Opus-generated Letta memory; that is not a Remnic or no-memory estimate.
+## Public source-task self-check
 
-For scheduling only, assume 5 to 30 minutes per task trial until measured. Thirty matched trials require 2.5 to 15 hours with one worker. The benchmark permits up to six hours for memory generation; allowing that maximum gives 8.5 to 21 hours, excluding setup. These are planning assumptions, not measured runtimes. Per-task ordering and estimates require the actual task manifests.
+Two source tasks can be identified from public descriptions without the hidden trajectory mapping:
 
-Rerunning all five named reference systems adds 75 trials for one configuration each. At the same scheduling assumption, those trials add 6.25 to 37.5 hours on one worker, plus each system's memory generation. Their total cost is unknown until configurations and provider rates are fixed. Reproducing every published model/effort combination is larger still.
+- [SkillsBench: dapt-intrusion-detection](https://www.skillsbench.ai/tasks/dapt-intrusion-detection), also available in its [public task directory](https://github.com/benchflow-ai/skillsbench/tree/main/tasks/dapt-intrusion-detection). Its DAPT2020 packet analysis matches the public network-analysis task family.
+- [DeepSWE: awilix-async-container-initialization](https://deepswe.datacurve.ai/data/tasks/awilix-async-container-initialization). It requests dependency-aware async container initialization, matching the public Awilix task family.
 
-## Exact commands and missing prerequisites
+These identify source families, not equivalence with FrontierMemory's adapted targets or repaired verifiers. No hidden mapping was reconstructed. No public source task was executed or used as a substitute score. Keep these pages out of dream and task-agent input.
 
-The following read-only preflight commands were executed:
+## What a scored run needs
 
-```bash
-gh api 'search/repositories?q=FrontierMemory&per_page=20' \
-  --jq '{total_count,items:[.items[].full_name]}'
-node -e 'for(const k of ["OPENAI_API_KEY","ANTHROPIC_API_KEY","LETTA_API_KEY","GOOGLE_API_KEY","GEMINI_API_KEY","OPENROUTER_API_KEY"]) console.log(k+"="+(process.env[k]?"SET":"MISSING"))'
-```
+A scored run requires the verified corpus, a working extraction model, and the resulting memory export. It also requires Letta's runner/task/verifier access or a submission through the published contact route. The task agent must use the official fixed configuration and permitted inputs. Reproduce a matched no-memory condition with the same task model and effort.
 
-The search returned zero repositories. Every listed key was missing. No official setup, baseline, Remnic, or verifier command can be supplied yet: the runner README and interface are unavailable. Recording invented commands would not make the evaluation reproducible.
+Do not invent task commands, replacement verifiers, or numeric scores. The existing submission contact has not authorized any outbound message from this evaluation.
 
-A full run needs official harness access, task assets and verifiers, supported sandbox tooling, provider credentials already in the execution environment, and approval for the selected paid configuration. No contact message was sent. Keep the pull request draft; do not self-merge or mark it ready.
+## Cost and runtime estimate
+
+No dream-stage provider charge was incurred. No downstream trial ran. Local probe token usage is unknown; no cloud model endpoint was called.
+
+Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. For a serial 674-trajectory pass to finish inside six hours, the total average allowance is about 32 seconds per trajectory, including extraction and maintenance. Actual runtime cannot be estimated narrowly until representative extraction calls complete. No inference rate was measured here.
+
+With a verified local model, provider API charges would be zero; local compute cost is not priced. For cloud extraction, price the measured input/output token totals at the selected provider's published rates. No token total or cloud dream-stage quote is available yet.
+
+The release lists mean downstream task costs of $0.77 and $2.80 for two Letta configurations, excluding dreaming. As a rough task-only estimate, 15 trials at those means cost $11.55 to $42.00. A matched Remnic/no-memory pair across 15 tasks costs an estimated $23.10 to $84.00. Generation, embeddings, sandboxes, reference reruns, and retries add cost. These figures are published-cost arithmetic, not observed Remnic prices.
+
+For scheduling only, a 5-to-30-minute trial assumption gives 2.5 to 15 hours for 30 serial matched trials. Including the full allowed dream window gives 8.5 to 21 hours, excluding setup. This is an explicit planning assumption; no downstream runtime was measured. Task-specific estimates require Letta's manifests and a measured trial.
+
+Keep [draft PR #3212](https://github.com/joshuaswarren/remnic/pull/3212) draft. Do not self-merge or mark it ready.

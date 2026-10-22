@@ -1,37 +1,52 @@
 # FrontierMemory 1.0 status
 
-Evaluation blocked on 2026-10-22. Zero of 15 tasks attempted. No Remnic or no-memory score exists.
+The dream stage is blocked by gated corpus access and an unverified local extraction model. Downstream scoring also requires Letta's task environments and verifiers. No task score exists.
 
+- Draft PR: [#3212](https://github.com/joshuaswarren/remnic/pull/3212), on `docs/frontiermemory-1-0`.
+- Previous draft: [#3211](https://github.com/joshuaswarren/remnic/pull/3211), closed as superseded without merging.
 - Plan: [eval-plan.md](eval-plan.md).
-- Draft PR: [#3211](https://github.com/joshuaswarren/remnic/pull/3211), held draft.
 - Results: [Markdown](results-2026-10-22.md) and [JSON](results-2026-10-22.json).
 
-## Blockers
+## Corpus access and verification
 
-The public [submission page](https://www.frontiermemory.com/submit/) requires contact with the benchmark authors. It provides no executable harness, README, or task download. GitHub repository search returned zero results for `FrontierMemory`.
+`hf auth whoami` returned `Not logged in`. A one-worker `hf download` attempt returned `GatedRepoError: 401`. It downloaded the README only: zero trajectory files and no `SHA256SUMS` were present. No login or terms acceptance was attempted.
 
-This process has no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `LETTA_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, or `OPENROUTER_API_KEY`. Execution stopped at credential preflight. No credentials were fetched elsewhere.
+The card describes 674 trajectories, with 184 pass and 490 fail. The expected manifest digest is:
 
-## Scores and remaining work
+```text
+c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1
+```
 
-The published harness range is 13.3% to 73.3% across all 15 tasks. Remnic has no measured score to compare against it. Every task and the no-memory condition remain unrun. The result files distinguish missing measurements from failed tasks.
+The digest and file checksums remain **unverified**. No corpus file, canary, or generated memory content was committed. Reserved in-repository corpus and memory paths are ignored; the attempt used temporary storage outside the checkout.
 
-No harness checkout, adapter, temporary daemon, memory store, or benchmark worker was created. No production memory service, shared index, fleet model endpoint, or unrelated experiment was used.
+## Isolated daemon and dream output
 
-## Requirements for a full run
+A separate source daemon started on a non-default loopback port with temporary memory, workspace, and Orama paths. The authenticated health request returned `ok: true`, `searchBackend: orama`, no pending turns, and no extraction timestamp. The daemon stopped after the smoke check.
 
-1. Supply official harness access, its README, trajectories, task environments, and verifiers.
-2. Supply the required provider keys in the execution environment and approve the chosen paid configuration.
-3. Provide the sandbox runtime required by the README; Docker is not on the current PATH.
-4. Implement and verify the standalone Remnic adapter with isolated temporary state and default recall settings.
-5. Run all 15 matched task pairs and reference conditions; export every outcome and provider cost.
+Two existing local development endpoints returned empty model lists. Both four-token completion probes timed out after 10 seconds with no response. No new model server started. Local probe token usage is unavailable.
 
-For Remnic plus no-memory, the provisional task-only estimate is $23.10 to $84.00. Generation, embeddings, sandboxes, references, and retries cost extra. Thirty trials need an assumed 2.5 to 15 hours on one worker; adding the allowed generation maximum gives 8.5 to 21 hours. Neither runtime nor Remnic cost has been measured. The plan explains the arithmetic and separate reference rerun requirements.
+| Dream measurement | Result |
+| --- | --- |
+| Trajectories ingested | 0 of 674 |
+| Extraction calls | 0 |
+| Dream runtime and token use | Not measured; dream stage did not start |
+| Generated memories, corrections, entities | Unmeasured; no dream output |
+| Empty smoke directory counts | 0 facts, 0 corrections, 0 entities |
+| Task-agent memory export | Not produced |
+| Dream provider charge | $0.00 |
 
-Keep the PR draft. Do not self-merge or mark it ready.
+No production daemon, shared memory, shared QMD index, or fleet model router was used. If direct OpenAI extraction replaces the unavailable local route, it requires `OPENAI_API_KEY` for the OpenAI provider. That variable is absent. No key was requested or retrieved.
+
+## Downstream scores and remaining requirements
+
+All 15 Remnic and no-memory task rows remain `not_run`, with `null` scores. The published 13.3% to 73.3% range is external reference data; it does not rank this run.
+
+The [plan](eval-plan.md) records the two-stage design, public source-task references, all named board baselines, and cost assumptions. A full evaluation needs gated corpus access, verified checksums, a working extractor, and Letta's scoring access or a submission. No contact message was sent.
+
+The dream limit is six hours; no Remnic dream runtime was measured. Published task-cost means give a provisional $23.10 to $84.00 for 15 matched Remnic/no-memory pairs, before dream generation and other costs. These are estimates, not charges incurred.
 
 ## Publication checks
 
-Document validation passed: 15 unique task IDs, null scores, valid local links, and no real home paths.
+The branch-shape check accepts `docs/frontiermemory-1-0`. `npm run check:pre-push` passed all cheap CI gates after the rename. The push published the branch, but shared git-config locking prevented upstream-tracking setup. No lock was removed or check bypassed.
 
-`npm run check:pre-push` passed eight checks and failed only `branch-shape`. That check rejects the explicitly required `eval/frontiermemory-1.0` branch name. No check was disabled or changed. This draft is not review-clean.
+Keep the PR draft. Do not self-merge or mark it ready.

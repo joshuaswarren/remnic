@@ -9,10 +9,54 @@
   "remnic_full_pass_rate": null,
   "no_memory_full_pass_rate": null,
   "benchmark_provider_spend_usd": 0,
-  "daemon_started": false,
+  "daemon_started": true,
+  "daemon_stopped": true,
+  "corpus": {
+    "source": "https://huggingface.co/datasets/letta-ai/frontier-memory-corpus",
+    "revision": "67250357405072066498c061f9af0eccfdac20c0",
+    "expected_trajectories": 674,
+    "expected_pass": 184,
+    "expected_fail": 490,
+    "expected_sha256sums_digest": "c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1",
+    "download_status": "blocked_gated_401",
+    "hf_identity": "not_logged_in",
+    "trajectory_files_downloaded": 0,
+    "sha256sums_present": false,
+    "checksum_verified": false,
+    "terms_accepted_by_this_run": false
+  },
+  "dream_stage": {
+    "status": "not_run",
+    "trajectories_ingested": 0,
+    "extraction_calls": 0,
+    "elapsed_seconds": null,
+    "input_tokens": null,
+    "output_tokens": null,
+    "provider_cost_usd": 0,
+    "generated_memories": null,
+    "generated_corrections": null,
+    "generated_entities": null,
+    "memory_export_created": false
+  },
+  "isolated_startup_smoke": {
+    "health_ok": true,
+    "search_backend": "orama",
+    "qmd_mode": "not-selected",
+    "pending_turns": 0,
+    "last_extraction_at": null,
+    "fact_files": 0,
+    "correction_files": 0,
+    "entity_files": 0,
+    "local_model_lists": [[], []],
+    "local_completion_probe_count": 2,
+    "local_completion_probe_timeout_seconds": 10,
+    "local_completion_probe_tokens": null
+  },
   "blockers": [
-    "No official executable harness or README obtained; public submission page is contact-only.",
-    "No provider API keys in the current process environment."
+    "Corpus download requires authenticated gated access; no login or terms acceptance attempted.",
+    "No local completion was obtained; both candidate routes returned no model IDs and timed out.",
+    "No cloud fallback credentials in the current environment; direct OpenAI would require OPENAI_API_KEY.",
+    "No downstream FrontierMemory task environments or verifiers obtained."
   ],
   "missing_environment_keys": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LETTA_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
   "published_reference": {
