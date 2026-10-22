@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { sleep } from "./utils/sleep.js";
 
 type AccessIdempotencyEntry = {
   recordedAt: string;
@@ -358,8 +359,4 @@ async function unlinkStaleLockIfStillOwned(options: {
   if (currentOwner !== options.observedOwner) return false;
   await unlink(options.lockPath);
   return true;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

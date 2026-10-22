@@ -2,6 +2,7 @@ import { abortError, throwIfAborted } from "./abort-error.js";
 import { log } from "./logger.js";
 import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
 import { mergeEnv } from "./runtime/env.js";
+import { sleep } from "./utils/sleep.js";
 
 export type QmdRuntimeEnv = Record<string, string | undefined>;
 
@@ -19,10 +20,6 @@ type PendingRequest = {
 };
 
 let nextJsonRpcId = 1;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Drop C0 controls and one ANSI CSI sequence. Char scan on purpose:
