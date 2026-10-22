@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { isErrnoCode } from "./utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
 async function listJsonFilesStrictInner(dir: string, allowMissingDirectory: boolean): Promise<string[]> {
   let entries: Dirent[];
@@ -25,6 +26,7 @@ async function listJsonFilesStrictInner(dir: string, allowMissingDirectory: bool
   }
   const out: string[] = [];
   for (const entry of entries) {
+    if (isMacOsReplicationJunkBasename(entry.name)) continue;
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       out.push(...(await listJsonFilesStrictInner(fullPath, false)));
@@ -55,6 +57,7 @@ export async function listNamedFiles(dir: string, fileName: string): Promise<str
     const entries = await readdir(dir, { withFileTypes: true });
     const out: string[] = [];
     for (const entry of entries) {
+      if (isMacOsReplicationJunkBasename(entry.name)) continue;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         out.push(...(await listNamedFiles(fullPath, fileName)));

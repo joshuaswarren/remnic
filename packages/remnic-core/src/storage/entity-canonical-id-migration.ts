@@ -22,6 +22,10 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { assertSafeEntityId } from "./entity-id-safety.js";
+import {
+  isMacOsReplicationJunkBasename,
+  warnIgnoredMacOsReplicationJunk,
+} from "../utils/macos-replication-junk.js";
 
 import {
   ENTITY_CANONICAL_ID_MIGRATION_FILE,
@@ -100,7 +104,7 @@ async function fingerprintEntityEntries(entitiesDir: string): Promise<string> {
   let names: string[];
   try {
     names = (await readdir(entitiesDir))
-      .filter((name) => path.extname(name) === ".md")
+      .filter((name) => path.extname(name) === ".md" && !isMacOsReplicationJunkBasename(name))
       .sort();
   } catch (error) {
     if (isErrnoCode(error, "ENOENT")) return "missing";
@@ -386,10 +390,16 @@ async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
  */
 export type BlockedEntityPairs = Map<string, string>;
 
+interface EntityScanNotes {
+  junk: Set<string>;
+  malformed: Set<string>;
+}
+
 async function discoverMappings(
   deps: EntityCanonicalIdMigrationDependencies,
   knownMappings: Readonly<Record<string, string>> = {},
   blocked: BlockedEntityPairs = new Map(),
+  scanNotes?: EntityScanNotes,
 ): Promise<Record<string, string>> {
   const mappings: Record<string, string> = {};
   const canonicalOwners = new Map<string, string[]>();
@@ -401,6 +411,15 @@ async function discoverMappings(
   blocked.clear();
   const entityEntries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entityEntries) {
+    // AppleDouble (`._*`) and `.DS_Store` are Finder metadata, not entity
+    // files. A real file that cannot be parsed is left in place: this scan
+    // runs during directory init, and aborting it took the daemon down.
+    // Skipping is the same outcome as the old throw (the file is not
+    // rewritten) without refusing to boot. Symlink checks above still run.
+    if (isMacOsReplicationJunkBasename(entry)) {
+      scanNotes?.junk.add(entry);
+      continue;
+    }
     if (!entry.endsWith(".md")) continue;
     const legacyId = entry.slice(0, -".md".length);
     assertSafeEntityId(legacyId);
@@ -411,11 +430,13 @@ async function discoverMappings(
       !/^#[ \t]+[^\r\n \t]/m.test(entityContent)
       || !/^\*\*Type:\*\*[ \t]*[^\r\n \t]/m.test(entityContent)
     ) {
-      throw new Error(`Cannot migrate malformed entity file ${entry}: missing name heading or type.`);
+      scanNotes?.malformed.add(entry);
+      continue;
     }
     const entity = deps.parseEntityFile(entityContent);
     if (!entity.name.trim() || !entity.type.trim()) {
-      throw new Error(`Cannot migrate malformed entity file ${entry}: missing name or type.`);
+      scanNotes?.malformed.add(entry);
+      continue;
     }
     const canonicalId = deps.normalizeEntityName(entity.name, entity.type);
     assertSafeEntityId(canonicalId);
@@ -864,6 +885,7 @@ export async function migrateLegacyEntityCanonicalIds(
         };
       }
       const blocked: BlockedEntityPairs = new Map();
+      const scanNotes: EntityScanNotes = { junk: new Set(), malformed: new Set() };
       // Parks for pairs whose files are GONE, tracked separately from
       // collision parks: pruneBlocked drops these (the canonical file is gone
       // too), and the rescan's blocked.clear() would otherwise silence them
@@ -884,6 +906,16 @@ export async function migrateLegacyEntityCanonicalIds(
           log.warn(
             `entity canonical-id migration dropped ${staleParked.size} mapping(s) whose entity files are gone: ${pairs}. `
             + "The stale journal entries were removed; references to those legacy ids do not resolve either way.",
+          );
+        }
+        warnIgnoredMacOsReplicationJunk(deps.entitiesDir, scanNotes.junk.size, (message) => {
+          log.warn(`entity canonical-id migration ${message}`);
+        });
+        if (scanNotes.malformed.size > 0) {
+          const names = [...scanNotes.malformed].sort().join(", ");
+          log.warn(
+            `entity canonical-id migration skipped ${scanNotes.malformed.size} malformed entity file(s): ${names}. `
+            + "Each file was left in place; startup continues. Fix or remove the file to migrate it.",
           );
         }
         // Every finish() path either just rewrote references (main/reconcile
@@ -997,7 +1029,7 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredBefore = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings, blocked),
+          await discoverMappings(deps, state.mappings, blocked, scanNotes),
         );
         const revivedBefore = await pruneBlocked();
         const mergedBefore = collapseMappings(mergeDiscoveredMappings(state.mappings, discoveredBefore));
@@ -1046,7 +1078,7 @@ export async function migrateLegacyEntityCanonicalIds(
           if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
           const discoveredAfter = rejectMappingCycles(
             state.mappings,
-            await discoverMappings(deps, state.mappings, blocked),
+            await discoverMappings(deps, state.mappings, blocked, scanNotes),
           );
           // Reconcile before declaring completion: this rescan can resolve a
           // park (another writer removed the legacy file), and completing
@@ -1107,7 +1139,7 @@ export async function migrateLegacyEntityCanonicalIds(
         if (!(await lock.refresh())) throw new Error("Lost entity canonical-id migration lock.");
         const discoveredAfter = rejectMappingCycles(
           state.mappings,
-          await discoverMappings(deps, state.mappings, blocked),
+          await discoverMappings(deps, state.mappings, blocked, scanNotes),
         );
         // A park resolved after the rewrite pass is promoted here, and a
         // promotion still has to be APPLIED. Completing on `discoveredAfter`

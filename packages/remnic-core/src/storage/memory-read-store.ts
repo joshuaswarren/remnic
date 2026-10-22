@@ -17,6 +17,7 @@ import { SecureStoreLockedError, readMaybeEncryptedFile } from "../secure-store/
 import { type BufferSurpriseEvent, type CompressionGuidelineOptimizerState, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isAbortError } from "../abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
@@ -117,7 +118,7 @@ export class MemoryReadStore {
       try {
         const entries = await readdir(this.deps.wearablesDir, { withFileTypes: true });
         sources = entries
-          .filter((entry) => entry.isDirectory())
+          .filter((entry) => entry.isDirectory() && !isMacOsReplicationJunkBasename(entry.name))
           .map((entry) => entry.name);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -134,7 +135,7 @@ export class MemoryReadStore {
         throw err;
       }
       for (const entry of entries) {
-        if (!entry.endsWith(".md")) continue;
+        if (isMacOsReplicationJunkBasename(entry) || !entry.endsWith(".md")) continue;
         const date = entry.slice(0, -3);
         if (!isValidTranscriptDate(date)) continue;
         days.push({ source, date });
@@ -170,6 +171,7 @@ export class MemoryReadStore {
             // in-flight dedup, so every abandoned recall used to start another
             // full walk of it (issue #2307).
             checkCorpusReadAbort(options);
+            if (isMacOsReplicationJunkBasename(entry.name)) continue;
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
               await readDir(fullPath);
@@ -287,6 +289,7 @@ export class MemoryReadStore {
         checkCorpusReadAbort(options);
         // Never follow symlinked entries out of the store.
         if (entry.isSymbolicLink()) continue;
+        if (isMacOsReplicationJunkBasename(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           subdirs.push(fullPath);
@@ -500,6 +503,7 @@ export class MemoryReadStore {
         const entries = await readdir(dir, { withFileTypes: true });
         const subdirs: string[] = [];
         for (const entry of entries) {
+          if (isMacOsReplicationJunkBasename(entry.name)) continue;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             subdirs.push(fullPath);
@@ -859,7 +863,7 @@ export class MemoryReadStore {
       const files = await readdir(this.deps.questionsDir);
       const questions = [];
       for (const file of files) {
-        if (!file.endsWith(".md")) continue;
+        if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".md")) continue;
         const filePath = path.join(this.deps.questionsDir, file);
         const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
         const parsed = this.deps.parseQuestionFile(raw, filePath);

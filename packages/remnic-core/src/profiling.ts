@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 
 import { log } from "./logger.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -358,7 +359,7 @@ export class ProfilingCollector {
     try {
       const dir = this.storageDir;
       const entries = await fsp.readdir(dir);
-      const jsonlFiles = entries.filter((f) => f.endsWith(".jsonl"));
+      const jsonlFiles = entries.filter((f) => !isMacOsReplicationJunkBasename(f) && f.endsWith(".jsonl"));
       const withMtime = await Promise.all(
         jsonlFiles.map(async (f) => ({
           name: f,

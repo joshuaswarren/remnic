@@ -16,6 +16,10 @@ import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-can
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { log } from "../logger.js";
+import {
+  warnIgnoredMacOsReplicationJunk,
+  withoutMacOsReplicationJunk,
+} from "../utils/macos-replication-junk.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
@@ -378,10 +382,23 @@ export class EntityStore {
     }
   }
 
+  /**
+   * Entity directory listing with macOS replication junk removed.
+   * One summary warning per directory and count, shared with migration.
+   */
+  private async readEntityDirectoryNames(): Promise<string[]> {
+    const entries = await readdir(this.deps.entitiesDir);
+    const { kept, ignored } = withoutMacOsReplicationJunk(entries, (name) => name);
+    warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
+      log.warn(`entity load ${message}`);
+    });
+    return kept;
+  }
+
   /** Return sorted list of entity filenames (without .md extension) */
   async listEntityNames(): Promise<string[]> {
     try {
-      const entries = await readdir(this.deps.entitiesDir);
+      const entries = await this.readEntityDirectoryNames();
       return entries
         .filter((e) => e.endsWith(".md"))
         .map((e) => e.replace(".md", ""))
@@ -513,7 +530,7 @@ export class EntityStore {
     if (cached) return cached;
 
     try {
-      const entries = await readdir(this.deps.entitiesDir);
+      const entries = await this.readEntityDirectoryNames();
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
       if (mdFiles.length === 0) return [];
 
@@ -642,7 +659,7 @@ export class EntityStore {
   private async mergeFragmentedEntitiesUnlocked(): Promise<number> {
     let merged = 0;
     try {
-      const entries = await readdir(this.deps.entitiesDir);
+      const entries = await this.readEntityDirectoryNames();
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
 
       // Group files by their canonical name

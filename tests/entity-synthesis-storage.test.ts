@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { link, lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { initLogger, resetLogger } from "../packages/remnic-core/src/logger.js";
 import { execFileSync } from "node:child_process";
 import {
   StorageManager,
@@ -1021,24 +1022,54 @@ test("ensureDirectories skips duplicate canonical targets instead of aborting", 
   }
 });
 
-test("ensureDirectories rejects malformed legacy entity files before migration", async () => {
+test("ensureDirectories skips malformed entity files and macOS replication junk", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-malformed-legacy-"));
+  const warnings: string[] = [];
+  initLogger({
+    info() {},
+    error() {},
+    warn(msg: string) {
+      warnings.push(msg);
+    },
+  }, false, { timestamps: false });
   try {
     const legacyPath = path.join(dir, "entities", "project-.md");
     const canonicalPath = path.join(dir, "entities", "project-月光.md");
+    const sidecarPath = path.join(dir, "entities", "._project-sidecar.md");
+    const finderPath = path.join(dir, "entities", ".DS_Store");
     const seed = new StorageManager(dir);
     await seed.ensureDirectories();
+    await seed.writeEntity("North Dome", "project", ["Synthetic dome schedule."]);
+    const canonical = normalizeEntityName("North Dome", "project");
+    await writeFile(sidecarPath, Buffer.from([0, 5, 22, 0]));
+    await writeFile(finderPath, Buffer.from("finder"));
     await writeFile(legacyPath, "# \n**Type:** project\n", "utf-8");
     await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+    warnings.length = 0;
 
     const migrating = new StorageManager(dir);
-    await assert.rejects(
-      () => migrating.ensureDirectories(),
-      /malformed entity file project-\.md/,
-    );
+    await migrating.ensureDirectories();
+    const names = await migrating.listEntityNames();
+    assert.ok(names.includes(canonical));
+    assert.equal(names.includes("._project-sidecar"), false);
+    assert.equal(names.includes(".DS_Store"), false);
+    await migrating.readAllEntityFiles();
+
+    assert.equal(await readFile(sidecarPath, "utf-8").then((text) => text.length > 0), true);
+    assert.equal((await readFile(finderPath)).toString(), "finder");
     assert.match(await readFile(legacyPath, "utf-8"), /^# /);
     await assert.rejects(() => readFile(canonicalPath, "utf-8"), { code: "ENOENT" });
+
+    const junkWarnings = warnings.filter((msg) => /ignored 2 macOS replication junk file\(s\)/.test(msg));
+    const malformedWarnings = warnings.filter((msg) =>
+      /skipped 1 malformed entity file\(s\): project-\.md/.test(msg),
+    );
+    assert.equal(junkWarnings.length, 1);
+    assert.match(junkWarnings[0], /entity canonical-id migration ignored 2/);
+    assert.equal(malformedWarnings.length, 1);
+    assert.match(malformedWarnings[0], /left in place/);
   } finally {
+    resetLogger();
     await rm(dir, { recursive: true, force: true });
   }
 });
