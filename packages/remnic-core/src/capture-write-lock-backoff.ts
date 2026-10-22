@@ -86,23 +86,46 @@ function pickWaitMs(value: number | undefined, fallback: number, label: string):
   return normalizeCaptureWriteLockWaitMs(value, label);
 }
 
+/**
+ * Limits for a capture with no lock-options source — the plain daemon or an
+ * inline capture. These preserve the pre-backoff behavior (three probes
+ * about 25ms apart) so ordinary capture contention still fails fast instead
+ * of blocking for the converge-scale deadline.
+ */
+export const LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS = 25;
+export const LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS = 25;
+export const LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS = 75;
+
 /** Fill omitted knobs from the defaults and reject an inverted schedule. */
 export function resolveCaptureWriteLockBackoffLimits(
   source: CaptureWriteLockLimitSource | undefined
 ): CaptureWriteLockBackoffLimits {
+  // No source means a non-converge capture: keep the short legacy bounds.
+  const defaults =
+    source === undefined
+      ? {
+          initialDelayMs: LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+          maxDelayMs: LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
+          deadlineMs: LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS,
+        }
+      : {
+          initialDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+          maxDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
+          deadlineMs: DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
+        };
   const initialDelayMs = pickWaitMs(
     source?.captureWriteLockInitialDelayMs,
-    DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+    defaults.initialDelayMs,
     "captureWriteLockInitialDelayMs"
   );
   const maxDelayMs = pickWaitMs(
     source?.captureWriteLockMaxDelayMs,
-    DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
+    defaults.maxDelayMs,
     "captureWriteLockMaxDelayMs"
   );
   const deadlineMs = pickWaitMs(
     source?.captureWriteLockDeadlineMs,
-    DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
+    defaults.deadlineMs,
     "captureWriteLockDeadlineMs"
   );
   if (initialDelayMs > maxDelayMs) {

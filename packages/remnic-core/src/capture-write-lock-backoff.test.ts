@@ -9,6 +9,9 @@ import {
   CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
   DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
   DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+  LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS,
+  LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+  LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
   DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
   MAX_CAPTURE_WRITE_LOCK_WAIT_MS,
   captureWriteLockDelayMs,
@@ -279,7 +282,14 @@ test("abort is rechecked after the capture write lock is acquired", async () => 
 
 test("capture write lock backoff config rejects junk and inverted schedules", () => {
   assert.deepEqual(parseConfig({}).converge, { conflictPolicy: "newest-wins" });
+  // No lock-options source is a plain (non-converge) capture: short legacy bounds.
   assert.deepEqual(resolveCaptureWriteLockBackoffLimits(undefined), {
+    initialDelayMs: LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
+    maxDelayMs: LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
+    deadlineMs: LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS,
+  });
+  // A converge source with no overrides gets the long converge defaults.
+  assert.deepEqual(resolveCaptureWriteLockBackoffLimits({}), {
     initialDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
     maxDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_MAX_DELAY_MS,
     deadlineMs: DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
@@ -486,6 +496,39 @@ test("aborting capture write lock backoff cancels the pending timer", async () =
     } finally {
       clearTimeout(abortTimer);
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a capture without lock options keeps the short legacy backoff", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-legacy-"));
+  try {
+    let now = 0;
+    let probes = 0;
+    const sleeps: number[] = [];
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      now: () => now,
+      random: () => 1,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        now += ms;
+      },
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        probes += 1;
+        return await task(false, { failure: "timeout", refresh: async () => false });
+      }) as typeof withHeldFileLock,
+    });
+
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
+      (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
+    );
+    // Three quick probes, 25ms apart, then the busy error — the pre-backoff
+    // behavior a plain daemon or inline capture still expects.
+    assert.equal(probes, 3);
+    assert.deepEqual(sleeps, [25, 25, 25]);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
