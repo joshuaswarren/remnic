@@ -140,7 +140,8 @@ export function isSearchExcludedPath(
       isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
       isNamespacedLocationDayPath(candidate, policy.memoryDir) ||
       isNamespacedJournalDayPath(candidate, policy.memoryDir) ||
-      isMeetingRecordPath(candidate)
+      isMeetingRecordPath(candidate) ||
+      isCompoundingReportPath(candidate, policy.memoryDir)
     ) {
       return true;
     }
@@ -158,6 +159,30 @@ export function isSearchExcludedPath(
  * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
  * served. Re-measuring against the namespace's own root closes that.
  */
+/**
+ * Derived compounding reports sit at `<root>/compounding/` and
+ * `namespaces/<namespace>/compounding/`. Generic recall must not return them:
+ * a root report can quote another namespace, and injection already has a
+ * filtered compounding section. A namespace literally named `compounding`,
+ * and an ordinary memory nested under a category, stay searchable.
+ */
+function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean {
+  let relative = candidate.replace(/\\/g, "/");
+  if (memoryDir && memoryDir.length > 0) {
+    const absolute = path.resolve(memoryDir, candidate).replace(/\\/g, "/");
+    const root = path.resolve(memoryDir).replace(/\\/g, "/").replace(/\/+$/, "");
+    if (absolute !== root && !absolute.startsWith(`${root}/`)) return false;
+    relative = absolute.slice(root.length).replace(/^\/+/, "");
+  }
+  if (relative.startsWith("../")) return false;
+  if (relative.startsWith("namespaces/")) {
+    const slash = relative.indexOf("/", "namespaces/".length);
+    if (slash < 0) return false;
+    relative = relative.slice(slash + 1);
+  }
+  return relative === "compounding" || relative.startsWith("compounding/");
+}
+
 function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): boolean {
   if (isActivityDigestPath(candidate, memoryDir)) return true;
   if (memoryDir === undefined || memoryDir.length === 0) return false;

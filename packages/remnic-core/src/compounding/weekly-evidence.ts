@@ -3,8 +3,9 @@
  *
  * Corrections, namespace action ledgers, and the feedback inbox are read here
  * so CompoundingEngine stays inside its line ceiling. Scans are bounded:
- * correction files outside the ISO week are skipped before they are read,
- * and at most WEEKLY_CORRECTION_READ_LIMIT candidates are parsed.
+ * correction files outside the ISO week are skipped before they are read.
+ * Parsing stops after WEEKLY_CORRECTION_READ_LIMIT accepted corrections or
+ * WEEKLY_CORRECTION_SCAN_LIMIT opened files, whichever comes first.
  */
 
 import type { Stats } from "node:fs";
@@ -27,8 +28,11 @@ import { isIsoWeekId, isoWeekId } from "./iso-week.js";
 
 const DAY_MS = 86_400_000;
 
-/** Newest in-week correction files parsed per synthesis. */
+/** Accepted in-week corrections kept per synthesis. */
 export const WEEKLY_CORRECTION_READ_LIMIT = 500;
+
+/** Opened in-week correction files per synthesis, including ones policy rejects. */
+export const WEEKLY_CORRECTION_SCAN_LIMIT = 2000;
 
 /** Skip a correction file whose on-disk size exceeds this, before parsing. */
 export const CORRECTION_FILE_BYTE_LIMIT = 256 * 1024;
@@ -212,16 +216,18 @@ export async function readWeeklyCorrections(input: {
     await collectCorrectionCandidates(candidates, ns.root, ns.namespace, input.weekId, weekStartMs, rootReal);
   }
   candidates.sort((a, b) => b.sortMs - a.sortMs || a.filePath.localeCompare(b.filePath));
-  if (candidates.length > WEEKLY_CORRECTION_READ_LIMIT) {
-    log.warn(
-      `weekly synthesis kept ${WEEKLY_CORRECTION_READ_LIMIT} of ${candidates.length} in-week correction candidates`
-    );
-  }
-  const selected = candidates.slice(0, WEEKLY_CORRECTION_READ_LIMIT);
   const out: WeeklyCorrectionEvidence[] = [];
-  for (const candidate of selected) {
+  let scanned = 0;
+  for (const candidate of candidates) {
+    if (out.length >= WEEKLY_CORRECTION_READ_LIMIT || scanned >= WEEKLY_CORRECTION_SCAN_LIMIT) break;
+    scanned += 1;
     const evidence = await readCorrectionCandidate(input.storage, input.memoryDir, input.weekId, candidate);
     if (evidence) out.push(evidence);
+  }
+  if (scanned < candidates.length) {
+    log.warn(
+      `weekly synthesis kept ${out.length} accepted corrections after scanning ${scanned} of ${candidates.length} in-week candidates`
+    );
   }
   return out;
 }

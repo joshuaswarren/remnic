@@ -34,6 +34,23 @@ test("isActivityDigestPath matches only the digest file shape", () => {
   assert.equal(isActivityDigestPath("/tmp/memory/my-activity-note.md"), false);
 });
 
+test("isGenericRecallExcludedPath skips derived compounding reports", () => {
+  const policy = { memoryDir: "/mem", qmdCollection: "openclaw-engram" };
+  assert.equal(isGenericRecallExcludedPath("/mem/compounding/weekly/2026-W43.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/compounding/rubrics.md", policy), true);
+  assert.equal(isGenericRecallExcludedPath("/mem/compounding/rubrics/agents/a.md", policy), true);
+  assert.equal(
+    isGenericRecallExcludedPath("/mem/namespaces/team/compounding/weekly/2026-W43.md", policy),
+    true,
+  );
+  assert.equal(isGenericRecallExcludedPath("/mem/facts/compounding/note.md", policy), false);
+  assert.equal(isGenericRecallExcludedPath("/mem/namespaces/compounding/facts/a.md", policy), false);
+  assert.equal(
+    isGenericRecallExcludedPath("openclaw-engram/compounding/weekly/2026-W43.md", policy, "qmd"),
+    true,
+  );
+});
+
 test("isGenericRecallExcludedPath covers artifacts, activity digests, and top-level archive content", () => {
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/artifacts/2026-02-21/a.md"), true);
   assert.equal(isGenericRecallExcludedPath("/tmp/memory/activity/2026-07-22.md"), true);

@@ -305,6 +305,42 @@ test("weekly synthesis bounds correction reads to the newest 500 in-week files",
   }
 });
 
+test("rejected correction files do not consume the accepted correction budget", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-correction-accepted-"));
+  try {
+    const dir = path.join(memoryDir, "corrections");
+    await mkdir(dir, { recursive: true });
+    const base = Date.parse("2026-10-22T00:00:00.000Z");
+    await writeFile(
+      path.join(dir, `correction-${base}-active.md`),
+      correctionDoc({
+        id: "older-active",
+        created: new Date(base).toISOString(),
+        content: "Older active correction survives newer rejected files",
+      })
+    );
+    for (let index = 1; index <= 500; index += 1) {
+      const ms = base + index * 1000;
+      await writeFile(
+        path.join(dir, `correction-${ms}-forgotten.md`),
+        correctionDoc({
+          id: `forgotten-${index}`,
+          created: new Date(ms).toISOString(),
+          content: `Forgotten correction ${index}`,
+          status: "forgotten",
+        })
+      );
+    }
+    const eng = new CompoundingEngine(config(memoryDir));
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const patterns = (await eng.readMistakes())?.patterns ?? [];
+    assert.ok(patterns.some((pattern) => pattern.includes("Older active correction survives newer rejected files")));
+    assert.equal(patterns.some((pattern) => pattern.includes("Forgotten correction")), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("weekly synthesis correction weeks follow the ISO Thursday boundary", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-correction-boundary-"));
   try {
