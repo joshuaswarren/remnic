@@ -52,12 +52,12 @@ function commitAll(root, message) {
   git(root, ["commit", "-q", "--allow-empty", "-m", message]);
 }
 
-function runGate(root, args = []) {
+function runGate(root, args = [], env = {}) {
   return spawnSync(process.execPath, [RUNNER, "--root", root, ...args], {
     encoding: "utf8",
     // An inherited CI value would hijack default-resolution cases; empty is
     // treated as unset by the runner.
-    env: { ...process.env, REMNIC_ANTI_SLOP_BASE_REF: "" },
+    env: { ...process.env, REMNIC_ANTI_SLOP_BASE_REF: "", ...env },
   });
 }
 
@@ -78,6 +78,18 @@ test("clean diffs and no-source diffs pass with an explicit clean result", (t) =
   result = runGate(root, ["--base", "HEAD"]);
   assertStatus(result, 0, "clean tree");
   assert.match(result.stdout, /no changed JavaScript\/TypeScript sources/);
+});
+
+test("gate loads TypeScript rules when native type stripping is not enabled by default", (t) => {
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  commitAll(root, "base");
+  write(root, "introduced.ts", VIOLATION);
+  const result = runGate(root, ["--base", "HEAD"], {
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --no-experimental-strip-types`.trim(),
+  });
+  assertStatus(result, 1, "TypeScript plugin loads independently of parent Node defaults");
+  assert.match(result.stderr, /anti-slop\(no-unknown-type-aliases\)/);
 });
 
 test("unchanged violations do not block a clean edit in the same file", (t) => {

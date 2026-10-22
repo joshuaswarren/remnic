@@ -20,7 +20,7 @@ function lint(source, rule) {
       rules: { [`anti-slop/${rule}`]: "error" },
     }));
     writeFileSync(input, source);
-    const result = spawnSync(process.execPath, [executable, "--threads=2", "--config", config, "--format", "json", input], {
+    const result = spawnSync(process.execPath, ["--experimental-strip-types", executable, "--threads=2", "--config", config, "--format", "json", input], {
       encoding: "utf8", timeout: 20000,
     });
     assert.equal(result.error, undefined, result.error?.message);

@@ -173,6 +173,8 @@ function lintChangedFiles(repoRoot, files) {
   const result = spawnSync(
     process.execPath,
     [
+      // Node 22.12/22.13 support type stripping but do not enable it by default.
+      "--experimental-strip-types",
       OXLINT_EXECUTABLE,
       "--threads=2",
       "--disable-nested-config",
