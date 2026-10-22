@@ -337,6 +337,68 @@ test("converge plan: a snapshot timeout is not erased by the fallback route's HT
   }
 });
 
+test("converge plan: a snapshot timeout is not erased by a non-JSON fallback", async () => {
+  const requested: string[] = [];
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }
+    const namespace = url.searchParams.get("namespace") ?? "";
+    requested.push(namespace);
+    if (namespace !== "alpha") return Promise.resolve(Response.json({ files: [], tombstones: [] }));
+    if (url.pathname.includes("/engram/")) {
+      return Promise.resolve(
+        new Response("not-json", { status: 200, headers: { "content-type": "application/json" } })
+      );
+    }
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      const fail = () => reject(signal.reason);
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  try {
+    await withPlanCursor((cursorDir) =>
+      assert.rejects(
+        computeConvergePlan({
+          cursorDir,
+          peerUrl: "https://peer.example.test",
+          peerRequestTimeoutMs: 30,
+          localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+            ["alpha", []],
+            ["beta", []],
+          ]),
+          fetchImpl,
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof Error);
+          assert.match(error.message, /timeout|aborted/i);
+          assert.equal(error.message.includes("not JSON"), false);
+          assert.equal(error.message.includes("HTTP"), false);
+          return true;
+        }
+      )
+    );
+    assert.ok(requested.includes("alpha"));
+    assert.equal(requested.includes("beta"), false);
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
 test("converge plan: an agreed namespace plus a refusal is not reported as converged", async () => {
   const plan = await withPlanCursor((cursorDir) =>
     computeConvergePlan({

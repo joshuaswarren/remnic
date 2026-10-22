@@ -266,6 +266,55 @@ test("peer snapshot keeps a timeout when the fallback route returns HTTP 404", a
   }
 });
 
+test("peer snapshot keeps a timeout when the fallback body is not JSON", async () => {
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) {
+      return Promise.resolve(
+        new Response("not-json", { status: 200, headers: { "content-type": "application/json" } })
+      );
+    }
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      const fail = () => reject(signal?.reason ?? new Error("aborted"));
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  try {
+    await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 30), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /timeout|aborted/i);
+      assert.equal(error.message.includes("not JSON"), false);
+      assert.equal(error.message.includes("invalid peer snapshot"), false);
+      assert.equal(isPeerTransportCensusFailure(error), true);
+      return true;
+    });
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("peer snapshot reports invalid JSON when no earlier timeout was recorded", async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  await assert.rejects(
+    fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000),
+    /invalid peer snapshot for namespace alpha: response was not JSON/
+  );
+});
+
 test("peer snapshot uses a later alias that succeeds after a timeout", async () => {
   const fetchImpl: typeof fetch = (input, init) => {
     const url = new URL(String(input));

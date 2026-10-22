@@ -240,6 +240,13 @@ export async function fetchPeerSnapshot(
     if (transportFailure === undefined && isPeerTransportCensusFailure(error)) transportFailure = error;
     lastFailure = error instanceof Error && error.message.length > 0 ? error.message : String(error);
   };
+  // A malformed fallback must not hide an earlier timeout. Only a valid
+  // snapshot clears it, by returning before this runs. The caller throws
+  // the returned error so the snapshot shape still narrows.
+  const invalidSnapshot = (detail: string): Error => {
+    if (transportFailure) throw transportFailure;
+    return new Error(`invalid peer snapshot for namespace ${namespace}: ${detail}`);
+  };
 
   for (const route of routes) {
     let response: Response;
@@ -274,10 +281,10 @@ export async function fetchPeerSnapshot(
         noteTransportFailure(error);
         continue;
       }
-      throw new Error(`invalid peer snapshot for namespace ${namespace}: response was not JSON`, { cause: error });
+      throw invalidSnapshot("response was not JSON");
     }
     if (!data || typeof data !== "object" || !("files" in data) || !Array.isArray(data.files)) {
-      throw new Error(`invalid peer snapshot for namespace ${namespace}: files must be an array`);
+      throw invalidSnapshot("files must be an array");
     }
 
     const files: ReconcileFileState[] = data.files
@@ -290,7 +297,7 @@ export async function fetchPeerSnapshot(
           !("sha256" in item) ||
           typeof item.sha256 !== "string"
         ) {
-          throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed file at index ${index}`);
+          throw invalidSnapshot(`malformed file at index ${index}`);
         }
         return {
           path: item.path,
@@ -303,12 +310,12 @@ export async function fetchPeerSnapshot(
 
     const rawTombstones = "tombstones" in data ? data.tombstones : undefined;
     if (rawTombstones !== undefined && !Array.isArray(rawTombstones)) {
-      throw new Error(`invalid peer snapshot for namespace ${namespace}: tombstones must be an array`);
+      throw invalidSnapshot("tombstones must be an array");
     }
     const tombstones = new Set<string>();
     for (const tombstone of rawTombstones ?? []) {
       if (typeof tombstone !== "string" || !/^[0-9a-f]{64}$/i.test(tombstone)) {
-        throw new Error(`invalid peer snapshot for namespace ${namespace}: malformed tombstone`);
+        throw invalidSnapshot("malformed tombstone");
       }
       tombstones.add(tombstone.toLowerCase());
     }
