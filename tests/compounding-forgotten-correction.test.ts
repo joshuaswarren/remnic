@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -90,6 +90,32 @@ test("forgetting corrections carried from earlier weeks retires every one of the
       entry.status === "active" && entry.category === "correction"
     ) ?? [];
     assert.equal(active.length, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable correction file does not retire its mistake", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-forget-unreadable-"));
+  try {
+    const eng = new CompoundingEngine(parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      compoundingEnabled: true,
+    }));
+    const filePath = path.join(memoryDir, "corrections", "correction-kept.md");
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, doc("kept", "Keep this lesson"));
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    await writeFile(filePath, "this is not a memory document\n");
+    await eng.synthesizeWeekly({ weekId: NEXT });
+    const afterUnreadable = (await eng.readMistakes())?.registry?.find((entry) => entry.pattern.includes("Keep this lesson"));
+    assert.equal(afterUnreadable?.status, "active");
+    await unlink(filePath);
+    await eng.synthesizeWeekly({ weekId: "2026-W45" });
+    const afterDelete = (await eng.readMistakes())?.registry?.find((entry) => entry.pattern.includes("Keep this lesson"));
+    assert.equal(afterDelete?.status, "retired");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

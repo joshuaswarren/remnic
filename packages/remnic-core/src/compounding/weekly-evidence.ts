@@ -613,7 +613,22 @@ export async function forgottenCorrectionPatterns(
         stillActive = true;
         break;
       }
-      if (!memory) continue;
+      if (!memory) {
+        // readMemoryByPath returns null for a missing file and for a read
+        // or decrypt failure. Only a confirmed absence can retire the lesson.
+        const sourcePath = path.join(memoryDir, rel);
+        try {
+          await lstat(sourcePath);
+          stillActive = true;
+          break;
+        } catch (err) {
+          if (!isErrnoCode(err, "ENOENT")) {
+            stillActive = true;
+            break;
+          }
+        }
+        continue;
+      }
       const raw = readRawMemoryDocument(memory);
       const status = raw ? rawFrontmatterScalar(raw, "status") : undefined;
       if (!status || status === "active") {
