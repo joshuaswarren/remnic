@@ -7,7 +7,7 @@ import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { StorageManager } from "../storage.js";
 import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
-import { resolveFeedbackInboxPath, type SharedFeedbackEntry } from "../shared-context/manager.js";
+import { migrateLegacyFeedbackInbox, resolveFeedbackInboxPath, type SharedFeedbackEntry } from "../shared-context/manager.js";
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
@@ -484,6 +484,7 @@ export class CompoundingEngine {
     await this.ensureDirs();
     const weekId = opts?.weekId ?? isoWeekId(new Date());
 
+    await migrateLegacyFeedbackInbox(this.config);
     const entries = await readFeedbackEntriesForWeekFile(this.feedbackInboxPath, weekId);
     const actionEvents = await readWeeklyActionEvents({
       storage: this.storage,

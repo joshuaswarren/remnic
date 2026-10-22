@@ -13,7 +13,7 @@ Shared context is a file-based coordination layer that multiple agents read and 
 }
 ```
 
-`sharedContextDir` is optional. Priorities, outputs, and roundtable default to `~/.openclaw/workspace/shared-context/`. When `sharedContextDir` is unset, `feedback/inbox.jsonl` is stored at `<memoryDir>/shared-context/feedback/inbox.jsonl` so the inbox replicates with the memory store. Set `sharedContextDir` to keep the inbox beside the other shared-context files.
+`sharedContextDir` is optional. Priorities, outputs, and roundtable default to `~/.openclaw/workspace/shared-context/`. When `sharedContextDir` is unset, `feedback/inbox.jsonl` is stored at `<memoryDir>/shared-context/feedback/inbox.jsonl` so the inbox replicates with the memory store. The first synthesis, feedback append, or shared-context init copies a non-empty legacy `<workspaceDir>/shared-context/feedback/inbox.jsonl` into that file when the memory-dir inbox is missing or empty. A non-empty memory-dir inbox is left as-is, and the legacy file is not read again. Set `sharedContextDir` to keep the inbox beside the other shared-context files; an explicit directory is not migrated.
 
 ## Directory structure
 

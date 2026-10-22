@@ -660,6 +660,105 @@ test("unset sharedContextDir stores and reads feedback inside the memory dir", a
   }
 });
 
+test("weekly synthesis copies a legacy workspace inbox once when the memory inbox is empty", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-legacy-"));
+  try {
+    const cfg = config(memoryDir);
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "Carry the old inbox forward",
+        date: IN_WEEK,
+        learning: "Legacy feedback still counts",
+      })}\n`,
+      "utf-8"
+    );
+    const eng = new CompoundingEngine(cfg);
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const copied = await readFile(path.join(memoryDir, "shared-context", "feedback", "inbox.jsonl"), "utf-8");
+    assert.match(copied, /Legacy feedback still counts/);
+    const legacyAfter = await readFile(legacyPath, "utf-8");
+    assert.match(legacyAfter, /Legacy feedback still counts/);
+    const entry = (await eng.readMistakes())?.registry?.find((item) =>
+      item.pattern.includes("Legacy feedback still counts")
+    );
+    assert.ok(entry);
+    assert.equal(entry.provenance.length, 1);
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const again = (await eng.readMistakes())?.registry?.find((item) =>
+      item.pattern.includes("Legacy feedback still counts")
+    );
+    assert.equal(again?.provenance.length, 1);
+    assert.equal(again?.recurrenceCount, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("shared-context init copies a legacy inbox over an empty memory inbox", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-legacy-empty-"));
+  try {
+    const cfg = config(memoryDir);
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    const nextPath = path.join(memoryDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await mkdir(path.dirname(nextPath), { recursive: true });
+    await writeFile(nextPath, "", "utf-8");
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "approved",
+        reason: "Empty memory inbox should inherit the workspace inbox",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    const manager = new SharedContextManager(cfg);
+    await manager.ensureStructure();
+    const copied = await readFile(nextPath, "utf-8");
+    assert.match(copied, /Empty memory inbox should inherit the workspace inbox/);
+    const legacyAfter = await readFile(legacyPath, "utf-8");
+    assert.match(legacyAfter, /Empty memory inbox should inherit the workspace inbox/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked legacy inbox is not copied into the memory dir", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-legacy-link-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-legacy-out-"));
+  try {
+    const cfg = config(memoryDir);
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    const outsideFile = path.join(outside, "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      outsideFile,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "A symlinked inbox must stay unread",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    await symlink(outsideFile, legacyPath);
+    const eng = new CompoundingEngine(cfg);
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const patterns = (await eng.readMistakes())?.patterns ?? [];
+    assert.equal(patterns.some((pattern) => pattern.includes("symlinked inbox")), false);
+    await assert.rejects(readFile(path.join(memoryDir, "shared-context", "feedback", "inbox.jsonl")));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test("an explicit sharedContextDir still owns the feedback inbox", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-explicit-"));
   const sharedDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-shared-"));

@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, appendFile, writeFile, stat, rename, rm } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { mkdir, readFile, readdir, appendFile, writeFile, stat, lstat, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
+import { isErrnoCode } from "../utils/errno.js";
 import { expandTildePath } from "../utils/path.js";
+import { pathIsInside } from "../utils/path-containment.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import { throwIfAborted } from "../abort-error.js";
 import {
@@ -482,6 +485,61 @@ export function resolveFeedbackInboxPath(config: PluginConfig): string {
   return path.join(expandTildePath(config.memoryDir), "shared-context", "feedback", "inbox.jsonl");
 }
 
+/**
+ * Copy a pre-upgrade workspace inbox into the memory-dir inbox once.
+ *
+ * Older builds stored `feedback/inbox.jsonl` under the workspace
+ * shared-context directory even when `sharedContextDir` was unset. The copy
+ * runs only while the memory-dir inbox is missing or empty, and only for a
+ * regular legacy file that stays inside the workspace. A non-empty memory-dir
+ * inbox is left untouched, so a later workspace file is not read again.
+ * An explicit `sharedContextDir` does not migrate.
+ */
+export async function migrateLegacyFeedbackInbox(config: PluginConfig): Promise<void> {
+  if (typeof config.sharedContextDir === "string" && config.sharedContextDir.length > 0) return;
+  const nextPath = resolveFeedbackInboxPath(config);
+  const legacyPath = path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
+  if (path.resolve(nextPath) === path.resolve(legacyPath)) return;
+
+  let nextStat: Stats | undefined;
+  try {
+    nextStat = await lstat(nextPath);
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+  }
+  if (nextStat && (nextStat.isSymbolicLink() || !nextStat.isFile() || nextStat.size > 0)) return;
+
+  let legacyStat: Stats;
+  try {
+    legacyStat = await lstat(legacyPath);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return;
+    throw err;
+  }
+  if (legacyStat.isSymbolicLink() || !legacyStat.isFile() || legacyStat.size === 0) return;
+
+  const workspaceReal = await realpath(expandTildePath(config.workspaceDir));
+  const legacyReal = await realpath(legacyPath);
+  if (!pathIsInside(workspaceReal, legacyReal)) return;
+
+  const memoryDir = expandTildePath(config.memoryDir);
+  await mkdir(path.dirname(nextPath), { recursive: true });
+  const memoryReal = await realpath(memoryDir);
+  const nextParentReal = await realpath(path.dirname(nextPath));
+  if (!pathIsInside(memoryReal, nextParentReal)) return;
+  if (nextStat) {
+    const nextReal = await realpath(nextPath);
+    if (!pathIsInside(memoryReal, nextReal)) return;
+    await rm(nextPath, { force: true });
+  }
+  const body = await readFile(legacyReal);
+  try {
+    await writeFile(nextPath, body, { flag: "wx" });
+  } catch (err) {
+    if (!isErrnoCode(err, "EEXIST")) throw err;
+  }
+}
+
 export class SharedContextManager {
   readonly dir: string;
   private readonly prioritiesPath: string;
@@ -544,6 +602,7 @@ export class SharedContextManager {
         "",
       ].join("\n"),
     );
+    await migrateLegacyFeedbackInbox(this.config);
     await this.ensureFile(this.feedbackInboxPath, "");
   }
 
@@ -684,6 +743,7 @@ export class SharedContextManager {
 
   async appendFeedback(entry: SharedFeedbackEntry): Promise<void> {
     const parsed = SharedFeedbackEntrySchema.parse(entry);
+    await migrateLegacyFeedbackInbox(this.config);
     await appendFile(this.feedbackInboxPath, JSON.stringify(parsed) + "\n", "utf-8");
   }
 
@@ -790,6 +850,7 @@ export class SharedContextManager {
     // Collect feedback entries for the day.
     const feedback: SharedFeedbackEntry[] = [];
     try {
+      await migrateLegacyFeedbackInbox(this.config);
       const raw = await readFile(this.feedbackInboxPath, "utf-8");
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
