@@ -4,7 +4,9 @@ Remnic exposes one local service layer through HTTP and MCP adapters, a set of a
 
 ## Standalone CLI Commands
 
-The canonical CLI is `remnic`; the legacy `engram` binary remains as a forwarder during the rename window, and every command works under either name. The full standalone reference — all 35 top-level commands, their subcommands, and flags — lives in the [CLI reference](cli.md).
+The canonical CLI is `remnic`; the legacy `engram` binary remains as a forwarder
+during the rename window, and every command works under either name. Common
+standalone commands, subcommands, and flags appear in the [CLI reference](cli.md).
 
 This page documents the shared access layer (HTTP + MCP), the agent tools, and the [`openclaw engram`](#cli-commands) hosted command surface.
 
