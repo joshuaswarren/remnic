@@ -198,6 +198,28 @@ test("default resolution uses the origin/main merge-base and falls back to HEAD^
   assert.match(result.stderr, /late\.ts/);
 });
 
+test("CI PR scope excludes base-only changes after main advances and still rejects PR violations", (t) => {
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  commitAll(root, "shared base");
+  git(root, ["checkout", "-qb", "pr"]);
+  write(root, "pr.ts", VIOLATION);
+  commitAll(root, "PR change");
+  git(root, ["checkout", "-qb", "main", "HEAD^"]);
+  write(root, "main-only.ts", VIOLATION);
+  commitAll(root, "main advances after PR event");
+  git(root, ["merge", "--no-ff", "-m", "synthetic PR merge", "pr"]);
+
+  let result = runGate(root, [], { REMNIC_ANTI_SLOP_BASE_REF: "HEAD^1" });
+  assertStatus(result, 1, "PR-introduced violation");
+  assert.match(result.stderr, /pr\.ts/);
+  assert.doesNotMatch(result.stderr, /main-only\.ts/);
+
+  write(root, "pr.ts", CLEAN_SOURCE);
+  result = runGate(root, [], { REMNIC_ANTI_SLOP_BASE_REF: "HEAD^1" });
+  assertStatus(result, 0, "main-only violation is outside PR scope");
+});
+
 test("parsers fail closed on malformed tool output and map hunks and spans to lines", () => {
   assert.throws(() => parseOxlintJson("not json"), /malformed oxlint JSON/);
   assert.throws(() => parseOxlintJson('{"number_of_files":1}'), /diagnostics array/);
@@ -239,6 +261,7 @@ test("gate wiring contract in root package, config, and CI files", () => {
 
   const ci = readFileSync(join(WORKTREE_ROOT, ".github", "workflows", "ci.yml"), "utf8");
   assert.match(ci, /REMNIC_ANTI_SLOP_BASE_REF/);
+  assert.match(ci, /REMNIC_ANTI_SLOP_BASE_REF: \$\{\{ github\.event_name == 'pull_request' && 'HEAD\^1' \|\| github\.event\.before \|\| 'HEAD\^' \}\}/);
   assert.match(ci, /Lint \(Biome and scoped anti-slop\)/);
   assert.match(ci, /run: pnpm run lint/);
   assert.match(ci, /needs: \[checks, tests, build-artifacts, lifecycle-matrix\]/);
