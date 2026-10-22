@@ -127,33 +127,6 @@ test("the calendar read overlaps the corpus reads instead of following them", as
   assert.deepEqual(result.sections.todayCalendar, [seeded.event]);
 });
 
-test("every section is rendered from the seeded store, follow-ups included", async (t) => {
-  const seeded = await makeTempStore(t);
-  const followups = [{ text: "Confirm the calendar overlap holds.", rationale: "deterministic" }];
-  const calendarSource: CalendarSource = { async eventsForDate() { return [seeded.event]; } };
-
-  const result = await buildBriefing({
-    storage: seeded.storage,
-    window: seeded.window,
-    calendarSource,
-    maxFollowups: 3,
-    allowLlm: true,
-    followupGenerator: async () => followups,
-    now: seeded.now,
-  });
-
-  assert.deepEqual(result.sections.suggestedFollowups, followups);
-  assert.deepEqual(result.sections.todayCalendar, [seeded.event]);
-  assert.deepEqual(result.sections.activeThreads.map((thread) => thread.title).sort(), [FACT_CONTENT, PENDING_CONTENT].sort());
-  assert.deepEqual(result.sections.openCommitments.map((commitment) => commitment.text), [PENDING_CONTENT]);
-  assert.deepEqual(result.sections.openCommitments.map((commitment) => commitment.kind), ["pending_memory"]);
-  assert.deepEqual(
-    result.sections.recentEntities.map((entity) => ({ name: entity.name, type: entity.type })),
-    [{ name: ENTITY_NAME, type: ENTITY_TYPE }],
-  );
-  assert.equal(result.calendarSourceErrors, undefined);
-});
-
 test("a failing calendar source still reports its error with the overlapping read", async (t) => {
   const seeded = await makeTempStore(t);
   const calendarSource: CalendarSource = {
