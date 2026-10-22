@@ -1,4 +1,6 @@
+import path from "node:path";
 import type { MemoryProjectionCurrentState } from "./types.js";
+import { isRecord } from "./store-contract.js";
 import {
   memoryCurrentSelectExpressions,
   openProjectionReadonly,
@@ -74,6 +76,24 @@ export function readProjectedMemoryStates(
       rebuiltAt: typeof rebuiltAt === "string" ? rebuiltAt : null,
       complete: meta.get("complete") === "true",
     };
+  } catch {
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Path-only census used to avoid parsing already-projected files during a fallback lookup. */
+export function readProjectedMemoryPaths(memoryDir: string): Set<string> | null {
+  const db = openProjectionReadonly(memoryDir);
+  if (!db) return null;
+  try {
+    const paths = new Set<string>();
+    for (const row of db.prepare("SELECT path_rel FROM memory_current").iterate()) {
+      const relative = isRecord(row) ? row.path_rel : undefined;
+      if (typeof relative === "string") paths.add(path.resolve(memoryDir, relative));
+    }
+    return paths;
   } catch {
     return null;
   } finally {

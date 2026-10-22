@@ -3648,18 +3648,6 @@ export class RecallInternalCoordinator {
       this.deps.appendRecallSection(sectionBuckets, "trust-zones", trustZoneSection);
     }
 
-    const harmonicRetrievalSection = await awaitEnrichmentSection(
-      "harmonic",
-      harmonicRetrievalPromise,
-    );
-    if (harmonicRetrievalSection) {
-      this.deps.appendRecallSection(
-        sectionBuckets,
-        "harmonic-retrieval",
-        harmonicRetrievalSection,
-      );
-    }
-
     if (verifiedRecallSection) {
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -4780,6 +4768,18 @@ export class RecallInternalCoordinator {
       }
     }
     const phase2AfterQmdMs = Date.now() - recallStart;
+
+    const harmonicRetrievalSection = await awaitEnrichmentSection(
+      "harmonic",
+      harmonicRetrievalPromise,
+    );
+    if (harmonicRetrievalSection) {
+      this.deps.appendRecallSection(
+        sectionBuckets,
+        "harmonic-retrieval",
+        harmonicRetrievalSection,
+      );
+    }
     if (shouldPersistGraphSnapshot) {
       if (!graphSnapshotStatus) {
         graphSnapshotStatus = "skipped";
