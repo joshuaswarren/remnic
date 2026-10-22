@@ -1086,6 +1086,10 @@ test("remnic converge retains per-side semantic state across a later metadata ed
 
     localContent = memory("local-id", "2026-01-03T00:00:00.000Z");
     const editedLocalSha = createHash("sha256").update(localContent).digest("hex");
+    // Census capturedAt is Date.now() before the file is stat'd. A rewrite in
+    // that same millisecond stays inside the 1ms fast-base ctime window and
+    // is planned as the previous bytes.
+    await new Promise((resolve) => setTimeout(resolve, 20));
     await fs.writeFile(path.join(rootDir, "facts/local-id.md"), localContent);
     const explicitPlan = await computeConvergePlan({
       ...options,

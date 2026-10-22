@@ -7,6 +7,7 @@ import {
   type ReconcileManifest,
   type ReconcileManifestFile,
 } from "@remnic/core/reconcile/manifest.js";
+import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js";
 import {
   fetchPeerFileContent,
   fetchPeerManifestStream,
@@ -118,6 +119,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     } else {
       clientBuilt = true;
       let readFailure: Error | undefined;
+      let transportFailure: unknown;
       peerManifest = await buildReconcileManifest({
         files: peerData.files,
         parseMemory: parseFrontmatter,
@@ -127,6 +129,10 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
         // rows (sha-keyed) skip the ones already fetched.
         cachedFiles: priorPeerFiles ?? args.localManifestFiles,
         readFile: async (file) => {
+          // The manifest builder settles the in-flight batch, then asks for
+          // the next one. A transport failure must not start that next batch,
+          // and a later generic miss must not replace the transport cause.
+          if (transportFailure) throw transportFailure;
           let remote: PeerFileContent | null;
           try {
             remote = await fetchPeerFileContent(
@@ -136,19 +142,24 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
               args.resolvedToken,
               args.fetchFn,
               args.timeoutMs,
-              args.signal
+              args.signal,
+              true
             );
           } catch (error) {
-            readFailure = error instanceof Error ? error : new Error(String(error));
-            throw readFailure;
+            const failure = error instanceof Error ? error : new Error(String(error));
+            if (isPeerTransportCensusFailure(error)) transportFailure = transportFailure ?? error;
+            if (!transportFailure) readFailure = failure;
+            throw failure;
           }
           if (!remote || remote.sha256 !== file.sha256) {
-            readFailure = new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
-            throw readFailure;
+            const failure = new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
+            if (!transportFailure) readFailure = failure;
+            throw failure;
           }
           return remote.content;
         },
       });
+      if (transportFailure) throw transportFailure;
       if (readFailure) throw readFailure;
     }
   }
@@ -157,15 +168,23 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   for (const tombstonePath of TOMBSTONE_PATHS) {
     const state = peerData.files.find((file) => file.path === tombstonePath);
     if (!state) continue;
-    const remote = await fetchPeerFileContent(
-      peerUrl,
-      ns,
-      tombstonePath,
-      args.resolvedToken,
-      args.fetchFn,
-      args.timeoutMs,
-      args.signal
-    );
+    let remote: PeerFileContent | null;
+    try {
+      remote = await fetchPeerFileContent(
+        peerUrl,
+        ns,
+        tombstonePath,
+        args.resolvedToken,
+        args.fetchFn,
+        args.timeoutMs,
+        args.signal,
+        true
+      );
+    } catch (error) {
+      // Name the tombstone read (#2954). The transport error stays the cause
+      // so a timeout or operator abort still fails the cycle.
+      throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`, { cause: error });
+    }
     // A transport-level failure here is FATAL on purpose: tombstone evidence
     // is what stops a plan from pushing a peer-retracted memory back
     // (resurrection). There is no safe "empty evidence" fallback — the

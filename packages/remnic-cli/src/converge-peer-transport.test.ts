@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { MessageChannel } from "node:worker_threads";
 import { OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES } from "@remnic/core";
+import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js";
 import {
   fetchPeerManifestStream,
   fetchPeerSnapshot,
@@ -162,6 +163,90 @@ test("peer transport rejects internal state paths before issuing a request", asy
   assert.equal(reads, 0);
 });
 
+test("peer snapshot error detail reads a bounded prefix and cancels the rest", { timeout: 2_000 }, async () => {
+  let pulls = 0;
+  let cancels = 0;
+  const snapshot = await fetchPeerSnapshot(
+    "http://peer",
+    "blocked",
+    undefined,
+    async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          const chunk = Buffer.alloc(64 * 1024, 0x20);
+          Buffer.from('{"error":"namespace is not readable: blocked"}').copy(chunk);
+          controller.enqueue(new Uint8Array(chunk));
+        },
+        cancel() {
+          cancels += 1;
+        },
+      });
+      return new Response(body, { status: 400, headers: { "content-type": "application/json" } });
+    },
+    1_000
+  ).catch((error: unknown) => error);
+  assert.ok(snapshot instanceof Error);
+  assert.match(snapshot.message, /HTTP 400 namespace is not readable: blocked/);
+  // Two routes, and each stream refills its queue once after the capped read.
+  // response.text() would pull this unending body until the test times out.
+  assert.equal(pulls, 4);
+  assert.ok(cancels >= 2);
+});
+
+test("peer snapshot error detail drops terminal control characters", async () => {
+  const snapshot = await fetchPeerSnapshot(
+    "http://peer",
+    "blocked",
+    undefined,
+    async () =>
+      Response.json(
+        { error: "namespace is not readable: \u001b[31mblocked\u001b[0m \u001b]0;forged\u0007" },
+        { status: 400 }
+      ),
+    1_000
+  ).catch((error: unknown) => error);
+  assert.ok(snapshot instanceof Error);
+  assert.equal(snapshot.message.includes("\u001b"), false);
+  assert.equal(snapshot.message.includes("\u0007"), false);
+  assert.match(snapshot.message, /HTTP 400 namespace is not readable: \[31mblocked\[0m/);
+});
+
+test("peer snapshot keeps a body-read timeout instead of recording an HTTP refusal", async () => {
+  const fetchImpl: typeof fetch = (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) return Promise.resolve(new Response(null, { status: 404 }));
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 400 }));
+  };
+  await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /timeout|aborted/i);
+    assert.equal(error.message.includes("HTTP"), false);
+    assert.equal(isPeerTransportCensusFailure(error), true);
+    return true;
+  });
+});
+
+test("peer snapshot still records an HTTP refusal when the error body fails for another reason", async () => {
+  const fetchImpl: typeof fetch = async () => {
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("decode failed"));
+      },
+    });
+    return new Response(body, { status: 400 });
+  };
+  await assert.rejects(
+    fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000),
+    /failed to fetch peer snapshot for namespace alpha: HTTP 400/
+  );
+});
+
 test("peer transport aborts a stalled request at the configured timeout", async () => {
   const fetchImpl: typeof fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {
@@ -180,6 +265,136 @@ test("peer transport aborts a stalled request at the configured timeout", async 
     keepAlive.port1.close();
     keepAlive.port2.close();
   }
+});
+
+test("peer snapshot keeps a timeout when the fallback route returns HTTP 404", async () => {
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) return Promise.resolve(new Response(null, { status: 404 }));
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      const fail = () => reject(signal.reason);
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  try {
+    await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 30), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /timeout|aborted/i);
+      assert.equal(error.message.includes("HTTP"), false);
+      return true;
+    });
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("peer snapshot keeps a timeout when the fallback body is not JSON", async () => {
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) {
+      return Promise.resolve(
+        new Response("not-json", { status: 200, headers: { "content-type": "application/json" } })
+      );
+    }
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      const fail = () => reject(signal?.reason ?? new Error("aborted"));
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  try {
+    await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 30), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /timeout|aborted/i);
+      assert.equal(error.message.includes("not JSON"), false);
+      assert.equal(error.message.includes("invalid peer snapshot"), false);
+      assert.equal(isPeerTransportCensusFailure(error), true);
+      return true;
+    });
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("peer snapshot reports invalid JSON when no earlier timeout was recorded", async () => {
+  const fetchImpl: typeof fetch = async () =>
+    new Response("not-json", { status: 200, headers: { "content-type": "application/json" } });
+  await assert.rejects(
+    fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000),
+    /invalid peer snapshot for namespace alpha: response was not JSON/
+  );
+});
+
+test("peer snapshot uses a later alias that succeeds after a timeout", async () => {
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/remnic/")) {
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        const fail = () => reject(signal?.reason ?? new Error("aborted"));
+        if (signal?.aborted) {
+          fail();
+          return;
+        }
+        signal?.addEventListener("abort", fail, { once: true });
+      });
+    }
+    return Promise.resolve(Response.json({ files: [], tombstones: [] }));
+  };
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  try {
+    const snapshot = await fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 30);
+    assert.deepEqual(snapshot.files, []);
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("peer snapshot body timeout is not rewritten as invalid JSON", async () => {
+  const fetchImpl: typeof fetch = async (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) return new Response(null, { status: 404 });
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message.includes("not JSON"), false);
+    assert.equal(isPeerTransportCensusFailure(error), true);
+    return true;
+  });
 });
 
 test("peer snapshot fetch threads the abort signal and does not retry the fallback route (#2954)", async () => {
