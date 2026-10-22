@@ -901,3 +901,23 @@ export function hasContradictoryPolarity(candidate: string, source: string): boo
   }
   return false;
 }
+
+export function normalizedEntityIdentifierTokens(name: string): string[] {
+  const identifier = normalizeForExactMatch(name).replace(/[-_]+/gu, " ");
+  const tokens = groundingLexemes(identifier)
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+    .map(({ token }) => stemToken(token, true));
+  return tokens.length > 1 && GROUNDING_ENTITY_TYPE_PREFIXES.has(tokens[0] ?? "")
+    ? tokens.slice(1)
+    : tokens;
+}
+
+export function isGroundedEntityName(name: string, source: string): boolean {
+  const nameTokens = normalizedEntityIdentifierTokens(name);
+  return nameTokens.length > 0 && sourceSentences(source).some((sentence) => {
+    const sentenceTokens = groundingLexemes(sentence)
+      .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+      .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
+    return containsContiguousGroundingTokens(nameTokens, sentenceTokens);
+  });
+}

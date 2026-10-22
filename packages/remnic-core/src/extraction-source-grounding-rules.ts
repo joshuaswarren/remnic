@@ -1,9 +1,19 @@
 import type { ExtractionResult } from "./types.js";
 import { anchorTemporalExpressions } from "./delinearize.js";
 import {
+  entityFactCount,
+  filterEntityFacts,
+  filterQuoteAnchoredEntity,
+  isQuoteAnchoredClaim,
+  isQuoteAnchoredRelationship,
+  quoteAnchors,
+  tokenPool,
+  type QuoteAnchor,
+  type TokenPool,
+} from "./extraction-quote-grounding.js";
+import {
   GROUNDING_AUXILIARY_TOKENS,
   GROUNDING_COPULAR_FORMS,
-  GROUNDING_ENTITY_TYPE_PREFIXES,
   GROUNDING_MIN_COVERAGE,
   GROUNDING_MIN_SHARED_TOKENS,
   GROUNDING_STOPWORDS,
@@ -14,8 +24,10 @@ import {
   groundingTokenSequence,
   hasContradictoryPolarity,
   hasExplicitRoleSubjectToken,
+  isGroundedEntityName,
   isInterrogativeSourceSentence,
   normalizeForExactMatch,
+  normalizedEntityIdentifierTokens,
   normalizedGroundingAlignmentTokenSequence,
   normalizedGroundingTokenSequence,
   sourceSentences,
@@ -352,25 +364,6 @@ function isSourceGrounded(
   return isSourceGroundedClause(candidate, sourceText, includeInterrogativeSource);
 }
 
-function normalizedEntityIdentifierTokens(name: string): string[] {
-  const identifier = normalizeForExactMatch(name).replace(/[-_]+/gu, " ");
-  const tokens = groundingLexemes(identifier)
-    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
-    .map(({ token }) => stemToken(token, true));
-  return tokens.length > 1 && GROUNDING_ENTITY_TYPE_PREFIXES.has(tokens[0] ?? "")
-    ? tokens.slice(1)
-    : tokens;
-}
-
-function isGroundedEntityName(name: string, source: string): boolean {
-  const nameTokens = normalizedEntityIdentifierTokens(name);
-  return nameTokens.length > 0 && sourceSentences(source).some((sentence) => {
-    const sentenceTokens = groundingLexemes(sentence)
-      .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
-      .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
-    return containsContiguousGroundingTokens(nameTokens, sentenceTokens);
-  });
-}
 function buildEntitySupportSource(name: string, source: string): string {
   const nameTokens = normalizedEntityIdentifierTokens(name);
   if (nameTokens.length === 0) return "";
@@ -596,6 +589,22 @@ function isGroundedCandidate(
     );
 }
 
+function groundWithinQuoteAnchors(
+  content: string,
+  anchors: readonly QuoteAnchor[],
+  sourceHas: TokenPool,
+): GroundingContext | undefined {
+  const anchor = anchors.find((candidate) => isQuoteAnchoredClaim(content, candidate, sourceHas));
+  if (anchor === undefined) return undefined;
+  return {
+    source: anchor.window,
+    assertionSource: undefined,
+    allowRoleNormalization: GROUNDING_ROLE_SUBJECT_TOKENS.has(
+      (groundingTokenSequence(content)[0] ?? "").replace(/^[\u0000\u0001]/u, ""),
+    ),
+  };
+}
+
 function buildFactSupportSource(
   source: string,
   supportingSentences: ReadonlyArray<string>,
@@ -656,6 +665,8 @@ function filterGroundedFact(
   roleAssertionSources: ExtractionGroundingRoleSources | undefined,
   eventTimeNormalizer: ((eventTime: string) => string) | undefined,
   spanMode: "off" | "shadow" | "on" = "off",
+  anchors: readonly QuoteAnchor[],
+  sourceHas: TokenPool,
 ): ExtractionResult["facts"][number] | undefined {
   // Span-materialized content (issue #2333) is "frame: verbatim slice". The
   // frame is generated deixis, so full-content gating would drop a verbatim
@@ -677,6 +688,7 @@ function filterGroundedFact(
   );
   let gateContent = fact.content;
   let factContext = contentContext;
+  let quoteAnchored = false;
   if (
     !isGroundedCandidate(
       fact.content,
@@ -686,25 +698,33 @@ function filterGroundedFact(
       contentContext.allowRoleNormalization,
     )
   ) {
-    if (embeddedQuote === undefined) return undefined;
-    gateContent = embeddedQuote;
-    factContext = selectGroundingContext(
-      gateContent,
-      resolveGroundingContext(gateContent, source, assertionSource, roleAssertionSources),
-    );
-    if (!isGroundedCandidate(
-      gateContent,
-      factContext.source,
-      factContext.assertionSource,
-      false,
-      factContext.allowRoleNormalization,
-    )) return undefined;
+    const quoteContext = groundWithinQuoteAnchors(fact.content, anchors, sourceHas);
+    if (quoteContext !== undefined) {
+      factContext = quoteContext;
+      quoteAnchored = true;
+    } else {
+      if (embeddedQuote === undefined) return undefined;
+      gateContent = embeddedQuote;
+      factContext = selectGroundingContext(
+        gateContent,
+        resolveGroundingContext(gateContent, source, assertionSource, roleAssertionSources),
+      );
+      if (!isGroundedCandidate(
+        gateContent,
+        factContext.source,
+        factContext.assertionSource,
+        false,
+        factContext.allowRoleNormalization,
+      )) return undefined;
+    }
   }
   const factEventTime = fact.eventTime;
   const groundedFactEventTime = factEventTime === undefined
     ? undefined
     : eventTimeNormalizer?.(factEventTime) ?? factEventTime;
-  const factSupportingSentences = sourceSentences(factContext.assertionSource ?? factContext.source).filter(
+  // A quote-anchored claim is reworded from the quote and its turn, so no single
+  // sentence grounds it; the anchor window is the support for its sub-fields.
+  const factSupportingSentences = quoteAnchored ? [] : sourceSentences(factContext.assertionSource ?? factContext.source).filter(
     (sentence) =>
     isGroundedCandidate(
       gateContent,
@@ -730,10 +750,12 @@ function filterGroundedFact(
     ? factContext.assertionSource
     : undefined;
 
-  const factSupportSource = buildFactSupportSource(
-    factContext.assertionSource ?? factContext.source,
-    factSupportingSentences,
-  );
+  const factSupportSource = quoteAnchored
+    ? factContext.source
+    : buildFactSupportSource(
+      factContext.assertionSource ?? factContext.source,
+      factSupportingSentences,
+    );
   const groundedAttributes = fact.structuredAttributes
     ? Object.fromEntries(
       Object.entries(fact.structuredAttributes)
@@ -849,27 +871,7 @@ function filterGroundedEntity(
   const entityAssertionSource = assertionSource === undefined
     ? undefined
     : buildEntitySupportSource(entity.name, assertionSource);
-  const facts = entity.facts.filter((fact) =>
-    isGroundedCandidate(fact, entitySource, entityAssertionSource),
-  );
-  const structuredSections = entity.structuredSections
-    ?.flatMap((section) => {
-      const groundedFacts = section.facts.filter((fact) =>
-        isGroundedCandidate(fact, entitySource, entityAssertionSource),
-      );
-      return groundedFacts.length > 0
-        ? [{ ...section, facts: groundedFacts }]
-        : [];
-    });
-  if (facts.length === 0 && (structuredSections === undefined || structuredSections.length === 0)) {
-    return undefined;
-  }
-  const { structuredSections: _structuredSections, ...entityWithoutSections } = entity;
-  return {
-    ...entityWithoutSections,
-    facts,
-    ...(structuredSections && structuredSections.length > 0 ? { structuredSections } : {}),
-  };
+  return filterEntityFacts(entity, (fact) => isGroundedCandidate(fact, entitySource, entityAssertionSource));
 }
 
 function normalizedEntitySourceText(name: string): string {
@@ -1117,7 +1119,13 @@ export function filterExtractionResultBySource(
     };
   }
 
+  const quoteSource = assertionSource ?? source;
+  const keptAnchors: QuoteAnchor[] = [];
+  const sourceHas = tokenPool(
+    result.facts.some((fact) => typeof fact.quote === "string") ? tokenize(quoteSource) : new Set(),
+  );
   const facts = result.facts.flatMap((fact) => {
+    const anchors = quoteAnchors(fact.quote, quoteSource);
     const grounded = filterGroundedFact(
       fact,
       source,
@@ -1125,22 +1133,32 @@ export function filterExtractionResultBySource(
       roleAssertionSources,
       eventTimeNormalizer,
       spanMode,
+      anchors,
+      sourceHas,
     );
-    return grounded === undefined ? [] : [grounded];
+    if (grounded === undefined) return [];
+    keptAnchors.push(...anchors);
+    return [grounded];
   });
   const profileUpdates = result.profileUpdates.filter((update) =>
     isRoleGroundedCandidate(update, source, assertionSource, roleAssertionSources),
   );
   const entities = result.entities.flatMap((entity) => {
     const grounded = filterGroundedEntity(entity, source, assertionSource);
-    return grounded === undefined ? [] : [grounded];
+    const anchored = filterQuoteAnchoredEntity(entity, keptAnchors, sourceHas);
+    const best = anchored !== undefined
+      && (grounded === undefined || entityFactCount(anchored) > entityFactCount(grounded))
+      ? anchored
+      : grounded;
+    return best === undefined ? [] : [best];
   });
   const questions = result.questions.flatMap((question) => {
     const grounded = groundQuestion(question, source, assertionSource);
     return grounded === undefined ? [] : [grounded];
   });
   const relationships = result.relationships?.filter((relationship) =>
-    isGroundedRelationship(relationship, source, assertionSource),
+    isGroundedRelationship(relationship, source, assertionSource)
+    || isQuoteAnchoredRelationship(relationship, keptAnchors, sourceHas),
   );
   const identityReflection = result.identityReflection
     && isRoleGroundedCandidate(
