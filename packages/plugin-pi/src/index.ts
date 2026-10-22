@@ -156,6 +156,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // the namespace preflight and every later hook each burn a full request
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
       const probe = await probeDaemonHealth(client, config);
+      if (probe !== "unreachable") {
+        await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
+      }
       if (config.statusEnabled) {
         session.setStatus(
           "remnic",
