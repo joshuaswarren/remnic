@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import { raceAbort, throwIfAborted } from "../abort-error.js";
 import {
   CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
   type CaptureWriteLockLimitSource,
@@ -65,6 +66,8 @@ export type TombstoneBlockedCaptureWriteLockOptions = {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly logDebug?: (message: string) => void;
   readonly logWarn?: (message: string) => void;
+  /** Direct seam. Converge passes the same signal through `lockOptions` instead. */
+  readonly signal?: AbortSignal;
 };
 
 export class TombstoneBlockedCaptureWriteLock {
@@ -98,6 +101,11 @@ export class TombstoneBlockedCaptureWriteLock {
     log.warn(message);
   }
 
+  /** Prefer the constructor seam; converge installs the signal on lock options at acquire time. */
+  private captureAbortSignal(): AbortSignal | undefined {
+    return this.options.signal ?? this.options.lockOptions?.().captureWriteLockSignal;
+  }
+
   /**
    * One probe of a single lock file. Returns the retry symbol when the lock
    * is busy and the permanent symbol on a filesystem error. Does not sleep:
@@ -127,10 +135,12 @@ export class TombstoneBlockedCaptureWriteLock {
     task: () => Promise<T>,
     identityHashes: readonly string[]
   ): Promise<T> {
+    const signal = this.captureAbortSignal();
     const lockPaths = [...new Set(identityHashes.map((hash) => this.captureWriteLockPathForHash(hash)))];
     const limits = resolveCaptureWriteLockBackoffLimits(this.options.lockOptions?.());
     const deadline = this.now() + limits.deadlineMs;
     const giveUp = (): never => {
+      throwIfAborted(signal);
       this.warn(
         `tombstone-blocked capture write lock remained busy after ${limits.deadlineMs}ms; failing this write so the rest of the cycle can continue`
       );
@@ -139,17 +149,20 @@ export class TombstoneBlockedCaptureWriteLock {
     const acquire = async (
       index: number
     ): Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY | typeof CAPTURE_WRITE_LOCK_PERMANENT> => {
+      throwIfAborted(signal);
       if (index === lockPaths.length) return await task();
       const lockPath = lockPaths[index];
       if (lockPath === undefined) return await task();
       return await this.withSingleCaptureWriteLockOnce(lockPath, () => acquire(index + 1));
     };
     for (let attempt = 0; ; attempt += 1) {
+      throwIfAborted(signal);
       const outcome = await acquire(0);
       if (outcome === CAPTURE_WRITE_LOCK_PERMANENT) {
         throw new Error("tombstone-blocked capture write lock acquisition failed");
       }
       if (outcome !== CAPTURE_WRITE_LOCK_RETRY) return outcome;
+      throwIfAborted(signal);
       const now = this.now();
       if (now >= deadline) giveUp();
       const delay = Math.min(
@@ -158,7 +171,7 @@ export class TombstoneBlockedCaptureWriteLock {
       );
       if (delay <= 0) giveUp();
       this.debug(`tombstone-blocked capture write lock busy; backing off ${delay}ms before retry ${attempt + 1}`);
-      await (this.options.sleep ?? sleep)(delay);
+      await raceAbort((this.options.sleep ?? sleep)(delay), signal);
     }
   }
 
@@ -187,6 +200,7 @@ export class TombstoneBlockedCaptureWriteLock {
     identities: readonly string[],
     identityHashes: readonly string[]
   ): Promise<T> {
+    throwIfAborted(this.captureAbortSignal());
     const current = this.context.getStore();
     const hashToken = (key: string): string =>
       `\u0000${key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")}`;
@@ -241,7 +255,10 @@ export class TombstoneBlockedCaptureWriteLock {
       next.add(hashToken(key));
     }
     for (const hash of hashes) next.add(`\u0000${hash}`);
-    const run = () => this.context.run(next, task);
+    const run = () => {
+      throwIfAborted(this.captureAbortSignal());
+      return this.context.run(next, task);
+    };
     if (physicalMissing.length === 0) return await run();
     return await this.withPhysicalCaptureWriteLocks(run, physicalMissing);
   }

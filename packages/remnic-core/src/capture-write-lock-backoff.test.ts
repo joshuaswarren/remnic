@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { isAbortError } from "./abort-error.js";
 import {
   CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
   DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
@@ -164,6 +165,113 @@ test("capture write lock deadline fails with the busy error", async () => {
     assert.ok(debugs.length >= 1);
     assert.ok(sleeps.length >= 1);
     assert.ok(now >= 80);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("aborted capture write lock does not probe, sleep, or write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-aborted-"));
+  try {
+    const controller = new AbortController();
+    controller.abort();
+    let probes = 0;
+    let slept = false;
+    let ran = false;
+    const warns: string[] = [];
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      lockOptions: () => ({ captureWriteLockSignal: controller.signal }),
+      sleep: async () => {
+        slept = true;
+      },
+      logWarn: (message) => warns.push(message),
+      withHeldFileLock: (async () => {
+        probes += 1;
+        return "held";
+      }) as typeof withHeldFileLock,
+    });
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => {
+        ran = true;
+        return "written";
+      }, "path 1 x"),
+      (error: unknown) => isAbortError(error)
+    );
+    assert.equal(probes, 0);
+    assert.equal(slept, false);
+    assert.equal(ran, false);
+    assert.equal(warns.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("abort during capture write lock backoff does not run the write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-abort-sleep-"));
+  try {
+    const controller = new AbortController();
+    let probes = 0;
+    let ran = false;
+    const warns: string[] = [];
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      signal: controller.signal,
+      lockOptions: () => ({
+        captureWriteLockInitialDelayMs: 40,
+        captureWriteLockMaxDelayMs: 40,
+        captureWriteLockDeadlineMs: 400,
+      }),
+      now: () => 0,
+      random: () => 1,
+      sleep: async () => {
+        controller.abort();
+      },
+      logWarn: (message) => warns.push(message),
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        probes += 1;
+        if (probes === 1) {
+          return await task(false, { failure: "timeout", refresh: async () => false });
+        }
+        return await task(true, { refresh: async () => true });
+      }) as typeof withHeldFileLock,
+    });
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => {
+        ran = true;
+        return "written";
+      }, "held-identity"),
+      (error: unknown) => isAbortError(error)
+    );
+    assert.equal(probes, 1);
+    assert.equal(ran, false);
+    assert.equal(warns.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("abort is rechecked after the capture write lock is acquired", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-abort-held-"));
+  try {
+    const controller = new AbortController();
+    let ran = false;
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      lockOptions: () => ({ captureWriteLockSignal: controller.signal }),
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        controller.abort();
+        return await task(true, { refresh: async () => true });
+      }) as typeof withHeldFileLock,
+    });
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => {
+        ran = true;
+        return "written";
+      }, "held-identity"),
+      (error: unknown) => isAbortError(error)
+    );
+    assert.equal(ran, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

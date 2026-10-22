@@ -80,6 +80,8 @@ export interface ContentHashIndexLockOptions {
   readonly captureWriteLockInitialDelayMs?: number;
   readonly captureWriteLockMaxDelayMs?: number;
   readonly captureWriteLockDeadlineMs?: number;
+  /** Apply abort signal. Checked before each probe, during backoff, and before the write. */
+  readonly captureWriteLockSignal?: AbortSignal;
 }
 
 /**

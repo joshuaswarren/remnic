@@ -32,6 +32,11 @@ export type CaptureWriteLockLimitSource = {
   readonly captureWriteLockInitialDelayMs?: number;
   readonly captureWriteLockMaxDelayMs?: number;
   readonly captureWriteLockDeadlineMs?: number;
+  /**
+   * Read when an acquire starts. Converge installs the apply abort signal
+   * here so a SIGINT during backoff never reaches the guarded write.
+   */
+  readonly captureWriteLockSignal?: AbortSignal;
 };
 
 /**

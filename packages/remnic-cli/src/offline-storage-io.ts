@@ -142,7 +142,8 @@ export async function createOfflineStorageIo(
     persisted: ReadonlyMap<string, { statIdentity?: string; excluded?: boolean }>;
     updates: Map<string, { statIdentity: string; excluded: boolean }>;
   },
-  captureWriteLockBackoff?: CaptureWriteLockBackoffLimits
+  captureWriteLockBackoff?: CaptureWriteLockBackoffLimits,
+  signal?: AbortSignal
 ): Promise<OfflineStorageIo> {
   // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
   // (#2033 P1). The normal decrypt path removes its own staging dir in a
@@ -152,12 +153,17 @@ export async function createOfflineStorageIo(
   // same memory root is never removed mid-use.
   await cleanupOrphanedOfflineDecryptStaging(memoryDir);
   const { storage, secureStoreKey } = configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
-  if (captureWriteLockBackoff) {
+  if (captureWriteLockBackoff || signal) {
     storage.factHashIndexLockOptions = {
       ...storage.factHashIndexLockOptions,
-      captureWriteLockInitialDelayMs: captureWriteLockBackoff.initialDelayMs,
-      captureWriteLockMaxDelayMs: captureWriteLockBackoff.maxDelayMs,
-      captureWriteLockDeadlineMs: captureWriteLockBackoff.deadlineMs,
+      ...(captureWriteLockBackoff
+        ? {
+            captureWriteLockInitialDelayMs: captureWriteLockBackoff.initialDelayMs,
+            captureWriteLockMaxDelayMs: captureWriteLockBackoff.maxDelayMs,
+            captureWriteLockDeadlineMs: captureWriteLockBackoff.deadlineMs,
+          }
+        : {}),
+      ...(signal ? { captureWriteLockSignal: signal } : {}),
     };
   }
   return {

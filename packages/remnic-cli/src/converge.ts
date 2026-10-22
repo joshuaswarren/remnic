@@ -461,7 +461,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
 
   const captureWriteLockBackoff = resolveConvergeCaptureWriteLockBackoff(config?.converge);
   const openStorageIo = (rootDir: string) =>
-    createOfflineStorageIo(rootDir, undefined, undefined, captureWriteLockBackoff);
+    createOfflineStorageIo(rootDir, undefined, undefined, captureWriteLockBackoff, options.signal);
   const rootMap = new Map<string, string>();
   if (config) {
     try {
