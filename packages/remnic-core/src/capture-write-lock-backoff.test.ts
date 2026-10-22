@@ -377,3 +377,116 @@ test("capture write lock backoff env yields to config", () => {
     }
   }
 });
+
+test("capture write lock deadline is checked before each lock probe", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-probe-deadline-"));
+  try {
+    let now = 0;
+    let probes = 0;
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      lockOptions: () => ({
+        captureWriteLockInitialDelayMs: 20,
+        captureWriteLockMaxDelayMs: 20,
+        captureWriteLockDeadlineMs: 100,
+      }),
+      now: () => now,
+      random: () => 1,
+      sleep: async (ms) => {
+        // The backoff itself pushes the clock past the deadline.
+        now += 200 + ms;
+      },
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        probes += 1;
+        return await task(false, { failure: "timeout", refresh: async () => false });
+      }) as typeof withHeldFileLock,
+    });
+
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
+      (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
+    );
+    // The first attempt probed once; the deadline must fail the second
+    // attempt before it probes the lock file again.
+    assert.equal(probes, 1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("capture write lock deadline is checked right before the write", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-write-deadline-"));
+  try {
+    let now = 0;
+    let ran = false;
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      lockOptions: () => ({
+        captureWriteLockInitialDelayMs: 20,
+        captureWriteLockMaxDelayMs: 20,
+        captureWriteLockDeadlineMs: 1_000,
+      }),
+      now: () => now,
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        // Waiting for the lock file consumed the whole deadline.
+        now += 5_000;
+        return await task(true, { refresh: async () => true });
+      }) as typeof withHeldFileLock,
+    });
+
+    await assert.rejects(
+      lock.withCaptureWriteLock(async () => {
+        ran = true;
+        return "written";
+      }, "held-identity"),
+      (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
+    );
+    assert.equal(ran, false, "the write must not run once the deadline has passed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("aborting capture write lock backoff cancels the pending timer", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-timer-cancel-"));
+  try {
+    const controller = new AbortController();
+    // Real timers on purpose: this test observes that abort clears the live
+    // Timeout handle the default backoff sleep created (same approach as the
+    // sleepAbortable tests in console/trace.test.ts).
+    const baseline = process.getActiveResourcesInfo().filter((entry) => entry === "Timeout").length;
+    const lock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: dir,
+      signal: controller.signal,
+      lockOptions: () => ({
+        captureWriteLockInitialDelayMs: 5_000,
+        captureWriteLockMaxDelayMs: 5_000,
+        captureWriteLockDeadlineMs: 60_000,
+      }),
+      random: () => 1,
+      withHeldFileLock: (async (_lockPath, _options, task) => {
+        return await task(false, { failure: "timeout", refresh: async () => false });
+      }) as typeof withHeldFileLock,
+    });
+
+    const abortTimer = setTimeout(() => controller.abort(), 25);
+    try {
+      const started = Date.now();
+      await assert.rejects(
+        lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
+        (error: unknown) => isAbortError(error)
+      );
+      assert.ok(Date.now() - started < 1_000, "abort must not wait out the 5s backoff");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(
+        process.getActiveResourcesInfo().filter((entry) => entry === "Timeout").length,
+        baseline,
+        "the cancelled backoff timer must be cleared, not left to fire"
+      );
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

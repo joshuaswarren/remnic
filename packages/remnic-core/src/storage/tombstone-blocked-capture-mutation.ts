@@ -12,7 +12,7 @@ import {
 import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
-import { sleep } from "../utils/sleep.js";
+import { sleepAbortable } from "../utils/sleep.js";
 import type { CasRevisionTransaction } from "./cas-revision-store.js";
 
 export { isTombstoneBlockedCaptureWriteLockBusy } from "../capture-write-lock-backoff.js";
@@ -63,7 +63,7 @@ export type TombstoneBlockedCaptureWriteLockOptions = {
   readonly lockOptions?: () => CaptureWriteLockLimitSource;
   readonly now?: () => number;
   readonly random?: () => number;
-  readonly sleep?: (ms: number) => Promise<void>;
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly logDebug?: (message: string) => void;
   readonly logWarn?: (message: string) => void;
   /** Direct seam. Converge passes the same signal through `lockOptions` instead. */
@@ -150,9 +150,16 @@ export class TombstoneBlockedCaptureWriteLock {
       index: number
     ): Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY | typeof CAPTURE_WRITE_LOCK_PERMANENT> => {
       throwIfAborted(signal);
-      if (index === lockPaths.length) return await task();
+      // The deadline gates each probe: a chain that started before the
+      // deadline must not keep probing locks (or run the write) after it.
+      const runTask = async (): Promise<T> => {
+        if (this.now() >= deadline) giveUp();
+        return await task();
+      };
+      if (index === lockPaths.length) return await runTask();
       const lockPath = lockPaths[index];
-      if (lockPath === undefined) return await task();
+      if (lockPath === undefined) return await runTask();
+      if (this.now() >= deadline) giveUp();
       return await this.withSingleCaptureWriteLockOnce(lockPath, () => acquire(index + 1));
     };
     for (let attempt = 0; ; attempt += 1) {
@@ -171,7 +178,9 @@ export class TombstoneBlockedCaptureWriteLock {
       );
       if (delay <= 0) giveUp();
       this.debug(`tombstone-blocked capture write lock busy; backing off ${delay}ms before retry ${attempt + 1}`);
-      await raceAbort((this.options.sleep ?? sleep)(delay), signal);
+      // raceAbort covers seam sleeps that ignore the signal; the default
+      // sleepAbortable also clears its timer so abort holds no Timeout.
+      await raceAbort((this.options.sleep ?? sleepAbortable)(delay, signal), signal);
     }
   }
 
