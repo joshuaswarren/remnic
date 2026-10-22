@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isSecretKey } from "./secret-keys.js";
-import { redactUrlSecrets } from "./url-secrets.js";
+import { isSecretKey } from "../packages/bench/src/security/secret-keys.js";
+import { redactUrlSecrets } from "../packages/bench/src/security/url-secrets.js";
 
 test("URL logs redact userinfo and secret queries across multiple URLs", () => {
   const input = "primary=https://alice:pass@example.test/a?token=first&region=west "
