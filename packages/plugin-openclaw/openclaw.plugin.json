@@ -5896,7 +5896,7 @@
       },
       "sharedContextDir": {
         "type": "string",
-        "description": "Override shared-context directory (default: ~/.openclaw/workspace/shared-context)."
+        "description": "Override shared-context directory (default: ~/.openclaw/workspace/shared-context). When unset, feedback/inbox.jsonl is stored under memoryDir/shared-context."
       },
       "sharedContextEnabled": {
         "type": "boolean",

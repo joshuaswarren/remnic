@@ -208,15 +208,17 @@ test("v5 compounding extracts patterns from feedback learning/rejections", async
   assert.ok(mistakes!.registry?.some((entry) => entry.agent === "seo-digest"));
 });
 
-test("v5 compounding defaults shared feedback under configured workspace", async () => {
+test("v5 compounding reads feedback from the memory dir when sharedContextDir is unset", async () => {
   const memoryDir = tmpDir("remnic-compound-workspace-mem");
   await mkdir(memoryDir, { recursive: true });
 
   const cfg = minimalConfig(memoryDir);
-  const feedbackDir = path.join(cfg.workspaceDir, "shared-context", "feedback");
-  await mkdir(feedbackDir, { recursive: true });
+  const memoryInboxDir = path.join(memoryDir, "shared-context", "feedback");
+  const workspaceInboxDir = path.join(cfg.workspaceDir, "shared-context", "feedback");
+  await mkdir(memoryInboxDir, { recursive: true });
+  await mkdir(workspaceInboxDir, { recursive: true });
   await writeFile(
-    path.join(feedbackDir, "inbox.jsonl"),
+    path.join(memoryInboxDir, "inbox.jsonl"),
     [
       JSON.stringify({
         agent: "bench-agent",
@@ -224,6 +226,19 @@ test("v5 compounding defaults shared feedback under configured workspace", async
         reason: "Make benchmark isolation explicit",
         date: new Date().toISOString(),
         learning: "Always keep benchmark shared context inside the run workspace",
+      }),
+      "",
+    ].join("\n"),
+    "utf-8",
+  );
+  await writeFile(
+    path.join(workspaceInboxDir, "inbox.jsonl"),
+    [
+      JSON.stringify({
+        agent: "bench-agent",
+        decision: "rejected",
+        reason: "Workspace inbox must not be read when sharedContextDir is unset",
+        date: new Date().toISOString(),
       }),
       "",
     ].join("\n"),
@@ -239,6 +254,10 @@ test("v5 compounding defaults shared feedback under configured workspace", async
     mistakes!.patterns.some((pattern) =>
       pattern.includes("bench-agent: Always keep benchmark shared context inside the run workspace"),
     ),
+  );
+  assert.equal(
+    mistakes!.patterns.some((pattern) => pattern.includes("Workspace inbox must not be read")),
+    false,
   );
 });
 
@@ -468,7 +487,7 @@ test("v5 compounding preserves recurrence for legacy action patterns when synthe
   const cfg = minimalConfig(memoryDir, sharedDir);
   const eng = new CompoundingEngine(cfg);
   await writeFile(
-    eng["memoryActionEventsPath"],
+    path.join(memoryDir, "state", "memory-actions.jsonl"),
     [
       JSON.stringify({
         timestamp: "2026-03-03T10:00:00.000Z",

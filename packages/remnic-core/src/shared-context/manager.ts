@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, readdir, appendFile, writeFile, stat, rename, rm } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { mkdir, readFile, readdir, appendFile, writeFile, stat, lstat, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
+import { isErrnoCode } from "../utils/errno.js";
 import { expandTildePath } from "../utils/path.js";
+import { pathIsInside } from "../utils/path-containment.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import { throwIfAborted } from "../abort-error.js";
 import {
@@ -469,6 +472,129 @@ export function resolveSharedContextDir(config: PluginConfig): string {
     : path.join(expandTildePath(config.workspaceDir), "shared-context");
 }
 
+/**
+ * Feedback inbox path. An explicit `sharedContextDir` keeps the inbox beside
+ * the other shared-context files. When that override is unset, the inbox
+ * lives under the memory directory so a standalone store replicates it.
+ * Priorities, outputs, and roundtable stay on {@link resolveSharedContextDir}.
+ */
+export function resolveFeedbackInboxPath(config: PluginConfig): string {
+  if (typeof config.sharedContextDir === "string" && config.sharedContextDir.length > 0) {
+    return path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
+  }
+  return path.join(expandTildePath(config.memoryDir), "shared-context", "feedback", "inbox.jsonl");
+}
+
+/**
+ * Copy a pre-upgrade workspace inbox into the memory-dir inbox once.
+ *
+ * Older builds stored `feedback/inbox.jsonl` under the workspace
+ * shared-context directory even when `sharedContextDir` was unset. The copy
+ * runs only while the memory-dir inbox is missing or empty, and only for a
+ * regular legacy file that stays inside the workspace. A non-empty memory-dir
+ * inbox is left untouched, so a later workspace file is not read again.
+ * An explicit `sharedContextDir` does not migrate.
+ */
+export async function migrateLegacyFeedbackInbox(config: PluginConfig): Promise<void> {
+  if (typeof config.sharedContextDir === "string" && config.sharedContextDir.length > 0) return;
+  const nextPath = resolveFeedbackInboxPath(config);
+  const legacyPath = path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
+  if (path.resolve(nextPath) === path.resolve(legacyPath)) return;
+  if (!(await legacyInboxCanMigrate(legacyPath))) return;
+  try {
+    const nextProbe = await lstat(nextPath);
+    if (nextProbe.isSymbolicLink() || !nextProbe.isFile() || nextProbe.size > 0) return;
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+  }
+
+  await mkdir(path.dirname(nextPath), { recursive: true });
+  await withFeedbackMigrateLock(`${nextPath}.migrate.lock`, async () => {
+    let nextStat: Stats | undefined;
+    try {
+      nextStat = await lstat(nextPath);
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    if (nextStat && (nextStat.isSymbolicLink() || !nextStat.isFile() || nextStat.size > 0)) return;
+    if (!(await legacyInboxCanMigrate(legacyPath))) return;
+
+    const workspaceReal = await realpath(expandTildePath(config.workspaceDir));
+    const legacyReal = await realpath(legacyPath);
+    if (!pathIsInside(workspaceReal, legacyReal)) return;
+    const memoryDir = expandTildePath(config.memoryDir);
+    const memoryReal = await realpath(memoryDir);
+    const nextParentReal = await realpath(path.dirname(nextPath));
+    if (!pathIsInside(memoryReal, nextParentReal)) return;
+    if (nextStat) {
+      const nextReal = await realpath(nextPath);
+      if (!pathIsInside(memoryReal, nextReal)) return;
+    }
+
+    const body = await readFile(legacyReal);
+    const tempPath = path.join(
+      path.dirname(nextPath),
+      `.${path.basename(nextPath)}.${process.pid}.${randomUUID()}.migrate.tmp`,
+    );
+    await writeFile(tempPath, body, { flag: "wx" });
+    try {
+      let current: Stats | undefined;
+      try {
+        current = await lstat(nextPath);
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+      if (current && (current.isSymbolicLink() || !current.isFile() || current.size > 0)) return;
+      await rename(tempPath, nextPath);
+    } finally {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  });
+}
+
+async function legacyInboxCanMigrate(legacyPath: string): Promise<boolean> {
+  let legacyStat: Stats;
+  try {
+    legacyStat = await lstat(legacyPath);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return false;
+    throw err;
+  }
+  return !legacyStat.isSymbolicLink() && legacyStat.isFile() && legacyStat.size > 0;
+}
+
+/** One migration at a time. A lock older than 30s is stale and is replaced. */
+async function withFeedbackMigrateLock(lockPath: string, body: () => Promise<void>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      await writeFile(lockPath, "", { flag: "wx" });
+    } catch (err) {
+      if (!isErrnoCode(err, "EEXIST")) throw err;
+      let lockStat: Stats;
+      try {
+        lockStat = await lstat(lockPath);
+      } catch (statErr) {
+        if (isErrnoCode(statErr, "ENOENT")) continue;
+        throw statErr;
+      }
+      if (!lockStat.isSymbolicLink() && lockStat.isFile() && Date.now() - lockStat.mtimeMs > 30_000) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      continue;
+    }
+    try {
+      await body();
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+    return;
+  }
+  throw new Error("feedback inbox migration did not acquire its lock before the wait elapsed");
+}
+
 export class SharedContextManager {
   readonly dir: string;
   private readonly prioritiesPath: string;
@@ -489,8 +615,8 @@ export class SharedContextManager {
     this.prioritiesInboxPath = path.join(base, "priorities.inbox.md");
     this.outputsDir = path.join(base, "agent-outputs");
     this.roundtableDir = path.join(base, "roundtable");
-    this.feedbackDir = path.join(base, "feedback");
-    this.feedbackInboxPath = path.join(this.feedbackDir, "inbox.jsonl");
+    this.feedbackInboxPath = resolveFeedbackInboxPath(config);
+    this.feedbackDir = path.dirname(this.feedbackInboxPath);
     this.crossSignalsDir = path.join(base, "cross-signals");
     this.allowBindingAuthority = config.sharedContextAllowBindingAuthority === true;
   }
@@ -531,6 +657,7 @@ export class SharedContextManager {
         "",
       ].join("\n"),
     );
+    await migrateLegacyFeedbackInbox(this.config);
     await this.ensureFile(this.feedbackInboxPath, "");
   }
 
@@ -671,6 +798,7 @@ export class SharedContextManager {
 
   async appendFeedback(entry: SharedFeedbackEntry): Promise<void> {
     const parsed = SharedFeedbackEntrySchema.parse(entry);
+    await migrateLegacyFeedbackInbox(this.config);
     await appendFile(this.feedbackInboxPath, JSON.stringify(parsed) + "\n", "utf-8");
   }
 
@@ -777,6 +905,7 @@ export class SharedContextManager {
     // Collect feedback entries for the day.
     const feedback: SharedFeedbackEntry[] = [];
     try {
+      await migrateLegacyFeedbackInbox(this.config);
       const raw = await readFile(this.feedbackInboxPath, "utf-8");
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;

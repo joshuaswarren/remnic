@@ -1272,7 +1272,7 @@ See [shared-context.md](shared-context.md).
 |---------|---------|-------------|
 | `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. Writers must still request it explicitly. MCP and OpenClaw tool surfaces can request `binding`; the write is rejected unless this flag is true |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context. Accepts boolean and CLI string forms (`true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`); a deployment already carrying the string `"true"` (previously ignored by the strict parser) now activates on upgrade. An unrecognized value warns and stays off — malformed input never silently enables |
-| `sharedContextDir` | `(unset)` | Directory for shared context files |
+| `sharedContextDir` | `(unset)` | Directory for shared-context files. When unset, `feedback/inbox.jsonl` is stored at `memoryDir/shared-context/feedback/inbox.jsonl` and other shared-context files stay under the workspace shared-context directory. An explicit path keeps the inbox there |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
 | `sharedCrossSignalSemanticEnabled` | `false` | Enable optional semantic overlap enhancement during daily curation |
 | `sharedCrossSignalSemanticTimeoutMs` | `4000` | Timeout budget for semantic enhancement pass (fail-open on timeout) |

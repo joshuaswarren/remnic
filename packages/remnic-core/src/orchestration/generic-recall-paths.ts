@@ -140,12 +140,38 @@ export function isSearchExcludedPath(
       isNamespacedActivityDigestPath(candidate, policy.memoryDir) ||
       isNamespacedLocationDayPath(candidate, policy.memoryDir) ||
       isNamespacedJournalDayPath(candidate, policy.memoryDir) ||
-      isMeetingRecordPath(candidate)
+      isMeetingRecordPath(candidate) ||
+      isCompoundingReportPath(candidate, policy.memoryDir)
     ) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Derived compounding reports sit at `<root>/compounding/` and
+ * `namespaces/<namespace>/compounding/`. Generic recall must not return them:
+ * a root report can quote another namespace, and injection already has a
+ * filtered compounding section. A namespace literally named `compounding`,
+ * and an ordinary memory nested under a category, stay searchable.
+ */
+function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean {
+  let relative = candidate.replace(/\\/g, "/");
+  if (memoryDir && memoryDir.length > 0) {
+    const absolute = path.resolve(memoryDir, candidate).replace(/\\/g, "/");
+    const root = path.resolve(memoryDir).replace(/\\/g, "/");
+    if (absolute !== root && !absolute.startsWith(`${root}/`)) return false;
+    relative = absolute.slice(root.length);
+    if (relative.startsWith("/")) relative = relative.slice(1);
+  }
+  if (relative.startsWith("../")) return false;
+  if (relative.startsWith("namespaces/")) {
+    const slash = relative.indexOf("/", "namespaces/".length);
+    if (slash < 0) return false;
+    relative = relative.slice(slash + 1);
+  }
+  return relative === "compounding" || relative.startsWith("compounding/");
 }
 
 /**
