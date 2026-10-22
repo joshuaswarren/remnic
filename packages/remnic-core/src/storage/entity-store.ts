@@ -467,10 +467,10 @@ export class EntityStore {
     if (cached?.identity === identity) return cached.ok;
     try {
       const content = await this.deps.readStorageSecureFile(filePath);
-      const parsed = isMalformedEntityRecord(content)
-        ? null
-        : parseEntityFile(content, this.deps.entitySchemas);
-      const ok = parsed !== null && parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
+      // Missing `**Type:**` still parses (type defaults to "other"). Only an
+      // empty name, including a tab heading, stays out of the name list.
+      const parsed = parseEntityFile(content, this.deps.entitySchemas);
+      const ok = parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
       this.entityIndexableCache.set(file, { identity, ok });
       return ok;
     } catch (err) {
@@ -663,7 +663,7 @@ export class EntityStore {
           }),
         );
         for (const content of results) {
-          if (content === null || isMalformedEntityRecord(content)) continue;
+          if (content === null) continue;
           const entity = parseEntityFile(content, this.deps.entitySchemas);
           if (!entity.name.trim() || !entity.type.trim()) continue;
           entities.push(entity);

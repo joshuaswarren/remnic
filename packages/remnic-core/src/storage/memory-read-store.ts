@@ -17,7 +17,7 @@ import { SecureStoreLockedError, readMaybeEncryptedFile } from "../secure-store/
 import { type BufferSurpriseEvent, type CompressionGuidelineOptimizerState, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
+import { isPopulatedUnnamedEntityRecord } from "../utils/malformed-entity-record.js";
 import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isAbortError } from "../abort-error.js";
@@ -553,12 +553,13 @@ export class MemoryReadStore {
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
-      // Entity records missing a heading or type stay out of recall, including
-      // contextual QMD hits that resolve through this path. QMD query behavior
-      // is unchanged; the file is simply not a memory. Classification is
+      // Entity bodies with text but no name heading stay out of recall,
+      // including contextual QMD hits. An empty body still resolves through
+      // frontmatter and the canonical filename. A missing type line is still
+      // an entity. QMD query behavior is unchanged. Classification is
       // relative to this store root: an absolute path that merely contains
       // an `entities` segment is still an ordinary fact.
-      if (isStoreEntityMarkdown(this.deps.baseDir, filePath) && isMalformedEntityRecord(raw)) {
+      if (isStoreEntityMarkdown(this.deps.baseDir, filePath) && isPopulatedUnnamedEntityRecord(raw)) {
         return null;
       }
       // Note: the outer catch intentionally swallows most errors (ENOENT etc.)

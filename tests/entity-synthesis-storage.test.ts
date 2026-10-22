@@ -1315,11 +1315,16 @@ test("readMemoryByPath skips a malformed entity that still has frontmatter", asy
       "utf-8",
     );
 
+    const prose = path.join(dir, "entities", "project-prose.md");
+    await writeFile(prose, "# North Dome\n\ntype: project\n", "utf-8");
+
     const good = await storage.readMemoryByPath(path.join(dir, "entities", `${canonical}.md`));
     assert.equal(good?.frontmatter.category, "entity");
     assert.equal(await storage.readMemoryByPath(malformed), null);
     assert.equal(await storage.readMemoryByPath(tabHeading), null);
+    assert.equal((await storage.readMemoryByPath(prose))?.frontmatter.category, "entity");
     assert.equal((await storage.listEntityNames()).includes("project-tab"), false);
+    assert.equal((await storage.listEntityNames()).includes("project-prose"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

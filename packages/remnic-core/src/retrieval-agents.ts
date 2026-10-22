@@ -27,7 +27,7 @@ import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
 import type { QmdSearchResult } from "./types.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
-import { isMalformedEntityRecord } from "./utils/malformed-entity-record.js";
+import { isShapedUnnamedEntityRecord } from "./utils/malformed-entity-record.js";
 
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -185,7 +185,7 @@ export async function runDirectAgent(
       }
       // Ciphertext has no heading. The secure resolver decrypts after this
       // candidate is kept; this scan does not look up a key.
-      if (!isEncryptedFile(bytes) && isMalformedEntityRecord(bytes.toString("utf8"))) continue;
+      if (!isEncryptedFile(bytes) && isShapedUnnamedEntityRecord(bytes.toString("utf8"))) continue;
       results.push(
         namespaceRelativeResult(
           {
