@@ -447,3 +447,38 @@ test("converge plan: a local census failure excludes that namespace on both side
     await fs.rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("converge plan: a shared-root local census failure excludes every alias", async () => {
+  const memoryDir = path.join(os.tmpdir(), `remnic-converge-alias-${Date.now()}-${process.pid}`);
+  const requested: string[] = [];
+  await assert.rejects(
+    computeConvergePlan({
+      config: parseConfig({
+        memoryDir,
+        namespacesEnabled: false,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+      }),
+      peerUrl: "https://peer.example.test",
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+        if (!url.pathname.endsWith("/offline-sync/snapshot")) return new Response(null, { status: 404 });
+        requested.push(url.searchParams.get("namespace") ?? "");
+        return Response.json({
+          files: [{ path: "facts/peer.md", sha256: "ab".repeat(32), bytes: 1, mtimeMs: 1 }],
+          tombstones: [],
+        });
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /every namespace census failed/);
+      assert.match(error.message, /default \(local\)/);
+      assert.match(error.message, /shared \(local\)/);
+      return true;
+    }
+  );
+  assert.equal(requested.includes("shared"), false);
+  assert.equal(requested.includes("default"), false);
+});

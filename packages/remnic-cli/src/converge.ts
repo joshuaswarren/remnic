@@ -306,8 +306,10 @@ export async function computeConvergePlan(
           localManifests.set(rootInfo.namespace, census.manifest);
           localTombstones.set(rootInfo.namespace, census.tombstones);
         } catch (error) {
-          recordNamespaceCensusFailure(excluded, rootInfo.namespace, "local", error, options.signal);
-          dropPlannedNamespace(rootInfo.namespace);
+          for (const namespace of rootInfo.namespaces) {
+            recordNamespaceCensusFailure(excluded, namespace, "local", error, options.signal);
+            dropPlannedNamespace(namespace);
+          }
         }
       }
     }
