@@ -1,0 +1,41 @@
+{
+  "benchmark": "FrontierMemory 1.0",
+  "date": "2026-10-22",
+  "status": "blocked",
+  "remnic_commit": "4cd7e54c70e94b1899ead3cd95285c183ca8638a",
+  "harness_commit": null,
+  "attempted_tasks": 0,
+  "total_tasks": 15,
+  "remnic_full_pass_rate": null,
+  "no_memory_full_pass_rate": null,
+  "benchmark_provider_spend_usd": 0,
+  "daemon_started": false,
+  "blockers": [
+    "No official executable harness or README obtained; public submission page is contact-only.",
+    "No provider API keys in the current process environment."
+  ],
+  "missing_environment_keys": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LETTA_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY"],
+  "published_reference": {
+    "source": "https://www.frontiermemory.com/blog/v1/",
+    "minimum_full_pass_rate_percent": 13.3,
+    "maximum_full_pass_rate_percent": 73.3,
+    "locally_reproduced": false
+  },
+  "tasks": [
+    {"id": "awilix-release-tier-explicit", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "awilix-release-tier-implicit", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "cattrs-compositional-changelog", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "automationbench-marketing-content-gap-analysis", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "customer-delivery-contextual-preferences", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "enterpriseops-csm-26d1b04a", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "cookie-store-compositional-changelog", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "apex-brightpath-market-share", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "dapt-intrusion-detection-workflow-learning", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "automationbench-sales-partnership-contract", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "apex-eurogrid-curtailment", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "apex-brightpath-seat-surplus", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "automationbench-sales-chatgpt-proposal-customization", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "enterpriseops-teams-2725d17f", "status": "not_run", "remnic_score": null, "no_memory_score": null},
+    {"id": "build-word2vec-pipeline", "status": "not_run", "remnic_score": null, "no_memory_score": null}
+  ]
+}
