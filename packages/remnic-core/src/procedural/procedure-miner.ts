@@ -14,6 +14,7 @@ import { clusterByKey } from "./reinforcement-core.js";
 import { log } from "../logger.js";
 import { composeMemoryEnvelope, STRUCTURED_ATTRIBUTE_LIMITS } from "../write-envelope.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { sleep } from "../utils/sleep.js";
 
 /** Must match truncation on `procedure_cluster` structured attribute (dedupe + storage). */
 const PROCEDURE_CLUSTER_ATTR_MAX = 500;
@@ -49,10 +50,6 @@ function clusterKey(record: CausalTrajectoryRecord): string {
 
 function clusterKeyHash(cluster: string): string {
   return createHash("sha256").update(cluster).digest("hex");
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function acquireClusterWriteLock(memoryDir: string, clusterHash: string): Promise<() => Promise<void>> {
