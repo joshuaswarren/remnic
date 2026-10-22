@@ -150,16 +150,6 @@ export function isSearchExcludedPath(
 }
 
 /**
- * The activity check, applied against the NAMESPACE root a hit came from.
- *
- * `isActivityDigestPath` is root-aware — the digest must sit directly under
- * the root it is given — but a namespaced search rewrites hits to absolute
- * paths beneath `…/namespaces/<ns>/`, and only the global `memoryDir` is
- * available here. Measured against that root, a real digest at
- * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
- * served. Re-measuring against the namespace's own root closes that.
- */
-/**
  * Derived compounding reports sit at `<root>/compounding/` and
  * `namespaces/<namespace>/compounding/`. Generic recall must not return them:
  * a root report can quote another namespace, and injection already has a
@@ -170,9 +160,10 @@ function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean
   let relative = candidate.replace(/\\/g, "/");
   if (memoryDir && memoryDir.length > 0) {
     const absolute = path.resolve(memoryDir, candidate).replace(/\\/g, "/");
-    const root = path.resolve(memoryDir).replace(/\\/g, "/").replace(/\/+$/, "");
+    const root = path.resolve(memoryDir).replace(/\\/g, "/");
     if (absolute !== root && !absolute.startsWith(`${root}/`)) return false;
-    relative = absolute.slice(root.length).replace(/^\/+/, "");
+    relative = absolute.slice(root.length);
+    if (relative.startsWith("/")) relative = relative.slice(1);
   }
   if (relative.startsWith("../")) return false;
   if (relative.startsWith("namespaces/")) {
@@ -183,6 +174,16 @@ function isCompoundingReportPath(candidate: string, memoryDir?: string): boolean
   return relative === "compounding" || relative.startsWith("compounding/");
 }
 
+/**
+ * The activity check, applied against the NAMESPACE root a hit came from.
+ *
+ * `isActivityDigestPath` is root-aware — the digest must sit directly under
+ * the root it is given — but a namespaced search rewrites hits to absolute
+ * paths beneath `…/namespaces/<ns>/`, and only the global `memoryDir` is
+ * available here. Measured against that root, a real digest at
+ * `<memoryDir>/namespaces/team/activity/<date>.md` reads as nested and is
+ * served. Re-measuring against the namespace's own root closes that.
+ */
 function isNamespacedActivityDigestPath(candidate: string, memoryDir?: string): boolean {
   if (isActivityDigestPath(candidate, memoryDir)) return true;
   if (memoryDir === undefined || memoryDir.length === 0) return false;
