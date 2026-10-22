@@ -17,6 +17,7 @@ import { SecureStoreLockedError, readMaybeEncryptedFile } from "../secure-store/
 import { type BufferSurpriseEvent, type CompressionGuidelineOptimizerState, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isAbortError } from "../abort-error.js";
@@ -540,6 +541,17 @@ export class MemoryReadStore {
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
+      // Entity records missing a heading or type stay out of recall, including
+      // contextual QMD hits that resolve through this path. QMD query behavior
+      // is unchanged; the file is simply not a memory.
+      const normalizedEntityPath = filePath.split(path.sep).join("/");
+      if (
+        normalizedEntityPath.includes("/entities/")
+        && filePath.endsWith(".md")
+        && isMalformedEntityRecord(raw)
+      ) {
+        return null;
+      }
       // Note: the outer catch intentionally swallows most errors (ENOENT etc.)
       // but SecureStoreLockedError must propagate — see re-throw below.
       const parsed = parseFrontmatter(raw);

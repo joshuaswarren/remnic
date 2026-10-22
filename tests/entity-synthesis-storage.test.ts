@@ -1077,6 +1077,65 @@ test("ensureDirectories skips malformed entity files and macOS replication junk"
   }
 });
 
+test("entity listing does not follow a symlink or fifo planted in entities", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-outside-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await storage.writeEntity("North Dome", "project", ["Synthetic dome schedule."]);
+    const canonical = normalizeEntityName("North Dome", "project");
+    const outsideFile = path.join(outside, "secret.md");
+    await writeFile(outsideFile, "# Secret\n**Type:** project\n\noutside target\n", "utf-8");
+    const linkPath = path.join(dir, "entities", "project-secret.md");
+    await symlink(outsideFile, linkPath);
+    const fifoPath = path.join(dir, "entities", "project-fifo.md");
+    execFileSync("mkfifo", [fifoPath]);
+
+    const names = await Promise.race([
+      storage.listEntityNames(),
+      new Promise<string[]>((_, reject) => {
+        setTimeout(() => reject(new Error("entity listing blocked on a non-regular file")), 2000);
+      }),
+    ]);
+    assert.ok(names.includes(canonical));
+    assert.equal(names.includes("project-secret"), false);
+    assert.equal(names.includes("project-fifo"), false);
+
+    const loaded = await storage.readAllEntityFiles();
+    assert.equal(loaded.some((entity) => entity.name === "Secret"), false);
+    await storage.mergeFragmentedEntities();
+    assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
+    assert.match(await readFile(outsideFile, "utf-8"), /outside target/);
+    assert.equal((await lstat(fifoPath)).isFIFO(), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("readMemoryByPath skips a malformed entity that still has frontmatter", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-qmd-malformed-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await storage.writeEntity("North Dome", "project", ["Synthetic dome schedule."]);
+    const canonical = normalizeEntityName("North Dome", "project");
+    const malformed = path.join(dir, "entities", "project-gap.md");
+    await writeFile(
+      malformed,
+      "---\nid: project-gap\ncategory: fact\n---\nno heading\n",
+      "utf-8",
+    );
+
+    const good = await storage.readMemoryByPath(path.join(dir, "entities", `${canonical}.md`));
+    assert.equal(good?.frontmatter.category, "entity");
+    assert.equal(await storage.readMemoryByPath(malformed), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureDirectories rescans legacy entities created during migration", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-rescan-"));
   try {

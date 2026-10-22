@@ -10,7 +10,7 @@
  *   - fragmented-entity merge (consolidation)
  */
 
-import { readdir, unlink } from "node:fs/promises";
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
@@ -33,6 +33,7 @@ import type {
   ScoredEntity,
 } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { pathIsInside } from "../utils/path-containment.js";
 import {
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
@@ -397,11 +398,40 @@ export class EntityStore {
   }
 
   /**
+   * A directory entry is readable only when it is a regular file whose
+   * real path stays inside the entities directory. Symlinks, FIFOs, and
+   * devices are skipped before any read so a link planted after startup
+   * cannot redirect entity listing or fragment merge outside the store.
+   */
+  private async isContainedRegularEntityFile(file: string): Promise<boolean> {
+    const filePath = path.join(this.deps.entitiesDir, file);
+    let entryStat;
+    try {
+      entryStat = await lstat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (entryStat.isSymbolicLink() || !entryStat.isFile()) return false;
+    let rootReal: string;
+    let fileReal: string;
+    try {
+      rootReal = await realpath(this.deps.entitiesDir);
+      fileReal = await realpath(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    return pathIsInside(rootReal, fileReal);
+  }
+
+  /**
    * Malformed entity files stay on disk (startup must not relocate them)
    * and stay out of merge, so a fragment merge cannot delete them.
    */
   private async isIndexableEntityMarkdown(file: string): Promise<boolean> {
     try {
+      if (!(await this.isContainedRegularEntityFile(file))) return false;
       const content = await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, file));
       if (isMalformedEntityRecord(content)) return false;
       const parsed = parseEntityFile(content, this.deps.entitySchemas);
@@ -586,6 +616,7 @@ export class EntityStore {
         const results = await Promise.all(
           batch.map(async (entry) => {
             try {
+              if (!(await this.isContainedRegularEntityFile(entry))) return null;
               return await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, entry));
             } catch (err) {
               if (err instanceof SecureStoreLockedError) throw err;
