@@ -564,6 +564,29 @@ pnpm install && pnpm --filter @remnic/core run build
 # Follow docs/benchmarks/runbook.md with the same --seed and --model.
 ```
 
+## LoCoMo replay extraction and extractor-model comparisons
+
+By default `remnic bench run locomo` (and `bench published --name locomo`)
+replays conversations with `replayExtractionMode: "skip"`: sessions are
+observed into LCM/transcripts, but the memory extractor is never called.
+Published LoCoMo numbers therefore measure LCM-first recall, not the
+extraction model, and changing `--internal-model` does not change what gets
+extracted.
+
+To compare extractor models on LoCoMo, opt in to extraction:
+
+```bash
+remnic bench run locomo --runtime-profile real \
+  --replay-extraction-mode await \
+  --internal-provider local-llm --internal-model <extractor> ...
+```
+
+`--replay-extraction-mode` accepts `skip` (default) or `await`, applies only
+to a single LoCoMo run, and leaves the default unchanged so existing LoCoMo
+results stay comparable. Do not mix `skip` and `await` runs in one
+comparison. Found during COS-404, where a LoCoMo extractor A/B exercised no
+extraction calls.
+
 ## Cue recall and leaderboard safety
 
 Issues #841 through #850 added a shared rule for all published

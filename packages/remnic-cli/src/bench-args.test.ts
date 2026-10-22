@@ -8,6 +8,7 @@ import {
   filterBenchWorkItemsForPreviousStatus,
   parseBenchArgs,
 } from "./bench-args.js";
+import { resolveLoCoMoReplayExtractionMode } from "./bench-args-replay-extraction.js";
 
 test("parseBenchArgs accepts the packaged MCP demo path", () => {
   const parsed = parseBenchArgs(["run", "longmemeval", "--quick", "--adapter", "mcp", "--mcp-demo"]);
@@ -1111,4 +1112,56 @@ test("parseBenchArgs --matrix empty error lists local-lab alongside the other pr
   // even though parseBenchRuntimeProfile accepts local-lab, so the message was
   // an outdated allow-list.
   assert.throws(() => parseBenchArgs(["run", "locomo", "--matrix", " , , "]), /local-lab/);
+});
+
+test("parseBenchArgs leaves LoCoMo replay extraction mode unset by default (CLI default skip)", () => {
+  const parsed = parseBenchArgs(["run", "locomo"]);
+  assert.equal(parsed.locomoReplayExtractionMode, undefined);
+  assert.equal(resolveLoCoMoReplayExtractionMode(parsed), "skip");
+});
+
+test("parseBenchArgs accepts --replay-extraction-mode for a single LoCoMo run", () => {
+  for (const mode of ["skip", "await"] as const) {
+    const parsed = parseBenchArgs(["run", "locomo", "--replay-extraction-mode", mode]);
+    assert.equal(parsed.locomoReplayExtractionMode, mode);
+    assert.equal(resolveLoCoMoReplayExtractionMode(parsed), mode);
+  }
+  const published = parseBenchArgs([
+    "published",
+    "--name",
+    "locomo",
+    "--dataset",
+    "/tmp",
+    "--model",
+    "m",
+    "--replay-extraction-mode",
+    "await",
+  ]);
+  assert.equal(published.locomoReplayExtractionMode, "await");
+});
+
+test("parseBenchArgs rejects invalid or non-LoCoMo --replay-extraction-mode", () => {
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--replay-extraction-mode", "background"]),
+    /--replay-extraction-mode must be one of: skip, await/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["run", "longmemeval", "--replay-extraction-mode", "await"]),
+    /--replay-extraction-mode is currently supported only for a single LoCoMo run/,
+  );
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--replay-extraction-mode",
+        "await",
+      ]),
+    /--replay-extraction-mode is currently supported only for a single LoCoMo run/,
+  );
 });

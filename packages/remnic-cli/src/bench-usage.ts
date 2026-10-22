@@ -152,6 +152,9 @@ Options:
   --threshold <value>      Regression threshold for compare (default: 0.05);
                            gold-memory similarity threshold for attribute (default: 0.6)
   --trial-limit <n>        Cap scored LoCoMo or MemoryAgentBench QA trials for staged published runs
+  --replay-extraction-mode <skip|await>
+                           LoCoMo only: memory extraction during replay ingest
+                           (default: skip; use await to compare extractor models)
   --task-ids-file <path>   Select an explicit JSON array of LoCoMo task IDs
   --expected-task-id-list-sha256 <sha256>
                            Pin the selected LoCoMo task-ID list
