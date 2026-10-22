@@ -38,10 +38,10 @@ const REQUIRED = [
   "unresolved-review-threads",
 ];
 
-function run(records) {
+function run(records, requiredContexts = REQUIRED) {
   const result = execFileSync(
     process.execPath,
-    [scriptPath, "--required-contexts", JSON.stringify(REQUIRED)],
+    [scriptPath, "--required-contexts", JSON.stringify(requiredContexts)],
     {
       input: JSON.stringify({ type: "check-runs", records }),
       encoding: "utf8",
@@ -655,4 +655,100 @@ test("script fails fast when --required-contexts is not provided", () => {
       }),
     (err) => err.status !== 0,
   );
+});
+
+test("an app-pinned required check cannot be satisfied by another app or an unverified legacy status", () => {
+  const required = [{ context: "quality", integration_id: 15368 }];
+  for (const record of [
+    { ...cr("quality"), app: { id: 999 } },
+    cr("quality"),
+    { ...cr("quality"), source: "status", creator: { id: 15368 } },
+  ]) {
+    const result = run([record], required);
+    assert.equal(result.decision, "refuse");
+    assert.match(result.reasons.join(" "), /quality: missing/);
+  }
+});
+
+test("only the pinned app's latest run determines its required verdict", () => {
+  const required = [{ context: "quality", integration_id: 15368 }];
+  const pinned = { ...cr("quality"), app: { id: 15368 }, source: "check-run" };
+  const other = { ...cr("quality", { completed_at: "2026-10-03T00:00:00Z" }), app: { id: 999 }, source: "check-run" };
+  assert.deepEqual(run([pinned, { ...other, conclusion: "failure" }], required), { decision: "allow", reasons: [] });
+  assert.deepEqual(run([pinned, { ...other, status: "queued", conclusion: null }], required), { decision: "allow", reasons: [] });
+  const failure = run([{ ...pinned, conclusion: "failure" }, other], required);
+  assert.equal(failure.decision, "refuse");
+  assert.deepEqual(failure.reasons, ["quality: failure"]);
+  const queued = {
+    ...pinned, status: "queued", conclusion: null,
+    started_at: "2026-10-04T00:00:00Z", completed_at: null,
+  };
+  const pending = run([pinned, queued, other], required);
+  assert.equal(pending.decision, "refuse");
+  assert.match(pending.reasons.join(" "), /quality: CI not finished/);
+});
+
+test("same context pinned to two integrations requires both integration verdicts", () => {
+  const required = [
+    { context: "quality", integration_id: 15368 },
+    { context: "quality", integration_id: 999 },
+  ];
+  const first = { ...cr("quality"), app: { id: 15368 } };
+  const second = { ...cr("quality"), app: { id: 999 } };
+  assert.equal(run([first], required).decision, "refuse");
+  assert.deepEqual(run([first, second], required), { decision: "allow", reasons: [] });
+  assert.equal(run([first, { ...second, conclusion: "failure" }], required).decision, "refuse");
+});
+
+test("string and unpinned object requirements retain check-run and status gating", () => {
+  const records = [
+    { ...cr("quality"), source: "check-run", app: { id: 999 } },
+    { ...cr("quality"), source: "status", conclusion: "failure" },
+  ];
+  for (const required of [
+    ["quality"],
+    [{ context: "quality" }],
+    [{ context: "quality", integration_id: null }],
+    [{ context: "quality", integration_id: -1 }],
+  ]) {
+    assert.equal(run(records, required).decision, "refuse");
+    assert.deepEqual(run(records.slice(0, 1), required), { decision: "allow", reasons: [] });
+  }
+});
+
+test("malformed integration requirements fail closed instead of becoming strings", () => {
+  for (const requirement of [
+    { context: "quality", integration_id: "15368" },
+    { context: "quality", integration_id: 0 },
+    { context: "quality", integration_id: 1.5 },
+    { integration_id: 15368 },
+    { context: "" },
+  ]) {
+    assert.throws(
+      () => run([cr("[object Object]")], [requirement]),
+      (err) => err.status === 2 && /entries must be context strings/.test(String(err.stderr)),
+    );
+  }
+});
+
+test("a pinned integration can satisfy its required context with a verified legacy status", () => {
+  const required = [{ context: "quality", integration_id: 15368 }];
+  const status = { ...cr("quality"), source: "status", app: { id: 15368 } };
+  const otherApp = { ...cr("quality"), source: "status", app: { id: 999 } };
+  assert.deepEqual(run([status], required), { decision: "allow", reasons: [] });
+  assert.deepEqual(run([status, { ...otherApp, conclusion: "failure" }], required), { decision: "allow", reasons: [] });
+  const check = { ...cr("quality"), source: "check-run", app: { id: 15368 } };
+  for (const records of [
+    [status, { ...check, conclusion: "failure" }],
+    [check, { ...status, conclusion: "failure" }],
+  ]) assert.deepEqual(run(records, required), { decision: "refuse", reasons: ["quality: failure"] });
+});
+
+test("an empty required-contexts list fails closed at the CLI", () => {
+  assert.throws(() => run([cr("quality")], []), (err) => {
+    assert.equal(err.status, 2);
+    assert.match(String(err.stderr), /must be a non-empty JSON array/);
+    assert.doesNotMatch(String(err.stdout), /"decision":"allow"/);
+    return true;
+  });
 });
