@@ -5,7 +5,9 @@
  * so CompoundingEngine stays inside its line ceiling. Scans are bounded:
  * correction files outside the ISO week are skipped before they are read.
  * Parsing stops after WEEKLY_CORRECTION_READ_LIMIT accepted corrections or
- * WEEKLY_CORRECTION_SCAN_LIMIT opened files, whichever comes first.
+ * WEEKLY_CORRECTION_SCAN_LIMIT opened files, whichever comes first. Visible
+ * store candidates are opened before other namespaces, so a foreign store
+ * cannot fill the accepted cap and hide an older default-store correction.
  */
 
 import type { Stats } from "node:fs";
@@ -205,6 +207,8 @@ export async function readWeeklyCorrections(input: {
   storage: WeeklyEvidenceStorage;
   memoryDir: string;
   weekId: string;
+  /** Flat root stays visible when this is null. A routed default store passes its `namespaces/<dir>/` prefix. */
+  defaultNamespacePrefix?: string | null;
 }): Promise<WeeklyCorrectionEvidence[]> {
   const weekStartMs = isoWeekStartMs(input.weekId);
   if (weekStartMs === null) return [];
@@ -216,9 +220,14 @@ export async function readWeeklyCorrections(input: {
     await collectCorrectionCandidates(candidates, ns.root, ns.namespace, input.weekId, weekStartMs, rootReal);
   }
   candidates.sort((a, b) => b.sortMs - a.sortMs || a.filePath.localeCompare(b.filePath));
+  const ordered = preferVisibleCorrectionCandidates(
+    candidates,
+    input.memoryDir,
+    input.defaultNamespacePrefix ?? null,
+  );
   const out: WeeklyCorrectionEvidence[] = [];
   let scanned = 0;
-  for (const candidate of candidates) {
+  for (const candidate of ordered) {
     if (out.length >= WEEKLY_CORRECTION_READ_LIMIT || scanned >= WEEKLY_CORRECTION_SCAN_LIMIT) break;
     scanned += 1;
     const evidence = await readCorrectionCandidate(input.storage, input.memoryDir, input.weekId, candidate);
@@ -230,6 +239,22 @@ export async function readWeeklyCorrections(input: {
     );
   }
   return out;
+}
+
+/** Newest-first within the visible store, then newest-first everywhere else. */
+function preferVisibleCorrectionCandidates(
+  candidates: readonly CorrectionCandidate[],
+  memoryDir: string,
+  defaultNamespacePrefix: string | null,
+): CorrectionCandidate[] {
+  const visible: CorrectionCandidate[] = [];
+  const foreign: CorrectionCandidate[] = [];
+  for (const candidate of candidates) {
+    const relative = path.relative(memoryDir, candidate.filePath).split(path.sep).join("/");
+    if (provenanceVisibleInStoreRecall([relative], defaultNamespacePrefix)) visible.push(candidate);
+    else foreign.push(candidate);
+  }
+  return visible.concat(foreign);
 }
 
 function parseMemoryActionEventLine(line: string): MemoryActionEvent | null {

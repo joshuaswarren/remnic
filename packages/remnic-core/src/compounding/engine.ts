@@ -499,17 +499,18 @@ export class CompoundingEngine {
       memoryDir: this.config.memoryDir,
       weekId,
     });
+    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
     const corrections = await readWeeklyCorrections({
       storage: this.storage,
       memoryDir: this.config.memoryDir,
-      weekId,
+      weekId, defaultNamespacePrefix: defaultPrefix,
     });
     const actionPatterns = buildActionFailurePatterns(actionEvents);
     const outcomeSummary = this.buildActionOutcomeSummary(actionEvents);
-    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
     const storeOutcomeSummary = this.buildActionOutcomeSummary(actionEventsVisibleInStore(actionEvents, defaultPrefix));
     const previousMistakes = await this.readMistakes();
-    const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, previousMistakes?.registry ?? []);
+    const priorRegistry = previousMistakes?.registry ?? [];
+    const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, priorRegistry, defaultPrefix);
     const rubrics = this.buildRubricSnapshot(entries, storeOutcomeSummary, corrections);
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
       ? this.derivePromotionCandidates(storeOutcomeSummary, mistakes.registry, rubrics, defaultPrefix)
@@ -1115,7 +1116,7 @@ export class CompoundingEngine {
     actionPatterns: Array<{ pattern: string; provenance: string }>,
     corrections: WeeklyCorrectionEvidence[],
     weekId: string,
-    previousRegistry: MistakeRegistryEntry[] = [],
+    previousRegistry: MistakeRegistryEntry[] = [], defaultNamespacePrefix: string | null = null,
   ): MistakesFile & { details: PatternWithProvenance[]; registry: MistakeRegistryEntry[] } {
     const patterns: PatternWithProvenance[] = [];
     const evidenceByPattern = new Map<string, {
@@ -1165,27 +1166,28 @@ export class CompoundingEngine {
 
     for (const correction of corrections) {
       patterns.push({ pattern: correction.pattern, provenance: [correction.provenance] });
-      const previous = evidenceByPattern.get(correction.pattern) ?? {
+      const visible = provenanceVisibleInStoreRecall([correction.provenance], defaultNamespacePrefix);
+      const prev = evidenceByPattern.get(correction.pattern) ?? {
         category: "correction" as const,
-        agent: correction.source,
-        workflow: correction.entityRef ?? "corrections",
+        agent: visible ? correction.source : null,
+        workflow: visible ? (correction.entityRef ?? "corrections") : "corrections",
         tags: new Set<string>(),
         severity: null,
-        confidence: correction.confidence,
+        confidence: visible ? correction.confidence : null,
         outcome: null,
         timestamps: [],
         evidenceWindow: { start: correction.created, end: correction.created },
       };
-      for (const tag of correction.tags) previous.tags.add(tag);
-      previous.timestamps.push(correction.created);
-      if (previous.agent === null && correction.source) previous.agent = correction.source;
-      if (correction.entityRef && previous.workflow === "corrections") previous.workflow = correction.entityRef;
-      if (previous.confidence === null) previous.confidence = correction.confidence;
-      previous.evidenceWindow = mergeEvidenceWindows(previous.evidenceWindow, {
+      if (visible) for (const tag of correction.tags) prev.tags.add(tag);
+      prev.timestamps.push(correction.created);
+      if (visible && prev.agent === null && correction.source) prev.agent = correction.source;
+      if (visible && correction.entityRef && prev.workflow === "corrections") prev.workflow = correction.entityRef;
+      if (visible && prev.confidence === null) prev.confidence = correction.confidence;
+      prev.evidenceWindow = mergeEvidenceWindows(prev.evidenceWindow, {
         start: correction.created,
         end: correction.created,
       });
-      evidenceByPattern.set(correction.pattern, previous);
+      evidenceByPattern.set(correction.pattern, prev);
     }
 
     for (const item of actionPatterns) {

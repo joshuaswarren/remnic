@@ -114,15 +114,24 @@ test("weekly synthesis reads in-week correction memories from the root and every
     );
     await writeCorrection(
       path.join(memoryDir, "corrections", `${sharedId}.md`),
-      correctionDoc({ id: sharedId, content: "Same lesson across stores", source: "root-agent" })
+      correctionDoc({
+        id: sharedId,
+        content: "Same lesson across stores",
+        source: "root-agent",
+        entityRef: "root-flow",
+        confidence: 0.75,
+        tags: ["from-root"],
+      })
     );
     await writeCorrection(
-      path.join(memoryDir, "namespaces", "team-beta", "corrections", `${sharedId}-b.md`),
+      path.join(memoryDir, "namespaces", "team-beta", "corrections", `correction-${IN_WEEK_MS + 50}-shared-b.md`),
       correctionDoc({
-        id: `${sharedId}-b`,
+        id: "shared-foreign",
+        created: "2026-10-22T18:00:00.000Z",
         content: "Same lesson across stores",
         source: "ns-agent",
         entityRef: "workflow-shared",
+        confidence: 0.2,
         tags: ["from-namespace"],
       })
     );
@@ -242,8 +251,14 @@ test("weekly synthesis reads in-week correction memories from the root and every
     assert.ok(shared);
     assert.ok(shared.provenance.some((item) => item.startsWith("corrections/")));
     assert.ok(shared.provenance.some((item) => item.startsWith("namespaces/team-beta/corrections/")));
-    assert.equal(shared.workflow, "workflow-shared");
-    assert.ok(shared.tags.includes("from-namespace"));
+    assert.equal(shared.agent, "root-agent");
+    assert.equal(shared.workflow, "root-flow");
+    assert.equal(shared.confidence, 0.75);
+    assert.deepEqual(shared.tags, ["from-root"]);
+    const sharedRecall = await eng.buildRecallSection("Same lesson across stores");
+    assert.match(sharedRecall ?? "", /scope=root-flow/);
+    assert.equal((sharedRecall ?? "").includes("workflow-shared"), false);
+    assert.equal((sharedRecall ?? "").includes("ns-agent"), false);
 
     const tokenEntry = mistakes.registry?.find((entry) => entry.pattern === "correction: Tokenized namespace lesson");
     assert.ok(tokenEntry?.provenance.some((item) => item.startsWith(`namespaces/${token}/corrections/`)));
@@ -300,6 +315,45 @@ test("weekly synthesis bounds correction reads to the newest 500 in-week files",
       correctionPatterns.some((pattern) => pattern.includes("unique-oversized-lesson")),
       false
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an older visible correction survives when newer foreign corrections fill the cap", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-visible-cap-"));
+  try {
+    const base = Date.parse("2026-10-22T00:00:00.000Z");
+    await writeCorrection(
+      path.join(memoryDir, "corrections", `correction-${base}-root.md`),
+      correctionDoc({
+        id: "older-root",
+        created: new Date(base).toISOString(),
+        content: "Older root lesson stays visible",
+      })
+    );
+    const foreignDir = path.join(memoryDir, "namespaces", "team-beta", "corrections");
+    await mkdir(foreignDir, { recursive: true });
+    for (let index = 1; index <= 500; index += 1) {
+      const ms = base + index * 1000;
+      await writeFile(
+        path.join(foreignDir, `correction-${ms}-f${index}.md`),
+        correctionDoc({
+          id: `foreign-${index}`,
+          created: new Date(ms).toISOString(),
+          content: `foreign-lesson-${index}`,
+        })
+      );
+    }
+    const eng = new CompoundingEngine(config(memoryDir));
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const patterns = (await eng.readMistakes())?.patterns ?? [];
+    assert.ok(patterns.some((pattern) => pattern.includes("Older root lesson stays visible")));
+    assert.ok(patterns.some((pattern) => pattern === "correction: foreign-lesson-500"));
+    assert.equal(patterns.some((pattern) => pattern === "correction: foreign-lesson-1"), false);
+    const section = await eng.buildRecallSection("lesson");
+    assert.match(section ?? "", /Older root lesson stays visible/);
+    assert.equal((section ?? "").includes("foreign-lesson-500"), false);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
