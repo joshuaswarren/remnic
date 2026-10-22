@@ -85,6 +85,9 @@ export interface EntityStoreDeps {
 }
 
 export class EntityStore {
+  /** Filename → file identity of the last indexable check. Unchanged files are not reread. */
+  private readonly entityIndexableCache = new Map<string, { identity: string; ok: boolean }>();
+
   constructor(
     private readonly deps: EntityStoreDeps,
   ) {}
@@ -385,10 +388,39 @@ export class EntityStore {
   }
 
   /**
+   * True when `entities/` is a real directory inside this memory root.
+   * `realpath` on a symlinked root would treat the link target as trusted,
+   * so the check uses `lstat` first and refuses the scan when the root
+   * itself is a symlink.
+   */
+  private async isTrustedEntitiesRoot(): Promise<boolean> {
+    let rootStat;
+    try {
+      rootStat = await lstat(this.deps.entitiesDir);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return false;
+    let memoryRoot: string;
+    let entitiesReal: string;
+    try {
+      memoryRoot = await realpath(this.deps.baseDir);
+      entitiesReal = await realpath(this.deps.entitiesDir);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    return pathIsInside(memoryRoot, entitiesReal);
+  }
+
+  /**
    * Entity directory listing with macOS replication junk removed.
    * One summary warning per directory and count, shared with migration.
+   * A symlinked entities root yields an empty list and is not read.
    */
   private async readEntityDirectoryNames(): Promise<string[]> {
+    if (!(await this.isTrustedEntitiesRoot())) return [];
     const entries = await readdir(this.deps.entitiesDir);
     const { kept, ignored } = withoutMacOsReplicationJunk(entries, (name) => name);
     warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
@@ -398,10 +430,9 @@ export class EntityStore {
   }
 
   /**
-   * A directory entry is readable only when it is a regular file whose
-   * real path stays inside the entities directory. Symlinks, FIFOs, and
-   * devices are skipped before any read so a link planted after startup
-   * cannot redirect entity listing or fragment merge outside the store.
+   * A directory entry is readable only when it is a regular file.
+   * Symlinks, FIFOs, and devices are skipped before any read. The entities
+   * root is refused separately, before the directory is listed.
    */
   private async isContainedRegularEntityFile(file: string): Promise<boolean> {
     const filePath = path.join(this.deps.entitiesDir, file);
@@ -412,30 +443,36 @@ export class EntityStore {
       if (isErrnoCode(err, "ENOENT")) return false;
       throw err;
     }
-    if (entryStat.isSymbolicLink() || !entryStat.isFile()) return false;
-    let rootReal: string;
-    let fileReal: string;
-    try {
-      rootReal = await realpath(this.deps.entitiesDir);
-      fileReal = await realpath(filePath);
-    } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return false;
-      throw err;
-    }
-    return pathIsInside(rootReal, fileReal);
+    return !entryStat.isSymbolicLink() && entryStat.isFile();
   }
 
   /**
    * Malformed entity files stay on disk (startup must not relocate them)
    * and stay out of merge, so a fragment merge cannot delete them.
+   * Unchanged files reuse the previous result so a name listing does not
+   * reread the whole directory on every extraction write.
    */
   private async isIndexableEntityMarkdown(file: string): Promise<boolean> {
+    const filePath = path.join(this.deps.entitiesDir, file);
+    let entryStat;
     try {
-      if (!(await this.isContainedRegularEntityFile(file))) return false;
-      const content = await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, file));
-      if (isMalformedEntityRecord(content)) return false;
-      const parsed = parseEntityFile(content, this.deps.entitySchemas);
-      return parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
+      entryStat = await lstat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (entryStat.isSymbolicLink() || !entryStat.isFile()) return false;
+    const identity = `${entryStat.dev}:${entryStat.ino}:${entryStat.mtimeMs}:${entryStat.size}`;
+    const cached = this.entityIndexableCache.get(file);
+    if (cached?.identity === identity) return cached.ok;
+    try {
+      const content = await this.deps.readStorageSecureFile(filePath);
+      const parsed = isMalformedEntityRecord(content)
+        ? null
+        : parseEntityFile(content, this.deps.entitySchemas);
+      const ok = parsed !== null && parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
+      this.entityIndexableCache.set(file, { identity, ok });
+      return ok;
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;

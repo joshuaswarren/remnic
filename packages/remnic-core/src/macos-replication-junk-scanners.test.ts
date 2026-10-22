@@ -158,6 +158,7 @@ test("direct entity recall ignores AppleDouble sidecars and malformed entities",
     await mkdir(entitiesDir, { recursive: true });
     await writeFile(path.join(entitiesDir, "project-real.md"), "# Real\n**Type:** project\n");
     await writeFile(path.join(entitiesDir, "project-real-gap.md"), "# \n**Type:** project\n");
+    await writeFile(path.join(entitiesDir, "project-real-tab.md"), "#\tTabbed\n**Type:** project\n");
     await writeFile(path.join(entitiesDir, "._project-real.md"), Buffer.from([0, 5, 22]));
     await writeFile(path.join(entitiesDir, ".DS_Store"), "finder");
 

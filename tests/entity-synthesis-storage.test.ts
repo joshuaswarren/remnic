@@ -1114,6 +1114,36 @@ test("entity listing does not follow a symlink or fifo planted in entities", asy
   }
 });
 
+test("entity listing does not follow a symlinked entities directory", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-root-symlink-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-root-outside-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    await storage.writeEntity("North Dome", "project", ["Synthetic dome schedule."]);
+    const entitiesDir = path.join(dir, "entities");
+    await rm(entitiesDir, { recursive: true, force: true });
+    await writeFile(path.join(outside, "project-secret.md"), "# Secret\n**Type:** project\n", "utf-8");
+    const fifoPath = path.join(outside, "project-fifo.md");
+    execFileSync("mkfifo", [fifoPath]);
+    await symlink(outside, entitiesDir);
+
+    const names = await Promise.race([
+      storage.listEntityNames(),
+      new Promise<string[]>((_, reject) => {
+        setTimeout(() => reject(new Error("entity listing followed a symlinked entities directory")), 2000);
+      }),
+    ]);
+    assert.deepEqual(names, []);
+    assert.deepEqual(await storage.readAllEntityFiles(), []);
+    assert.equal((await lstat(entitiesDir)).isSymbolicLink(), true);
+    assert.equal((await lstat(fifoPath)).isFIFO(), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
 test("readMemoryByPath skips a malformed entity that still has frontmatter", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-qmd-malformed-"));
   try {
@@ -1127,10 +1157,18 @@ test("readMemoryByPath skips a malformed entity that still has frontmatter", asy
       "---\nid: project-gap\ncategory: fact\n---\nno heading\n",
       "utf-8",
     );
+    const tabHeading = path.join(dir, "entities", "project-tab.md");
+    await writeFile(
+      tabHeading,
+      "---\nid: project-tab\ncategory: fact\n---\n#\tTabbed\n**Type:** project\n",
+      "utf-8",
+    );
 
     const good = await storage.readMemoryByPath(path.join(dir, "entities", `${canonical}.md`));
     assert.equal(good?.frontmatter.category, "entity");
     assert.equal(await storage.readMemoryByPath(malformed), null);
+    assert.equal(await storage.readMemoryByPath(tabHeading), null);
+    assert.equal((await storage.listEntityNames()).includes("project-tab"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
