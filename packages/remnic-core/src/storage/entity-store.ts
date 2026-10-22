@@ -792,9 +792,31 @@ export class EntityStore {
         groups.get(canonical)!.push(file);
       }
 
+      // A malformed or otherwise non-indexable file is absent from `files`.
+      // Writing the canonical path anyway would replace that file, then
+      // delete the fragments that still hold the only readable copy.
+      const canonicalDestinationOccupied = async (
+        canonicalName: string,
+        members: readonly string[],
+      ): Promise<boolean> => {
+        if (members.includes(canonicalName)) return false;
+        try {
+          await lstat(path.join(this.deps.entitiesDir, canonicalName));
+          return true;
+        } catch (err) {
+          if (isErrnoCode(err, "ENOENT")) return false;
+          throw err;
+        }
+      };
+
       // Merge groups with more than one file
       for (const [canonical, files] of groups) {
         if (files.length <= 1) continue;
+        const canonicalName = `${canonical}.md`;
+        if (await canonicalDestinationOccupied(canonicalName, files)) {
+          log.warn(`skipped entity merge into occupied ${canonicalName}`);
+          continue;
+        }
 
         // Parse all files and merge into a single EntityFile
         const mergedEntity: EntityFile = {
@@ -1033,7 +1055,11 @@ export class EntityStore {
         mergedEntity.created = mergedEntity.created || mergedEntity.updated || new Date().toISOString();
         mergedEntity.updated = mergedEntity.updated || new Date().toISOString();
 
-        const canonicalPath = path.join(this.deps.entitiesDir, `${canonical}.md`);
+        const canonicalPath = path.join(this.deps.entitiesDir, canonicalName);
+        if (await canonicalDestinationOccupied(canonicalName, files)) {
+          log.warn(`skipped entity merge into occupied ${canonicalName}`);
+          continue;
+        }
         await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()));
         this.deps.bumpEntityMutationVersion();
 

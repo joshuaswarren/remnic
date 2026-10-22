@@ -65,6 +65,7 @@ import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
 import { assertSafeEntityId } from "./storage/entity-id-safety.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
@@ -4872,6 +4873,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           checkCorpusReadAbort(options);
+          if (isMacOsReplicationJunkBasename(entry.name)) continue;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             await readDir(fullPath);
@@ -7120,7 +7122,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const summaries: MemorySummary[] = [];
 
       for (const file of files) {
-        if (!file.endsWith(".json")) continue;
+        if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".json")) continue;
         const filePath = path.join(this.summariesDir, file);
         const raw = await this.readStorageSecureFile(filePath);
         summaries.push(JSON.parse(raw) as MemorySummary);

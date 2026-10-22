@@ -32,6 +32,7 @@ test("offline sync omits macOS replication junk on snapshot, push, and pull", as
     await write(root, "namespaces/lab/.DS_Store", "finder");
     await write(root, "entities/._root.md", Buffer.from([0, 5, 22]));
     await write(root, ".DS_Store", "finder-root");
+    await write(root, "facts/._ignored/record.md", "nested junk");
 
     const snapshot = await buildOfflineSyncSnapshot({
       root,
@@ -60,6 +61,16 @@ test("offline sync omits macOS replication junk on snapshot, push, and pull", as
           root,
           sourceId: "remote",
           paths: ["namespaces/lab/entities/._sidecar.md"],
+          includeContent: true,
+        }),
+      /offline sync snapshot path is excluded/
+    );
+    await assert.rejects(
+      () =>
+        buildOfflineSyncSnapshotForPaths({
+          root,
+          sourceId: "remote",
+          paths: ["facts/._ignored/record.md"],
           includeContent: true,
         }),
       /offline sync snapshot path is excluded/
@@ -101,10 +112,18 @@ test("offline sync omits macOS replication junk on snapshot, push, and pull", as
           sha256: createHash("sha256").update("finder").digest("hex"),
           bytes: Buffer.byteLength("finder"),
         },
+        {
+          ...real,
+          path: "facts/._ignored/record.md",
+          contentBase64: Buffer.from("nested junk").toString("base64"),
+          sha256: createHash("sha256").update("nested junk").digest("hex"),
+          bytes: Buffer.byteLength("nested junk"),
+        },
       ],
       deletions: [
         { path: "facts/removed.md", mtimeMs: 2 },
         { path: "entities/._root.md", mtimeMs: 1 },
+        { path: "facts/._ignored/record.md", mtimeMs: 3 },
       ],
     };
     const normalized = normalizeOfflineSyncSnapshot(incoming);
@@ -119,6 +138,7 @@ test("offline sync omits macOS replication junk on snapshot, push, and pull", as
     assert.equal(await readFile(path.join(dest, "namespaces/lab/entities/project-real.md"), "utf8"), "real entity");
     await assert.rejects(() => readFile(path.join(dest, "namespaces/lab/entities/._sidecar.md")), { code: "ENOENT" });
     await assert.rejects(() => readFile(path.join(dest, "namespaces/other/.DS_Store")), { code: "ENOENT" });
+    await assert.rejects(() => readFile(path.join(dest, "facts/._ignored/record.md")), { code: "ENOENT" });
 
     const changeset = normalizeOfflineSyncChangeset({
       format: OFFLINE_SYNC_CHANGESET_FORMAT,

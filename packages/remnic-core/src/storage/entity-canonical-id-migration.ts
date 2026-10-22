@@ -615,12 +615,14 @@ async function rewriteRelationshipTargets(
   let rewritten = false;
   const entries = await readSafeEntityEntries(deps.entitiesDir);
   for (const entry of entries) {
-    if (!entry.endsWith(".md")) continue;
+    if (!entry.endsWith(".md") || isMacOsReplicationJunkBasename(entry)) continue;
     const entityPath = deps.resolveEntityFilePath(entry.slice(0, -".md".length));
     if (entityPath === null) continue;
     const observedEntityFingerprint = await fingerprintPath(entityPath);
     if (observedEntityFingerprint === "missing") continue;
-    const entity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
+    const entityRaw = await deps.readStorageSecureFile(entityPath);
+    if (isMalformedEntityRecord(entityRaw)) continue;
+    const entity = deps.parseEntityFile(entityRaw);
     const relationships = entity.relationships.map((relationship) => {
       const target = mappings[relationship.target];
       return target ? { ...relationship, target } : relationship;
@@ -630,7 +632,9 @@ async function rewriteRelationshipTargets(
       deps.stateDir,
       async (refreshEntityLock) => {
         if (!(await refreshLock())) throw new Error("Lost entity canonical-id migration lock.");
-        const latestEntity = deps.parseEntityFile(await deps.readStorageSecureFile(entityPath));
+        const latestRaw = await deps.readStorageSecureFile(entityPath);
+        if (isMalformedEntityRecord(latestRaw)) return false;
+        const latestEntity = deps.parseEntityFile(latestRaw);
         if ((await fingerprintPath(entityPath)) !== observedEntityFingerprint) return false;
         const latestRelationships = latestEntity.relationships.map((relationship) => {
           const target = mappings[relationship.target];
@@ -813,6 +817,14 @@ async function migrateEntityFilePair(
     const entityContent = await deps.readStorageSecureFile(legacyPath);
     await assertNotSymlink(legacyPath, legacyId);
     await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
+    // A journal entry must not relocate Finder metadata or a record this scan
+    // would leave in place. The mapping stays, so a later repair can still move.
+    if (
+      isMacOsReplicationJunkBasename(path.basename(legacyPath))
+      || (!entityEncrypted && isMalformedEntityRecord(entityContent))
+    ) {
+      return { deferred: false, progressed: false };
+    }
     let canonicalFingerprintAfterWrite: string | null = null;
     try {
       await deps.writeStorageSecureFile(canonicalPath, entityContent, entityEncrypted);

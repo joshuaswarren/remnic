@@ -99,6 +99,18 @@ function isPropagatableReadError(err: unknown): boolean {
   return typeof code === "string" && code !== "ENOENT";
 }
 
+/**
+ * Markdown under this store's `entities/` directory. The first relative
+ * segment must be `entities`; a memory root whose absolute path contains
+ * that name is not an entity store.
+ */
+function isStoreEntityMarkdown(baseDir: string, filePath: string): boolean {
+  if (!filePath.endsWith(".md")) return false;
+  const relative = path.relative(baseDir, filePath);
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return relative.split(path.sep)[0] === "entities";
+}
+
 export class MemoryReadStore {
   constructor(
     private readonly deps: MemoryReadStoreDeps,
@@ -543,13 +555,10 @@ export class MemoryReadStore {
       const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
       // Entity records missing a heading or type stay out of recall, including
       // contextual QMD hits that resolve through this path. QMD query behavior
-      // is unchanged; the file is simply not a memory.
-      const normalizedEntityPath = filePath.split(path.sep).join("/");
-      if (
-        normalizedEntityPath.includes("/entities/")
-        && filePath.endsWith(".md")
-        && isMalformedEntityRecord(raw)
-      ) {
+      // is unchanged; the file is simply not a memory. Classification is
+      // relative to this store root: an absolute path that merely contains
+      // an `entities` segment is still an ordinary fact.
+      if (isStoreEntityMarkdown(this.deps.baseDir, filePath) && isMalformedEntityRecord(raw)) {
         return null;
       }
       // Note: the outer catch intentionally swallows most errors (ENOENT etc.)
@@ -571,8 +580,7 @@ export class MemoryReadStore {
       // YAML frontmatter. Build a synthetic MemoryFile so entity files returned by
       // the direct retrieval agent participate in boostSearchResults and last-recall
       // tracking rather than being silently dropped.
-      const normalizedPath = filePath.split(path.sep).join("/");
-      if (normalizedPath.includes("/entities/") && filePath.endsWith(".md")) {
+      if (isStoreEntityMarkdown(this.deps.baseDir, filePath)) {
         const entity = parseEntityFile(raw, this.deps.entitySchemas);
         if (!entity.name) return null;
         const nameWithoutExt = path.basename(filePath, ".md");

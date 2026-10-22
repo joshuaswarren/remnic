@@ -123,10 +123,12 @@ The transfer intentionally excludes private or process-local directories such
 as `.secure-store/`, `.offline-sync/`, `.capsules/`, `node_modules/`, and `.git/`.
 Auth tokens stay local and must be provisioned separately on each machine.
 
-Finder metadata is excluded on both sides, in every namespace: basenames
-`._*` and `.DS_Store` are omitted from snapshot, push, pull, and converge
-census. An older snapshot that still lists them is accepted with those paths
-dropped, not applied. This is structural, not an `offlineSyncExcludes` glob.
+Finder metadata is excluded on both sides, in every namespace, when any
+path segment is `._*` or the exact basename `.DS_Store`. Snapshot, push,
+pull, and converge census omit those paths. An older snapshot that still
+lists them is accepted with those paths dropped, not applied. This is
+structural, not an `offlineSyncExcludes` glob, and it matches the reserved
+name rather than file contents.
 
 ### Node-local state excludes
 

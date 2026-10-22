@@ -1144,6 +1144,124 @@ test("entity listing does not follow a symlinked entities directory", async () =
   }
 });
 
+test("mergeFragmentedEntities does not overwrite a malformed canonical file", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-merge-occupied-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const fragment = (label: string) => [
+      "# North Dome",
+      "",
+      "**Type:** project",
+      "**Updated:** 2026-04-13T10:00:00Z",
+      "",
+      "## Timeline",
+      "",
+      `- [2026-04-13T10:00:00Z] ${label}`,
+      "",
+    ].join("\n");
+    const occupied = "RECOVERY-BYTES-DO-NOT-MERGE\n";
+    const spaced = path.join(dir, "entities", "project-north dome.md");
+    const underscored = path.join(dir, "entities", "project-north_dome.md");
+    const canonical = path.join(dir, "entities", "project-north-dome.md");
+    await writeFile(spaced, fragment("one"), "utf-8");
+    await writeFile(underscored, fragment("two"), "utf-8");
+    await writeFile(canonical, occupied, "utf-8");
+
+    const merged = await storage.mergeFragmentedEntities();
+    assert.equal(merged, 0);
+    assert.equal(await readFile(canonical, "utf-8"), occupied);
+    assert.equal(await readFile(spaced, "utf-8"), fragment("one"));
+    assert.equal(await readFile(underscored, "utf-8"), fragment("two"));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("entity migration leaves malformed records and AppleDouble sidecars byte-for-byte", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-preserve-"));
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    await seed.writeEntity("North Dome", "project", ["Synthetic dome schedule."]);
+    const canonicalId = normalizeEntityName("North Dome", "project");
+    const canonicalPath = path.join(dir, "entities", `${canonicalId}.md`);
+    const legacyPath = path.join(dir, "entities", "project-north dome.md");
+    await writeFile(legacyPath, await readFile(canonicalPath));
+    await rm(canonicalPath);
+    const malformed = [
+      "## Connected to",
+      "",
+      "- [[project-north dome]] — works with",
+      "",
+    ].join("\n");
+    const malformedPath = path.join(dir, "entities", "project-notes.md");
+    await writeFile(malformedPath, malformed, "utf-8");
+    const sidecar = [
+      "# Sidecar",
+      "**Type:** project",
+      "",
+      "## Connected to",
+      "",
+      "- [[project-north dome]] — works with",
+      "",
+    ].join("\n");
+    const sidecarPath = path.join(dir, "entities", "._project-notes.md");
+    await writeFile(sidecarPath, sidecar, "utf-8");
+    await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"));
+
+    const migrating = new StorageManager(dir);
+    await migrating.ensureDirectories();
+    assert.equal(await readFile(malformedPath, "utf-8"), malformed);
+    assert.equal(await readFile(sidecarPath, "utf-8"), sidecar);
+    await assert.rejects(() => readFile(legacyPath), { code: "ENOENT" });
+    assert.match(await readFile(canonicalPath, "utf-8"), /# North Dome/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a retained canonical-id mapping does not move a malformed entity, and a repair still can", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-repair-"));
+  try {
+    const seed = new StorageManager(dir);
+    await seed.ensureDirectories();
+    const malformed = "# \n**Type:** project\nRECOVERY-BYTES\n";
+    const legacyPath = path.join(dir, "entities", "project-notes.md");
+    const canonicalPath = path.join(dir, "entities", "project-north-dome.md");
+    await writeFile(legacyPath, malformed, "utf-8");
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { "project-notes": "project-north-dome" },
+      }),
+      "utf-8",
+    );
+
+    const held = new StorageManager(dir);
+    await held.ensureDirectories();
+    assert.equal(await readFile(legacyPath, "utf-8"), malformed);
+    await assert.rejects(() => readFile(canonicalPath), { code: "ENOENT" });
+
+    const repaired = [
+      "# North Dome",
+      "",
+      "**Type:** project",
+      "**Updated:** 2026-04-13T10:00:00Z",
+      "",
+    ].join("\n");
+    await writeFile(legacyPath, repaired, "utf-8");
+    const resumed = new StorageManager(dir);
+    await resumed.ensureDirectories();
+    await assert.rejects(() => readFile(legacyPath), { code: "ENOENT" });
+    assert.match(await readFile(canonicalPath, "utf-8"), /# North Dome/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("readMemoryByPath skips a malformed entity that still has frontmatter", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-qmd-malformed-"));
   try {
@@ -1171,6 +1289,37 @@ test("readMemoryByPath skips a malformed entity that still has frontmatter", asy
     assert.equal((await storage.listEntityNames()).includes("project-tab"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMemoryByPath keeps facts when the store path contains an entities segment", async () => {
+  const parent = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-segment-parent-"));
+  const dir = path.join(parent, "entities", "remnic-store");
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const factPath = path.join(dir, "facts", "2026-04-13", "fact-north.md");
+    await mkdir(path.dirname(factPath), { recursive: true });
+    await writeFile(
+      factPath,
+      ["---", "id: fact-north", "category: fact", "---", "North Dome schedule."].join("\n"),
+      "utf-8",
+    );
+    const nestedPath = path.join(dir, "facts", "entities", "nested.md");
+    await mkdir(path.dirname(nestedPath), { recursive: true });
+    await writeFile(
+      nestedPath,
+      ["---", "id: fact-nested", "category: fact", "---", "Nested fact."].join("\n"),
+      "utf-8",
+    );
+    const malformed = path.join(dir, "entities", "project-gap.md");
+    await writeFile(malformed, "---\nid: project-gap\ncategory: fact\n---\nno heading\n", "utf-8");
+
+    assert.equal((await storage.readMemoryByPath(factPath))?.frontmatter.id, "fact-north");
+    assert.equal((await storage.readMemoryByPath(nestedPath))?.frontmatter.id, "fact-nested");
+    assert.equal(await storage.readMemoryByPath(malformed), null);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
   }
 });
 

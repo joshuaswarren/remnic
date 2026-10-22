@@ -8,10 +8,12 @@ import { readCalibrationCorrections } from "./calibration.js";
 import { CorrectionPlanner, type PlannerDeps } from "./correction/correction-planner.js";
 import { listJsonFiles } from "./json-store.js";
 import { ProfilingCollector } from "./profiling.js";
+import { resolveDefaultNamespaceRoot } from "./namespaces/storage.js";
 import { runDirectAgent } from "./retrieval-agents.js";
 import { scanMemoryDir } from "./search/document-scanner.js";
 import { StorageManager } from "./storage.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
+import type { PluginConfig } from "./types.js";
 
 const CORRECTION_BODY = [
   "---",
@@ -161,12 +163,66 @@ test("direct entity recall ignores AppleDouble sidecars and malformed entities",
     await writeFile(path.join(entitiesDir, "project-real-tab.md"), "#\tTabbed\n**Type:** project\n");
     await writeFile(path.join(entitiesDir, "._project-real.md"), Buffer.from([0, 5, 22]));
     await writeFile(path.join(entitiesDir, ".DS_Store"), "finder");
+    const encrypted = Buffer.alloc(12);
+    Buffer.from("REMNIC-ENC").copy(encrypted);
+    await writeFile(path.join(entitiesDir, "project-real-locked.md"), encrypted);
 
     const hits = await runDirectAgent("real", memoryDir);
     assert.deepEqual(
-      hits.map((hit) => path.basename(hit.path)),
-      ["project-real.md"],
+      hits.map((hit) => path.basename(hit.path)).sort(),
+      ["project-real-locked.md", "project-real.md"],
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("archive and summary reads ignore macOS replication junk", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-archive-macos-junk-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const archive = path.join(dir, "archive");
+    await mkdir(archive, { recursive: true });
+    await writeFile(
+      path.join(archive, "archived-real.md"),
+      ["---", "id: archived-real", "category: fact", "---", "Kept."].join("\n"),
+      "utf8",
+    );
+    await writeFile(path.join(archive, "._archived-real.md"), "{not-a-memory");
+    await writeFile(path.join(archive, ".DS_Store"), "finder");
+    const archived = await storage.readArchivedMemories();
+    assert.deepEqual(archived.map((memory) => memory.frontmatter.id), ["archived-real"]);
+
+    const summaries = path.join(dir, "summaries");
+    await mkdir(summaries, { recursive: true });
+    await writeFile(path.join(summaries, "sum-real.json"), JSON.stringify({ id: "sum-real", text: "ok" }));
+    await writeFile(path.join(summaries, "._sum-real.json"), "{not-json");
+    const loaded = await storage.readSummaries();
+    assert.deepEqual(loaded.map((summary) => summary.id), ["sum-real"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("namespace routing ignores macOS replication junk in the legacy root", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-macos-junk-"));
+  try {
+    const config = {
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    } as PluginConfig;
+    await mkdir(path.join(memoryDir, "namespaces", "default", "facts"), { recursive: true });
+    await mkdir(path.join(memoryDir, "entities"), { recursive: true });
+    await writeFile(path.join(memoryDir, "entities", ".DS_Store"), "finder");
+    await writeFile(path.join(memoryDir, "entities", "._sidecar.md"), Buffer.from([0, 5]));
+    assert.equal(
+      await resolveDefaultNamespaceRoot(config),
+      path.join(memoryDir, "namespaces", "default"),
+    );
+    await writeFile(path.join(memoryDir, "entities", "project-real.md"), "# Real\n");
+    assert.equal(await resolveDefaultNamespaceRoot(config), memoryDir);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

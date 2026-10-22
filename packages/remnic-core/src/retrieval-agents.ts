@@ -23,6 +23,7 @@ import { isAbortError } from "./abort-error.js";
 import { log } from "./logger.js";
 import type { QmdClient } from "./qmd.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
 import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
 import type { QmdSearchResult } from "./types.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
@@ -176,13 +177,15 @@ export async function runDirectAgent(
     const results: ParallelSearchResult[] = [];
     for (const hit of scored) {
       if (results.length >= maxResults) break;
-      let content: string;
+      let bytes: Buffer;
       try {
-        content = await readFile(hit.safePath, "utf8");
+        bytes = await readFile(hit.safePath);
       } catch {
         continue;
       }
-      if (isMalformedEntityRecord(content)) continue;
+      // Ciphertext has no heading. The secure resolver decrypts after this
+      // candidate is kept; this scan does not look up a key.
+      if (!isEncryptedFile(bytes) && isMalformedEntityRecord(bytes.toString("utf8"))) continue;
       results.push(
         namespaceRelativeResult(
           {
