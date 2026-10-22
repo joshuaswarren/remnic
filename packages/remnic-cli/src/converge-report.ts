@@ -42,7 +42,7 @@ function singleLine(value: string): string {
 export function formatConvergeReport(plan: ReportPlan): string {
   const excluded = plan.excludedNamespaces ?? [];
   const lines: string[] = [];
-  const status = excluded.length > 0 && plan.converged ? "PARTIAL" : plan.converged ? "CONVERGED" : "DIVERGED";
+  const status = excluded.length > 0 ? "PARTIAL" : plan.converged ? "CONVERGED" : "DIVERGED";
   lines.push(`Convergence Status: ${status}`);
   lines.push("");
   lines.push("Per-Namespace Summary:");

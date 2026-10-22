@@ -233,6 +233,13 @@ export async function fetchPeerSnapshot(
   ];
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   let lastFailure = "no snapshot route responded";
+  // A timeout on the live route must survive a fallback HTTP 404. Otherwise
+  // every namespace waits out that timeout and is then treated as a refusal.
+  let transportFailure: unknown;
+  const noteTransportFailure = (error: unknown): void => {
+    if (transportFailure === undefined && isPeerTransportCensusFailure(error)) transportFailure = error;
+    lastFailure = error instanceof Error && error.message.length > 0 ? error.message : String(error);
+  };
 
   for (const route of routes) {
     let response: Response;
@@ -247,7 +254,7 @@ export async function fetchPeerSnapshot(
       // An aborted request is not a route failure: retrying the fallback
       // route after Ctrl+C would race the operator's shutdown.
       if (signal?.aborted) throw error;
-      lastFailure = error instanceof Error ? error.message : String(error);
+      noteTransportFailure(error);
       continue;
     }
     if (!response.ok) {
@@ -259,8 +266,15 @@ export async function fetchPeerSnapshot(
     let data: unknown;
     try {
       data = await response.json();
-    } catch {
-      throw new Error(`invalid peer snapshot for namespace ${namespace}: response was not JSON`);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      // A body timeout is not invalid JSON. Try the other alias, and if
+      // neither succeeds, fail the cycle with the transport error.
+      if (isPeerTransportCensusFailure(error)) {
+        noteTransportFailure(error);
+        continue;
+      }
+      throw new Error(`invalid peer snapshot for namespace ${namespace}: response was not JSON`, { cause: error });
     }
     if (!data || typeof data !== "object" || !("files" in data) || !Array.isArray(data.files)) {
       throw new Error(`invalid peer snapshot for namespace ${namespace}: files must be an array`);
@@ -301,6 +315,7 @@ export async function fetchPeerSnapshot(
     return { files, tombstones };
   }
 
+  if (transportFailure) throw transportFailure;
   throw new Error(`failed to fetch peer snapshot for namespace ${namespace}: ${lastFailure}`);
 }
 

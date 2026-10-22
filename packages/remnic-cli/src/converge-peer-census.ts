@@ -7,6 +7,7 @@ import {
   type ReconcileManifest,
   type ReconcileManifestFile,
 } from "@remnic/core/reconcile/manifest.js";
+import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js";
 import {
   fetchPeerFileContent,
   fetchPeerManifestStream,
@@ -118,6 +119,7 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
     } else {
       clientBuilt = true;
       let readFailure: Error | undefined;
+      let transportFailure: unknown;
       peerManifest = await buildReconcileManifest({
         files: peerData.files,
         parseMemory: parseFrontmatter,
@@ -127,6 +129,10 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
         // rows (sha-keyed) skip the ones already fetched.
         cachedFiles: priorPeerFiles ?? args.localManifestFiles,
         readFile: async (file) => {
+          // The manifest builder settles the in-flight batch, then asks for
+          // the next one. A transport failure must not start that next batch,
+          // and a later generic miss must not replace the transport cause.
+          if (transportFailure) throw transportFailure;
           let remote: PeerFileContent | null;
           try {
             remote = await fetchPeerFileContent(
@@ -140,16 +146,20 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
               true
             );
           } catch (error) {
-            readFailure = error instanceof Error ? error : new Error(String(error));
-            throw readFailure;
+            const failure = error instanceof Error ? error : new Error(String(error));
+            if (isPeerTransportCensusFailure(error)) transportFailure = transportFailure ?? error;
+            if (!transportFailure) readFailure = failure;
+            throw failure;
           }
           if (!remote || remote.sha256 !== file.sha256) {
-            readFailure = new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
-            throw readFailure;
+            const failure = new Error(`failed to read peer reconciliation manifest file: ${file.path}`);
+            if (!transportFailure) readFailure = failure;
+            throw failure;
           }
           return remote.content;
         },
       });
+      if (transportFailure) throw transportFailure;
       if (readFailure) throw readFailure;
     }
   }

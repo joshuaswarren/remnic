@@ -423,7 +423,7 @@ export async function computeConvergePlan(
     const plan = collapseActiveFactDuplicates(planned, localManifests, peerManifests, semanticAgreementMap);
     const excludedNamespaces = listNamespaceExclusions(excluded);
     if (excludedNamespaces.length === 0) return plan;
-    return { ...plan, excludedNamespaces };
+    return { ...plan, excludedNamespaces, converged: false };
   } finally {
     // Releases the cross-process plan lock; already-written checkpoints
     // remain valid for the next (resumed) run.
