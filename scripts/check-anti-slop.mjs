@@ -16,7 +16,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const WORKTREE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -249,7 +249,7 @@ function main() {
   const violations = [];
   const internalErrors = [];
   for (const diagnostic of lintChangedFiles(repoRoot, changedFiles)) {
-    const file = isNonEmptyText(diagnostic.filename) ? diagnostic.filename.replace(/^\.\//, "") : null;
+    const file = isNonEmptyText(diagnostic.filename) ? relative(repoRoot, resolve(repoRoot, diagnostic.filename)).split(sep).join("/") : null;
     if (file === null || !scannedFiles.has(file)) {
       internalErrors.push(`diagnostic for unscanned path ${JSON.stringify(diagnostic.filename)}: ${diagnostic.message}`);
       continue;
