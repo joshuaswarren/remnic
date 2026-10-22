@@ -41,9 +41,13 @@ Structural inspection exposed only field names, types, and counts. It found 537 
 
 The ingestion controller preserves the complete source text, including tool records and verifier lines. It splits oversized inputs into consecutive 400,000-character parts without omissions and appends the verified PASS/FAIL line to each part. Each part uses a distinct trajectory/part session key. The controller calls normal `observe`, then awaits `extractionForceFlush`. Input is historical source data, not instructions for the extractor.
 
+Each source part enters `observe` as one `role: "user"` replay message. Original role labels, tool records, and source structure remain inside that raw archive text. This is archive ingestion, not a host-format conversion into separate native turns.
+
+The eval transport uses `omp/18.12.6`. An initially unclassified provider error repeated after one checkpoint resume. The second failure carried error ID `53248` (`0xD000`). The [upstream flag table](https://github.com/can1357/oh-my-pi/blob/main/packages/ai/src/error/flags.ts) maps that value to `Class`, `AccountPolicy`, and `ContentBlocked`. Once classified, refused source parts are recorded without rewriting or further retries. Other unchanged parts continue through normal ingestion. Usage or rate-limit failures still pause all workers. Refused parts never count as successful extraction.
+
 The ingestion-only `extractionMaxTurnChars` setting is 450,000, above the maximum wrapped part length. This avoids the default 4,000-character truncation. Recall settings retain their defaults. Source grounding remains enabled.
 
-The run began with two admission workers sharing one daemon. Raising admissions to six did not produce parallel extraction: Remnic's normal `ExtractionQueueCoordinator` is serial to prevent write races. After a clean checkpoint, six independent standalone instances now use separate memory, workspace, and Orama directories. Each instance retains its normal serial queue. A process-wide semaphore caps subscription calls at six. Provider events verified six concurrent requests.
+The run began with two admission workers sharing one daemon. Raising admissions to six did not produce parallel extraction: Remnic's normal `ExtractionQueueCoordinator` is serial to prevent write races. After a clean checkpoint, six independent standalone instances used separate memory, workspace, and Orama directories. Each retained its normal serial queue. A process-wide semaphore capped subscription calls at six. Provider events verified six concurrent requests.
 
 This is a sharded dream configuration. Its private handoff includes the original memory folder and all six worker memory folders. Workers do not share learned entities or consolidate across folders during extraction. Aggregate counts must identify this layout; they are not a single-store consolidation result.
 
@@ -75,7 +79,7 @@ The direct Codex CLI runner failed a real request with `invalid_refresh_token`, 
 
 The adapter disables context-file providers, tools, LSP, extensions, skills, rules, session persistence, model fallback, context promotion, and compaction. It passes requests through stdin, accepts only the exact requested provider/model, and records usage without transcript content. It captures the completed assistant event before stopping the child. CLI linger after a completed response is not counted as a model timeout.
 
-Earlier requests used `--service-tier priority`. After the authorized reset update, requests use `--service-tier default`, with Fast mode off. New provider metrics record that requested tier. OMP does not expose the effective backend tier here, so that field remains unverified.
+Earlier requests used `--service-tier priority`. After the authorized reset update, requests used `--service-tier default`, with Fast mode off. Provider metrics recorded that requested tier. This evaluation did not record an effective backend tier.
 
 The private corpus controller runs in this form:
 
@@ -104,9 +108,11 @@ These calls consumed 11,953 reported tokens in total. They used no corpus inputs
 
 Separate setup smokes covered the direct CLI auth failure, two context-inflated OMP attempts, a context-disabled JSON completion, and the private adapter itself. Some earlier diagnostics lack a complete usage record; the three-row table covers only independently recorded normal-pipeline calls and is not a total for all setup activity.
 
-The real corpus dream stage started after integrity verification. Its aggregate progress and final measurements belong in [STATUS.md](STATUS.md) and the result exports. No downstream score exists.
+The real corpus attempt finished at 20:34:00 UTC after 17,249.368 seconds. It attempted all 674 trajectories and all 1,183 source parts. One part remained provider-blocked; 673 trajectories finished without refusal. The run reported 131,040,618 input and 1,631,388 output tokens. Failed requests may have unreported usage.
 
-The run retains grounding and records empty output as an actual result. It does not substitute the earlier synthetic failures for corpus measurements. The intended handoff is the resulting private memory folder, with counts and a local checksum. Its contents remain outside this repository.
+Grounding stayed enabled. The resulting native Markdown handoff contains 60 files and 33,869 bytes across seven store trees. Its file counts include nine facts, five corrections, and 33 entities. File-copy checks matched the source bytes. The handoff excludes corpus inputs and runtime databases. Its contents and the full run state remain private. All owned instances stopped.
+
+Full successful extraction remains blocked by the mandated provider route's refusal of one unchanged part. Scored task runs remain blocked by unavailable Letta environments and verifiers. All 15 task rows retain null scores.
 
 ## Published board baselines
 
@@ -141,7 +147,7 @@ Do not invent task commands, replacement verifiers, or numeric scores. The exist
 
 No metered API fallback or downstream trial ran. Corpus extraction uses Codex subscription quota. Dream-stage usage comes from completed provider events; partial failed requests can leave unreported usage.
 
-Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. A serial 674-trajectory pass has an average allowance of about 32 seconds per trajectory within that limit. The earlier synthetic provider calls took 24.6 to 30.3 seconds each, but they do not estimate corpus throughput. Corpus runtime will be reported separately.
+Letta reports a six-hour maximum for memory generation. This corpus attempt took 4h 47m 29.368s, including startup, restarts, and diagnostic pauses. It attempted every input but retained one provider refusal. For another dream attempt, reserve up to the published six-hour window; that allowance does not guarantee provider acceptance.
 
 The selected route uses subscription quota, whose cost is not priced here. The current authorization prohibits metered fallback. A usage or rate limit pauses the run with its progress and private state intact. Failed requests can have unreported token use.
 

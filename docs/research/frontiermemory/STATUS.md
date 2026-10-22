@@ -1,26 +1,45 @@
 # FrontierMemory 1.0 status
 
-The verified corpus dream stage is running with six concurrent subscription calls and Fast mode off. Grounding remains enabled. No downstream task ran. Keep [draft PR #3212](https://github.com/joshuaswarren/remnic/pull/3212) draft; do not merge or mark ready.
+All 674 trajectories and 1,183 source parts were attempted. One part remains provider-blocked; 673 trajectories finished without a provider refusal. The run produced a private native Markdown handoff. No downstream task ran.
 
-## Measured checkpoint
+Keep [draft PR #3212](https://github.com/joshuaswarren/remnic/pull/3212) draft. Do not merge or mark ready.
 
-Snapshot: 2026-10-22 at 17:51:23 UTC. These are partial dream results, not a completed benchmark.
+## Final dream measurements
+
+The run started at 15:46:31 UTC and stopped at 20:34:00 UTC on 2026-10-22. Wall time includes startup, restarts, and diagnostic pauses. Download and earlier synthetic setup are separate.
 
 | Measurement | Observed value |
 | --- | ---: |
-| Completed trajectories | 111 of 674 |
-| Completed source parts | 205 |
-| Ingestion errors | 5 administrative restart cancellations |
-| Provider errors | 0 |
-| Reported input tokens | 26,879,794 |
-| Reported output tokens | 252,829 |
-| Reported total tokens | 27,132,623 |
-| Fact files | 1 |
-| Correction files | 0 |
-| Entity files | 2 |
+| Trajectories fully attempted | 674 of 674 |
+| Trajectories without refused parts | 673 |
+| Trajectories with a refused part | 1 |
+| Source parts attempted | 1,183 |
+| Parts completed without provider failure | 1,182 |
+| Provider-refused parts | 1 |
+| Provider requests | 1,184 |
+| Failed provider requests | 2, for the same part |
+| Administrative queued-part cancellations | 5 |
+| Recorded ingestion errors | 7 |
+| Wall time | 17,249.368 seconds (4h 47m 29.368s) |
+| Reported input tokens | 131,040,618 |
+| Reported output tokens | 1,631,388 |
+| Reported total tokens | 132,672,006 |
+| Fact files | 9 |
+| Correction files | 5 |
+| Entity files | 33 |
+| Native Markdown handoff files | 60 |
+| Handoff content bytes | 33,869 |
 | Metered API spend | $0 |
 
-The canceled queued parts made no provider requests. Their ledger records remain intact, and resume retries their unfinished work. No completed parts were discarded. Final counters will replace this checkpoint after completion or a real provider limit.
+Token totals cover reported successful completions. Failed requests may have unreported usage. Subscription quota is not priced here. File counts do not measure downstream accuracy or unique semantic memories.
+
+## Exact extraction blocker
+
+One source part failed twice. The first error lacked a recorded classifier. The second carried OMP error ID `53248` (`0xD000`), identifying account-policy and content-block flags. Its HTTP status was unreported. The read-only usage report did not show subscription exhaustion.
+
+After classification, the run retained that refusal without rewriting or retrying the part. It attempted the remaining unchanged parts. The completion ledger and resume cursors account for every source part, including the refusal. No model switch or metered fallback occurred.
+
+Full successful extraction needs the mandated provider route to accept that unchanged part. This run did not bypass the provider policy.
 
 ## Verified corpus
 
@@ -32,19 +51,21 @@ The SHA-256 of `SHA256SUMS` matched:
 c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1
 ```
 
-This run used existing authentication after an external access grant. It performed no HF login, terms acceptance, upload, push, or repository creation. Structural inspection exposed no trajectory content. Corpus and generated memories remain outside this public repository.
+This run performed no HF login, terms acceptance, upload, push, or repository creation. Corpus files, memory contents, and the canary remain outside this public repository.
 
-## Extractor and state
+## Extractor and handoff
 
-The private runner uses the existing `openai-codex/gpt-6.1-sol` subscription through OMP. Current requests use `--service-tier default`, with Fast mode off. Earlier requests used priority. The effective backend tier remains unverified. No metered API or extractor switch is permitted.
+The private transport used `omp/18.12.6` and the existing `openai-codex/gpt-6.1-sol` subscription. Earlier requests used priority. Post-reset requests used `--service-tier default`, with Fast mode off. The effective backend tier was not recorded.
 
-Six independent standalone instances now use separate temporary memory, workspace, and Orama directories. Provider events verified six concurrent requests. Each instance keeps Remnic's normal serial extraction queue. The handoff includes the original memory folder and all six worker folders; workers do not share learned entities or consolidate across folders. This sharded layout must remain part of any result interpretation.
+Six independent standalone instances used separate memory, workspace, and Orama directories. Provider events proved a peak of six concurrent calls. Each instance retained its normal serial extraction queue. Grounding stayed enabled. Recall settings retained their defaults.
 
-Oversized inputs use consecutive 400,000-character source parts without omissions. Each part retains the verified outcome. The ingestion-only turn limit is 450,000 characters. Recall settings retain their defaults, and grounding remains on. The checked restarts retained 53 trajectories/103 parts, then 97 trajectories/183 parts.
+The handoff contains native Markdown trees from the original store and six worker stores. Its 60 files include the 47 fact/correction/entity files above. No cross-store consolidation or semantic deduplication is claimed. File-copy checks matched the source bytes. The handoff excludes corpus input files and runtime databases.
 
-The run uses no production service, shared QMD index, or other model endpoint. A real usage or rate-limit failure will stop new admissions, drain requests, stop the owned instances, and retain private state. No quota estimate alone triggers a pause.
+Each archive part entered normal observe/extract/flush as one user replay message. Original role labels and tool records remained inside the source text. Consecutive parts contained at most 400,000 source characters; the ingestion-only turn limit was 450,000 characters. No source part was silently truncated.
 
-## Scoring and files
+All owned instances stopped. Their evaluation ports had no listeners after shutdown. Private state and execution scripts remain available for inspection or an authorized resume. No production service, shared QMD index, other extractor, or other model endpoint was used.
+
+## Downstream scoring
 
 All 15 downstream rows remain `not_run`, with `null` Remnic and no-memory scores. The external 13.3% to 73.3% range does not rank this run. Scoring requires Letta's task environments and verifiers or a submission. No contact message was sent.
 
