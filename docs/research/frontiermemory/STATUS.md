@@ -33,6 +33,32 @@ The run started at 15:46:31 UTC and stopped at 20:34:00 UTC on 2026-10-22. Wall 
 
 Token totals cover reported successful completions. Failed requests may have unreported usage. Subscription quota is not priced here. File counts do not measure downstream accuracy or unique semantic memories.
 
+## Caveat: output is anomalously thin (diagnosis, 2026-10-22)
+
+Treat the stored output as a pipeline defect, not a measurement of what the corpus contains. Across 1,182 completed parts, the run kept 9 fact files, 5 correction files, and 33 entity files, using 132,672,006 reported tokens. Downstream scores stay `null` until Letta's task environments and verifiers are available. Nothing in this run ranks Remnic.
+
+**Cause: source grounding discarded almost everything the extractor returned.** The extractor produced memories with verbatim source quotes. Remnic's grounding filter (`extractionSourceGroundingEnabled: true`, `extraction.spanMode: "off"`) then rejected nearly all of them. It checks the model's paraphrased `content` against the source text and ignores the `quote` field unless span mode is `on`.
+
+Evidence, from a read-only pass over the retained private state and a fresh isolated store:
+
+- **The count is correct.** A recursive walk of the original store and all six worker stores finds exactly 9 fact, 5 correction, and 33 entity files. The daemon logged 51 `persisted:` lines, and their totals match the files on disk. Persistence-stage gates removed almost nothing: 1 dedup, and no importance, judge, or redaction rejections.
+- **Most extractions ended empty before persistence.** There were 1,189 observes and 11 extraction failures (7 network, 3 schema rejection, 1 empty). Only 35 of 1,183 parts appear as a source on any stored memory.
+- **The extractor did return content.** Matching provider events to parts by timestamp worked for 1,006 of 1,184 calls. Parts that stored nothing had a median of 1,414 output tokens, and 678 of them had at least 1,000. Raw responses were not logged, because the eval runner discarded them.
+- **Replay reproduces the stored output exactly.** Three parts were re-extracted with the same extractor in a fresh store, using 3 model calls: trajectories 300 (FAIL), 376 (PASS), and 118 (FAIL), part 1 each. Output-token counts were within 8% of the original calls. The extractor returned 13 facts, 4 entities, 2 profile updates, and 3 relationships, and all 13 fact quotes were exact substrings of the source. The pipeline kept 0, 0, and 1 fact plus 2 profile updates, which matches what the original run stored for those three parts.
+- **Each item was checked offline against Remnic's grounding code, with no model calls.** Grounding kept 1 of 13 facts, 0 of 4 entities, and 0 of 3 relationships, and it kept both profile updates. Normalization and sanitization dropped nothing. Even with the verbatim quote used as the content, grounding kept only 6 of 13 against the JSON-escaped source and 8 of 13 against decoded text. Simulating `spanMode: "on"` did not change the content gate.
+
+The prompt, the JSON parsing, the storage paths, the namespace, and replay extraction mode were not the cause. Extraction ran on every part (`extraction=true`). Survivors were mostly short statements copied nearly word for word, which is the shape this filter lets through.
+
+**Confidence:** high for the mechanism. Three of three replayed parts matched exactly. The thin output across the full run is consistent with this mechanism, but it is not proven per part, because raw outputs from the original run were not retained.
+
+**Recommended fix before any rerun:**
+
+1. Remnic code PR: quote-anchored grounding. Accept a fact when its `quote` is an exact substring of one assertion-source turn and its `content` is grounded against a window around that quote rather than the whole transcript. Apply the same rule to entity facts and relationships, and stop sentence splitting from breaking a matched quote at `;`. Unrelated or hallucinated quotes still fail.
+2. Runner change: keep raw model responses in private run state, so grounding changes can be re-applied offline without new model calls. Optionally render trajectory JSON as plain-text turns before ingestion.
+3. Not recommended as the fix: turning grounding off. It would keep these items but drop the faithfulness guard. It is useful only as an offline comparison once raw outputs are logged.
+
+**Cost of a corrected run:** after a pilot on 20 parts (about 2.2M tokens), a full rerun costs about the same as this one. That is about 1,183 extraction calls, about 133M reported tokens, and roughly 4h 47m at six concurrent calls on the same Codex subscription, with no metered spend. The one content-blocked part stays blocked. Per-part caps (12 facts and 6 entities) bound the maximum yield.
+
 ## Exact extraction blocker
 
 One source part failed twice. The first error lacked a recorded classifier. The second carried OMP error ID `53248` (`0xD000`), identifying account-policy and content-block flags. Its HTTP status was unreported. The read-only usage report did not show subscription exhaustion.

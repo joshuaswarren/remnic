@@ -89,10 +89,75 @@
       "unsuccessful_requests_for_that_part": 2,
       "first_error_classification": "unrecorded",
       "second_error_id": 53248,
-      "second_error_flags": ["account-policy", "content-blocked"],
+      "second_error_flags": [
+        "account-policy",
+        "content-blocked"
+      ],
       "http_status": null,
       "rewritten_after_classification": false,
       "retried_after_classification": false
+    },
+    "output_anomaly": {
+      "anomalously_thin": true,
+      "scores_null_pending_letta_harness": true,
+      "diagnosed_cause": "source_grounding_rejects_paraphrased_content_despite_verbatim_quotes",
+      "confidence": "high_for_mechanism_not_proven_per_part",
+      "stored_counts_verified_on_disk": {
+        "facts": 9,
+        "corrections": 5,
+        "entities": 33
+      },
+      "persisted_log_lines": 51,
+      "persist_stage_dedup": 1,
+      "persist_stage_gated": 0,
+      "parts_with_any_stored_memory": 35,
+      "extraction_failures": {
+        "network": 7,
+        "schema_rejection": 3,
+        "empty": 1
+      },
+      "raw_responses_retained": false,
+      "replay": {
+        "model_calls": 3,
+        "trajectories": [
+          300,
+          376,
+          118
+        ],
+        "part": 1,
+        "extractor_returned": {
+          "facts": 13,
+          "entities": 4,
+          "profile_updates": 2,
+          "relationships": 3
+        },
+        "fact_quotes_verbatim": 13,
+        "grounding_kept": {
+          "facts": 1,
+          "entities": 0,
+          "profile_updates": 2,
+          "relationships": 0
+        },
+        "matches_original_run_storage": true,
+        "quote_as_content_kept": {
+          "json_escaped_source": 6,
+          "decoded_source": 8,
+          "of": 13
+        }
+      },
+      "recommended_fix": [
+        "remnic_code_pr_quote_anchored_grounding",
+        "runner_retain_raw_responses_privately"
+      ],
+      "not_recommended": "disable_grounding",
+      "corrected_run_estimate": {
+        "pilot_parts": 20,
+        "pilot_tokens_approx": 2200000,
+        "extraction_calls_approx": 1183,
+        "total_tokens_approx": 133000000,
+        "wall_time_approx": "4h47m at 6 concurrent",
+        "metered_spend_usd": 0
+      }
     }
   },
   "isolated_startup_smoke": {
@@ -104,7 +169,10 @@
     "fact_files": 0,
     "correction_files": 0,
     "entity_files": 0,
-    "local_model_lists": [[], []],
+    "local_model_lists": [
+      [],
+      []
+    ],
     "local_completion_probe_count": 2,
     "local_completion_probe_timeout_seconds": 10,
     "local_completion_probe_tokens": null
@@ -125,9 +193,34 @@
       "usage": null
     },
     "normal_pipeline_smokes": [
-      {"input_tokens": 3014, "output_tokens": 947, "total_tokens": 3961, "provider_elapsed_ms": 28254, "persisted_facts": 0, "status": "failed_persistence_assertion"},
-      {"input_tokens": 3015, "output_tokens": 995, "total_tokens": 4010, "provider_elapsed_ms": 30274, "persisted_facts": 0, "status": "failed_persistence_assertion"},
-      {"input_tokens": 3018, "output_tokens": 964, "total_tokens": 3982, "provider_elapsed_ms": 24613, "persisted_facts": 0, "status": "failed_persistence_assertion", "raw_facts": 2, "raw_entities": 1, "post_grounding_facts": 0, "post_grounding_entities": 0}
+      {
+        "input_tokens": 3014,
+        "output_tokens": 947,
+        "total_tokens": 3961,
+        "provider_elapsed_ms": 28254,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion"
+      },
+      {
+        "input_tokens": 3015,
+        "output_tokens": 995,
+        "total_tokens": 4010,
+        "provider_elapsed_ms": 30274,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion"
+      },
+      {
+        "input_tokens": 3018,
+        "output_tokens": 964,
+        "total_tokens": 3982,
+        "provider_elapsed_ms": 24613,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion",
+        "raw_facts": 2,
+        "raw_entities": 1,
+        "post_grounding_facts": 0,
+        "post_grounding_entities": 0
+      }
     ],
     "smoke_corpus_inputs_used": 0,
     "normal_pipeline_smoke_total_tokens": 11953,
@@ -148,20 +241,95 @@
     "locally_reproduced": false
   },
   "tasks": [
-    {"id": "awilix-release-tier-explicit", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "awilix-release-tier-implicit", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "cattrs-compositional-changelog", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "automationbench-marketing-content-gap-analysis", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "customer-delivery-contextual-preferences", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "enterpriseops-csm-26d1b04a", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "cookie-store-compositional-changelog", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "apex-brightpath-market-share", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "dapt-intrusion-detection-workflow-learning", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "automationbench-sales-partnership-contract", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "apex-eurogrid-curtailment", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "apex-brightpath-seat-surplus", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "automationbench-sales-chatgpt-proposal-customization", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "enterpriseops-teams-2725d17f", "status": "not_run", "remnic_score": null, "no_memory_score": null},
-    {"id": "build-word2vec-pipeline", "status": "not_run", "remnic_score": null, "no_memory_score": null}
+    {
+      "id": "awilix-release-tier-explicit",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "awilix-release-tier-implicit",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "cattrs-compositional-changelog",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-marketing-content-gap-analysis",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "customer-delivery-contextual-preferences",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "enterpriseops-csm-26d1b04a",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "cookie-store-compositional-changelog",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-brightpath-market-share",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "dapt-intrusion-detection-workflow-learning",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-sales-partnership-contract",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-eurogrid-curtailment",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-brightpath-seat-surplus",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-sales-chatgpt-proposal-customization",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "enterpriseops-teams-2725d17f",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "build-word2vec-pipeline",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    }
   ]
 }
