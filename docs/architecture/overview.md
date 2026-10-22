@@ -83,7 +83,7 @@ full-corpus scan.
 
 Do not treat the entire `state/` directory as a disposable search index: it also
 contains pending turns and other operational state. See
-[Operations](../operations.md) for backup and restore guidance.
+[Operations](../operations.md) for backup guidance.
 
 ## Entity File Format
 

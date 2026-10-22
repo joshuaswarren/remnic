@@ -112,7 +112,10 @@ capability record:
 
 - An absent `ops` or `namespaces` axis is unrestricted on that axis.
 - An empty array denies everything on that axis.
-- A non-empty array allows only its listed operations or namespaces.
+- A non-empty `namespaces` array allows only its listed namespaces. A non-empty
+  `ops` array allows only its listed operations, except where an operation
+  declares alternate grants (`allowedByOps`): the `namespace_writable` preflight
+  is also granted by `observe` or `memory_store`.
 
 New tokens always record capabilities; `{ "version": 1 }` explicitly means no
 token-level restrictions. Pre-feature entries without `capabilities` retain

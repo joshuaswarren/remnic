@@ -30,10 +30,13 @@ write routes additionally use the validation and quota rules below.
 | `GET /engram/v1/capabilities` | Returns feature-support flags for client compatibility checks, not the presenting token's permissions. |
 | `GET /engram/v1/authorization?op=recall&op=memory_get` | Checks every named operation without executing its handler. Success returns `{ "authorized": true, "operations": ["recall", "memory_get"] }`. |
 
-These routes require bearer authentication once the server is ready. During
-startup, `/live` and `/health` return HTTP 503 with `code: "not_ready"`,
-`ready: false`, `warmupAttempts`, and `lastError` before the bearer gate; a startup 503
-does not establish that a token is valid.
+Bearer authentication is the default for these routes once the server is ready.
+A host-supplied external request handler runs before bearer authorization and can
+fully handle a request; an integration that claims an infrastructure route this
+way must enforce authentication itself. During startup, `/live` and `/health`
+return HTTP 503 with `code: "not_ready"`, `ready: false`, `warmupAttempts`, and
+`lastError` before the bearer gate; a startup 503 does not establish that a
+token is valid.
 
 The authorization probe requires at least one supported `op`; repeat the query
 parameter for multiple operations. Unsupported operations return HTTP 400;
