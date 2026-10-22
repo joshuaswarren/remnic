@@ -13,15 +13,16 @@
  */
 
 import { createHash } from "node:crypto";
-import path from "node:path";
 import { mkdir, readFile } from "node:fs/promises";
-import { FallbackLlmClient } from "./fallback-llm.js";
-import { writeFileAtomically } from "./maintenance/atomic-file.js";
-import type { AgentPersonaModelConfig, GatewayConfig, MemoryFile } from "./types.js";
-import { listJsonFiles, readJsonFile } from "./json-store.js";
-import { isRecord } from "./store-contract.js";
-import { log } from "./logger.js";
+import path from "node:path";
+import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
+import { FallbackLlmClient } from "./fallback-llm.js";
+import { listJsonFiles } from "./json-store.js";
+import { LocalLlmClient } from "./local-llm.js";
+import { log } from "./logger.js";
+import { writeFileAtomically } from "./maintenance/atomic-file.js";
+import type { AgentPersonaModelConfig, GatewayConfig, PluginConfig } from "./types.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -264,12 +265,57 @@ Output valid JSON only:
   ]
 }`;
 
+interface CalibrationChatClient {
+  chatCompletion(
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options?: {
+      temperature?: number;
+      maxTokens?: number;
+      agentId?: string;
+      modelChain?: AgentPersonaModelConfig;
+    }
+  ): Promise<{ content?: string | null } | null>;
+}
+
+interface CalibrationLlmOptions {
+  gatewayConfig?: GatewayConfig;
+  gatewayAgentId?: string;
+  modelChain?: AgentPersonaModelConfig;
+  workspaceDir?: string;
+  /** Plugin config. Supplies `localLlm*` settings when the gateway chain is empty. */
+  pluginConfig?: PluginConfig;
+}
+
+function resolveCalibrationChatClient(options: CalibrationLlmOptions): CalibrationChatClient | null {
+  const gateway = new FallbackLlmClient(options.gatewayConfig, {
+    workspaceDir: options.workspaceDir,
+  });
+  if (gateway.isAvailable({ agentId: options.gatewayAgentId, modelChain: options.modelChain })) {
+    return gateway;
+  }
+  const pluginConfig = options.pluginConfig;
+  if (pluginConfig && resolveLocalLlmCapabilities(pluginConfig).localLlm) {
+    log.info(`[calibration] using configured local LLM (model=${pluginConfig.localLlmModel})`);
+    const local = new LocalLlmClient(pluginConfig);
+    return {
+      chatCompletion(messages, chatOptions) {
+        return local.chatCompletion(messages, {
+          temperature: chatOptions?.temperature,
+          maxTokens: chatOptions?.maxTokens,
+        });
+      },
+    };
+  }
+  log.warn("[calibration] no LLM available — skipping consolidation");
+  return null;
+}
+
 export async function synthesizeCalibrationRules(
   corrections: CorrectionMemory[],
-  llm: FallbackLlmClient,
+  llm: CalibrationChatClient,
   existingRules: CalibrationRule[],
   agentId?: string,
-  modelChain?: AgentPersonaModelConfig,
+  modelChain?: AgentPersonaModelConfig
 ): Promise<CalibrationRule[]> {
   if (corrections.length < 2) return [];
 
@@ -279,16 +325,20 @@ export async function synthesizeCalibrationRules(
     .map((c, i) => `[${c.id}] ${c.content}`)
     .join("\n\n");
 
-  const existingRulesText = existingRules.length > 0
-    ? `\n\nExisting calibration rules (avoid duplicating these):\n${existingRules.map((r) => `- ${r.condition}: ${r.calibration}`).join("\n")}`
-    : "";
+  const existingRulesText =
+    existingRules.length > 0
+      ? `\n\nExisting calibration rules (avoid duplicating these):\n${existingRules.map((r) => `- ${r.condition}: ${r.calibration}`).join("\n")}`
+      : "";
 
   const response = await llm.chatCompletion(
     [
       { role: "system", content: CLUSTER_PROMPT },
-      { role: "user", content: `Here are ${corrections.length} corrections from this user:\n\n${correctionText}${existingRulesText}` },
+      {
+        role: "user",
+        content: `Here are ${corrections.length} corrections from this user:\n\n${correctionText}${existingRulesText}`,
+      },
     ],
-    { temperature: 0.3, maxTokens: 3000, agentId, modelChain },
+    { temperature: 0.3, maxTokens: 3000, agentId, modelChain }
   );
 
   if (!response?.content) return [];
@@ -324,7 +374,10 @@ export async function synthesizeCalibrationRules(
         }
         const evidenceCorrectionIds = parseEvidenceIds(raw.evidenceIds);
         return {
-          id: `cal-${createHash("sha256").update(condition + calibration).digest("hex").slice(0, 12)}`,
+          id: `cal-${createHash("sha256")
+            .update(condition + calibration)
+            .digest("hex")
+            .slice(0, 12)}`,
           ruleType: ruleType as CalibrationRule["ruleType"],
           condition,
           modelTendency,
@@ -333,8 +386,8 @@ export async function synthesizeCalibrationRules(
           confidence,
           evidenceCount: evidenceCorrectionIds.length,
           evidenceCorrectionIds,
-        createdAt: now,
-        lastReinforcedAt: now,
+          createdAt: now,
+          lastReinforcedAt: now,
         };
       })
       .filter((rule): rule is CalibrationRule => !!rule);
@@ -383,6 +436,30 @@ export function buildCalibrationRecallSection(
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 /**
+ * Options weekly compounding passes into calibration. Gateway agent and task
+ * chain fields stay limited to `modelSource: "gateway"`. `pluginConfig` carries
+ * the `localLlm*` settings used when that chain is empty.
+ */
+export function calibrationConsolidationInput(config: PluginConfig): {
+  memoryDir: string;
+  gatewayConfig?: GatewayConfig;
+  gatewayAgentId?: string;
+  modelChain?: AgentPersonaModelConfig;
+  workspaceDir?: string;
+  pluginConfig: PluginConfig;
+} {
+  const gateway = config.modelSource === "gateway";
+  return {
+    memoryDir: config.memoryDir,
+    gatewayConfig: config.gatewayConfig,
+    gatewayAgentId: gateway ? (config.gatewayAgentId || undefined) : undefined,
+    modelChain: gateway ? config.taskModelChain : undefined,
+    workspaceDir: config.workspaceDir,
+    pluginConfig: config,
+  };
+}
+
+/**
  * Run the full calibration pipeline:
  * 1. Read all corrections
  * 2. Send to LLM for clustering and rule synthesis
@@ -395,6 +472,7 @@ export async function runCalibrationConsolidation(options: {
   gatewayAgentId?: string;
   modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
+  pluginConfig?: PluginConfig;
   /**
    * When set, a week whose reinforcement is already in the index is returned
    * as-is. Weekly synthesis passes the ISO week id so a retry after a later
@@ -410,23 +488,24 @@ export async function runCalibrationConsolidation(options: {
       return existingIndex.rules;
     }
 
-    const llm = new FallbackLlmClient(options.gatewayConfig, {
-      workspaceDir: options.workspaceDir,
-    });
-    if (!llm.isAvailable({ agentId: options.gatewayAgentId, modelChain: options.modelChain })) {
-      log.debug("[calibration] no LLM available — skipping consolidation");
-      return [];
-    }
+    const llm = resolveCalibrationChatClient(options);
+    if (!llm) return [];
 
     const corrections = await readCorrections(options.memoryDir);
     if (corrections.length < 3) {
-      log.debug(`[calibration] only ${corrections.length} corrections — need at least 3`);
+      log.info(`[calibration] only ${corrections.length} corrections — need at least 3`);
       return [];
     }
 
-    const newRules = await synthesizeCalibrationRules(corrections, llm, existingIndex.rules, options.gatewayAgentId, options.modelChain);
+    const newRules = await synthesizeCalibrationRules(
+      corrections,
+      llm,
+      existingIndex.rules,
+      options.gatewayAgentId,
+      options.modelChain
+    );
     if (newRules.length === 0) {
-      log.debug("[calibration] no new calibration rules synthesized");
+      log.info("[calibration] no new calibration rules synthesized");
       return existingIndex.rules;
     }
 
@@ -455,7 +534,9 @@ export async function runCalibrationConsolidation(options: {
     log.debug(`[calibration] synthesized ${newRules.length} new rule(s), ${allRules.length} total`);
     return allRules;
   } catch (error) {
-    log.warn(`[calibration] consolidation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+    log.warn(
+      `[calibration] consolidation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`
+    );
     return [];
   }
 }
@@ -474,6 +555,7 @@ export async function runCalibrationIfEnabled(options: {
   gatewayAgentId?: string;
   modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
+  pluginConfig?: PluginConfig;
 }): Promise<CalibrationRule[]> {
   if (!options.calibrationEnabled) {
     return [];
@@ -484,6 +566,7 @@ export async function runCalibrationIfEnabled(options: {
     gatewayAgentId: options.gatewayAgentId,
     modelChain: options.modelChain,
     workspaceDir: options.workspaceDir,
+    pluginConfig: options.pluginConfig,
   });
 }
 

@@ -545,13 +545,9 @@ export class CompoundingEngine {
     // failure does not reinforce the same rules again.
     if (resolveConsolidationCapabilities(this.config).calibration) {
       try {
-        const { runCalibrationConsolidation } = await import("../calibration.js");
+        const { calibrationConsolidationInput, runCalibrationConsolidation } = await import("../calibration.js");
         const calRules = await runCalibrationConsolidation({
-          memoryDir: this.config.memoryDir,
-          gatewayConfig: this.config.gatewayConfig,
-          gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
-          modelChain: this.config.modelSource === "gateway" ? this.config.taskModelChain : undefined,
-          workspaceDir: this.config.workspaceDir,
+          ...calibrationConsolidationInput(this.config),
           idempotencyKey: weekId,
         });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);

@@ -13,6 +13,8 @@
  * `@remnic/core/abort-error`) — the root index stays untouched.
  */
 
+import { sleep as defaultSleep } from "./utils/sleep.js";
+
 export interface RetryingFetchOptions {
   /** Request init for every attempt. Ignored when `buildInit` is set. */
   init?: RequestInit;
@@ -69,12 +71,6 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_BACKOFF_BASE_MS = 1_000;
-
-function defaultSleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
 
 /**
  * Network/timeout failures wrap Node error text that can carry loader

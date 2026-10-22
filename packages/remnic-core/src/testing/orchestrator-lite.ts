@@ -18,6 +18,8 @@ import { getAbstractionNodeStoreStatus, type AbstractionNodeStoreStatus } from "
 import type { Orchestrator } from "../orchestrator.js";
 import type { ExtractionRunCoordinatorDeps } from "../orchestration/extraction-run.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "../types.js";
+import { sleep } from "../utils/sleep.js";
+export { sleep } from "../utils/sleep.js";
 
 /**
  * Offline-safe config: QMD off, embedding fallback off, planner off (so the
@@ -74,13 +76,6 @@ export function mkTempMemoryDir(label: string): Promise<string> {
 /** One hour in the past — never the same millisecond as any `now` bound (readRecent uses `ts < now`). */
 export function pastIso(): string {
   return new Date(Date.now() - 3600_000).toISOString();
-}
-
-/** Linear async sleep (shared by the retrying cleanup and pollers). */
-export function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
 }
 
 /**
