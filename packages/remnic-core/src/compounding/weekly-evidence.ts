@@ -19,7 +19,7 @@ import * as keyring from "../secure-store/keyring.js";
 import { readMaybeEncryptedFile } from "../secure-store/secure-fs.js";
 import { type SharedFeedbackEntry, SharedFeedbackEntrySchema } from "../shared-context/manager.js";
 import { readRawMemoryDocument } from "../storage/memory-frontmatter-metadata.js";
-import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "../storage/secure-line-reader.js";
+import { readMaybeEncryptedLines } from "../storage/secure-line-reader.js";
 import type { MemoryActionEvent, MemoryFile, PluginConfig } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
@@ -176,18 +176,22 @@ export async function readWeeklyActionEvents(input: {
     if (entryStat.isSymbolicLink() || !entryStat.isFile()) continue;
     const fileReal = await realpath(filePath);
     assertPathInsideRoot(rootReal, fileReal, filePath);
-    let rows: Array<{ line: number; event: MemoryActionEvent }>;
     try {
-      rows = await readMemoryActionEventRowsFromLines(
-        readMaybeEncryptedLines(filePath, () => readMaybeEncryptedFile(filePath, key, input.memoryDir)),
-        Number.MAX_SAFE_INTEGER
-      );
+      let lineNumber = 0;
+      for await (const row of readMaybeEncryptedLines(
+        filePath,
+        () => readMaybeEncryptedFile(filePath, key, input.memoryDir),
+      )) {
+        lineNumber += 1;
+        const line = row.trim();
+        if (line.length === 0) continue;
+        const event = parseMemoryActionEventLine(line);
+        if (!event) continue;
+        pushActionEvent(out, seenActionIds, lineNumber, event, ns.namespace, label, input.weekId);
+      }
     } catch (err) {
       if (isErrnoCode(err, "ENOENT")) continue;
       throw err;
-    }
-    for (const row of rows) {
-      pushActionEvent(out, seenActionIds, row.line, row.event, ns.namespace, label, input.weekId);
     }
   }
   return out;
@@ -220,6 +224,23 @@ export async function readWeeklyCorrections(input: {
     if (evidence) out.push(evidence);
   }
   return out;
+}
+
+function parseMemoryActionEventLine(line: string): MemoryActionEvent | null {
+  let parsed: Partial<MemoryActionEvent> & { recordKind?: unknown };
+  try {
+    parsed = JSON.parse(line) as Partial<MemoryActionEvent> & { recordKind?: unknown };
+  } catch {
+    return null;
+  }
+  if (parsed.recordKind !== undefined) return null;
+  const outcome = parsed.outcome === "applied" || parsed.outcome === "skipped" || parsed.outcome === "failed"
+    ? parsed.outcome
+    : null;
+  const timestamp = parsed.timestamp;
+  const action = parsed.action;
+  if (typeof timestamp !== "string" || typeof action !== "string" || outcome === null) return null;
+  return { ...parsed, timestamp, action, outcome };
 }
 
 function pushActionEvent(

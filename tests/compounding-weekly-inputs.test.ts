@@ -923,6 +923,41 @@ test("store recall keeps corrections from the routed default namespace", async (
   }
 });
 
+test("a held migration lock fails the append instead of writing beside the copy", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-lock-"));
+  try {
+    const cfg = config(memoryDir);
+    const inboxDir = path.join(memoryDir, "shared-context", "feedback");
+    await mkdir(inboxDir, { recursive: true });
+    await writeFile(path.join(inboxDir, "inbox.jsonl.migrate.lock"), "", "utf-8");
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "Hold the lock",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    const manager = new SharedContextManager(cfg);
+    await assert.rejects(
+      () => manager.appendFeedback({
+        agent: "bench-agent",
+        decision: "approved",
+        reason: "Must not append while the lock is held",
+        date: IN_WEEK,
+      }),
+      /did not acquire its lock/
+    );
+    await assert.rejects(readFile(path.join(inboxDir, "inbox.jsonl")));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("concurrent legacy inbox migration keeps an append that lands during the copy", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-race-"));
   try {

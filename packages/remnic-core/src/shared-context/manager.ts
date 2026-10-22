@@ -586,6 +586,7 @@ async function withFeedbackMigrateLock(lockPath: string, body: () => Promise<voi
     }
     return;
   }
+  throw new Error("feedback inbox migration did not acquire its lock before the wait elapsed");
 }
 
 export class SharedContextManager {
