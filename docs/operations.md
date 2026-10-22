@@ -322,11 +322,18 @@ remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>
 
 - `--interval <seconds>` sets the cadence (default 300, mirroring `replicaPeers.pollIntervalMs`;
   values below 1 second are clamped to 1 second).
-- Each cycle runs the same apply as the one-shot command and prints one status line. With `--json`
-  the final summary is a machine-readable `ConvergeWatchOutcome`.
-- A failed cycle (peer unreachable, transient network error) is reported and does NOT stop the
-  watch — a peer being unreachable is exactly when the surviving side most needs to keep the
-  schedule. Unresolved conflicts under `manual` likewise stop mutation for that cycle only.
+- Each cycle runs the same apply as the one-shot command and prints one status line
+  (`excluded=N` counts namespaces left out of that cycle). With `--json` the final summary is a
+  machine-readable `ConvergeWatchOutcome`, including `lastExcludedNamespaces`.
+- A census or snapshot failure for one namespace — for example HTTP 400 because that namespace is
+  not readable — excludes it from the plan on both sides. It is not treated as an empty corpus, so
+  the cycle pushes nothing to it and deletes nothing from it. Stderr names the namespace, side, and
+  error. The other namespaces still converge. The cycle status is `partial` when that is the only
+  problem. If every namespace census fails, the cycle fails closed instead of reporting convergence.
+- A failed cycle (peer unreachable, every namespace census failed, transient network error) is
+  reported and does NOT stop the watch — a peer being unreachable is exactly when the surviving
+  side most needs to keep the schedule. Unresolved conflicts under `manual` likewise stop mutation
+  for that cycle only.
 - `SIGINT`/`SIGTERM` stop the watch after the current cycle completes.
 
 Run it as a supervised long-running process on ONE side of the pair (typically the side you want

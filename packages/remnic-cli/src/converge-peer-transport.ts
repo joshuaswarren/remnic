@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import {
-  isInternalRemnicStatePath,
   OFFLINE_SYNC_CHANGESET_FORMAT,
   OFFLINE_SYNC_FILE_CONTENT_MAX_CHUNK_BYTES,
   OFFLINE_SYNC_FILE_CONTENT_TRANSFER_CHUNK_BYTES,
+  isInternalRemnicStatePath,
 } from "@remnic/core";
 import { normalizeConvergePeerUrl } from "@remnic/core/reconcile/cursor.js";
-import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
+import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
 import { parsePeerManifestStream } from "./converge-peer-manifest.js";
 
 export const DEFAULT_PEER_REQUEST_TIMEOUT_MS = 30_000;
@@ -84,7 +84,9 @@ export async function fetchPeerSyncCapabilities(
     }
     const platform = "platform" in payload && typeof payload.platform === "string" ? payload.platform : undefined;
     const manifestRevision =
-      "manifestRevision" in payload && typeof payload.manifestRevision === "string" ? payload.manifestRevision : undefined;
+      "manifestRevision" in payload && typeof payload.manifestRevision === "string"
+        ? payload.manifestRevision
+        : undefined;
     return {
       convergenceFinalization: payload.convergenceFinalization,
       manifestStream: payload.manifestStream,
@@ -124,6 +126,53 @@ export async function fetchPeerManifestStream(
     return parsePeerManifestStream(response, namespace);
   }
   return null;
+}
+
+/** Bound a failed snapshot body so the cycle log can name the refusal. */
+function collapseWhitespace(value: string, max: number): string {
+  let out = "";
+  let pendingSpace = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    const code = char.charCodeAt(0);
+    const isSpace = code === 32 || code === 9 || code === 10 || code === 13;
+    if (isSpace) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      if (out.length + 1 >= max) break;
+      out += " ";
+      pendingSpace = false;
+    }
+    if (out.length >= max) break;
+    out += char;
+  }
+  return out;
+}
+
+async function readSnapshotErrorDetail(response: Response): Promise<string> {
+  let raw = "";
+  try {
+    raw = await response.text();
+  } catch {
+    return "";
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return "";
+  let detail = trimmed;
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (parsed !== null && typeof parsed === "object" && "error" in parsed) {
+        const error = (parsed as { error?: unknown }).error;
+        if (typeof error === "string" && error.trim().length > 0) detail = error.trim();
+      }
+    } catch {
+      // A non-JSON body is still the operator-facing reason.
+    }
+  }
+  return collapseWhitespace(detail, 160);
 }
 
 export async function fetchPeerSnapshot(
@@ -168,7 +217,8 @@ export async function fetchPeerSnapshot(
       continue;
     }
     if (!response.ok) {
-      lastFailure = `HTTP ${response.status}`;
+      const detail = await readSnapshotErrorDetail(response);
+      lastFailure = detail.length > 0 ? `HTTP ${response.status} ${detail}` : `HTTP ${response.status}`;
       continue;
     }
 

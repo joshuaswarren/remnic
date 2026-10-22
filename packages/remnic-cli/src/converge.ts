@@ -26,10 +26,7 @@ import {
   readConvergeCursor,
   writeConvergeCursor,
 } from "@remnic/core/reconcile/cursor.js";
-import {
-  type ReconcileManifest,
-  collapseActiveFactDuplicates,
-} from "@remnic/core/reconcile/manifest.js";
+import { type ReconcileManifest, collapseActiveFactDuplicates } from "@remnic/core/reconcile/manifest.js";
 import {
   type ReconcileFileState,
   type ReconcileNamespaceInput,
@@ -38,16 +35,23 @@ import {
   planReconciliation,
 } from "@remnic/core/reconcile/plan.js";
 import { planLocalNamespaceCensus } from "./converge-local-census.js";
+import {
+  type ConvergeNamespaceExclusion,
+  type ConvergeNamespaceFailure,
+  finishConvergeApplyResult,
+  listNamespaceExclusions,
+  recordNamespaceCensusFailure,
+  throwIfEveryNamespaceCensusFailed,
+} from "./converge-namespace-exclusions.js";
 import { planPeerNamespaceCensus } from "./converge-peer-census.js";
 import {
   ConvergePlanCache,
   ConvergePlanCacheBusyError,
-  convergePlanScopeKey,
   type ConvergePlanProgressEvent,
+  convergePlanScopeKey,
 } from "./converge-plan-cache.js";
 
 import type { ConvergeConflictPolicy } from "@remnic/core/types.js";
-import { formatConvergeApplyReport, formatConvergeReport } from "./converge-report.js";
 import {
   DEFAULT_PEER_REQUEST_TIMEOUT_MS,
   type PeerFileChunk,
@@ -60,11 +64,18 @@ import {
   postPeerFileDeletion,
   streamPeerFileContent,
 } from "./converge-peer-transport.js";
-import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
+import {
+  formatConvergeApplyReport,
+  formatConvergeExclusionLine,
+  formatConvergeReport,
+  formatConvergeWatchCycleLine,
+} from "./converge-report.js";
 import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
+import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
 import { createOfflineStorageIo } from "./offline-storage-io.js";
 
 export type { ConvergePlanProgressEvent } from "./converge-plan-cache.js";
+export type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
 export interface ConvergePlanOptions {
   config?: PluginConfig;
   peerUrl?: string;
@@ -96,8 +107,15 @@ export interface ConvergeApplyOptions extends ConvergePlanOptions {
 
 export interface ConvergeApplyResult {
   converged: boolean;
-  status: "converged" | "applied" | "stopped_unresolved_conflicts" | "dry_run";
-  plan: ReconcilePlan;
+  /**
+   * `partial` means at least one namespace was excluded after a census or
+   * snapshot failure and the planned namespaces finished without transfer
+   * failures. Those namespaces converged; the excluded ones were not touched.
+   */
+  status: "converged" | "applied" | "partial" | "stopped_unresolved_conflicts" | "dry_run";
+  plan: ReconcilePlan & { excludedNamespaces?: readonly ConvergeNamespaceExclusion[] };
+  /** Namespaces omitted from `plan`. Absent when every census succeeded. */
+  excludedNamespaces?: readonly ConvergeNamespaceExclusion[];
   transfers: {
     pulled: number;
     pushed: number;
@@ -148,7 +166,9 @@ async function openPlanCache(memoryDir: string, scope: string): Promise<Converge
   }
 }
 
-export async function computeConvergePlan(options: ConvergePlanOptions = {}): Promise<ReconcilePlan> {
+export async function computeConvergePlan(
+  options: ConvergePlanOptions = {}
+): Promise<ReconcilePlan & { excludedNamespaces?: ConvergeNamespaceExclusion[] }> {
   const baseMap = new Map<string, ReconcileFileState[]>();
   const semanticAgreementMap = new Map<string, ReconcileSemanticAgreement[]>();
   const namespacesToPlan = new Set<string>();
@@ -160,7 +180,24 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
   const peerDeletionMtimeMs = new Map<string, ReadonlyMap<string, number>>();
   const localManifests = new Map<string, ReconcileManifest>();
   const peerManifests = new Map<string, ReconcileManifest>();
+  const excluded = new Map<string, ConvergeNamespaceFailure>();
   let peerPlatform: string | undefined;
+
+  // Drop both sides. A failed census must not be planned as an empty corpus:
+  // an empty peer plans pushes, and an empty local plans deletes.
+  const dropPlannedNamespace = (namespace: string): void => {
+    namespacesToPlan.delete(namespace);
+    baseMap.delete(namespace);
+    semanticAgreementMap.delete(namespace);
+    localMap.delete(namespace);
+    localTombstones.delete(namespace);
+    localDeletionMtimeMs.delete(namespace);
+    localManifests.delete(namespace);
+    peerMap.delete(namespace);
+    peerTombstones.delete(namespace);
+    peerDeletionMtimeMs.delete(namespace);
+    peerManifests.delete(namespace);
+  };
 
   if (options.baseFilesByNamespace) {
     for (const [ns, files] of options.baseFilesByNamespace) {
@@ -251,28 +288,35 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       }
       for (const [rootIndex, rootInfo] of roots.entries()) {
         namespacesToPlan.add(rootInfo.namespace);
-        const census = await planLocalNamespaceCensus({
-          rootDir: rootInfo.rootDir,
-          namespace: rootInfo.namespace,
-          index: rootIndex + 1,
-          total: roots.length,
-          citationTemplate: config.inlineSourceAttributionFormat,
-          cache,
-          signal: options.signal,
-          onProgress: options.onProgress,
-          memoryDir,
-          peerUrl: options.peerUrl,
-          userExcludeRegexps,
-        });
-        localMap.set(rootInfo.namespace, census.files);
-        localManifests.set(rootInfo.namespace, census.manifest);
-        localTombstones.set(rootInfo.namespace, census.tombstones);
+        try {
+          const census = await planLocalNamespaceCensus({
+            rootDir: rootInfo.rootDir,
+            namespace: rootInfo.namespace,
+            index: rootIndex + 1,
+            total: roots.length,
+            citationTemplate: config.inlineSourceAttributionFormat,
+            cache,
+            signal: options.signal,
+            onProgress: options.onProgress,
+            memoryDir,
+            peerUrl: options.peerUrl,
+            userExcludeRegexps,
+          });
+          localMap.set(rootInfo.namespace, census.files);
+          localManifests.set(rootInfo.namespace, census.manifest);
+          localTombstones.set(rootInfo.namespace, census.tombstones);
+        } catch (error) {
+          recordNamespaceCensusFailure(excluded, rootInfo.namespace, "local", error, options.signal);
+          dropPlannedNamespace(rootInfo.namespace);
+        }
       }
     }
 
     if (memoryDir && peerUrl) {
       for (const namespace of await discoverCursorNamespaces(memoryDir, peerUrl)) {
-        namespacesToPlan.add(namespace);
+        // A namespace already excluded by the local census must not come back
+        // through a cursor and be planned against an empty local side.
+        if (!excluded.has(namespace)) namespacesToPlan.add(namespace);
       }
     }
     if (!options.peerFilesByNamespace && peerUrl) {
@@ -296,27 +340,35 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
       peerPlatform = capabilities?.platform;
       const sortedNamespaces = [...namespacesToPlan].sort();
       for (const [nsIndex, ns] of sortedNamespaces.entries()) {
-        const census = await planPeerNamespaceCensus({
-          peerUrl,
-          namespace: ns,
-          index: nsIndex + 1,
-          total: sortedNamespaces.length,
-          resolvedToken,
-          fetchFn,
-          timeoutMs,
-          manifestStream: capabilities?.manifestStream === true,
-          peerManifestRevision: capabilities?.manifestRevision,
-          citationTemplate: config?.inlineSourceAttributionFormat,
-          localManifestFiles: localManifests.get(ns)?.files,
-          cache,
-          signal: options.signal,
-          onProgress: options.onProgress,
-        });
-        peerMap.set(ns, census.manifest.files);
-        peerManifests.set(ns, census.manifest);
-        peerTombstones.set(ns, census.tombstones);
+        if (excluded.has(ns)) continue;
+        try {
+          const census = await planPeerNamespaceCensus({
+            peerUrl,
+            namespace: ns,
+            index: nsIndex + 1,
+            total: sortedNamespaces.length,
+            resolvedToken,
+            fetchFn,
+            timeoutMs,
+            manifestStream: capabilities?.manifestStream === true,
+            peerManifestRevision: capabilities?.manifestRevision,
+            citationTemplate: config?.inlineSourceAttributionFormat,
+            localManifestFiles: localManifests.get(ns)?.files,
+            cache,
+            signal: options.signal,
+            onProgress: options.onProgress,
+          });
+          peerMap.set(ns, census.manifest.files);
+          peerManifests.set(ns, census.manifest);
+          peerTombstones.set(ns, census.tombstones);
+        } catch (error) {
+          recordNamespaceCensusFailure(excluded, ns, "peer", error, options.signal);
+          dropPlannedNamespace(ns);
+        }
       }
     }
+
+    throwIfEveryNamespaceCensusFailed(namespacesToPlan.size, excluded);
 
     if (memoryDir && options.peerUrl && (!options.baseFilesByNamespace || !options.semanticAgreementsByNamespace)) {
       for (const ns of namespacesToPlan) {
@@ -346,6 +398,7 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 
     const inputs: ReconcileNamespaceInput[] = [];
     for (const ns of [...namespacesToPlan].sort()) {
+      if (excluded.has(ns)) continue;
       const baseFiles = baseMap.get(ns);
       const localFiles = localMap.get(ns) ?? [];
       const peerFiles = peerMap.get(ns) ?? [];
@@ -365,8 +418,11 @@ export async function computeConvergePlan(options: ConvergePlanOptions = {}): Pr
 
     const conflictPolicy =
       options.conflictPolicy ?? config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
-    const plan = planReconciliation(inputs, { conflictPolicy, peerPlatform });
-    return collapseActiveFactDuplicates(plan, localManifests, peerManifests, semanticAgreementMap);
+    const planned = planReconciliation(inputs, { conflictPolicy, peerPlatform });
+    const plan = collapseActiveFactDuplicates(planned, localManifests, peerManifests, semanticAgreementMap);
+    const excludedNamespaces = listNamespaceExclusions(excluded);
+    if (excludedNamespaces.length === 0) return plan;
+    return { ...plan, excludedNamespaces };
   } finally {
     // Releases the cross-process plan lock; already-written checkpoints
     // remain valid for the next (resumed) run.
@@ -381,26 +437,29 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
   const conflictPolicy =
     options.conflictPolicy ?? options.config?.converge.conflictPolicy ?? DEFAULT_CONVERGE_CONFLICT_POLICY;
   const plan = await computeConvergePlan({ ...options, conflictPolicy });
+  const excludedNamespaces = plan.excludedNamespaces ?? [];
+  const finish = (result: ConvergeApplyResult): ConvergeApplyResult =>
+    finishConvergeApplyResult(result, excludedNamespaces);
   if (plan.converged && !options.dryRun) {
     await updateCursorsForPlan(plan, options);
-    return {
+    return finish({
       converged: true,
       status: "converged",
       plan,
       transfers: { pulled: 0, pushed: 0, conflictsResolved: 0, suppressed: 0, failed: 0 },
       cursorUpdated: true,
-    };
+    });
   }
   const unresolvedCount = plan.byNamespace.reduce((acc, report) => acc + report.unresolved, 0);
   if (unresolvedCount > 0) {
     // Every policy stops when its conflict rule cannot choose a safe resolution.
-    return {
+    return finish({
       converged: false,
       status: "stopped_unresolved_conflicts",
       plan,
       transfers: { pulled: 0, pushed: 0, conflictsResolved: 0, suppressed: 0, failed: 0 },
       cursorUpdated: false,
-    };
+    });
   }
   const plannedTransfers = {
     pulled: 0,
@@ -416,13 +475,13 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     else if (entry.action === "suppress") plannedTransfers.suppressed += 1;
   }
   if (options.dryRun) {
-    return {
+    return finish({
       converged: plan.converged,
       status: "dry_run",
       plan,
       transfers: plannedTransfers,
       cursorUpdated: false,
-    };
+    });
   }
   const actualTransfers = {
     pulled: 0,
@@ -840,7 +899,16 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
   options.signal?.throwIfAborted();
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
     const namespaces = [...peerMutatedNamespaces].sort();
-    if (!(await postPeerConvergenceComplete(options.peerUrl, namespaces, resolvedToken, fetchFn, timeoutMs, options.signal))) {
+    if (
+      !(await postPeerConvergenceComplete(
+        options.peerUrl,
+        namespaces,
+        resolvedToken,
+        fetchFn,
+        timeoutMs,
+        options.signal
+      ))
+    ) {
       actualTransfers.failed += 1;
     }
   }
@@ -851,13 +919,13 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     cursorUpdated = true;
   }
 
-  return {
+  return finish({
     converged: actualTransfers.failed === 0,
     status: "applied",
     plan,
     transfers: actualTransfers,
     cursorUpdated,
-  };
+  });
 }
 
 async function updateCursorsForPlan(plan: ReconcilePlan, options: ConvergeApplyOptions): Promise<void> {
@@ -1037,26 +1105,25 @@ Subcommands:
         intervalMs: intervalSeconds !== undefined ? intervalSeconds * 1000 : undefined,
         ...(timeoutMsFlag !== undefined ? { peerRequestTimeoutMs: timeoutMsFlag } : {}),
         signal: controller.signal,
-        onCycle: json
-          ? undefined
-          : (cycle, event) => {
-              if (event.error !== undefined) {
-                console.error(`converge watch: cycle ${cycle} failed: ${String(event.error)}`);
-                return;
-              }
-              const result = event.result;
-              if (!result) return;
-              const transfers = result.transfers;
-              console.log(
-                `converge watch: cycle ${cycle} status=${result.status} pulled=${transfers.pulled} pushed=${transfers.pushed} conflicts=${transfers.conflictsResolved} failed=${transfers.failed}`
-              );
-            },
+        onCycle: (cycle, event) => {
+          if (event.error !== undefined) {
+            console.error(`converge watch: cycle ${cycle} failed: ${String(event.error)}`);
+            return;
+          }
+          const result = event.result;
+          if (!result) return;
+          for (const exclusion of result.excludedNamespaces ?? []) {
+            console.error(formatConvergeExclusionLine(cycle, exclusion));
+          }
+          if (json) return;
+          console.log(formatConvergeWatchCycleLine(cycle, result));
+        },
       });
       if (json) {
         console.log(JSON.stringify(outcome, null, 2));
       } else {
         console.log(
-          `converge watch stopped after ${outcome.cycles} cycle(s): ${outcome.convergedCycles} converged, ${outcome.appliedCycles} applied, ${outcome.failedCycles} failed (last: ${outcome.lastStatus}).`
+          `converge watch stopped after ${outcome.cycles} cycle(s): ${outcome.convergedCycles} converged, ${outcome.appliedCycles} applied, ${outcome.failedCycles} failed (last: ${outcome.lastStatus}, excluded: ${outcome.lastExcludedNamespaces.length}).`
         );
       }
     } finally {
@@ -1095,6 +1162,9 @@ Subcommands:
         signal: controller.signal,
         onProgress,
       });
+      for (const exclusion of plan.excludedNamespaces ?? []) {
+        process.stderr.write(`${formatConvergeExclusionLine(undefined, exclusion)}\n`);
+      }
       if (json) {
         console.log(JSON.stringify(plan, null, 2));
       } else {
@@ -1112,6 +1182,9 @@ Subcommands:
       signal: controller.signal,
       onProgress,
     });
+    for (const exclusion of result.excludedNamespaces ?? []) {
+      process.stderr.write(`${formatConvergeExclusionLine(undefined, exclusion)}\n`);
+    }
     if (json) {
       console.log(JSON.stringify(result, null, 2));
     } else {

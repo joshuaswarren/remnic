@@ -1,4 +1,9 @@
 import type { ReconcilePlan } from "@remnic/core/reconcile/plan.js";
+import type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
+
+type ReportPlan = ReconcilePlan & {
+  excludedNamespaces?: readonly ConvergeNamespaceExclusion[];
+};
 
 type ApplyReportInput = {
   converged: boolean;
@@ -13,9 +18,31 @@ type ApplyReportInput = {
   };
 };
 
-export function formatConvergeReport(plan: ReconcilePlan): string {
+function singleLine(value: string): string {
+  let out = "";
+  let pendingSpace = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    const code = char.charCodeAt(0);
+    const isSpace = code === 32 || code === 9 || code === 10 || code === 13;
+    if (isSpace) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      out += " ";
+      pendingSpace = false;
+    }
+    out += char;
+  }
+  return out;
+}
+
+export function formatConvergeReport(plan: ReportPlan): string {
+  const excluded = plan.excludedNamespaces ?? [];
   const lines: string[] = [];
-  lines.push(`Convergence Status: ${plan.converged ? "CONVERGED" : "DIVERGED"}`);
+  const status = excluded.length > 0 && plan.converged ? "PARTIAL" : plan.converged ? "CONVERGED" : "DIVERGED";
+  lines.push(`Convergence Status: ${status}`);
   lines.push("");
   lines.push("Per-Namespace Summary:");
   if (plan.byNamespace.length === 0) {
@@ -31,7 +58,28 @@ export function formatConvergeReport(plan: ReconcilePlan): string {
       lines.push(`    unresolved: ${report.unresolved}`);
     }
   }
+  if (excluded.length > 0) {
+    lines.push("");
+    lines.push("Excluded namespaces (census failed; no pushes, no deletes):");
+    for (const exclusion of excluded) {
+      lines.push(`  [${singleLine(exclusion.namespace)}] side=${exclusion.side} ${singleLine(exclusion.error)}`);
+    }
+  }
   return lines.join("\n");
+}
+
+export function formatConvergeWatchCycleLine(
+  cycle: number,
+  result: ApplyReportInput & { excludedNamespaces?: readonly ConvergeNamespaceExclusion[] }
+): string {
+  const transfers = result.transfers;
+  const excluded = result.excludedNamespaces?.length ?? 0;
+  return `converge watch: cycle ${cycle} status=${result.status} pulled=${transfers.pulled} pushed=${transfers.pushed} conflicts=${transfers.conflictsResolved} failed=${transfers.failed} excluded=${excluded}`;
+}
+
+export function formatConvergeExclusionLine(cycle: number | undefined, exclusion: ConvergeNamespaceExclusion): string {
+  const prefix = cycle === undefined ? "converge:" : `converge watch: cycle ${cycle}`;
+  return `${prefix} excluded namespace=${singleLine(exclusion.namespace)} side=${exclusion.side}: ${singleLine(exclusion.error)}`;
 }
 
 export function formatConvergeApplyReport(result: ApplyReportInput): string {
