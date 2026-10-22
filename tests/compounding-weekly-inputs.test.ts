@@ -301,20 +301,23 @@ test("weekly synthesis bounds correction reads to the newest 500 in-week files",
         content: `unique-oversized-lesson ${"x".repeat(300_000)}`,
       })
     );
+    await mkdir(path.join(memoryDir, "state"), { recursive: true });
+    await writeFile(
+      path.join(memoryDir, "state", "memory-actions.jsonl"),
+      `${JSON.stringify({ timestamp: IN_WEEK, action: "discard", outcome: "failed", reason: "root-action-kept" })}\n`
+    );
     const eng = new CompoundingEngine(config(memoryDir));
     await eng.synthesizeWeekly({ weekId: WEEK });
     const mistakes = await eng.readMistakes();
     const correctionPatterns = (mistakes?.patterns ?? []).filter((pattern) => pattern.startsWith("correction:"));
-    assert.equal(correctionPatterns.length, 500);
-    assert.equal(
-      correctionPatterns.some((pattern) => pattern.includes("unique-lesson-0")),
-      false
-    );
+    assert.equal(mistakes?.patterns?.length, 500);
+    assert.equal(correctionPatterns.length, 499);
+    assert.equal(correctionPatterns.some((pattern) => pattern.includes("unique-lesson-0")), false);
     assert.ok(correctionPatterns.some((pattern) => pattern.includes("unique-lesson-500")));
-    assert.equal(
-      correctionPatterns.some((pattern) => pattern.includes("unique-oversized-lesson")),
-      false
-    );
+    assert.equal(correctionPatterns.some((pattern) => pattern.includes("unique-oversized-lesson")), false);
+    assert.ok((mistakes?.patterns ?? []).some((pattern) => pattern.includes("root-action-kept")));
+    const section = await eng.buildRecallSection("kept");
+    assert.match(section ?? "", /root-action-kept/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

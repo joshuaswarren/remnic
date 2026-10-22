@@ -555,6 +555,31 @@ export function visibleRubricEntries<T extends {
   });
 }
 
+/**
+ * The mistake registry keeps 500 patterns. Store-visible action failures stay
+ * ahead of correction text, and every visible pattern stays ahead of another
+ * namespace, so a full correction week cannot drop the caller's own outcomes.
+ */
+export function capWeeklyPatternDetails<T extends { pattern: string; provenance: readonly string[] }>(
+  details: readonly T[],
+  categoryFor: (pattern: string) => string | undefined,
+  defaultNamespacePrefix: string | null,
+  limit = 500,
+): T[] {
+  const visibleActions: T[] = [];
+  const visibleOther: T[] = [];
+  const foreign: T[] = [];
+  for (const detail of details) {
+    if (!provenanceVisibleInStoreRecall(detail.provenance, defaultNamespacePrefix)) {
+      foreign.push(detail);
+      continue;
+    }
+    if (categoryFor(detail.pattern) === "action") visibleActions.push(detail);
+    else visibleOther.push(detail);
+  }
+  return [...visibleActions, ...visibleOther, ...foreign].slice(0, limit);
+}
+
 export function provenanceVisibleInStoreRecall(
   provenance: readonly string[],
   defaultNamespacePrefix: string | null = null,

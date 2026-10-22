@@ -12,7 +12,7 @@ import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import {
-  actionEventsVisibleInStore,
+  actionEventsVisibleInStore, capWeeklyPatternDetails,
   buildActionFailurePatterns,
   defaultNamespaceRecallPrefix,
   provenanceVisibleInStoreRecall,
@@ -1213,9 +1213,9 @@ export class CompoundingEngine {
       byPattern.set(item.pattern, existing);
     }
 
-    const details = [...byPattern.entries()]
-      .map(([pattern, provenance]) => ({ pattern, provenance: [...provenance].sort() }))
-      .slice(0, 500);
+    const details = capWeeklyPatternDetails(
+      [...byPattern.entries()].map(([pattern, provenance]) => ({ pattern, provenance: [...provenance].sort() })),
+      (pattern) => evidenceByPattern.get(pattern)?.category, defaultNamespacePrefix);
     const previousById = new Map(previousRegistry.map((entry) => [entry.id, entry]));
     const previousByPattern = new Map(previousRegistry.map((entry) => [entry.pattern, entry]));
     const registry: MistakeRegistryEntry[] = details.map((detail) => {
