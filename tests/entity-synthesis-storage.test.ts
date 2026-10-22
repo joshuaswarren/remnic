@@ -1053,6 +1053,7 @@ test("ensureDirectories skips malformed entity files and macOS replication junk"
     assert.ok(names.includes(canonical));
     assert.equal(names.includes("._project-sidecar"), false);
     assert.equal(names.includes(".DS_Store"), false);
+    assert.equal(names.includes("project-"), false);
     const loaded = await migrating.readAllEntityFiles();
     assert.ok(loaded.some((entity) => entity.name === "North Dome"));
     assert.equal(loaded.some((entity) => !entity.name.trim() || !entity.type.trim()), false);

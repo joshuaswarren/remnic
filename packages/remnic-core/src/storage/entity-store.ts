@@ -413,15 +413,34 @@ export class EntityStore {
     }
   }
 
-  /** Return sorted list of entity filenames (without .md extension) */
+  /**
+   * Sorted entity filenames (without .md). Malformed records stay on disk
+   * and are omitted, so extraction, matching, and entity list cannot reuse them.
+   */
   async listEntityNames(): Promise<string[]> {
     try {
       const entries = await this.readEntityDirectoryNames();
-      return entries
-        .filter((e) => e.endsWith(".md"))
-        .map((e) => e.replace(".md", ""))
-        .sort();
-    } catch {
+      const mdFiles = entries.filter((e) => e.endsWith(".md"));
+      const names: string[] = [];
+      const batchSize = 100;
+      for (let i = 0; i < mdFiles.length; i += batchSize) {
+        const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
+          try {
+            if (!(await this.isIndexableEntityMarkdown(file))) return null;
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError) throw err;
+            return null;
+          }
+          return file.slice(0, -3);
+        }));
+        for (const name of resolved) {
+          if (name) names.push(name);
+        }
+      }
+      names.sort();
+      return names;
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
       return [];
     }
   }
