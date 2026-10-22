@@ -250,7 +250,7 @@ jobs:
           # branch (where the release merges) directly. If the read fails, fail
           # closed: the gate cannot proceed without knowing what to gate on.
           if ! gh api "${REPO}/rules/branches/main" \
-              --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[]?.context] | unique' \
+              --jq '[.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[]? | {context, integration_id}] | unique' \
               > required-contexts.json 2>required-read.err; then
             echo "::error title=Ruleset unreadable::$(cat required-read.err)"
             exit 1
@@ -270,7 +270,7 @@ jobs:
           # selection treats the status like a completed run.
           : > "${RUNNER_TEMP}/ci-gate-records.jsonl"
           gh api --paginate "${REPO}/commits/${EVAL_SHA}/check-runs" \
-            --jq '.check_runs[]? | {source: "check-run", id, name, status, conclusion, started_at, completed_at}' \
+            --jq '.check_runs[]? | {source: "check-run", id, name, app: {id: .app.id}, status, conclusion, started_at, completed_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           gh api "${REPO}/commits/${EVAL_SHA}/status" \
             --jq '.statuses[]? | {source: "status", id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
