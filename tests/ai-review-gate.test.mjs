@@ -180,14 +180,15 @@ test("AI review gate neutralizer skips neutral stamp when ai-reviewers success i
 
 test("AI review gate workflow limits the Dependabot exception to manifest-only missing Cursor activity", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+  const evaluator = readFileSync("scripts/ai-review-gate.mjs", "utf8");
 
   assert.match(workflow, /pullRequest\.data\.user\?\.login/);
   assert.match(workflow, /github\.paginate\(github\.rest\.pulls\.listFiles/);
-  assert.match(workflow, /dependabot\[bot\]/);
+  assert.match(evaluator, /dependabot\[bot\]/);
   assert.match(workflow, /result\.blockers\.length === 0/);
-  assert.match(workflow, /result\.missing\.every/);
-  assert.match(workflow, /DEPENDABOT_UNAVAILABLE_REVIEWER_ALIASES\.has\(normalizeLogin\(alias\)\)/);
-  assert.match(workflow, /DEPENDENCY_MANIFEST_BASENAMES/);
+  assert.match(evaluator, /result\.missing\.every/);
+  assert.match(evaluator, /DEPENDABOT_UNAVAILABLE_REVIEWER_ALIASES\.has\(normalizeLogin\(alias\)\)/);
+  assert.match(evaluator, /DEPENDENCY_MANIFEST_BASENAMES/);
 });
 
 test("Dependabot manifest-only classification accepts the repository dependency surfaces", () => {
@@ -318,6 +319,102 @@ test("CodeRabbit current-head success satisfies the Cursor OR group", () => {
   assert.equal(result.ok, true);
   assert.deepEqual(result.missing, []);
   assert.deepEqual(result.blockers, []);
+});
+
+test("trusted agents require an independent formal approval bound to the full current head", () => {
+  const currentHead = "a".repeat(40);
+  const approval = {
+    user: { login: "review-agent" },
+    state: "APPROVED",
+    commit_id: currentHead,
+    submitted_at: "2026-05-21T12:05:00.000Z",
+  };
+  const options = {
+    groups: parseReviewerGroups("cursor|coderabbitai"),
+    headSha: currentHead,
+    headCommittedAt,
+    authorLogin: "contributor",
+    trustedAgentLogins: [" REVIEW-AGENT "],
+    reviews: [approval],
+  };
+  const accepted = evaluateAiReviewGate(options);
+  assert.equal(accepted.ok, true);
+  assert.deepEqual(accepted.missing, []);
+  assert.equal(accepted.present[0].alias, "review-agent");
+
+  for (const [name, overrides] of [
+    ["untrusted", { trustedAgentLogins: [] }],
+    ["association is not an allowlist", {
+      trustedAgentLogins: [],
+      reviews: [{ ...approval, author_association: "OWNER" }],
+    }],
+    ["self-review", { authorLogin: "REVIEW-AGENT" }],
+    ["unknown author", { authorLogin: undefined }],
+    ["stale head", { reviews: [{ ...approval, commit_id: "b".repeat(40) }] }],
+    ["short SHA", { reviews: [{ ...approval, commit_id: currentHead.slice(0, 7) }] }],
+    ["missing commit binding", { reviews: [{ ...approval, commit_id: undefined, body: `PASS head ${currentHead}` }] }],
+    ["commented rather than approved", { reviews: [{ ...approval, state: "COMMENTED", body: "PASS" }] }],
+    ["pending review", { reviews: [{ ...approval, state: "PENDING" }] }],
+    ["issue comment", { reviews: [], issueComments: [{ ...approval, body: `PASS head ${currentHead}` }] }],
+    ["review comment", { reviews: [], reviewComments: [{ ...approval, body: "PASS" }] }],
+    ["check run", {
+      reviews: [],
+      checkRuns: [{ app: { slug: "review-agent" }, conclusion: "success", head_sha: currentHead }],
+    }],
+  ]) {
+    assert.equal(evaluateAiReviewGate({ ...options, ...overrides }).ok, false, name);
+  }
+});
+
+test("trusted agent verdicts preserve bot blockers and honor the latest agent review", () => {
+  const currentHead = "a".repeat(40);
+  const review = {
+    user: { login: "review-agent" },
+    commit_id: currentHead,
+    state: "APPROVED",
+    submitted_at: "2026-05-21T12:05:00.000Z",
+  };
+  const options = {
+    groups: parseReviewerGroups("cursor"),
+    headSha: currentHead,
+    authorLogin: "contributor",
+    trustedAgentLogins: ["review-agent"],
+    checkRuns: [{ app: { slug: "cursor" }, conclusion: "success", head_sha: currentHead }],
+  };
+  for (const state of ["CHANGES_REQUESTED", "DISMISSED"]) {
+    const result = evaluateAiReviewGate({
+      ...options,
+      reviews: [review, { ...review, state, submitted_at: "2026-05-21T12:06:00.000Z" }],
+    });
+    assert.equal(result.ok, false, state);
+    assert.equal(result.blockers[0].alias, "review-agent");
+    for (const nonVerdict of ["COMMENTED", "PENDING"]) {
+      const stillBlocked = evaluateAiReviewGate({
+        ...options,
+        reviews: [
+          { ...review, state },
+          { ...review, state: nonVerdict, submitted_at: "2026-05-21T12:07:00.000Z" },
+        ],
+      });
+      assert.equal(stillBlocked.ok, false, `${nonVerdict} must not clear ${state}`);
+    }
+  }
+  const botBlocker = evaluateAiReviewGate({
+    ...options,
+    reviews: [review],
+    checkRuns: [{ app: { slug: "cursor" }, conclusion: "failure", head_sha: currentHead }],
+  });
+  assert.equal(botBlocker.ok, false);
+  assert.equal(botBlocker.blockers[0].alias, "cursor");
+  const recovered = evaluateAiReviewGate({
+    ...options,
+    checkRuns: [],
+    reviews: [
+      { ...review, state: "CHANGES_REQUESTED" },
+      { ...review, submitted_at: "2026-05-21T12:06:00.000Z" },
+    ],
+  });
+  assert.equal(recovered.ok, true);
 });
 
 
@@ -866,18 +963,17 @@ test("missing-review-only failures are distinct from blocker failures", () => {
   assert.equal(isMissingReviewOnlyFailure(blocked), false);
 });
 
-test("AI review gate workflow waives the gate with success when bots never post", () => {
+test("AI review gate uses the base evaluator and never waives a missing verdict", () => {
   const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
-  assert.match(workflow, /AI reviewers never posted/);
-  assert.match(workflow, /onlyMissingReviews/);
-  // `success`, not `neutral`: the ruleset requires this context and does not
-  // accept neutral, so the old conclusion left such PRs blocked and forced an
-  // admin merge that bypasses every other required check.
-  assert.match(workflow, /conclusion:\s*'success'/);
-  assert.match(workflow, /Reviewers never posted — gate waived/);
-  // The waiver must be predicated on real absence, not merely on a missing
-  // positive verdict.
-  assert.match(workflow, /!hasReviewerActivity/);
+  assert.match(workflow, /ref:\s*\$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.sha \}\}/);
+  assert.match(workflow, /TRUSTED_AI_AGENT_REVIEWERS:\s*\$\{\{ vars\.TRUSTED_AI_AGENT_REVIEWERS \}\}/);
+  assert.match(workflow, /scripts\/ai-review-gate\.mjs/);
+  assert.doesNotMatch(workflow, /function evaluateAiReviewGate/);
+  assert.match(workflow, /authorLogin: pullRequest\.data\.user\?\.login/);
+  assert.match(workflow, /trustedAgentLogins,/);
+  assert.doesNotMatch(workflow, /Reviewers never posted|onlyMissingReviews|gate waived/);
+  assert.doesNotMatch(workflow, /conclusion:\s*'success'/);
+  assert.match(workflow, /hasBlockers \|\| elapsedMs \+ POLL_INTERVAL_MS > POLL_DEADLINE_MS/);
 });
 
 test("participation is reported for any current-head reviewer activity, not just positives", () => {
