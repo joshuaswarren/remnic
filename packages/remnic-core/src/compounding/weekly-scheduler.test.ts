@@ -4,12 +4,13 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "../config.js";
+import { initLogger, resetLogger } from "../logger.js";
 import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { NamespaceSearchRouter } from "../namespaces/search.js";
 import { MaintenanceScheduler } from "../orchestration/maintenance.js";
@@ -198,6 +199,50 @@ test("a failed tick retries on the next boundary and a stopped timer does not ru
   }
 });
 
+test("a failed week is retried after the ISO boundary, before the newly due week", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-cron-"));
+  let now = new Date("2026-03-18T12:00:00.000Z");
+  let fail = true;
+  const calls: string[] = [];
+  try {
+    const { handle, timers } = startFor(memoryDir, {
+      now: () => now,
+      synthesizeWeekly: async (weekId) => {
+        calls.push(weekId);
+        if (fail) throw new Error("synthesis unavailable");
+      },
+    });
+    await handle.whenIdle();
+    const failed = previousIsoWeekId(now);
+    now = new Date(now.getTime() + 7 * 86_400_000);
+    const due = previousIsoWeekId(now);
+    assert.notEqual(failed, due);
+    fail = false;
+    timers.armed.at(-1)?.fn();
+    await handle.whenIdle();
+    assert.deepEqual(calls, [failed, failed, due]);
+    await handle.stop();
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a later artifact failure does not leave the weekly report marker", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-cron-"));
+  const weekId = previousIsoWeekId(new Date("2026-03-18T12:00:00.000Z"));
+  try {
+    await mkdir(path.join(memoryDir, "compounding", "mistakes.json"), { recursive: true });
+    const engine = new CompoundingEngine(parseConfig({ memoryDir, qmdEnabled: false, compoundingEnabled: true }));
+    await assert.rejects(() => engine.synthesizeWeekly({ weekId }));
+    await assert.rejects(
+      () => stat(compoundingWeeklyReportPath(memoryDir, weekId)),
+      (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("an overlapping tick coalesces into one follow-up run", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-cron-"));
   let release: (() => void) | undefined;
@@ -269,10 +314,29 @@ test("the daemon arms synthesizeWeekly, including its calibration pass, for the 
   const weekId = previousIsoWeekId(new Date());
   const original = CompoundingEngine.prototype.synthesizeWeekly;
   const calls: Array<string | undefined> = [];
+  const logs: string[] = [];
   CompoundingEngine.prototype.synthesizeWeekly = async function (opts) {
     calls.push(opts?.weekId);
     return original.call(this, opts);
   };
+  initLogger(
+    {
+      info(msg) {
+        logs.push(String(msg));
+      },
+      warn(msg) {
+        logs.push(String(msg));
+      },
+      error(msg) {
+        logs.push(String(msg));
+      },
+      debug(msg) {
+        logs.push(String(msg));
+      },
+    },
+    true,
+    { timestamps: false }
+  );
   const scheduler = maintenanceScheduler(memoryDir, { compounding: true, weekly: true });
   try {
     assert.equal(scheduler.armCompoundingWeeklyCron(), true);
@@ -281,8 +345,14 @@ test("the daemon arms synthesizeWeekly, including its calibration pass, for the 
     assert.deepEqual(calls, [weekId]);
     const report = await readFile(compoundingWeeklyReportPath(memoryDir, weekId), "utf8");
     assert.equal(report.includes(weekId), true);
+    assert.equal(
+      logs.some((line) => line.includes("weekly synthesis produced")),
+      true,
+      "synthesizeWeekly must run the calibration pass"
+    );
   } finally {
     CompoundingEngine.prototype.synthesizeWeekly = original;
+    resetLogger();
     await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }

@@ -559,10 +559,10 @@ export class CompoundingEngine {
       ? await this.readContinuityAuditReferences(weekId)
       : { monthId: monthIdFromIsoWeek(weekId), weeklyPath: null, monthlyPath: null };
 
-    // Write weekly report (always, even if empty: "day-one outcomes").
+    // The markdown report is the completion marker, so it is written after the
+    // JSON, rubrics, and mistakes artifacts. A crash before that write retries.
     const reportPath = path.join(this.weeklyDir, `${weekId}.md`);
     const md = this.formatWeeklyReport(weekId, entries, mistakes.patterns, mistakes.details, continuity, outcomeSummary, promotionCandidates);
-    await writeFile(reportPath, md, "utf-8");
 
     const reportJsonPath = path.join(this.weeklyDir, `${weekId}.json`);
     const weeklyArtifact: WeeklyCompoundingArtifact = {
@@ -619,6 +619,7 @@ export class CompoundingEngine {
       }, null, 2) + "\n",
       "utf-8",
     );
+    await writeFile(reportPath, md, "utf-8");
 
     log.info(
       `compounding: wrote weekly=${reportPath} weeklyJson=${reportJsonPath} rubrics=${this.rubricsPath} rubricsIndex=${this.rubricsIndexPath} mistakes=${this.mistakesPath}`,

@@ -15,7 +15,9 @@
  * week, not a history backfill.
  *
  * The timer is unref'd. Startup fires one tick immediately; later ticks land
- * on the next Monday 00:00 UTC.
+ * on the next Monday 00:00 UTC. A failed tick remembers that week and retries
+ * it before the newly due week, including after the boundary. That memory is
+ * process-local: a restart still keys off the report file.
  */
 
 import { lstat } from "node:fs/promises";
@@ -100,6 +102,26 @@ export function startCompoundingWeeklyScheduler(
   let pending = false;
   let inFlight: Promise<CompoundingWeeklyTick> | null = null;
   let timer: TimerHandle | null = null;
+  let retryWeekId: string | null = null;
+
+  const runWeek = async (weekId: string): Promise<CompoundingWeeklyTick> => {
+    try {
+      if (await reportExists(weekId)) {
+        if (retryWeekId === weekId) retryWeekId = null;
+        logger.debug(`compounding weekly cron: ${weekId} report exists, skipping`);
+        return { status: "skipped", weekId };
+      }
+      await options.synthesizeWeekly(weekId);
+      if (retryWeekId === weekId) retryWeekId = null;
+      logger.info(`compounding weekly cron: synthesized ${weekId}`);
+      return { status: "synthesized", weekId };
+    } catch (error) {
+      retryWeekId = weekId;
+      const name = error instanceof Error ? error.name : "Error";
+      logger.warn(`compounding weekly cron: ${weekId} failed (${name}) — retrying on the next tick`);
+      return { status: "failed", weekId };
+    }
+  };
 
   const arm = (): void => {
     if (stopped) return;
@@ -115,20 +137,11 @@ export function startCompoundingWeeklyScheduler(
   };
 
   const doTick = async (): Promise<CompoundingWeeklyTick> => {
-    const weekId = previousIsoWeekId(now());
-    try {
-      if (await reportExists(weekId)) {
-        logger.debug(`compounding weekly cron: ${weekId} report exists, skipping`);
-        return { status: "skipped", weekId };
-      }
-      await options.synthesizeWeekly(weekId);
-      logger.info(`compounding weekly cron: synthesized ${weekId}`);
-      return { status: "synthesized", weekId };
-    } catch (error) {
-      const name = error instanceof Error ? error.name : "Error";
-      logger.warn(`compounding weekly cron: ${weekId} failed (${name}) — retrying on the next tick`);
-      return { status: "failed", weekId };
-    }
+    const due = previousIsoWeekId(now());
+    const weekId = retryWeekId ?? due;
+    const first = await runWeek(weekId);
+    if (first.status === "failed" || weekId === due) return first;
+    return runWeek(due);
   };
 
   const request = (): Promise<CompoundingWeeklyTick> => {
@@ -186,8 +199,8 @@ export function createCompoundingWeeklyCron(deps: {
     defaultLog.info("compounding weekly cron armed");
     return handle;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    defaultLog.debug(`compounding weekly cron failed to arm (non-fatal): ${message}`);
+    const name = error instanceof Error ? error.name : "Error";
+    defaultLog.warn(`compounding weekly cron failed to arm (${name}) — non-fatal`);
     return null;
   }
 }

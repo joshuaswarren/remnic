@@ -76,7 +76,7 @@ compounding_weekly_synthesize
 
 The standalone daemon runs it when both `compoundingEnabled` and `compoundingWeeklyCronEnabled` are true. Both default to `false`. On startup, and again at each ISO week boundary (Monday 00:00 UTC), the daemon calls `synthesizeWeekly` for the ISO week that just ended. That call is the full synthesis path, including calibration when `calibrationEnabled` is true.
 
-The weekly markdown report (`compounding/weekly/<YYYY-Www>.md`) is the idempotency marker. A week whose report already exists is skipped, so a restart does not write it again. If the daemon was down at the boundary, the next start writes that missed week. It does not backfill older weeks.
+The weekly markdown report (`compounding/weekly/<YYYY-Www>.md`) is written only after the week's JSON, rubrics, and mistakes artifacts. A week whose report already exists is skipped, so a restart does not write it again. If the daemon was down at the boundary, the next start writes that missed week. It does not backfill older weeks. A failed attempt is retried on the next tick, before the week that has since ended. That retry memory lasts for the life of the process; a restart uses the report file and catches up the week that just ended.
 
 OpenClaw delegate mode registers only `memory_search` and `memory_get`, so a gateway cron job can no longer call `compounding_weekly_synthesize`. Delegate-mode installs use `compoundingWeeklyCronEnabled` on the daemon. An embedded host that still exposes the tool may keep a Sunday agent-turn cron instead; do not arm both against the same memory directory.
 
