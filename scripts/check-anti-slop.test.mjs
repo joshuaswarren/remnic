@@ -37,7 +37,7 @@ function git(root, args) {
 
 function makeRepo() {
   const root = mkdtempSync(join(tmpdir(), "anti-slop-gate-"));
-  git(root, ["init", "-q"]);
+  git(root, ["init", "-q", "--initial-branch=fixture-base"]);
   git(root, ["config", "commit.gpgsign", "false"]);
   return root;
 }
