@@ -136,7 +136,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
               args.resolvedToken,
               args.fetchFn,
               args.timeoutMs,
-              args.signal
+              args.signal,
+              true
             );
           } catch (error) {
             readFailure = error instanceof Error ? error : new Error(String(error));
@@ -164,7 +165,8 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
       args.resolvedToken,
       args.fetchFn,
       args.timeoutMs,
-      args.signal
+      args.signal,
+      true
     );
     // A transport-level failure here is FATAL on purpose: tombstone evidence
     // is what stops a plan from pushing a peer-retracted memory back

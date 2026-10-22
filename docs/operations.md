@@ -331,7 +331,8 @@ remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>
   error. The other namespaces still converge. The cycle status is `partial` when that is the only
   problem. If every namespace census fails, the cycle fails closed instead of reporting convergence.
   A peer timeout or connection failure is not an exclusion: the cycle fails as soon as the transport
-  fails, so one hung snapshot does not wait out every remaining namespace.
+  fails, so one hung snapshot or file-content download does not wait out every remaining namespace.
+  An apply download that times out is still a failed transfer for that file.
 - A failed cycle (peer unreachable, every namespace census failed, transient network error) is
   reported and does NOT stop the watch — a peer being unreachable is exactly when the surviving
   side most needs to keep the schedule. Unresolved conflicts under `manual` likewise stop mutation

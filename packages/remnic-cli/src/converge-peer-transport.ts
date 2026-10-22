@@ -8,6 +8,7 @@ import {
 import { normalizeConvergePeerUrl } from "@remnic/core/reconcile/cursor.js";
 import type { ReconcileManifest } from "@remnic/core/reconcile/manifest.js";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
+import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js";
 import { parsePeerManifestStream } from "./converge-peer-manifest.js";
 
 export const DEFAULT_PEER_REQUEST_TIMEOUT_MS = 30_000;
@@ -336,7 +337,14 @@ export async function streamPeerFileContent(
   fetchImpl: typeof fetch = globalThis.fetch,
   timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
   /** Apply-phase cancellation (#2803 review): aborts the in-flight request. */
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /**
+   * Planning census rethrows a timeout or connection failure after both
+   * route aliases have been tried, so one hung download does not wait out
+   * every remaining namespace. Apply leaves this false: a failed download
+   * stays a failed transfer.
+   */
+  propagateTransportErrors = false
 ): Promise<Omit<PeerFileContent, "content"> | null> {
   assertTransferablePeerPath(filePath);
   const base = normalizePeerBaseUrl(peerUrl);
@@ -350,6 +358,7 @@ export async function streamPeerFileContent(
   let expectedBytes: number | undefined;
   let expectedSha256: string | undefined;
   let mtimeMs: number | undefined;
+  let transportFailure: unknown;
 
   for (const route of routes) {
     let routeFailed = false;
@@ -374,7 +383,9 @@ export async function streamPeerFileContent(
           timeoutMs
         );
         if (!response.ok) throw new Error(`offline file content request failed: ${response.status}`);
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (propagateTransportErrors && isPeerTransportCensusFailure(error)) transportFailure = error;
         routeFailed = true;
         break;
       }
@@ -402,7 +413,9 @@ export async function streamPeerFileContent(
         ) {
           throw new Error(`offline file content response changed during transfer: ${filePath}`);
         }
-      } catch {
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        if (propagateTransportErrors && isPeerTransportCensusFailure(error)) transportFailure = error;
         routeFailed = true;
         break;
       }
@@ -425,15 +438,19 @@ export async function streamPeerFileContent(
   }
 
   if (
-    expectedBytes === undefined ||
-    expectedSha256 === undefined ||
-    mtimeMs === undefined ||
-    offset !== expectedBytes ||
-    hash.digest("hex") !== expectedSha256
+    expectedBytes !== undefined &&
+    expectedSha256 !== undefined &&
+    mtimeMs !== undefined &&
+    offset === expectedBytes &&
+    hash.digest("hex") === expectedSha256
   ) {
-    return null;
+    return { sha256: expectedSha256, bytes: expectedBytes, mtimeMs };
   }
-  return { sha256: expectedSha256, bytes: expectedBytes, mtimeMs };
+  // A later alias can still succeed after an earlier route times out.
+  // Neither alias produced the file, so the planning cycle must stop
+  // instead of treating the miss as an ordinary unread manifest.
+  if (transportFailure) throw transportFailure;
+  return null;
 }
 
 export async function fetchPeerFileContent(
@@ -443,7 +460,8 @@ export async function fetchPeerFileContent(
   token?: string,
   fetchImpl: typeof fetch = globalThis.fetch,
   timeoutMs = DEFAULT_PEER_REQUEST_TIMEOUT_MS,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  propagateTransportErrors = false
 ): Promise<PeerFileContent | null> {
   const chunks: Buffer[] = [];
   const metadata = await streamPeerFileContent(
@@ -456,7 +474,8 @@ export async function fetchPeerFileContent(
     token,
     fetchImpl,
     timeoutMs,
-    signal
+    signal,
+    propagateTransportErrors
   );
   if (!metadata) return null;
   return {

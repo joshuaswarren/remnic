@@ -15,6 +15,16 @@ import { computeConvergePlan, executeConvergeApply } from "./converge.js";
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
 
+/** Plan-cache locks are per memory dir. Parallel tests must not share the default dir. */
+async function withPlanCursor<T>(run: (cursorDir: string) => Promise<T>): Promise<T> {
+  const cursorDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-isolate-"));
+  try {
+    return await run(cursorDir);
+  } finally {
+    await fs.rm(cursorDir, { recursive: true, force: true });
+  }
+}
+
 test("converge watch: a partial cycle counts as progress and keeps the exclusion", async () => {
   const outcome = await convergeWatch({
     intervalMs: 1,
@@ -49,6 +59,14 @@ test("converge watch: a partial cycle counts as progress and keeps the exclusion
     formatConvergeExclusionLine(1, exclusion),
     /cycle 1 excluded namespace=blocked side=peer: HTTP 400 namespace is not readable/
   );
+  const forged = formatConvergeExclusionLine(1, {
+    namespace: "blocked",
+    side: "peer",
+    error: "namespace is not readable: \u001b[31mblocked\u0007",
+  });
+  assert.equal(forged.includes("\u001b"), false);
+  assert.equal(forged.includes("\u0007"), false);
+  assert.match(forged, /namespace is not readable: \[31mblocked/);
 });
 
 test("converge plan: one peer snapshot refusal is excluded and the other namespace still plans a push", async () => {
@@ -69,25 +87,28 @@ test("converge plan: one peer snapshot refusal is excluded and the other namespa
     mtimeMs: 1000,
   };
   const requested: string[] = [];
-  const plan = await computeConvergePlan({
-    peerUrl: "https://peer.example.test",
-    localFilesByNamespace: new Map([
-      ["healthy", [healthy]],
-      ["blocked", [blocked]],
-    ]),
-    baseFilesByNamespace: new Map([["blocked", [blocked]]]),
-    fetchImpl: async (input) => {
-      const url = new URL(String(input));
-      if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
-      if (!url.pathname.endsWith("/offline-sync/snapshot")) return new Response(null, { status: 404 });
-      const namespace = url.searchParams.get("namespace") ?? "";
-      requested.push(namespace);
-      if (namespace === "blocked") {
-        return Response.json({ error: "namespace is not readable: blocked", code: "input_error" }, { status: 400 });
-      }
-      return Response.json({ files: [], tombstones: [] });
-    },
-  });
+  const plan = await withPlanCursor((cursorDir) =>
+    computeConvergePlan({
+      cursorDir,
+      peerUrl: "https://peer.example.test",
+      localFilesByNamespace: new Map([
+        ["healthy", [healthy]],
+        ["blocked", [blocked]],
+      ]),
+      baseFilesByNamespace: new Map([["blocked", [blocked]]]),
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+        if (!url.pathname.endsWith("/offline-sync/snapshot")) return new Response(null, { status: 404 });
+        const namespace = url.searchParams.get("namespace") ?? "";
+        requested.push(namespace);
+        if (namespace === "blocked") {
+          return Response.json({ error: "namespace is not readable: blocked", code: "input_error" }, { status: 400 });
+        }
+        return Response.json({ files: [], tombstones: [] });
+      },
+    })
+  );
 
   // Both snapshot routes are tried before the namespace is excluded.
   assert.ok(requested.includes("healthy"));
@@ -179,26 +200,29 @@ test("converge apply: a refused namespace gets no push and no delete while the o
 });
 
 test("converge plan: every namespace snapshot failing still rejects the cycle", async () => {
-  await assert.rejects(
-    computeConvergePlan({
-      peerUrl: "https://peer.example.test",
-      localFilesByNamespace: new Map<string, ReconcileFileState[]>([
-        ["alpha", []],
-        ["beta", []],
-      ]),
-      fetchImpl: async (input) => {
-        const url = new URL(String(input));
-        if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
-        return Response.json({ error: "namespace is not readable" }, { status: 400 });
-      },
-    }),
-    (error: unknown) => {
-      assert.ok(error instanceof Error);
-      assert.match(error.message, /every namespace census failed/);
-      assert.match(error.message, /alpha \(peer\)/);
-      assert.match(error.message, /beta \(peer\)/);
-      return true;
-    }
+  await withPlanCursor((cursorDir) =>
+    assert.rejects(
+      computeConvergePlan({
+        cursorDir,
+        peerUrl: "https://peer.example.test",
+        localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+          ["alpha", []],
+          ["beta", []],
+        ]),
+        fetchImpl: async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+          return Response.json({ error: "namespace is not readable" }, { status: 400 });
+        },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /every namespace census failed/);
+        assert.match(error.message, /alpha \(peer\)/);
+        assert.match(error.message, /beta \(peer\)/);
+        return true;
+      }
+    )
   );
 });
 
@@ -232,20 +256,83 @@ test("converge plan: a peer transport timeout fails the cycle instead of waiting
     });
   };
   try {
-    await assert.rejects(
-      computeConvergePlan({
-        peerUrl: "https://peer.example.test",
-        peerRequestTimeoutMs: 30,
-        localFilesByNamespace: new Map<string, ReconcileFileState[]>([
-          ["alpha", []],
-          ["beta", []],
-        ]),
-        fetchImpl,
-      }),
-      /timeout|aborted/i
+    await withPlanCursor((cursorDir) =>
+      assert.rejects(
+        computeConvergePlan({
+          cursorDir,
+          peerUrl: "https://peer.example.test",
+          peerRequestTimeoutMs: 30,
+          localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+            ["alpha", []],
+            ["beta", []],
+          ]),
+          fetchImpl,
+        }),
+        /timeout|aborted/i
+      )
     );
     assert.ok(requested.includes("alpha"));
     assert.equal(requested.includes("beta"), false);
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("converge plan: a file-content timeout fails the cycle instead of excluding every namespace", async () => {
+  const requested: string[] = [];
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }
+    if (url.pathname.endsWith("/offline-sync/snapshot")) {
+      const namespace = url.searchParams.get("namespace") ?? "";
+      requested.push(`snapshot:${namespace}`);
+      return Promise.resolve(
+        Response.json({
+          files:
+            namespace === "alpha" ? [{ path: "facts/alpha.md", sha256: "ab".repeat(32), bytes: 1, mtimeMs: 1 }] : [],
+          tombstones: [],
+        })
+      );
+    }
+    requested.push(url.pathname);
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      const fail = () => reject(signal.reason);
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  try {
+    await withPlanCursor((cursorDir) =>
+      assert.rejects(
+        computeConvergePlan({
+          cursorDir,
+          peerUrl: "https://peer.example.test",
+          peerRequestTimeoutMs: 30,
+          localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+            ["alpha", []],
+            ["beta", []],
+          ]),
+          fetchImpl,
+        }),
+        /timeout|aborted/i
+      )
+    );
+    assert.ok(requested.includes("snapshot:alpha"));
+    assert.equal(requested.includes("snapshot:beta"), false);
   } finally {
     keepAlive.port1.close();
     keepAlive.port2.close();
@@ -290,27 +377,30 @@ test("peer transport failures are not namespace exclusions; HTTP refusals are", 
 
 test("converge plan: abort during one snapshot still rejects the whole plan", async () => {
   const controller = new AbortController();
-  await assert.rejects(
-    computeConvergePlan({
-      peerUrl: "https://peer.example.test",
-      signal: controller.signal,
-      localFilesByNamespace: new Map<string, ReconcileFileState[]>([
-        ["alpha", []],
-        ["beta", []],
-      ]),
-      fetchImpl: async (input) => {
-        const url = new URL(String(input));
-        if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
-        if (url.searchParams.get("namespace") === "beta") {
-          controller.abort();
-          const aborted = new Error("The operation was aborted");
-          aborted.name = "AbortError";
-          throw aborted;
-        }
-        return Response.json({ files: [], tombstones: [] });
-      },
-    }),
-    (error: unknown) => error instanceof Error && error.name === "AbortError"
+  await withPlanCursor((cursorDir) =>
+    assert.rejects(
+      computeConvergePlan({
+        cursorDir,
+        peerUrl: "https://peer.example.test",
+        signal: controller.signal,
+        localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+          ["alpha", []],
+          ["beta", []],
+        ]),
+        fetchImpl: async (input) => {
+          const url = new URL(String(input));
+          if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+          if (url.searchParams.get("namespace") === "beta") {
+            controller.abort();
+            const aborted = new Error("The operation was aborted");
+            aborted.name = "AbortError";
+            throw aborted;
+          }
+          return Response.json({ files: [], tombstones: [] });
+        },
+      }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError"
+    )
   );
 });
 

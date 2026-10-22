@@ -29,6 +29,7 @@ function singleLine(value: string): string {
       pendingSpace = out.length > 0;
       continue;
     }
+    if (code < 32 || code === 127 || (code >= 128 && code <= 159)) continue;
     if (pendingSpace) {
       out += " ";
       pendingSpace = false;
