@@ -469,6 +469,19 @@ export function resolveSharedContextDir(config: PluginConfig): string {
     : path.join(expandTildePath(config.workspaceDir), "shared-context");
 }
 
+/**
+ * Feedback inbox path. An explicit `sharedContextDir` keeps the inbox beside
+ * the other shared-context files. When that override is unset, the inbox
+ * lives under the memory directory so a standalone store replicates it.
+ * Priorities, outputs, and roundtable stay on {@link resolveSharedContextDir}.
+ */
+export function resolveFeedbackInboxPath(config: PluginConfig): string {
+  if (typeof config.sharedContextDir === "string" && config.sharedContextDir.length > 0) {
+    return path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
+  }
+  return path.join(expandTildePath(config.memoryDir), "shared-context", "feedback", "inbox.jsonl");
+}
+
 export class SharedContextManager {
   readonly dir: string;
   private readonly prioritiesPath: string;
@@ -489,8 +502,8 @@ export class SharedContextManager {
     this.prioritiesInboxPath = path.join(base, "priorities.inbox.md");
     this.outputsDir = path.join(base, "agent-outputs");
     this.roundtableDir = path.join(base, "roundtable");
-    this.feedbackDir = path.join(base, "feedback");
-    this.feedbackInboxPath = path.join(this.feedbackDir, "inbox.jsonl");
+    this.feedbackInboxPath = resolveFeedbackInboxPath(config);
+    this.feedbackDir = path.dirname(this.feedbackInboxPath);
     this.crossSignalsDir = path.join(base, "cross-signals");
     this.allowBindingAuthority = config.sharedContextAllowBindingAuthority === true;
   }

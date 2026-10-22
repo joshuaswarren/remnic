@@ -1,28 +1,31 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isoWeekId } from "./iso-week.js";
 import { log } from "../logger.js";
 import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import { StorageManager } from "../storage.js";
 import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
-import { resolveSharedContextDir, SharedFeedbackEntrySchema, type SharedFeedbackEntry } from "../shared-context/manager.js";
+import { resolveFeedbackInboxPath, type SharedFeedbackEntry } from "../shared-context/manager.js";
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
+import {
+  buildActionFailurePatterns,
+  readFeedbackEntriesForWeekFile,
+  readWeeklyActionEvents,
+  readWeeklyCorrections,
+  type FeedbackEntryWithProvenance,
+  type WeeklyActionEvent,
+  type WeeklyCorrectionEvidence,
+} from "./weekly-evidence.js";
 
 type MistakesFile = {
   version?: number;
   updatedAt: string;
   patterns: string[];
   registry?: MistakeRegistryEntry[];
-};
-
-type FeedbackEntryWithProvenance = {
-  entry: SharedFeedbackEntry;
-  sourceLine: number;
-  sourcePath: string;
-  entryId: string;
 };
 
 type PatternWithProvenance = {
@@ -68,7 +71,7 @@ type EvidenceWindow = {
 type MistakeRegistryEntry = {
   id: string;
   pattern: string;
-  category: "feedback" | "action";
+  category: "feedback" | "action" | "correction";
   status: "active" | "retired";
   agent: string | null;
   workflow: string | null;
@@ -170,15 +173,6 @@ export interface CompoundingPromotionReport {
   }>;
 }
 
-type WeeklyActionEvent = {
-  line: number;
-  action: string;
-  outcome: "applied" | "skipped" | "failed";
-  policyDecision: "deny" | "defer" | null;
-  namespace: string;
-  reason: string | null;
-};
-
 const COMPOUNDING_VERSION = 2;
 const RETIREMENT_WINDOW_WEEKS = 8;
 
@@ -248,7 +242,7 @@ function mergeEvidenceWindows(current: EvidenceWindow, next: EvidenceWindow): Ev
 }
 
 function stableMistakeId(
-  category: "feedback" | "action",
+  category: "feedback" | "action" | "correction",
   pattern: string,
   agent: string | null,
   workflow: string | null,
@@ -298,7 +292,7 @@ function inferLegacyMistakeScope(pattern: string): { agent: string | null; workf
 }
 
 function inferLegacyMistakeMetadata(pattern: string): {
-  category: "feedback" | "action";
+  category: "feedback" | "action" | "correction";
   agent: string | null;
   workflow: string | null;
 } {
@@ -307,6 +301,13 @@ function inferLegacyMistakeMetadata(pattern: string): {
       category: "action",
       agent: null,
       workflow: "memory-actions",
+    };
+  }
+  if (pattern.startsWith("correction:")) {
+    return {
+      category: "correction",
+      agent: null,
+      workflow: "corrections",
     };
   }
   const scope = inferLegacyMistakeScope(pattern);
@@ -399,17 +400,6 @@ export function defaultTierMigrationCycleBudget(
   };
 }
 
-function isoWeekId(d: Date): string {
-  // ISO week based on Thursday
-  const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = dt.getUTCDay() || 7;
-  dt.setUTCDate(dt.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((dt.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-  const yyyy = dt.getUTCFullYear();
-  return `${yyyy}-W${String(week).padStart(2, "0")}`;
-}
-
 function isoMonthId(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
@@ -454,7 +444,6 @@ export class CompoundingEngine {
   private readonly feedbackInboxPath: string;
   private readonly identityAuditWeeklyDir: string;
   private readonly identityAuditMonthlyDir: string;
-  private readonly memoryActionEventsPath: string;
 
   constructor(
     private readonly config: PluginConfig,
@@ -467,10 +456,9 @@ export class CompoundingEngine {
     this.rubricsWorkflowsDir = path.join(this.rubricsDir, "workflows");
     this.rubricsPath = path.join(config.memoryDir, "compounding", "rubrics.md");
     this.mistakesPath = path.join(config.memoryDir, "compounding", "mistakes.json");
-    this.feedbackInboxPath = path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
+    this.feedbackInboxPath = resolveFeedbackInboxPath(config);
     this.identityAuditWeeklyDir = path.join(config.memoryDir, "identity", "audits", "weekly");
     this.identityAuditMonthlyDir = path.join(config.memoryDir, "identity", "audits", "monthly");
-    this.memoryActionEventsPath = path.join(config.memoryDir, "state", "memory-actions.jsonl");
   }
 
   async ensureDirs(): Promise<void> {
@@ -496,13 +484,22 @@ export class CompoundingEngine {
     await this.ensureDirs();
     const weekId = opts?.weekId ?? isoWeekId(new Date());
 
-    const entries = await this.readFeedbackEntriesForWeek(weekId);
-    const actionEvents = await this.readActionEventsForWeek(weekId);
-    const actionPatterns = this.buildActionFailurePatterns(actionEvents);
+    const entries = await readFeedbackEntriesForWeekFile(this.feedbackInboxPath, weekId);
+    const actionEvents = await readWeeklyActionEvents({
+      storage: this.storage,
+      memoryDir: this.config.memoryDir,
+      weekId,
+    });
+    const corrections = await readWeeklyCorrections({
+      storage: this.storage,
+      memoryDir: this.config.memoryDir,
+      weekId,
+    });
+    const actionPatterns = buildActionFailurePatterns(actionEvents);
     const outcomeSummary = this.buildActionOutcomeSummary(actionEvents);
     const previousMistakes = await this.readMistakes();
-    const mistakes = this.buildMistakes(entries, actionPatterns, weekId, previousMistakes?.registry ?? []);
-    const rubrics = this.buildRubricSnapshot(entries, outcomeSummary);
+    const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, previousMistakes?.registry ?? []);
+    const rubrics = this.buildRubricSnapshot(entries, outcomeSummary, corrections);
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
       ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics)
       : [];
@@ -968,76 +965,6 @@ export class CompoundingEngine {
     return defaultTierMigrationCycleBudget(this.config, trigger);
   }
 
-  private async readFeedbackEntriesForWeek(weekId: string): Promise<FeedbackEntryWithProvenance[]> {
-    // Minimal implementation: includes entries where date starts with any day in the ISO week.
-    // We approximate by taking all entries and filtering by computed isoWeekId(date).
-    const out: FeedbackEntryWithProvenance[] = [];
-    try {
-      const raw = await readFile(this.feedbackInboxPath, "utf-8");
-      const lines = raw.split("\n");
-      for (let idx = 0; idx < lines.length; idx += 1) {
-        const line = lines[idx];
-        if (!line.trim()) continue;
-        try {
-          const obj = JSON.parse(line);
-          const parsed = SharedFeedbackEntrySchema.safeParse(obj);
-          if (!parsed.success) continue;
-          const d = new Date(parsed.data.date);
-          if (!Number.isFinite(d.getTime())) continue;
-          if (isoWeekId(d) !== weekId) continue;
-          const sourceLine = idx + 1;
-          out.push({
-            entry: parsed.data,
-            sourceLine,
-            sourcePath: this.feedbackInboxPath,
-            entryId: `${parsed.data.agent}-${parsed.data.date}-${sourceLine}`.replace(/[^a-zA-Z0-9._:-]/g, "_"),
-          });
-        } catch {
-          // ignore
-        }
-      }
-    } catch {
-      // missing feedback is normal
-    }
-    return out;
-  }
-
-  private buildActionFailurePatterns(events: WeeklyActionEvent[]): string[] {
-    const out: string[] = [];
-    for (const event of events) {
-      const failed = event.outcome === "failed" || event.outcome === "skipped";
-      if (!failed && event.policyDecision === null) continue;
-      const suffix = event.reason && event.reason.trim().length > 0
-        ? ` - ${event.reason.trim().slice(0, 140)}`
-        : "";
-      out.push(
-        `memory-action/${event.namespace}: ${event.action} ${event.outcome}${event.policyDecision ? `/${event.policyDecision}` : ""}${suffix}`,
-      );
-    }
-    return out;
-  }
-
-  private async readActionEventsForWeek(weekId: string): Promise<WeeklyActionEvent[]> {
-    const out: WeeklyActionEvent[] = [];
-    const rows = await this.storage.readMemoryActionEventRows(Number.MAX_SAFE_INTEGER);
-    for (const row of rows) {
-      const event = row.event;
-      const ts = new Date(event.timestamp);
-      if (!Number.isFinite(ts.getTime()) || isoWeekId(ts) !== weekId) continue;
-      out.push({
-        line: row.line,
-        action: event.action,
-        outcome: event.outcome,
-        policyDecision: event.policyDecision === "deny" || event.policyDecision === "defer"
-          ? event.policyDecision
-          : null,
-        namespace: typeof event.namespace === "string" && event.namespace.length > 0 ? event.namespace : "default",
-        reason: typeof event.reason === "string" ? event.reason : null,
-      });
-    }
-    return out;
-  }
-
   private buildActionOutcomeSummary(events: WeeklyActionEvent[]): ActionOutcomeSummary[] {
     const byAction = new Map<string, { counts: ActionOutcomeCounts; provenance: Set<string> }>();
     for (const event of events) {
@@ -1049,7 +976,7 @@ export class CompoundingEngine {
       if (event.outcome === "applied") acc.counts.applied += 1;
       else if (event.outcome === "skipped") acc.counts.skipped += 1;
       else acc.counts.failed += 1;
-      acc.provenance.add(`${path.basename(this.memoryActionEventsPath)}:L${event.line}`);
+      acc.provenance.add(`${event.ledgerLabel}:L${event.line}`);
       byAction.set(key, acc);
     }
 
@@ -1169,13 +1096,14 @@ export class CompoundingEngine {
 
   private buildMistakes(
     entries: FeedbackEntryWithProvenance[],
-    actionPatterns: string[] = [],
+    actionPatterns: Array<{ pattern: string; provenance: string }>,
+    corrections: WeeklyCorrectionEvidence[],
     weekId: string,
     previousRegistry: MistakeRegistryEntry[] = [],
   ): MistakesFile & { details: PatternWithProvenance[]; registry: MistakeRegistryEntry[] } {
     const patterns: PatternWithProvenance[] = [];
     const evidenceByPattern = new Map<string, {
-      category: "feedback" | "action";
+      category: "feedback" | "action" | "correction";
       agent: string | null;
       workflow: string | null;
       tags: Set<string>;
@@ -1219,9 +1147,34 @@ export class CompoundingEngine {
       evidenceByPattern.set(pattern, previous);
     }
 
-    for (const pattern of actionPatterns) {
-      patterns.push({ pattern, provenance: [`${path.basename(this.memoryActionEventsPath)}:*`] });
-      const previous = evidenceByPattern.get(pattern) ?? {
+    for (const correction of corrections) {
+      patterns.push({ pattern: correction.pattern, provenance: [correction.provenance] });
+      const previous = evidenceByPattern.get(correction.pattern) ?? {
+        category: "correction" as const,
+        agent: correction.source,
+        workflow: correction.entityRef ?? "corrections",
+        tags: new Set<string>(),
+        severity: null,
+        confidence: correction.confidence,
+        outcome: null,
+        timestamps: [],
+        evidenceWindow: { start: correction.created, end: correction.created },
+      };
+      for (const tag of correction.tags) previous.tags.add(tag);
+      previous.timestamps.push(correction.created);
+      if (previous.agent === null && correction.source) previous.agent = correction.source;
+      if (correction.entityRef && previous.workflow === "corrections") previous.workflow = correction.entityRef;
+      if (previous.confidence === null) previous.confidence = correction.confidence;
+      previous.evidenceWindow = mergeEvidenceWindows(previous.evidenceWindow, {
+        start: correction.created,
+        end: correction.created,
+      });
+      evidenceByPattern.set(correction.pattern, previous);
+    }
+
+    for (const item of actionPatterns) {
+      patterns.push({ pattern: item.pattern, provenance: [item.provenance] });
+      const previous = evidenceByPattern.get(item.pattern) ?? {
         category: "action" as const,
         agent: null,
         workflow: "memory-actions",
@@ -1232,7 +1185,7 @@ export class CompoundingEngine {
         timestamps: [],
         evidenceWindow: { start: null, end: null },
       };
-      evidenceByPattern.set(pattern, previous);
+      evidenceByPattern.set(item.pattern, previous);
     }
 
     const byPattern = new Map<string, Set<string>>();
@@ -1427,6 +1380,7 @@ export class CompoundingEngine {
   private buildRubricSnapshot(
     entries: FeedbackEntryWithProvenance[],
     outcomeSummary: ActionOutcomeSummary[],
+    corrections: WeeklyCorrectionEvidence[] = [],
   ): RubricSnapshot {
     const updatedAt = new Date().toISOString();
     const byAgent = new Map<string, RubricSnapshotEntry>();
@@ -1471,6 +1425,38 @@ export class CompoundingEngine {
       byWorkflow.set(workflow, workflowEntry);
     }
 
+    for (const correction of corrections) {
+      if (correction.source) {
+        const agentEntry = byAgent.get(correction.source) ?? {
+          id: stableRubricId("agent", correction.source),
+          kind: "agent" as const,
+          subject: correction.source,
+          observations: [],
+          tags: [],
+          provenance: [],
+          observationEntries: [],
+          updatedAt,
+        };
+        this.addRubricObservation(agentEntry, correction.note, correction.provenance);
+        agentEntry.tags = normalizeTags([...agentEntry.tags, ...correction.tags]);
+        byAgent.set(correction.source, agentEntry);
+      }
+      const workflow = correction.entityRef ?? "corrections";
+      const workflowEntry = byWorkflow.get(workflow) ?? {
+        id: stableRubricId("workflow", workflow),
+        kind: "workflow" as const,
+        subject: workflow,
+        observations: [],
+        tags: [],
+        provenance: [],
+        observationEntries: [],
+        updatedAt,
+      };
+      this.addRubricObservation(workflowEntry, correction.note, correction.provenance);
+      workflowEntry.tags = normalizeTags([...workflowEntry.tags, ...correction.tags]);
+      byWorkflow.set(workflow, workflowEntry);
+    }
+
     for (const item of outcomeSummary) {
       const workflowEntry = byWorkflow.get(item.action) ?? {
         id: stableRubricId("workflow", item.action),
@@ -1503,7 +1489,7 @@ export class CompoundingEngine {
       "",
       `Generated: ${snapshot.updatedAt}`,
       "",
-      "Stable, deterministic rubric snapshot generated from weekly feedback + action outcomes.",
+      "Stable, deterministic rubric snapshot generated from weekly feedback, correction memories, and action outcomes.",
       "",
     ];
 

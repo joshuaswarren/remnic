@@ -19,8 +19,11 @@ The compounding engine turns cross-agent feedback into persistent institutional 
 
 ## Inputs
 
-The engine reads shared feedback entries from:
-- `shared-context/feedback/inbox.jsonl`
+Weekly synthesis reads three evidence sources for the ISO week (`YYYY-Www`):
+
+- Shared feedback from `feedback/inbox.jsonl`. When `sharedContextDir` is set, that file lives under the shared-context directory. When it is unset, the inbox is `memoryDir/shared-context/feedback/inbox.jsonl` so a standalone store replicates it with the memory directory. Other shared-context files stay at the workspace default.
+- Correction memories (`category: correction`) whose `created` timestamp falls in the week, from `corrections/` and that week's `facts/<YYYY-MM-DD>/` at the memory root and under every namespace directory. These become mistake patterns and rubric observations. The scan keeps the 500 newest in-week candidates and skips files larger than 256KB.
+- Action outcomes from `state/memory-actions.jsonl` at the memory root and from `namespaces/<namespace>/state/memory-actions.jsonl` for every namespace store.
 
 Write feedback via tool:
 - `shared_feedback_record`
