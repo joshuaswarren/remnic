@@ -40,6 +40,8 @@ hf download letta-ai/frontier-memory-corpus --repo-type dataset \
 
 Inspection found zero trajectory files and no `SHA256SUMS`. The download progress counter did not represent 676 downloaded trajectories. Neither file checksums nor the expected corpus digest could be verified.
 
+Authentication was subsequently supplied outside this run, but dataset files remained gated with a reported HTTP 403. This run waits for an access-granted notice before another download. Authority is download-only: no HF upload, push, repository creation, sign-in, or terms acceptance.
+
 Once access exists, verify the manifest before ingestion:
 
 ```bash
@@ -60,44 +62,56 @@ An isolated standalone daemon started from this worktree's source. Its config pl
 
 QMD was unavailable. The smoke used built-in Orama, which supports lexical search without an embedding provider. It did not use any existing QMD index. All recall scope, budget, result-count, planner, and deadline settings retained their defaults.
 
-The smoke additionally set `modelSource: "plugin"`, `openaiApiKey: false`, `localLlmEnabled: false`, and `taskLlmFallback: false`. These prevent an empty startup test from using cloud or gateway fallback. No extraction model was configured because corpus access and local model probes failed. This is startup configuration, not a completed dream-stage configuration.
+The initial startup-only smoke disabled every extractor. The current extraction configuration uses the subscription chain:
 
-After writing that config, the source launch used this form:
-
-```bash
-env -i PATH=/usr/bin:/bin \
-  HOME="$RUN_ROOT/home" XDG_CONFIG_HOME="$RUN_ROOT/config" \
-  XDG_CACHE_HOME="$RUN_ROOT/cache" XDG_DATA_HOME="$RUN_ROOT/data" \
-  REMNIC_AUTH_TOKEN="$SMOKE_TOKEN" \
-  node --conditions=remnic-source --import tsx \
-  packages/remnic-server/src/index.ts \
-  --config "$RUN_ROOT/remnic.config.json" --host 127.0.0.1 --port 14319
+```json
+{
+  "modelSource": "gateway",
+  "openaiApiKey": false,
+  "localLlmEnabled": false,
+  "taskModelChain": {
+    "primary": "codex-subscription/gpt-6.1-sol"
+  },
+  "taskLlmTimeoutMs": 120000
+}
 ```
 
-The protected health request returned `ok: true`, `searchBackend: "orama"`, and QMD mode `not-selected`. It showed no pending turns and no extraction timestamp. The daemon then stopped. No production service, shared memory directory, external model router, or normal daemon-management command was used.
+The direct Codex CLI runner failed a real request with `invalid_refresh_token`, despite a successful ChatGPT login-status check. A private eval adapter instead calls the pane's existing `openai-codex/gpt-6.1-sol` subscription through OMP. It registers on Remnic's existing `setCodexCliFallbackRunnerForProcess` seam before starting the standalone server. No core provider or persistent auth configuration was changed.
 
-## Local model and dream-stage outcome
+The adapter disables context-file providers, tools, LSP, extensions, skills, rules, session persistence, model fallback, context promotion, and compaction. It passes requests through stdin, accepts only the exact requested provider/model, and records usage without transcript content. It captures the completed assistant event before stopping the child. CLI linger after a completed response is not counted as a model timeout.
 
-No standard local model service answered on the three tested standard ports. Two existing local development endpoints returned empty model lists. A four-token completion probe to each endpoint timed out after 10 seconds with no response bytes. No successful local completion or model identity was established. No new model server started.
+The request uses `--service-tier priority`. Upstream [Codex discussion](https://github.com/openai/codex/issues/32191) identifies `priority` as the Fast-mode request encoding, but also describes backend downgrades. OMP does not expose the effective backend tier here, so that field remains unverified. The adapter never claims verified Fast service.
 
-The health field `llmReachable: true` was not accepted as proof of a working extraction model. The direct completion probes did not succeed.
+The private smoke controller ran in this form:
 
-The dream stage did not run. Corpus access is the first blocker. A successful local extraction route is also missing. If direct OpenAI extraction is selected instead, the exact missing variable is `OPENAI_API_KEY`, for the OpenAI provider. No cloud key was requested or retrieved.
+```bash
+node --conditions=remnic-source --import tsx \
+  "$EVAL_SCRIPTS/cos400-extraction-smoke.mjs" "$RUN_ROOT"
+```
 
-| Measurement | Observed state |
-| --- | --- |
-| Trajectories downloaded and ingested | 0 and 0 |
-| Extraction calls | 0 |
-| Dream-stage time | Not measured; stage did not start |
-| Dream input/output tokens | Not measured; stage did not start |
-| Dream provider charge | $0.00 |
-| Generated memories, corrections, entities | Unmeasured; no dream output |
-| Empty smoke directory files: facts, corrections, entities | 0, 0, 0 |
-| Task-agent memory export | Not produced |
+`EVAL_SCRIPTS` refers to private session artifacts, not a packaged repository command. The controller calls the real `startServer`, `service.observe`, and `service.extractionForceFlush` APIs. It creates fresh temporary state and stops the server afterward. It does not insert prewritten memories.
 
-The two local probe requests have no returned token usage. Do not report their usage as zero. Empty smoke directories are not a memory export and do not constitute benchmark results.
+No API fallback was used: the pane-native subscription route returned real extraction JSON. The approved $20 API fallback remains conditional on failure of that route; no API key was requested, loaded, or billed.
 
-When access and a model become available, ingest every trajectory through Remnic's normal observe/extract path. Retain all user, assistant, and tool content plus the appended verifier message. Preserve trajectory boundaries, drain extraction, and record persistence failures before exporting. The format adapter is not implemented because no input trajectory could be read. Do not substitute manually written memories or reference-system dream output.
+## Subscription and dream-stage outcome
+
+The earlier local-model probes failed and are historical diagnostics only. Local endpoints are now excluded from extraction.
+
+Three synthetic normal-pipeline smokes completed subscription requests but failed the assertion that a fact had persisted:
+
+| Smoke | Input tokens | Output tokens | Provider time, ms | Persisted facts |
+| --- | ---: | ---: | ---: | ---: |
+| Initial policy fixture | 3,014 | 947 | 28,254 | 0 |
+| Concrete project policy | 3,015 | 995 | 30,274 | 0 |
+| Boundary diagnostic | 3,018 | 964 | 24,613 | 0 |
+
+These calls consumed 11,953 reported tokens in total. They used no corpus inputs and are not dream-stage results. The final diagnostic observed two facts and one entity after normalization and sanitization, then zero of each at finalization. Source grounding removed the candidates before persistence. That explains this smoke's empty store; it does not establish that every corpus trajectory would behave the same way. No grounding rule was disabled to force a pass.
+
+Separate setup smokes covered the direct CLI auth failure, two context-inflated OMP attempts, a context-disabled JSON completion, and the private adapter itself. Some earlier diagnostics lack a complete usage record; the three-row table covers only independently recorded normal-pipeline calls and is not a total for all setup activity.
+
+The dream stage has not run. Gated corpus access remains the first blocker. No dataset checksums, dream runtime, dream token totals, generated-memory counts, or task-agent export exist yet. Keep those measurements null rather than reporting the empty synthetic stores as dream output. No downstream score exists.
+
+When access is granted, ingest every trajectory through Remnic's normal path. Retain user, assistant, and tool content plus the appended verifier message. Preserve trajectory boundaries, drain extraction, and record every failure. Inspect actual input formats before building the format adapter. The default 4,000-character extraction turn limit must not silently remove trajectory content; any ingestion-only adjustment must be recorded separately from unchanged recall settings.
 
 The intended handoff is the resulting memory folder or a supported export, with file counts and a local checksum. Keep its contents private or gated unless the benchmark authors permit publication. Record elapsed time, model identity, token usage, provider charge, and category counts. Use one worker initially and never exceed two.
 
@@ -132,11 +146,11 @@ Do not invent task commands, replacement verifiers, or numeric scores. The exist
 
 ## Cost and runtime estimate
 
-No dream-stage provider charge was incurred. No downstream trial ran. Local probe token usage is unknown; no cloud model endpoint was called.
+No dream-stage provider charge was incurred and no downstream trial ran. Setup calls consumed Codex subscription quota. No metered OpenAI API fallback was used. Local probe usage from the earlier, superseded setup remains unknown.
 
-Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. For a serial 674-trajectory pass to finish inside six hours, the total average allowance is about 32 seconds per trajectory, including extraction and maintenance. Actual runtime cannot be estimated narrowly until representative extraction calls complete. No inference rate was measured here.
+Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. A serial 674-trajectory pass has an average allowance of about 32 seconds per trajectory within that limit. The three tiny pipeline smokes each took 24.6 to 30.3 seconds at the provider boundary, but they do not estimate corpus throughput. No corpus-sized extraction has run.
 
-With a verified local model, provider API charges would be zero; local compute cost is not priced. For cloud extraction, price the measured input/output token totals at the selected provider's published rates. No token total or cloud dream-stage quote is available yet.
+The selected route uses subscription quota, whose cost is not priced here. If that route becomes unusable, the approved metered API alternative requires a written reason and a hard $20 admission budget before any request. It must reserve each request's maximum input/output cost, include retries and maintenance calls, and reject work that would exceed the cap. That fallback was not activated.
 
 The release lists mean downstream task costs of $0.77 and $2.80 for two Letta configurations, excluding dreaming. As a rough task-only estimate, 15 trials at those means cost $11.55 to $42.00. A matched Remnic/no-memory pair across 15 tasks costs an estimated $23.10 to $84.00. Generation, embeddings, sandboxes, reference reruns, and retries add cost. These figures are published-cost arithmetic, not observed Remnic prices.
 

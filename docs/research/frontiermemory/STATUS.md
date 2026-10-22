@@ -1,52 +1,57 @@
 # FrontierMemory 1.0 status
 
-The dream stage is blocked by gated corpus access and an unverified local extraction model. Downstream scoring also requires Letta's task environments and verifiers. No task score exists.
+Corpus access still blocks the dream stage. The pane-native Codex subscription route returns extraction JSON. Three persistence smokes failed; no corpus run or memory export exists.
 
 - Draft PR: [#3212](https://github.com/joshuaswarren/remnic/pull/3212), on `docs/frontiermemory-1-0`.
-- Previous draft: [#3211](https://github.com/joshuaswarren/remnic/pull/3211), closed as superseded without merging.
+- Previous draft: [#3211](https://github.com/joshuaswarren/remnic/pull/3211), closed without merging.
 - Plan: [eval-plan.md](eval-plan.md).
 - Results: [Markdown](results-2026-10-22.md) and [JSON](results-2026-10-22.json).
 
-## Corpus access and verification
+## Corpus gate
 
-`hf auth whoami` returned `Not logged in`. A one-worker `hf download` attempt returned `GatedRepoError: 401`. It downloaded the README only: zero trajectory files and no `SHA256SUMS` were present. No login or terms acceptance was attempted.
+The initial `hf auth whoami` returned `Not logged in`; the download returned `GatedRepoError: 401`. It obtained only the README, with zero trajectory files and no `SHA256SUMS`.
 
-The card describes 674 trajectories, with 184 pass and 490 fail. The expected manifest digest is:
+Authentication was later supplied outside this run, but dataset access still returned a reported HTTP 403 pending the gate. No new download will start before an access-granted notice. Authority is download-only. This run performed no HF upload, push, repository creation, login, or terms acceptance.
+
+The card specifies 674 trajectories, including 184 pass and 490 fail. Those counts are not locally verified. The expected manifest digest remains unverified:
 
 ```text
 c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1
 ```
 
-The digest and file checksums remain **unverified**. No corpus file, canary, or generated memory content was committed. Reserved in-repository corpus and memory paths are ignored; the attempt used temporary storage outside the checkout.
+## Extractor route
 
-## Isolated daemon and dream output
+Remnic's built-in `codex-subscription` runner failed because the separate Codex CLI could not refresh its login (`invalid_refresh_token`). A private eval runner instead uses the pane's existing `openai-codex/gpt-6.1-sol` subscription through OMP. It does not inspect or copy auth material.
 
-A separate source daemon started on a non-default loopback port with temporary memory, workspace, and Orama paths. The authenticated health request returned `ok: true`, `searchBackend: orama`, no pending turns, and no extraction timestamp. The daemon stopped after the smoke check.
+The runner disables context files, tools, extensions, skills, rules, sessions, model fallback, context promotion, and compaction. It requests `priority`, the Fast-mode request encoding discussed upstream. Effective backend tier is not reported and remains unverified.
 
-Two existing local development endpoints returned empty model lists. Both four-token completion probes timed out after 10 seconds with no response. No new model server started. Local probe token usage is unavailable.
+The real standalone daemon used temporary memory/workspace/Orama paths and a non-default loopback port. The normal observe/extract/flush path completed subscription requests. No metered API fallback was used; the conditional $20 allowance was not activated. Local and fleet model endpoints are excluded from this route.
 
-| Dream measurement | Result |
+## Observed setup results
+
+| Measurement | Observed result |
 | --- | --- |
-| Trajectories ingested | 0 of 674 |
-| Extraction calls | 0 |
-| Dream runtime and token use | Not measured; dream stage did not start |
-| Generated memories, corrections, entities | Unmeasured; no dream output |
-| Empty smoke directory counts | 0 facts, 0 corrections, 0 entities |
-| Task-agent memory export | Not produced |
-| Dream provider charge | $0.00 |
+| Normal-pipeline synthetic requests | 3 |
+| Reported input/output tokens | 9,047 / 2,906 |
+| Reported total tokens | 11,953 |
+| Provider time per request | 24.6 to 30.3 seconds |
+| Persisted facts in each synthetic smoke | 0 |
+| Persistence assertions | All 3 failed |
 
-No production daemon, shared memory, shared QMD index, or fleet model router was used. If direct OpenAI extraction replaces the unavailable local route, it requires `OPENAI_API_KEY` for the OpenAI provider. That variable is absent. No key was requested or retrieved.
+The final diagnostic observed two facts and one entity after normalization and sanitization, then zero of each at finalization. Source grounding removed those candidates. No grounding rule was disabled to force a pass. This result does not establish the outcome for real corpus trajectories.
 
-## Downstream scores and remaining requirements
+Earlier setup probes and their failures appear in the plan. Some lack complete usage records. The table is not a total for all setup activity. All smoke inputs were synthetic; no corpus trajectory was used.
 
-All 15 Remnic and no-memory task rows remain `not_run`, with `null` scores. The published 13.3% to 73.3% range is external reference data; it does not rank this run.
+## Dream-stage and scoring status
 
-The [plan](eval-plan.md) records the two-stage design, public source-task references, all named board baselines, and cost assumptions. A full evaluation needs gated corpus access, verified checksums, a working extractor, and Letta's scoring access or a submission. No contact message was sent.
+Dream stage: **not run**. Trajectories ingested: **0 of 674**. Dream runtime, token totals, generated memories/corrections/entities, and memory export remain unmeasured or absent. Setup counters are not dream counters.
 
-The dream limit is six hours; no Remnic dream runtime was measured. Published task-cost means give a provisional $23.10 to $84.00 for 15 matched Remnic/no-memory pairs, before dream generation and other costs. These are estimates, not charges incurred.
+All 15 downstream rows remain `not_run`, with `null` Remnic and no-memory scores. The external 13.3% to 73.3% range does not rank this run. Scoring needs Letta's task environments and verifiers or a submission; no contact message was sent.
 
-## Publication checks
+No corpus, canary, or generated memory content was committed. Reserved corpus and memory paths remain ignored. No production daemon, shared memory, shared QMD index, or fleet model router was used. Owned smoke daemons stopped.
 
-The branch-shape check accepts `docs/frontiermemory-1-0`. `npm run check:pre-push` passed all cheap CI gates after the rename. The push published the branch, but shared git-config locking prevented upstream-tracking setup. No lock was removed or check bypassed.
+## Next execution condition
 
-Keep the PR draft. Do not self-merge or mark it ready.
+Wait for corpus access to be granted. Then download only, verify `SHA256SUMS` and its digest, validate the 674/184/490 counts, inspect formats without exposing contents, and run all trajectories through normal ingestion. Record any ingestion-only limit adjustment; leave recall settings unchanged.
+
+The plan records cost assumptions and the six-hour dream limit. No corpus throughput estimate is available from these tiny smokes. Keep the PR draft. Do not self-merge or mark it ready.
