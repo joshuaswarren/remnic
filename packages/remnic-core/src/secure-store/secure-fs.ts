@@ -61,6 +61,7 @@ import {
 } from "./cipher.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { readStoreFileBuffer } from "./entity-file-read.js";
 
 // ---------------------------------------------------------------------------
 // Error classes
@@ -291,7 +292,7 @@ export async function readMaybeEncryptedFileBuffer(
   memoryDir?: string,
   opts?: { aadFilePath?: string }
 ): Promise<Buffer> {
-  const buf = await readFile(filePath);
+  const buf = memoryDir ? await readStoreFileBuffer(filePath, memoryDir) : await readFile(filePath);
   if (!isEncryptedFile(buf)) {
     // Plain file — legacy or unencrypted store.
     return buf;

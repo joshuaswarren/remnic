@@ -364,18 +364,37 @@ export class EntityStore {
     return normalized;
   }
 
+  private async readEntityFileResolvingRename(firstPath: string, entityId: string) {
+    try {
+      return { id: entityId, content: await this.deps.readStorageSecureFile(firstPath) };
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+    }
+    const historicalIds = this.deps.currentHistoricalIds();
+    const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+    const candidates = new Set([canonical]);
+    for (const legacy of Object.keys(historicalIds)) {
+      if (resolveHistoricalEntityCanonicalId(legacy, historicalIds) === canonical) candidates.add(legacy);
+    }
+    candidates.delete(entityId);
+    for (const candidate of candidates) {
+      try {
+        return { id: candidate, content: await this.deps.readStorageSecureFile(
+          path.join(this.deps.entitiesDir, `${candidate}.md`),
+        ) };
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    return null;
+  }
+
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) {
       return "";
     }
-    try {
-      return await this.deps.readStorageSecureFile(filePath);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return "";
-    }
+    return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
   }
 
   /** Return sorted list of entity filenames (without .md extension) */
@@ -517,6 +536,9 @@ export class EntityStore {
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
       if (mdFiles.length === 0) return [];
 
+      const historicalIds = this.deps.currentHistoricalIds();
+      const seen = new Map<string, Set<string>>();
+
       // Read all entity files in parallel batches to avoid O(N) sequential I/O.
       // With 3000+ entity files, sequential reads can take 15-20s under load.
       // Batching at 100 keeps file-descriptor pressure manageable while staying fast.
@@ -528,29 +550,22 @@ export class EntityStore {
         checkCorpusReadAbort(options);
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
-          batch.map(async (entry) => {
-            try {
-              return await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, entry));
-            } catch (err) {
-              if (err instanceof SecureStoreLockedError) throw err;
-              if (!isErrnoCode(err, "ENOENT")) throw err;
-              const legacyId = entry.slice(0, -".md".length);
-              const renamedTo = resolveHistoricalEntityCanonicalId(legacyId, this.deps.currentHistoricalIds());
-              if (renamedTo === legacyId) return null;
-              try {
-                return await this.deps.readStorageSecureFile(
-                  path.join(this.deps.entitiesDir, `${renamedTo}.md`),
-                );
-              } catch (retryErr) {
-                if (retryErr instanceof SecureStoreLockedError) throw retryErr;
-                if (!isErrnoCode(retryErr, "ENOENT")) throw retryErr;
-                return null;
-              }
-            }
+          batch.map((entry) => {
+            const entityId = entry.slice(0, -".md".length);
+            return this.readEntityFileResolvingRename(path.join(this.deps.entitiesDir, entry), entityId);
           }),
         );
-        for (const content of results) {
-          if (content !== null) entities.push(parseEntityFile(content, this.deps.entitySchemas));
+        for (const result of results) {
+          if (result === null) continue;
+          const canonical = resolveHistoricalEntityCanonicalId(result.id, historicalIds);
+          let contents = seen.get(canonical);
+          if (contents?.has(result.content)) continue;
+          if (!contents) {
+            contents = new Set();
+            seen.set(canonical, contents);
+          }
+          contents.add(result.content);
+          entities.push(parseEntityFile(result.content, this.deps.entitySchemas));
         }
       }
       // A signal that fired during the last batch's await would otherwise publish

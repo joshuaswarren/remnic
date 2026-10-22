@@ -32,6 +32,10 @@ export class EntityCanonicalIdMigrationRunner {
     return this.ensure();
   }
 
+  public async drain(): Promise<void> {
+    while (this.inFlight) await this.inFlight.catch(() => undefined);
+  }
+
   private async runOrReuse(): Promise<void> {
     let fingerprintAtStart = await this.readFingerprint();
     if (this.migrationComplete && fingerprintAtStart === this.completedFingerprint) return;

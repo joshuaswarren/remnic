@@ -73,8 +73,11 @@ each write; see the API reference (api.md#http) for the exact guarantee.
 remnic briefing --since 7d --focus project:acme-webshop --format markdown --save
 ```
 
-Startup runs entity canonical-ID migration in the background. Briefings read the existing corpus without waiting for that migration.
-Memory and entity writes still wait for migration. If migration moves an entity file during a read, the reader retries the journal's canonical ID.
+Startup runs entity canonical-ID migration in the background.
+Briefings read the existing corpus without waiting for that migration.
+Full startup readiness and shutdown wait for the background job.
+Memory and entity writes still wait for migration.
+If migration moves an entity file during a read, the reader retries the journal's canonical ID.
 
 ## Connectors & integrations
 

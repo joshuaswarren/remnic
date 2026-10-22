@@ -56,13 +56,6 @@ function buildConfig(memoryDir: string, workspaceDir: string) {
   });
 }
 
-async function stop(orchestrator: Orchestrator | undefined): Promise<void> {
-  if (!orchestrator) return;
-  await orchestrator.storage.ensureDirectories().catch(() => undefined);
-  await orchestrator.deferredReady;
-  await orchestrator.destroy();
-}
-
 async function holdMigrationLock(memoryDir: string): Promise<{ release: () => Promise<void> }> {
   const acquired = Promise.withResolvers<void>();
   const released = Promise.withResolvers<void>();
@@ -184,7 +177,7 @@ test("initialize and briefing stay available while the entity canonical-id migra
       "the replay must not drop persisted memories",
     );
   } finally {
-    await stop(orchestrator);
+    await orchestrator?.destroy();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
   }
@@ -231,7 +224,7 @@ test("a write still waits for the canonical-id replay that startup deferred", as
       "the write held behind the replay must land, not vanish",
     );
   } finally {
-    await stop(orchestrator);
+    await orchestrator?.destroy();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
   }
@@ -306,7 +299,7 @@ test("a startup canonical-id replay that fails is retried by the next writer", a
     );
     assert.equal(await exists(path.join(memoryDir, "entities", `${legacyId}.md`)), false);
   } finally {
-    await stop(orchestrator);
+    await orchestrator?.destroy();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(workspaceDir, { recursive: true, force: true });
   }

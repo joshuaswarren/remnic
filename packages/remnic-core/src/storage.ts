@@ -3627,6 +3627,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
     const waitForMigration = options.waitForEntityMigration !== false;
+    if (!waitForMigration) await entityMigration.readSafeEntityEntries(this.entitiesDir);
     if (waitForMigration) await this.entityCanonicalIdMigration.ensure();
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
@@ -3646,6 +3647,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     void migrationBarrier.catch((error) => {
       log.warn(`entity canonical-id migration deferred at startup failed: ${error instanceof Error ? error.message : String(error)}`);
     });
+  }
+
+  async drainEntityCanonicalIdMigration(): Promise<void> {
+    await this.entityCanonicalIdMigration.drain();
   }
 
   /**
