@@ -401,7 +401,7 @@ Use isolated `agentTurn` jobs and `delivery.mode: "none"`:
 - action: call tool `shared_context_curate_daily`
 
 4. Weekly compounding synthesis:
-- Standalone daemon: set `compoundingEnabled` and `compoundingWeeklyCronEnabled`. The daemon writes the ISO week that just ended, skips a week whose report already exists, and catches up that week after a restart. Calibration runs as part of `synthesizeWeekly` when `calibrationEnabled` is true.
+- Standalone daemon: set `compoundingEnabled` and `compoundingWeeklyCronEnabled`. The daemon writes the ISO week that just ended, skips a week only when `compounding/weekly/.scheduler/<YYYY-Www>.done` exists, and catches up that week after a restart. Calibration runs as part of `synthesizeWeekly` when `calibrationEnabled` is true.
 - OpenClaw delegate mode does not register `compounding_weekly_synthesize`, so a gateway cron cannot call it. Use the daemon flags above.
 - Embedded hosts that still expose the tool can keep an isolated agent turn instead of the daemon flag:
   - schedule: `35 21 * * 0`

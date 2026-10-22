@@ -554,15 +554,15 @@ export class CompoundingEngine {
         log.warn(`[cmc] causal consolidation in synthesizeWeekly failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    // PEDC: calibration consolidation during weekly synthesis. The week id is
-    // the idempotency key; only a completed week stamps it, so a manual
-    // in-progress-week run cannot make Monday's run skip calibration.
-    if (resolveConsolidationCapabilities(this.config).calibration) {
+    // PEDC: calibration consolidation, keyed by the week id so a retry does
+    // not reinforce the same rules. Only a completed week consolidates: a
+    // manual in-progress-week run must not double-count partial evidence.
+    if (resolveConsolidationCapabilities(this.config).calibration && weekId < isoWeekId(new Date())) {
       try {
         const { calibrationConsolidationInput, runCalibrationConsolidation } = await import("../calibration.js");
         const calRules = await runCalibrationConsolidation({
           ...calibrationConsolidationInput(this.config),
-          idempotencyKey: weekId < isoWeekId(new Date()) ? weekId : undefined,
+          idempotencyKey: weekId,
         });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);
       } catch (error) {
