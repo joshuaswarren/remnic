@@ -105,8 +105,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
+      - name: Lint (Biome and scoped anti-slop)
         run: pnpm run lint
+        env:
+          REMNIC_ANTI_SLOP_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
 
       - name: Package typecheck scripts
         run: node scripts/check-package-typecheck-scripts.mjs

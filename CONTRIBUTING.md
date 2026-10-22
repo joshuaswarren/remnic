@@ -49,6 +49,7 @@ This wires `pre-commit` to `npm run preflight:quick` and `pre-push` to `npm run 
 
 ## Quality gates
 
+- `npm run lint` — required Biome checks, strict plugin types, anti-slop rule/gate regressions, and scoped anti-slop lint. CI's `checks` job runs it; the required `quality` check fails unless `checks` succeeds.
 - `npm run preflight:quick` — fast gate (types + config contract + key tests). Run before every push.
 - `npm run preflight` — full pre-PR gate (types + contract + tests + build).
 - `npm run check-config-contract` — required when you touch config types, `parseConfig`, or the plugin manifest schema.
@@ -56,6 +57,14 @@ This wires `pre-commit` to `npm run preflight:quick` and `pre-push` to `npm run 
 - `npm run test:entity-hardening` — required when you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, `config.ts`, or anything under `storage/` or `orchestration/`.
 
 For retrieval/planner/cache/config changes, also run the mandatory hardening gate described in [docs/ops/pr-review-hardening-playbook.md](docs/ops/pr-review-hardening-playbook.md).
+
+### Anti-slop rollout
+
+The fifteen Oxlint anti-slop rules recovered from #3175 remain errors. To adopt them without blocking every PR on existing debt, `npm run lint:anti-slop` lints changed JavaScript/TypeScript files but fails only diagnostics whose reported spans overlap added or changed lines. New and untracked source files are checked in full; deletions do not buy a budget for new violations. Unchanged findings on other lines remain debt, not a waiver for new code.
+
+Locally the comparison is the merge base with `origin/main`, including staged and unstaged edits. On `main` with no divergent merge base it uses `HEAD^`. Override with `npm run lint:anti-slop -- --base <ref>`; a missing or invalid base fails closed. CI supplies `REMNIC_ANTI_SLOP_BASE_REF` from the PR base SHA or the push's previous SHA, so merged PRs and multi-commit pushes keep the correct scope. Tool failures, malformed output, and parse errors also fail the gate.
+
+Run `npm run test:anti-slop` for the real Oxlint rule and scope regressions (one test worker, at most two lint threads). No repository-wide cleanup or baseline reset is needed. Agent/configuration directories and the rule implementation itself retain #3175's exclusions. The rollout's limit is line scope: a new alias or data-flow change can produce a finding only on an unchanged line and escape this gate. A whole-file baseline ratchet is a later change if that limit becomes material.
 
 ## PR quality bar
 
