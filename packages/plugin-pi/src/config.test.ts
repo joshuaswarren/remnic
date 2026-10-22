@@ -6,6 +6,12 @@ import test from "node:test";
 
 import { loadConfig, resolveConfigPath } from "./config.js";
 
+test("recall-timeout config comments describe automatic recovery, not permanent disablement", () => {
+  const source = fs.readFileSync(new URL("./config.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /permanently|process lifetime/);
+  assert.match(source, /5 minute cooldown/);
+});
+
 test("resolveConfigPath uses the Pi extension config location by default", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-home-"));
   try {

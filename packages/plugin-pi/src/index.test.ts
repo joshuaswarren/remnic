@@ -165,6 +165,7 @@ test("default Pi extension creates isolated state for each host invocation", asy
     if (String(input).includes("/engram/v1/namespace/writable")) {
       return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
     }
+    if (String(input).endsWith("/mcp")) return Response.json({ result: {} });
     recallBodies.push(JSON.parse(String(init?.body ?? "{}")));
     return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
   };
@@ -937,6 +938,7 @@ test("empty recall at first before_agent_start does not inject context but a lat
     if (url.includes("/engram/v1/namespace/writable")) {
       return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
     }
+    if (url.endsWith("/mcp")) return Response.json({ result: {} });
     recallCallIndex += 1;
     return new Response(JSON.stringify({ context: recallCallIndex === 1 ? "" : "remembered context" }), { status: 200 });
   };
@@ -1217,6 +1219,7 @@ test("before_agent_start recall failure notification survives stale Pi ctx after
     if (url.includes("/engram/v1/namespace/writable")) {
       return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
     }
+    if (url.endsWith("/mcp")) return Response.json({ result: {} });
     stale.markStale();
     throw new Error("offline");
   };
@@ -2656,3 +2659,62 @@ test("session_start preflight tailors the remediation text for an unsupported (n
   assert.match(err?.message ?? "", /namespaces disabled/);
   assert.doesNotMatch(err?.message ?? "", /namespacePolicies entry/);
 });
+
+test("session_start warns once on plugin/daemon version mismatch without blocking recall", async (t) => {
+  const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  const warnings: string[] = [];
+  const methods: string[] = [];
+  t.mock.method(console, "warn", (message: string) => warnings.push(message));
+  t.mock.method(globalThis, "fetch", async (input: unknown, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/mcp")) {
+      const body = JSON.parse(String(init?.body));
+      methods.push(body.method);
+      assert.equal(body.params.clientInfo.version, packageVersion);
+      return Response.json({ result: { serverInfo: { name: "remnic", version: "0.0.1" } } });
+    }
+    if (url.endsWith("/recall")) return Response.json({ context: "recall still works" });
+    return Response.json({ ok: true, namespace: "default" });
+  });
+  const { pi, emit } = makePiHarness();
+  await createRemnicPiExtension({ config: {
+    ...baseConfig(), authToken: "test-token", statusEnabled: false, mcpToolsEnabled: false,
+  } })(pi);
+  const ctx = { cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => "version-mismatch" } };
+  await emit("session_start", {}, ctx);
+  await emit("session_start", {}, ctx);
+  assert.equal(warnings.length, 1);
+  assert.ok(warnings[0].includes(packageVersion));
+  assert.match(warnings[0], /0\.0\.1/);
+  assert.doesNotMatch(warnings[0], /[\r\n]/);
+  assert.deepEqual(methods, ["initialize"], "version check runs once even when MCP tools/status are disabled");
+  const result = await emit("before_agent_start", { prompt: "query", systemPrompt: "" }, ctx) as { systemPrompt: string };
+  assert.match(result.systemPrompt, /recall still works/);
+});
+
+for (const scenario of ["matching", "missing", "invalid", "unavailable"] as const) {
+  test(`session_start version check tolerates ${scenario} daemon version`, async (t) => {
+    const packageVersion = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+    const warnings: string[] = [];
+    let initializes = 0;
+    t.mock.method(console, "warn", (message: string) => warnings.push(message));
+    t.mock.method(globalThis, "fetch", async (input: unknown) => {
+      if (String(input).endsWith("/mcp")) {
+        initializes++;
+        if (scenario === "unavailable") throw new Error("fetch failed");
+        const version = scenario === "matching" ? packageVersion : scenario === "invalid" ? "bad\nversion" : undefined;
+        return Response.json({ result: { serverInfo: { name: "remnic", version } } });
+      }
+      return Response.json({ ok: true, namespace: "default" });
+    });
+    const { pi, emit } = makePiHarness();
+    await createRemnicPiExtension({ config: {
+      ...baseConfig(), authToken: "test-token", statusEnabled: false, mcpToolsEnabled: false,
+    } })(pi);
+    await emit("session_start", {}, {
+      cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => `version-${scenario}` },
+    });
+    assert.equal(initializes, 1);
+    assert.deepEqual(warnings, []);
+  });
+}
