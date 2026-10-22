@@ -13,6 +13,7 @@ import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationC
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import {
   buildActionFailurePatterns,
+  provenanceVisibleInStoreRecall,
   readFeedbackEntriesForWeekFile,
   readWeeklyActionEvents,
   readWeeklyCorrections,
@@ -906,7 +907,7 @@ export class CompoundingEngine {
     const queryTokens = tokenizeRecallQuery(query);
 
     const activePatterns = (mistakes?.registry ?? [])
-      .filter((entry) => entry.status === "active")
+      .filter((entry) => entry.status === "active" && provenanceVisibleInStoreRecall(entry.provenance))
       .sort((a, b) =>
         b.recurrenceCount - a.recurrenceCount ||
         b.lastSeenAt.localeCompare(a.lastSeenAt) ||
@@ -917,7 +918,18 @@ export class CompoundingEngine {
     const allRubrics = [
       ...(rubrics?.workflows ?? []),
       ...(rubrics?.agents ?? []),
-    ];
+    ].flatMap((entry) => {
+      const visible = this.getRubricObservationEntries(entry).filter((item) =>
+        provenanceVisibleInStoreRecall(item.provenance),
+      );
+      if (visible.length === 0) return [];
+      return [{
+        ...entry,
+        observations: visible.map((item) => item.note),
+        provenance: [...new Set(visible.flatMap((item) => item.provenance))],
+        observationEntries: visible,
+      }];
+    });
     const scoredRubrics = allRubrics
       .map((entry) => ({
         entry,
@@ -1046,6 +1058,7 @@ export class CompoundingEngine {
 
     for (const entry of mistakes) {
       if (entry.status !== "active") continue;
+      if (!provenanceVisibleInStoreRecall(entry.provenance)) continue;
       if (entry.recurrenceCount < 2) continue;
       const content = normalizePromotedGuidanceContent(lessonContentFromPattern(entry.pattern, entry.agent));
       if (content.length === 0) continue;
@@ -1069,6 +1082,7 @@ export class CompoundingEngine {
     for (const rubric of [...rubrics.workflows, ...rubrics.agents]) {
       for (const observation of this.getRubricObservationEntries(rubric)) {
         if (this.isSyntheticOutcomeRubricObservation(observation.note)) continue;
+        if (!provenanceVisibleInStoreRecall(observation.provenance)) continue;
         const evidenceCount = observation.provenance.length;
         if (evidenceCount < 2) continue;
         const content = normalizePromotedGuidanceContent(observation.note);

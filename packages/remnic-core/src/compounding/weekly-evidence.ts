@@ -419,6 +419,11 @@ async function readCorrectionCandidate(
   const raw = readRawMemoryDocument(memory);
   if (!raw) return null;
   if (rawFrontmatterScalar(raw, "category") !== "correction") return null;
+  // Missing status is the writer default (`active`). Any other explicit
+  // status, including forgotten, stays out of compounding so a forget is
+  // not copied back into recall or promotion.
+  const status = rawFrontmatterScalar(raw, "status");
+  if (status && status !== "active") return null;
   const created = rawFrontmatterScalar(raw, "created");
   if (!created) return null;
   const createdDate = new Date(created);
@@ -451,6 +456,15 @@ async function readCorrectionCandidate(
     tags,
     provenance: path.relative(memoryDir, candidate.filePath).split(path.sep).join("/"),
   };
+}
+
+/**
+ * Store-level recall and promotion already ran against root evidence.
+ * Namespace ledger and correction provenance is kept on the weekly report,
+ * and is not injected back through the root compounding section.
+ */
+export function provenanceVisibleInStoreRecall(provenance: readonly string[]): boolean {
+  return provenance.length === 0 || provenance.some((item) => !item.startsWith("namespaces/"));
 }
 
 function collapseWhitespace(value: string): string {

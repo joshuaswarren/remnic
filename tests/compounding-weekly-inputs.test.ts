@@ -207,7 +207,7 @@ test("weekly synthesis reads in-week correction memories from the root and every
     assert.ok(patterns.some((pattern) => pattern === "correction: Namespace lesson about the ledger"));
     assert.ok(patterns.some((pattern) => pattern === "correction: Tokenized namespace lesson"));
     assert.ok(patterns.some((pattern) => pattern === "correction: Day directory lesson"));
-    assert.ok(patterns.some((pattern) => pattern === "correction: Forgotten corrections still count"));
+    assert.equal(patterns.some((pattern) => pattern.includes("Forgotten corrections still count")), false);
     assert.equal(patterns.filter((pattern) => pattern === "correction: Same lesson across stores").length, 1);
     for (const absent of [
       "Filename clock outside the week is not read",
@@ -826,5 +826,67 @@ test("a symlinked namespaces directory is not scanned", async () => {
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("weekly report keeps namespace evidence while store recall stays on the root", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-recall-scope-"));
+  try {
+    await writeCorrection(
+      path.join(memoryDir, "corrections", `correction-${IN_WEEK_MS}-root.md`),
+      correctionDoc({ id: "root-active", content: "Root lesson stays in recall" })
+    );
+    await writeCorrection(
+      path.join(memoryDir, "corrections", `correction-${IN_WEEK_MS}-pending.md`),
+      correctionDoc({
+        id: "pending",
+        content: "Pending review corrections stay out of compounding",
+        status: "pending_review",
+      })
+    );
+    await writeCorrection(
+      path.join(memoryDir, "namespaces", "team-beta", "corrections", `correction-${IN_WEEK_MS}-ns.md`),
+      correctionDoc({ id: "ns-active", content: "Namespace lesson stays in the weekly report" })
+    );
+    const rootLedger = path.join(memoryDir, "state", "memory-actions.jsonl");
+    const nsLedger = path.join(memoryDir, "namespaces", "team-beta", "state", "memory-actions.jsonl");
+    await mkdir(path.dirname(rootLedger), { recursive: true });
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    await writeFile(
+      rootLedger,
+      `${JSON.stringify({
+        timestamp: IN_WEEK,
+        action: "discard",
+        outcome: "failed",
+        reason: "root failure reason",
+      })}\n`,
+      "utf-8"
+    );
+    await writeFile(
+      nsLedger,
+      `${JSON.stringify({
+        timestamp: IN_WEEK,
+        action: "discard",
+        outcome: "failed",
+        namespace: "team-beta",
+        reason: "namespace failure reason",
+      })}\n`,
+      "utf-8"
+    );
+    const eng = new CompoundingEngine(config(memoryDir));
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const patterns = (await eng.readMistakes())?.patterns ?? [];
+    assert.ok(patterns.some((pattern) => pattern.includes("Root lesson stays in recall")));
+    assert.ok(patterns.some((pattern) => pattern.includes("Namespace lesson stays in the weekly report")));
+    assert.ok(patterns.some((pattern) => pattern.includes("namespace failure reason")));
+    assert.equal(patterns.some((pattern) => pattern.includes("Pending review corrections")), false);
+    const section = await eng.buildRecallSection("lesson failure");
+    assert.ok(section);
+    assert.match(section, /Root lesson stays in recall/);
+    assert.match(section, /root failure reason/);
+    assert.equal(section.includes("Namespace lesson stays in the weekly report"), false);
+    assert.equal(section.includes("namespace failure reason"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
