@@ -56,6 +56,13 @@ export interface LifelogsPage {
   nextCursor: string | null;
 }
 
+interface LifelogsQuery {
+  date: string;
+  timezone: string;
+  cursor?: string | null;
+  signal?: AbortSignal;
+}
+
 export interface LimitlessClientOptions {
   apiKey: string;
   baseUrl?: string;
@@ -83,6 +90,7 @@ export class LimitlessClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private pageSize = LIFELOGS_MAX_PAGE_SIZE;
 
   constructor(options: LimitlessClientOptions) {
     if (typeof options.apiKey !== "string" || options.apiKey.trim().length === 0) {
@@ -100,17 +108,33 @@ export class LimitlessClient {
       options.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
-  /** One page of lifelogs for a single day. */
-  async listLifelogs(params: {
-    date: string;
-    timezone: string;
-    cursor?: string | null;
-    signal?: AbortSignal;
-  }): Promise<LifelogsPage> {
+  /** Preserve the logical ten-item page even when provider requests get smaller. */
+  async listLifelogs(params: LifelogsQuery): Promise<LifelogsPage> {
+    const lifelogs: LimitlessLifelog[] = [];
+    const seenCursors = new Set<string>();
+    let cursor = params.cursor;
+    if (cursor) seenCursors.add(cursor);
+    for (;;) {
+      const page = await this.fetchLifelogsPage(
+        { ...params, cursor }, LIFELOGS_MAX_PAGE_SIZE - lifelogs.length,
+      );
+      lifelogs.push(...page.lifelogs);
+      cursor = page.nextCursor;
+      // Keep the existing outer pagination safety ceiling's candidate capacity.
+      if (!cursor || page.lifelogs.length === 0 || this.pageSize === LIFELOGS_MAX_PAGE_SIZE ||
+        lifelogs.length >= LIFELOGS_MAX_PAGE_SIZE || seenCursors.has(cursor)) {
+        return { lifelogs, nextCursor: cursor };
+      }
+      seenCursors.add(cursor);
+    }
+  }
+
+  private async fetchLifelogsPage(params: LifelogsQuery, remaining: number): Promise<LifelogsPage> {
+    let pageSize = Math.min(this.pageSize, remaining);
     const search = new URLSearchParams({
       date: params.date,
       timezone: params.timezone,
-      limit: String(LIFELOGS_MAX_PAGE_SIZE),
+      limit: String(pageSize),
       direction: "asc",
       // The markdown rendering duplicates what `contents` carries and
       // inflates payloads; segments come from `contents`.
@@ -121,10 +145,23 @@ export class LimitlessClient {
     if (typeof params.cursor === "string" && params.cursor.length > 0) {
       search.set("cursor", params.cursor);
     }
-    const payload = await this.requestJson(
-      `/v1/lifelogs?${search.toString()}`,
-      params.signal,
-    );
+    let payload: unknown;
+    for (;;) {
+      params.signal?.throwIfAborted();
+      search.set("limit", String(pageSize));
+      try {
+        payload = await this.requestJson(`/v1/lifelogs?${search.toString()}`, params.signal);
+        break;
+      } catch (err) {
+        if (params.signal?.aborted || !(err instanceof LimitlessApiError) ||
+          (err.status !== 408 && err.status !== 504) || pageSize === 1) throw err;
+        // Retry the SAME cursor with a lighter payload; the caller still drains
+        // every nextCursor. Keep the learned size for subsequent pages.
+        pageSize = Math.max(1, Math.floor(pageSize / 2));
+        this.pageSize = Math.min(this.pageSize, pageSize);
+        await this.sleep(1_000);
+      }
+    }
     const data = (payload as { data?: { lifelogs?: unknown } }).data;
     const lifelogsRaw = data?.lifelogs;
     if (!Array.isArray(lifelogsRaw)) {
@@ -199,9 +236,10 @@ export class LimitlessClient {
         }
         return null;
       },
-      networkError: (err, attempts) =>
+      networkError: (err, attempts, { timedOut }) =>
         new LimitlessApiError(
           `Limitless API request failed after ${attempts} attempts: ${describeNetworkError(err)}`,
+          timedOut ? 408 : undefined,
         ),
       retryableError: (retryable) =>
         new LimitlessApiError(`Limitless API responded ${retryable.status}`, retryable.status),
@@ -214,7 +252,11 @@ export class LimitlessClient {
     }
     try {
       return await response.json();
-    } catch {
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+        throw new LimitlessApiError("Limitless API response body timed out", 408);
+      }
       throw new LimitlessApiError("Limitless API returned a non-JSON body");
     }
   }
