@@ -19,7 +19,7 @@ import {
   visibleRubricEntries,
   readFeedbackEntriesForWeekFile,
   readWeeklyActionEvents,
-  readWeeklyCorrections,
+  forgottenCorrectionPatterns, readWeeklyCorrections,
   type FeedbackEntryWithProvenance,
   type WeeklyActionEvent,
   type WeeklyCorrectionEvidence,
@@ -510,7 +510,8 @@ export class CompoundingEngine {
     const storeOutcomeSummary = this.buildActionOutcomeSummary(actionEventsVisibleInStore(actionEvents, defaultPrefix));
     const previousMistakes = await this.readMistakes();
     const priorRegistry = previousMistakes?.registry ?? [];
-    const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, priorRegistry, defaultPrefix);
+    const forgottenPatterns = await forgottenCorrectionPatterns(this.storage, this.config.memoryDir, priorRegistry, defaultPrefix);
+    const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, priorRegistry, defaultPrefix, forgottenPatterns);
     const rubrics = this.buildRubricSnapshot(entries, storeOutcomeSummary, corrections);
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
       ? this.derivePromotionCandidates(storeOutcomeSummary, mistakes.registry, rubrics, defaultPrefix)
@@ -1116,7 +1117,7 @@ export class CompoundingEngine {
     actionPatterns: Array<{ pattern: string; provenance: string }>,
     corrections: WeeklyCorrectionEvidence[],
     weekId: string,
-    previousRegistry: MistakeRegistryEntry[] = [], defaultNamespacePrefix: string | null = null,
+    previousRegistry: MistakeRegistryEntry[] = [], defaultNamespacePrefix: string | null = null, forgottenPatterns: ReadonlySet<string> = new Set(),
   ): MistakesFile & { details: PatternWithProvenance[]; registry: MistakeRegistryEntry[] } {
     const patterns: PatternWithProvenance[] = [];
     const evidenceByPattern = new Map<string, {
@@ -1258,8 +1259,8 @@ export class CompoundingEngine {
       const staleWeeks = weekIdToIndex(weekId) - weekIdToIndex(previous.lastWeekId);
       registry.push({
         ...previous,
-        status: staleWeeks >= RETIREMENT_WINDOW_WEEKS ? "retired" : previous.status,
-        retiredAt: staleWeeks >= RETIREMENT_WINDOW_WEEKS
+        status: forgottenPatterns.has(previous.pattern) || staleWeeks >= RETIREMENT_WINDOW_WEEKS ? "retired" : previous.status,
+        retiredAt: forgottenPatterns.has(previous.pattern) || staleWeeks >= RETIREMENT_WINDOW_WEEKS
           ? previous.retiredAt ?? new Date().toISOString()
           : previous.retiredAt ?? null,
       });

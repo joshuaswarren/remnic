@@ -580,6 +580,54 @@ export function capWeeklyPatternDetails<T extends { pattern: string; provenance:
   return [...visibleActions, ...visibleOther, ...foreign].slice(0, limit);
 }
 
+const FORGOTTEN_CORRECTION_CHECK_LIMIT = 500;
+
+/**
+ * Active correction mistakes whose visible source files are all missing or
+ * non-active. The next synthesis retires those registry entries immediately.
+ */
+export async function forgottenCorrectionPatterns(
+  storage: WeeklyEvidenceStorage,
+  memoryDir: string,
+  registry: ReadonlyArray<{ category?: string; status?: string; pattern: string; provenance?: readonly string[] }>,
+  defaultNamespacePrefix: string | null,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  let reads = 0;
+  for (const entry of registry) {
+    if (entry.category !== "correction" || entry.status !== "active") continue;
+    const visible = (entry.provenance ?? []).filter((item) =>
+      provenanceVisibleInStoreRecall([item], defaultNamespacePrefix),
+    );
+    if (visible.length === 0) continue;
+    let stillActive = false;
+    for (const rel of visible) {
+      if (rel.includes("..") || path.isAbsolute(rel)) {
+        stillActive = true;
+        break;
+      }
+      if (reads >= FORGOTTEN_CORRECTION_CHECK_LIMIT) return out;
+      reads += 1;
+      let memory: MemoryFile | null;
+      try {
+        memory = await storage.readMemoryByPath(path.join(memoryDir, rel));
+      } catch {
+        stillActive = true;
+        break;
+      }
+      if (!memory) continue;
+      const raw = readRawMemoryDocument(memory);
+      const status = raw ? rawFrontmatterScalar(raw, "status") : undefined;
+      if (!status || status === "active") {
+        stillActive = true;
+        break;
+      }
+    }
+    if (!stillActive) out.add(entry.pattern);
+  }
+  return out;
+}
+
 export function provenanceVisibleInStoreRecall(
   provenance: readonly string[],
   defaultNamespacePrefix: string | null = null,
