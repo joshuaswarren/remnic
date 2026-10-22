@@ -1008,3 +1008,50 @@ test("participation is reported for any current-head reviewer activity, not just
   });
   assert.deepEqual(silent.participated, []);
 });
+
+test("a later COMMENTED review does not overwrite a current-head APPROVED review (COS-404, #3233)", () => {
+  const currentHead = "c".repeat(40);
+  const oldHead = "d".repeat(40);
+  const base = {
+    groups: parseReviewerGroups("coderabbitai[bot]|coderabbitai"),
+    headSha: currentHead,
+    headCommittedAt,
+    authorLogin: "contributor",
+  };
+  const approval = {
+    user: { login: "coderabbitai[bot]" },
+    commit_id: currentHead,
+    state: "APPROVED",
+    submitted_at: "2026-05-21T12:05:00.000Z",
+  };
+  const later = (state, minute = 6) => ({
+    ...approval,
+    state,
+    submitted_at: `2026-05-21T12:0${minute}:00.000Z`,
+  });
+
+  const approveThenComment = evaluateAiReviewGate({
+    ...base,
+    reviews: [approval, later("COMMENTED"), later("COMMENTED", 7)],
+  });
+  assert.equal(approveThenComment.ok, true, "approve then comment passes");
+  assert.equal(approveThenComment.present[0].state, "APPROVED");
+
+  for (const state of ["CHANGES_REQUESTED", "DISMISSED"]) {
+    const superseded = evaluateAiReviewGate({ ...base, reviews: [approval, later(state)] });
+    assert.equal(superseded.ok, false, `approve then ${state} fails`);
+    assert.equal(superseded.blockers[0].state, state);
+    const stillSuperseded = evaluateAiReviewGate({
+      ...base,
+      reviews: [approval, later(state), later("COMMENTED", 7)],
+    });
+    assert.equal(stillSuperseded.ok, false, `a COMMENTED after ${state} does not restore the approval`);
+  }
+
+  const oldHeadApproval = evaluateAiReviewGate({
+    ...base,
+    reviews: [{ ...approval, commit_id: oldHead }, later("COMMENTED")],
+  });
+  assert.equal(oldHeadApproval.ok, false, "an approval on an old head fails");
+  assert.equal(oldHeadApproval.present.length, 0);
+});
