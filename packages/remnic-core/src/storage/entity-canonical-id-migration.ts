@@ -21,7 +21,8 @@ import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
-import { assertSafeEntityId, isMalformedEntityRecord } from "./entity-id-safety.js";
+import { assertSafeEntityId } from "./entity-id-safety.js";
+import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import {
   isMacOsReplicationJunkBasename,
   warnIgnoredMacOsReplicationJunk,

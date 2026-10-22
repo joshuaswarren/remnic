@@ -15,7 +15,7 @@ import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
-import { isMalformedEntityRecord } from "./entity-id-safety.js";
+import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
 import {
   warnIgnoredMacOsReplicationJunk,
