@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { resolveContainedPath, sanitizeFilenameSegment } from "./filename-safety.js";
+import { resolveContainedPath, sanitizeFilenameSegment } from "../packages/bench/src/filename-safety.js";
 
 test("artifact filename segments preserve safe characters and replace path separators", () => {
   const cases: Array<[string, string]> = [
