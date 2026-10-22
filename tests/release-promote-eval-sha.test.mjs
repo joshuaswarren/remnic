@@ -52,19 +52,22 @@ set -euo pipefail
 joined="$*"
 case "$joined" in
   *"rules/branches/main"*)
-    # gh-side --jq already applied: emit the filtered context list JSON.
-    echo '["quality","dependency-review","gitleaks","analyze","ai-reviewers","unresolved-review-threads"]'
+    # Apply the workflow's real projection, including integration identity.
+    jq -c "\${!#}" "${binDir}/rules.json"
     exit 0
     ;;
   *"check-runs"*)
-    # gh-side --jq applied: emit trimmed check-run records for the PR head.
-    cat "${binDir}/check-runs.jsonl"
+    jq -c "\${!#}" "${binDir}/check-runs.json"
     exit 0
     ;;
-  *"/status"*)
-    # gh-side --jq applied: no statuses.
-    echo ''
+  *"/statuses"*)
+    jq -c "\${!#}" "${binDir}/statuses.json"
     exit 0
+    ;;
+  *"apps/"*)
+    slug="\${2#apps/}"
+    jq -er --arg slug "$slug" '.[$slug]' "${binDir}/apps.json"
+    exit $?
     ;;
   *"pulls"*)
     # Raw JSON array; the step pipes this through real jq itself.
@@ -114,7 +117,7 @@ const CONTEXTS = [
  * is what the merged-PR lookup returns as head.sha, so a test can feed the
  * step a good or a malformed value.
  */
-function runGate({ prHeadSha }) {
+function runGate({ prHeadSha, integrationId = null, checkAppId = 15368, statuses = [], apps = { "github-actions": 15368, "other-app": 999 }, extraRequired = [] }) {
   const run = readStepRun();
   const work = mkdtempSync(path.join(tmpdir(), "evalsha-"));
   const binDir = path.join(work, "bin");
@@ -124,6 +127,14 @@ function runGate({ prHeadSha }) {
     mkdirSync(path.join(work, "runner-temp"), { recursive: true });
     writeFileSync(githubEnv, "");
     writeStubGh(binDir);
+    writeFileSync(path.join(binDir, "statuses.json"), JSON.stringify(statuses));
+    writeFileSync(path.join(binDir, "apps.json"), JSON.stringify(apps));
+    writeFileSync(path.join(binDir, "rules.json"), JSON.stringify([{
+      type: "required_status_checks",
+      parameters: {
+        required_status_checks: [...CONTEXTS, ...extraRequired].map((context) => ({ context, integration_id: integrationId })),
+      },
+    }]));
     writeFileSync(
       path.join(binDir, "pulls.json"),
       JSON.stringify([
@@ -137,17 +148,15 @@ function runGate({ prHeadSha }) {
       ]),
     );
     writeFileSync(
-      path.join(binDir, "check-runs.jsonl"),
-      CONTEXTS.map(
-        (name) =>
-          JSON.stringify({
-            name,
-            status: "completed",
-            conclusion: "success",
-            started_at: "2026-10-02T12:00:00Z",
-            completed_at: "2026-10-02T12:01:00Z",
-          }) + "\n",
-      ).join(""),
+      path.join(binDir, "check-runs.json"),
+      JSON.stringify({ check_runs: CONTEXTS.map((name) => ({
+        name,
+        app: { id: checkAppId },
+        status: "completed",
+        conclusion: "success",
+        started_at: "2026-10-02T12:00:00Z",
+        completed_at: "2026-10-02T12:01:00Z",
+      })) }),
     );
     const script = path.join(work, "step.sh");
     writeFileSync(script, run, { mode: 0o755 });
@@ -234,4 +243,60 @@ test("percent and comma in a malformed EVAL_SHA are escaped in the ::error paylo
     false,
     "the payload must not start a second workflow command",
   );
+});
+
+test("workflow preserves required integration IDs and check-run app IDs", () => {
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368 });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /"integration_id":15368/);
+});
+
+test("workflow refuses same-name green runs from the wrong integration", () => {
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, checkAppId: 999 });
+  assert.notEqual(r.status, 0, "another app must not authorize promotion");
+  assert.match(r.stdout, /CI not green/);
+  assert.match(r.stdout, /quality: missing/);
+});
+
+test("workflow accepts pinned legacy statuses only after resolving their GitHub App identity", () => {
+  const statuses = CONTEXTS.map((context, id) => ({
+    context, id, state: "success", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "github-actions[bot]", id: 41898282 },
+  }));
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, checkAppId: 999, statuses });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
+test("workflow cannot satisfy a pinned check with another app or a user-like status", () => {
+  for (const creator of [
+    { type: "Bot", login: "other-app[bot]", id: 15368 },
+    { type: "User", login: "github-actions[bot]", id: 15368 },
+    null,
+  ]) {
+    const statuses = CONTEXTS.map((context, id) => ({
+      context, id, state: "success", updated_at: "2026-10-02T12:01:00Z", creator,
+    }));
+    const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, checkAppId: 999, statuses });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /quality: missing/);
+  }
+});
+
+test("workflow fails closed when a required status app cannot be resolved", () => {
+  const statuses = [{
+    context: "quality", id: 1, state: "failure", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "unknown-app[bot]" },
+  }];
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, statuses, apps: {} });
+  assert.notEqual(r.status, 0, "a failed identity lookup must not silently discard a potentially blocking status");
+  assert.match(r.stdout, /Status app identity unavailable/);
+});
+
+test("workflow keeps its own promote context self-excluded during identity enrichment", () => {
+  const statuses = [{
+    context: "promote", id: 1, state: "failure", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "unknown-app[bot]" },
+  }];
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, statuses, extraRequired: ["promote"], apps: {} });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });

@@ -15,7 +15,7 @@
  * Document shape:
  *   { "type": "check-runs", "records": [ { name, status, conclusion,
  *                                           completed_at?, started_at?,
- *                                           id? }, ... ] }
+ *                                           id?, source?, app?: { id } }, ... ] }
  *   Records may be check-runs (from /commits/{sha}/check-runs) and/or
  *   commit statuses (from /commits/{sha}/status), normalized to the same
  *   shape by the workflow before being handed to this script. Statuses
@@ -23,7 +23,9 @@
  *   `completed_at`, so every status record is timestamped.
  *
  * CLI:
- *   --required-contexts <JSON array of strings>   required, fail closed
+ *   --required-contexts <JSON array>   required strings or
+ *     { context, integration_id? } pairs from the ruleset; null/omitted/-1
+ *     integration_id means any app, a positive integer pins verified app.id.
  *   --self-excluded    <JSON array of strings>    optional, names that never
  *                                                 block even if required
  *
@@ -36,6 +38,10 @@
  *     contexts (Dependabot, latest-openclaw-scanner, `checks`, etc.) cannot
  *     block. If the ruleset API cannot be read the workflow must NOT call
  *     this script with an empty required list — it fails the step.
+ *   - Pinned requirements only consider records from their integration.
+ *     Check-runs carry app.id directly; legacy statuses are enriched by the
+ *     workflow using their bot creator and GitHub's app endpoint. Unverified
+ *     authors cannot satisfy a pin. Status/check-run verdicts stay independent.
  *   - For each required context, take the LATEST record (per
  *     `completed_at`; falls back to `started_at`; falls back to the
  *     record `id` when a record carries no timestamps at all — that
@@ -96,12 +102,20 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === "--required-contexts") {
       opts.requiredContexts = JSON.parse(argv[++i]);
-      if (!Array.isArray(opts.requiredContexts)) {
-        throw new Error(
-          "--required-contexts must be a JSON array of strings (fail closed)",
-        );
+      if (!Array.isArray(opts.requiredContexts) || opts.requiredContexts.length === 0) {
+        throw new Error("--required-contexts must be a non-empty JSON array (fail closed)");
       }
-      opts.requiredContexts = opts.requiredContexts.map(String);
+      opts.requiredContexts = opts.requiredContexts.map((required) => {
+        const check = typeof required === "string" ? { context: required } : required;
+        const id = check?.integration_id;
+        if (
+          !check || typeof check.context !== "string" || check.context.length === 0 ||
+          !(id == null || id === -1 || (Number.isSafeInteger(id) && id > 0))
+        ) {
+          throw new Error("--required-contexts entries must be context strings or { context, integration_id?: positive integer | null | -1 }");
+        }
+        return check;
+      });
     } else if (a === "--self-excluded") {
       opts.selfExcluded = JSON.parse(argv[++i]);
       if (!Array.isArray(opts.selfExcluded)) {
@@ -148,7 +162,6 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     };
   }
 
-  const bySource = new Map();
   const orderKey = (r) => ({
     timestamp: r.completed_at ?? r.started_at ?? null,
     id: Number(r.id ?? -1),
@@ -164,44 +177,37 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     if (a.timestamp !== b.timestamp) return a.timestamp < b.timestamp ? -1 : 1;
     return compareIds(a, b);
   };
-  for (const r of records) {
-    if (!r || typeof r.name !== "string") continue;
-    const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";
-    let byName = bySource.get(source);
-    if (!byName) {
-      byName = new Map();
-      bySource.set(source, byName);
-    }
-    const prev = byName.get(r.name);
-    if (!prev) {
-      byName.set(r.name, r);
-      continue;
-    }
-    const comparison = compareOrder(orderKey(r), orderKey(prev));
-    if (
-      comparison > 0 ||
-      (comparison === 0 &&
-        r.conclusion !== "success" &&
-        prev.conclusion === "success")
-    ) {
-      byName.set(r.name, r);
-    }
-  }
 
-  const sortedRequired = [...requiredContexts].sort();
+  const sortedRequired = requiredContexts
+    .map((required) => typeof required === "string" ? { context: required } : required)
+    .sort((a, b) => a.context.localeCompare(b.context));
   const reasons = [];
 
-  for (const name of sortedRequired) {
+  for (const { context: name, integration_id: integrationId } of sortedRequired) {
     if (selfSet.has(name)) continue;
-    const populatedSources = [...bySource.keys()]
-      .filter((source) => bySource.get(source).has(name))
-      .sort();
+    const pinned = integrationId != null && integrationId !== -1;
+    const bySource = new Map();
+    // ponytail: scan once per required check; index if rulesets grow beyond a small context list.
+    for (const r of records) {
+      if (!r || r.name !== name) continue;
+      const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";
+      if (pinned && ((source !== "check-run" && source !== "status") || r.app?.id !== integrationId)) continue;
+      const prev = bySource.get(source);
+      const comparison = prev ? compareOrder(orderKey(r), orderKey(prev)) : 1;
+      if (
+        comparison > 0 ||
+        (comparison === 0 && r.conclusion !== "success" && prev.conclusion === "success")
+      ) {
+        bySource.set(source, r);
+      }
+    }
+    const populatedSources = [...bySource.keys()].sort();
     if (populatedSources.length === 0) {
       reasons.push(`${name}: missing check-run on evaluated commit`);
       continue;
     }
     for (const source of populatedSources) {
-      const record = bySource.get(source).get(name);
+      const record = bySource.get(source);
       const status = record.status ?? "completed";
       const conclusion = record.conclusion ?? null;
       if (status !== "completed" || conclusion === null) {
