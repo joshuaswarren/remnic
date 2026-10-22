@@ -64,10 +64,28 @@ function hasTransportMarker(message: string): boolean {
 }
 
 /**
+ * These messages append a peer-controlled path. A file named "fetch failed"
+ * must not abort the cycle; a real timeout is on `cause` or is the error itself.
+ */
+const PEER_PATH_ERROR_PREFIXES = [
+  "failed to read peer reconciliation manifest file:",
+  "failed to read peer tombstone evidence:",
+  "offline file content response changed during transfer:",
+];
+
+function errorEmbedsPeerPath(message: string): boolean {
+  for (const prefix of PEER_PATH_ERROR_PREFIXES) {
+    if (message.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
  * A peer request that never produced an HTTP status. One timeout or
  * connection failure used to reject the cycle; treating it as a per-namespace
  * exclusion would wait out that timeout once per namespace.
  * An HTTP status, including a namespace refusal, is not a transport failure.
+ * Marker text inside a peer path is not a transport failure either.
  */
 export function isPeerTransportCensusFailure(error: unknown): boolean {
   const seen = new Set<unknown>();
@@ -76,7 +94,8 @@ export function isPeerTransportCensusFailure(error: unknown): boolean {
     seen.add(current);
     if (!(current instanceof Error)) return false;
     if (hasHttpStatus(current.message)) return false;
-    if (current.name === "TimeoutError" || hasTransportMarker(current.message)) return true;
+    if (current.name === "TimeoutError") return true;
+    if (!errorEmbedsPeerPath(current.message) && hasTransportMarker(current.message)) return true;
     current = "cause" in current ? current.cause : undefined;
   }
   return false;

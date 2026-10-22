@@ -555,6 +555,16 @@ test("peer transport failures are not namespace exclusions; HTTP refusals are", 
     false
   );
   assert.equal(isPeerTransportCensusFailure(new Error("peer manifest request failed: HTTP 500")), false);
+  assert.equal(
+    isPeerTransportCensusFailure(new Error("failed to read peer reconciliation manifest file: facts/fetch failed.md")),
+    false
+  );
+  assert.equal(
+    isPeerTransportCensusFailure(
+      new Error("failed to read peer tombstone evidence: state/fetch failed.jsonl", { cause: timeout })
+    ),
+    true
+  );
   const excluded = new Map();
   assert.throws(() => recordNamespaceCensusFailure(excluded, "alpha", "peer", timeout, undefined), /timeout/i);
   assert.equal(excluded.size, 0);
@@ -568,6 +578,39 @@ test("peer transport failures are not namespace exclusions; HTTP refusals are", 
   assert.equal(excluded.size, 1);
   recordNamespaceCensusFailure(excluded, "local-ns", "local", timeout, undefined);
   assert.equal(excluded.get("local-ns")?.side, "local");
+});
+
+test("converge plan: a missed file named fetch failed excludes only that namespace", async () => {
+  const sha = "ab".repeat(32);
+  const plan = await withPlanCursor((cursorDir) =>
+    computeConvergePlan({
+      cursorDir,
+      peerUrl: "https://peer.example.test",
+      localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+        ["alpha", []],
+        ["beta", []],
+      ]),
+      fetchImpl: async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/offline-sync/capabilities")) return new Response(null, { status: 404 });
+        if (url.pathname.endsWith("/offline-sync/file-content")) return new Response(null, { status: 404 });
+        const namespace = url.searchParams.get("namespace") ?? "";
+        if (namespace === "alpha") {
+          return Response.json({ files: [{ path: "facts/fetch failed.md", sha256: sha }], tombstones: [] });
+        }
+        return Response.json({ files: [], tombstones: [] });
+      },
+    })
+  );
+  assert.equal(
+    plan.excludedNamespaces?.some((item) => item.namespace === "alpha" && item.side === "peer"),
+    true
+  );
+  assert.equal(
+    plan.excludedNamespaces?.some((item) => item.namespace === "beta"),
+    false
+  );
+  assert.equal(plan.converged, false);
 });
 
 test("converge plan: abort during one snapshot still rejects the whole plan", async () => {

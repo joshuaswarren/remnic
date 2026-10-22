@@ -339,6 +339,8 @@ remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>
   and a plan that excluded any namespace reports `converged: false`.
   When every census fails, the error written to the log has those same control
   characters removed. The original rejection is kept as the error cause.
+  A missed peer file whose path contains transport wording excludes that
+  namespace. It does not fail the rest of the cycle.
   An apply download that times out is still a failed transfer for that file.
 - A failed cycle (peer unreachable, every namespace census failed, transient network error) is
   reported and does NOT stop the watch — a peer being unreachable is exactly when the surviving
