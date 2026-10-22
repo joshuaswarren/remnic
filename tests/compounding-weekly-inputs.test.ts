@@ -993,3 +993,113 @@ test("concurrent legacy inbox migration keeps an append that lands during the co
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("a populated memory inbox does not wait on the migration lock", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-populated-"));
+  try {
+    const cfg = config(memoryDir);
+    const inboxDir = path.join(memoryDir, "shared-context", "feedback");
+    await mkdir(inboxDir, { recursive: true });
+    await writeFile(
+      path.join(inboxDir, "inbox.jsonl"),
+      `${JSON.stringify({
+        agent: "memory-agent",
+        decision: "approved",
+        reason: "Memory inbox already has feedback",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    await writeFile(path.join(inboxDir, "inbox.jsonl.migrate.lock"), "", "utf-8");
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "Legacy inbox must not block a populated memory inbox",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    const started = Date.now();
+    const manager = new SharedContextManager(cfg);
+    await manager.appendFeedback({
+      agent: "bench-agent",
+      decision: "approved",
+      reason: "Append without taking the migration lock",
+      date: IN_WEEK,
+    });
+    assert.ok(Date.now() - started < 1_000);
+    const body = await readFile(path.join(inboxDir, "inbox.jsonl"), "utf-8");
+    assert.match(body, /Memory inbox already has feedback/);
+    assert.match(body, /Append without taking the migration lock/);
+    assert.equal(body.includes("Legacy inbox must not block"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("weekly synthesis still writes its report when inbox migration cannot take its lock", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-migrate-abort-"));
+  try {
+    const cfg = config(memoryDir);
+    const inboxDir = path.join(memoryDir, "shared-context", "feedback");
+    await mkdir(inboxDir, { recursive: true });
+    await writeFile(path.join(inboxDir, "inbox.jsonl.migrate.lock"), "", "utf-8");
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "Locked migration must not abort the week",
+        date: IN_WEEK,
+      })}\n`,
+      "utf-8"
+    );
+    const eng = new CompoundingEngine(cfg);
+    const result = await eng.synthesizeWeekly({ weekId: WEEK });
+    const report = await readFile(result.reportPath, "utf-8");
+    assert.match(report, new RegExp(WEEK));
+    assert.equal(report.includes("Locked migration must not abort the week"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("foreign action counts stay on the weekly report and out of rubrics and promotion", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-foreign-counts-"));
+  try {
+    const cfg = parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      compoundingEnabled: true,
+      compoundingSemanticEnabled: true,
+    });
+    const nsLedger = path.join(memoryDir, "namespaces", "team-beta", "state", "memory-actions.jsonl");
+    await mkdir(path.dirname(nsLedger), { recursive: true });
+    const foreignRow = JSON.stringify({
+      timestamp: IN_WEEK,
+      action: "archive_stale",
+      outcome: "applied",
+      namespace: "team-beta",
+      reason: "foreign success",
+    });
+    const foreign = `${foreignRow}\n${foreignRow}\n${foreignRow}\n`;
+    await writeFile(nsLedger, foreign, "utf-8");
+    const eng = new CompoundingEngine(cfg);
+    const result = await eng.synthesizeWeekly({ weekId: WEEK });
+    const report = await readFile(result.reportPath, "utf-8");
+    assert.match(report, /archive_stale: applied=3, skipped=0, failed=0/);
+    assert.equal(report.includes("[action-outcome] archive_stale"), false);
+    const rubrics = await readFile(result.rubricsPath, "utf-8");
+    assert.equal(rubrics.includes("archive_stale"), false);
+    assert.equal(rubrics.includes("applied=3"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

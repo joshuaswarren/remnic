@@ -12,6 +12,7 @@ import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import {
+  actionEventsVisibleInStore,
   buildActionFailurePatterns,
   defaultNamespaceRecallPrefix,
   provenanceVisibleInStoreRecall,
@@ -487,7 +488,11 @@ export class CompoundingEngine {
     await this.ensureDirs();
     const weekId = opts?.weekId ?? isoWeekId(new Date());
 
-    await migrateLegacyFeedbackInbox(this.config);
+    try {
+      await migrateLegacyFeedbackInbox(this.config);
+    } catch (error) {
+      log.warn(`[compounding] legacy feedback inbox migration failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
+    }
     const entries = await readFeedbackEntriesForWeekFile(this.feedbackInboxPath, weekId);
     const actionEvents = await readWeeklyActionEvents({
       storage: this.storage,
@@ -501,12 +506,13 @@ export class CompoundingEngine {
     });
     const actionPatterns = buildActionFailurePatterns(actionEvents);
     const outcomeSummary = this.buildActionOutcomeSummary(actionEvents);
+    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
+    const storeOutcomeSummary = this.buildActionOutcomeSummary(actionEventsVisibleInStore(actionEvents, defaultPrefix));
     const previousMistakes = await this.readMistakes();
     const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, previousMistakes?.registry ?? []);
-    const rubrics = this.buildRubricSnapshot(entries, outcomeSummary, corrections);
-    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
+    const rubrics = this.buildRubricSnapshot(entries, storeOutcomeSummary, corrections);
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
-      ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics, defaultPrefix)
+      ? this.derivePromotionCandidates(storeOutcomeSummary, mistakes.registry, rubrics, defaultPrefix)
       : [];
     if (resolveConversationContextCapabilities(this.config).cmcConsolidation) {
       try {
@@ -609,7 +615,7 @@ export class CompoundingEngine {
     await writeFile(reportJsonPath, JSON.stringify(weeklyArtifact, null, 2) + "\n", "utf-8");
 
     // Write stable rubric artifact.
-    const rubricsMarkdown = this.formatRubrics(outcomeSummary, rubrics);
+    const rubricsMarkdown = this.formatRubrics(storeOutcomeSummary, rubrics);
     await writeFile(this.rubricsPath, rubricsMarkdown, "utf-8");
     await writeFile(this.rubricsIndexPath, JSON.stringify(rubrics, null, 2) + "\n", "utf-8");
     await this.syncRubricArtifacts(rubrics);

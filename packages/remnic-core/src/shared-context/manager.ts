@@ -501,6 +501,12 @@ export async function migrateLegacyFeedbackInbox(config: PluginConfig): Promise<
   const legacyPath = path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
   if (path.resolve(nextPath) === path.resolve(legacyPath)) return;
   if (!(await legacyInboxCanMigrate(legacyPath))) return;
+  try {
+    const nextProbe = await lstat(nextPath);
+    if (nextProbe.isSymbolicLink() || !nextProbe.isFile() || nextProbe.size > 0) return;
+  } catch (err) {
+    if (!isErrnoCode(err, "ENOENT")) throw err;
+  }
 
   await mkdir(path.dirname(nextPath), { recursive: true });
   await withFeedbackMigrateLock(`${nextPath}.migrate.lock`, async () => {

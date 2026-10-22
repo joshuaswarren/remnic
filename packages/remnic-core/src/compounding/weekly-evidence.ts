@@ -534,6 +534,16 @@ export function provenanceVisibleInStoreRecall(
   });
 }
 
+/** Ledger rows that belong to the flat root or the routed default namespace. */
+export function actionEventsVisibleInStore<T extends { ledgerLabel: string; line: number }>(
+  events: readonly T[],
+  defaultNamespacePrefix: string | null,
+): T[] {
+  return events.filter((event) =>
+    provenanceVisibleInStoreRecall([`${event.ledgerLabel}:L${event.line}`], defaultNamespacePrefix),
+  );
+}
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
