@@ -11,6 +11,7 @@ import { resolveSharedContextDir, SharedFeedbackEntrySchema, type SharedFeedback
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 
 type MistakesFile = {
   version?: number;
@@ -619,7 +620,7 @@ export class CompoundingEngine {
       }, null, 2) + "\n",
       "utf-8",
     );
-    await writeFile(reportPath, md, "utf-8");
+    await writeFileAtomically(reportPath, md);
 
     log.info(
       `compounding: wrote weekly=${reportPath} weeklyJson=${reportJsonPath} rubrics=${this.rubricsPath} rubricsIndex=${this.rubricsIndexPath} mistakes=${this.mistakesPath}`,

@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -343,8 +343,16 @@ test("the daemon arms synthesizeWeekly, including its calibration pass, for the 
     assert.equal(scheduler.armCompoundingWeeklyCron(), true, "arming twice must not start a second runner");
     await scheduler.dispose();
     assert.deepEqual(calls, [weekId]);
-    const report = await readFile(compoundingWeeklyReportPath(memoryDir, weekId), "utf8");
+    const reportPath = compoundingWeeklyReportPath(memoryDir, weekId);
+    const report = await readFile(reportPath, "utf8");
     assert.equal(report.includes(weekId), true);
+    const weeklyNames = await readdir(path.dirname(reportPath));
+    assert.equal(weeklyNames.includes(`${weekId}.md`), true);
+    assert.equal(
+      weeklyNames.some((name) => name.endsWith(".tmp")),
+      false,
+      "the completion marker is renamed into place, not left as a partial temp file"
+    );
     assert.equal(
       logs.some((line) => line.includes("weekly synthesis produced")),
       true,

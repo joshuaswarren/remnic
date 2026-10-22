@@ -235,7 +235,6 @@ export class MaintenanceScheduler {
     // Activity (screen-capture) in-process sync scheduler (issue #1900),
     // master default-off. The registrar owns the arm/re-arm/teardown contract
     // (stop-prior, abort/teardown guards, secure-store refusal, retry latch).
-    if (!signal.aborted) this.armCompoundingWeeklyCron();
     await this.activityRegistrar.register(signal);
     // Location day sync (issue #2047): same deferred lifecycle as activity;
     // ticks run the SAME shared runner as the CLI/MCP/HTTP surfaces.

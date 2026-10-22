@@ -3,8 +3,8 @@
  *
  * OpenClaw delegate mode registers only memory_search and memory_get, so a
  * gateway cron can no longer call `compounding_weekly_synthesize`. When both
- * compounding flags are on, the daemon's maintenance scheduler arms this
- * runner instead.
+ * compounding flags are on, the standalone daemon arms this runner after
+ * orchestrator init. Embedded OpenClaw init does not.
  *
  * Each tick synthesizes the ISO week that most recently ended (previous week,
  * not the in-progress one) by calling `synthesizeWeekly`, which includes

@@ -799,7 +799,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   initLogger(undefined, config.debug);
   log.debug(`debug logging enabled from config (${resolvedConfigPath.source})`);
   const orchestrator = new Orchestrator(config);
-  await orchestrator.initialize();
+  await orchestrator.initialize(); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron();
 
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
