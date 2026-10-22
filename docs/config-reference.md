@@ -2385,7 +2385,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `sharedCrossSignalSemanticTimeoutMs` | `4000` | `4000` |
 | `sharedCrossSignalSemanticMaxCandidates` | `120` | `120` |
 | `compoundingEnabled` | `false` | `false` unless you are ready to curate weekly syntheses |
-| `compoundingWeeklyCronEnabled` | `false` | `false` |
+| `compoundingWeeklyCronEnabled` | `false` | `false` unless the standalone daemon should write one compounding report per completed ISO week (`compoundingEnabled` must also be true) |
 | `compoundingSemanticEnabled` | `false` | `false` |
 | `compoundingSynthesisTimeoutMs` | `15000` | `15000` |
 | `compoundingInjectEnabled` | `true` | `true` |

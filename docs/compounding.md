@@ -67,15 +67,18 @@ When `compoundingInjectEnabled=true`, recall injection can include both recurrin
 
 ## Running weekly synthesis
 
-Manual:
+Manual, for the current ISO week:
 
 ```bash
-# via OpenClaw agent tool
+# via the compounding tool (embedded hosts and the daemon access surface)
 compounding_weekly_synthesize
 ```
 
-Recommended scheduling:
-- Use OpenClaw cron with an isolated agent turn that calls `compounding_weekly_synthesize`.
+The standalone daemon runs it when both `compoundingEnabled` and `compoundingWeeklyCronEnabled` are true. Both default to `false`. On startup, and again at each ISO week boundary (Monday 00:00 UTC), the daemon calls `synthesizeWeekly` for the ISO week that just ended. That call is the full synthesis path, including calibration when `calibrationEnabled` is true.
+
+The weekly markdown report (`compounding/weekly/<YYYY-Www>.md`) is the idempotency marker. A week whose report already exists is skipped, so a restart does not write it again. If the daemon was down at the boundary, the next start writes that missed week. It does not backfill older weeks.
+
+OpenClaw delegate mode registers only `memory_search` and `memory_get`, so a gateway cron job can no longer call `compounding_weekly_synthesize`. Delegate-mode installs use `compoundingWeeklyCronEnabled` on the daemon. An embedded host that still exposes the tool may keep a Sunday agent-turn cron instead; do not arm both against the same memory directory.
 
 ## Continuity audit generation
 

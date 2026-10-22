@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isoWeekId } from "./iso-week.js";
 import { log } from "../logger.js";
 import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -397,17 +398,6 @@ export function defaultTierMigrationCycleBudget(
     scanLimit: limit * 4,
     minIntervalMs: resolveQmdCapabilities(config).qmdTierAutoBackfill ? 120_000 : 300_000,
   };
-}
-
-function isoWeekId(d: Date): string {
-  // ISO week based on Thursday
-  const dt = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-  const day = dt.getUTCDay() || 7;
-  dt.setUTCDate(dt.getUTCDate() + 4 - day);
-  const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
-  const week = Math.ceil((((dt.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
-  const yyyy = dt.getUTCFullYear();
-  return `${yyyy}-W${String(week).padStart(2, "0")}`;
 }
 
 function isoMonthId(d: Date): string {

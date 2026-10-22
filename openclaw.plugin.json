@@ -1213,7 +1213,7 @@
       "compoundingWeeklyCronEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "If true, compounding weekly synthesis can be scheduled externally via cron."
+        "description": "When true together with compoundingEnabled, the standalone daemon runs synthesizeWeekly once per completed ISO week (including calibration when calibration is enabled). Default off. Skips a week whose report already exists and catches up one missed week after a restart."
       },
       "compressionGuidelineLearningEnabled": {
         "type": "boolean",
