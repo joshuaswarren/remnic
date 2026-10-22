@@ -1337,7 +1337,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     resume,
     retryFailed,
     ...research,
-    ...parseLoCoMoReplayExtractionArgs(args, action, publishedName, benchmarks),
+    ...parseLoCoMoReplayExtractionArgs(args, { action, publishedName, benchmarks, runtimeProfile, matrixProfiles, adapter }),
     driftGenAction,
     driftGenDir,
   };

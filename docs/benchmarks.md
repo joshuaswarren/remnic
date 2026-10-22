@@ -583,7 +583,10 @@ remnic bench run locomo --runtime-profile real \
 
 `--replay-extraction-mode` accepts `skip` (default) or `await`, applies only
 to a single LoCoMo run, and leaves the default unchanged so existing LoCoMo
-results stay comparable. Do not mix `skip` and `await` runs in one
+results stay comparable. `await` requires the remnic adapter with
+`--runtime-profile real` or `openclaw-chain` (no `--matrix`). The baseline
+profile, `--quick`, and `--adapter mcp` cannot run extraction, so the CLI
+rejects them. Do not mix `skip` and `await` runs in one
 comparison. Found during COS-404, where a LoCoMo extractor A/B exercised no
 extraction calls.
 

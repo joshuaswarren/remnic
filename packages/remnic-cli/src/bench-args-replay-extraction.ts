@@ -36,16 +36,34 @@ export function resolveLoCoMoReplayExtractionMode(
   return args.locomoReplayExtractionMode ?? "skip";
 }
 
+/** Runtime profiles whose adapter runs the core extraction pipeline. */
+export const EXTRACTION_CAPABLE_RUNTIME_PROFILES = Object.freeze([
+  "real",
+  "openclaw-chain",
+] as const);
+
+export interface LoCoMoReplayExtractionContext {
+  action: BenchAction;
+  publishedName: string | undefined;
+  benchmarks: readonly string[];
+  runtimeProfile: string | undefined;
+  matrixProfiles: readonly string[] | undefined;
+  adapter: "remnic" | "mcp" | undefined;
+}
+
 /**
  * Parse `--replay-extraction-mode <skip|await>`. Only valid when the run
  * targets exactly LoCoMo (`run locomo` or `published --name locomo`).
+ * `await` additionally requires an adapter that can extract: the baseline
+ * profile, `--quick` lightweight runs, `--matrix`, and `--adapter mcp` would
+ * otherwise record `replayExtractionMode: "await"` while making zero
+ * extraction calls.
  */
 export function parseLoCoMoReplayExtractionArgs(
   args: string[],
-  action: BenchAction,
-  publishedName: string | undefined,
-  benchmarks: readonly string[],
+  ctx: LoCoMoReplayExtractionContext,
 ): LoCoMoReplayExtractionArgs {
+  const { action, publishedName, benchmarks } = ctx;
   const raw = readBenchOptionValue(args, "--replay-extraction-mode");
   if (raw === undefined) return {};
   if (!isLoCoMoReplayExtractionMode(raw)) {
@@ -62,6 +80,21 @@ export function parseLoCoMoReplayExtractionArgs(
     throw new Error(
       "ERROR: --replay-extraction-mode is currently supported only for a single LoCoMo run.",
     );
+  }
+  if (raw === "await") {
+    const capable =
+      ctx.adapter !== "mcp" &&
+      ctx.matrixProfiles === undefined &&
+      (EXTRACTION_CAPABLE_RUNTIME_PROFILES as readonly string[]).includes(
+        ctx.runtimeProfile ?? "baseline",
+      );
+    if (!capable) {
+      throw new Error(
+        "ERROR: --replay-extraction-mode await requires the remnic adapter with " +
+          "--runtime-profile real or openclaw-chain (no --matrix); other " +
+          "setups cannot run extraction.",
+      );
+    }
   }
   return { locomoReplayExtractionMode: raw };
 }

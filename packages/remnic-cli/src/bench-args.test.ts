@@ -1122,7 +1122,14 @@ test("parseBenchArgs leaves LoCoMo replay extraction mode unset by default (CLI 
 
 test("parseBenchArgs accepts --replay-extraction-mode for a single LoCoMo run", () => {
   for (const mode of ["skip", "await"] as const) {
-    const parsed = parseBenchArgs(["run", "locomo", "--replay-extraction-mode", mode]);
+    const parsed = parseBenchArgs([
+      "run",
+      "locomo",
+      "--runtime-profile",
+      "real",
+      "--replay-extraction-mode",
+      mode,
+    ]);
     assert.equal(parsed.locomoReplayExtractionMode, mode);
     assert.equal(resolveLoCoMoReplayExtractionMode(parsed), mode);
   }
@@ -1134,10 +1141,32 @@ test("parseBenchArgs accepts --replay-extraction-mode for a single LoCoMo run", 
     "/tmp",
     "--model",
     "m",
+    "--runtime-profile",
+    "openclaw-chain",
     "--replay-extraction-mode",
     "await",
   ]);
   assert.equal(published.locomoReplayExtractionMode, "await");
+});
+
+test("parseBenchArgs rejects --replay-extraction-mode await on adapters that cannot extract", () => {
+  const nonExtracting: string[][] = [
+    [],
+    ["--runtime-profile", "baseline"],
+    ["--quick"],
+    ["--runtime-profile", "real", "--adapter", "mcp", "--mcp-demo"],
+    ["--matrix", "baseline,real"],
+  ];
+  for (const extra of nonExtracting) {
+    assert.throws(
+      () => parseBenchArgs(["run", "locomo", ...extra, "--replay-extraction-mode", "await"]),
+      /--replay-extraction-mode await requires the remnic adapter/,
+      `expected rejection for: ${extra.join(" ") || "(defaults)"}`,
+    );
+  }
+  // skip stays allowed everywhere LoCoMo runs, since it matches the default.
+  const quickSkip = parseBenchArgs(["run", "locomo", "--quick", "--replay-extraction-mode", "skip"]);
+  assert.equal(quickSkip.locomoReplayExtractionMode, "skip");
 });
 
 test("parseBenchArgs rejects invalid or non-LoCoMo --replay-extraction-mode", () => {

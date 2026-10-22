@@ -154,7 +154,8 @@ Options:
   --trial-limit <n>        Cap scored LoCoMo or MemoryAgentBench QA trials for staged published runs
   --replay-extraction-mode <skip|await>
                            LoCoMo only: memory extraction during replay ingest
-                           (default: skip; use await to compare extractor models)
+                           (default: skip; await compares extractor models and
+                           needs --runtime-profile real|openclaw-chain)
   --task-ids-file <path>   Select an explicit JSON array of LoCoMo task IDs
   --expected-task-id-list-sha256 <sha256>
                            Pin the selected LoCoMo task-ID list
