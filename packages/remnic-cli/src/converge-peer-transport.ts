@@ -177,7 +177,10 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
       chunks.push(value);
       received += value.byteLength;
     }
-  } catch {
+  } catch (error) {
+    // A timeout or disconnect while reading the refusal body is not an HTTP
+    // refusal. Swallowing it makes every later namespace wait out the same stall.
+    if (isPeerTransportCensusFailure(error)) throw error;
     return "";
   } finally {
     await reader.cancel().catch(() => undefined);
@@ -186,12 +189,7 @@ async function readBoundedBody(response: Response, maxBytes: number): Promise<st
 }
 
 async function readSnapshotErrorDetail(response: Response): Promise<string> {
-  let raw = "";
-  try {
-    raw = await readBoundedBody(response, SNAPSHOT_ERROR_BODY_CAP_BYTES);
-  } catch {
-    return "";
-  }
+  const raw = await readBoundedBody(response, SNAPSHOT_ERROR_BODY_CAP_BYTES);
   const trimmed = raw.trim();
   if (trimmed.length === 0) return "";
   let detail = trimmed;
@@ -265,7 +263,14 @@ export async function fetchPeerSnapshot(
       continue;
     }
     if (!response.ok) {
-      const detail = await readSnapshotErrorDetail(response);
+      let detail = "";
+      try {
+        detail = await readSnapshotErrorDetail(response);
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        noteTransportFailure(error);
+        continue;
+      }
       lastFailure = detail.length > 0 ? `HTTP ${response.status} ${detail}` : `HTTP ${response.status}`;
       continue;
     }

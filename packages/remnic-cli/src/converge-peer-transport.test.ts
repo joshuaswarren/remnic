@@ -212,6 +212,41 @@ test("peer snapshot error detail drops terminal control characters", async () =>
   assert.match(snapshot.message, /HTTP 400 namespace is not readable: \[31mblocked\[0m/);
 });
 
+test("peer snapshot keeps a body-read timeout instead of recording an HTTP refusal", async () => {
+  const fetchImpl: typeof fetch = (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.includes("/engram/")) return Promise.resolve(new Response(null, { status: 404 }));
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 400 }));
+  };
+  await assert.rejects(fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /timeout|aborted/i);
+    assert.equal(error.message.includes("HTTP"), false);
+    assert.equal(isPeerTransportCensusFailure(error), true);
+    return true;
+  });
+});
+
+test("peer snapshot still records an HTTP refusal when the error body fails for another reason", async () => {
+  const fetchImpl: typeof fetch = async () => {
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("decode failed"));
+      },
+    });
+    return new Response(body, { status: 400 });
+  };
+  await assert.rejects(
+    fetchPeerSnapshot("http://peer", "alpha", undefined, fetchImpl, 1_000),
+    /failed to fetch peer snapshot for namespace alpha: HTTP 400/
+  );
+});
+
 test("peer transport aborts a stalled request at the configured timeout", async () => {
   const fetchImpl: typeof fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {

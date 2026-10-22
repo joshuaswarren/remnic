@@ -399,6 +399,48 @@ test("converge plan: a snapshot timeout is not erased by a non-JSON fallback", a
   }
 });
 
+test("converge plan: a snapshot error-body timeout is not recorded as an HTTP refusal", async () => {
+  const requested: string[] = [];
+  const fetchImpl: typeof fetch = (input) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }
+    const namespace = url.searchParams.get("namespace") ?? "";
+    requested.push(namespace);
+    if (namespace !== "alpha") return Promise.resolve(Response.json({ files: [], tombstones: [] }));
+    if (url.pathname.includes("/engram/")) return Promise.resolve(new Response(null, { status: 404 }));
+    const body = new ReadableStream({
+      pull(controller) {
+        controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 400 }));
+  };
+  await withPlanCursor((cursorDir) =>
+    assert.rejects(
+      computeConvergePlan({
+        cursorDir,
+        peerUrl: "https://peer.example.test",
+        peerRequestTimeoutMs: 30,
+        localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+          ["alpha", []],
+          ["beta", []],
+        ]),
+        fetchImpl,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /timeout|aborted/i);
+        assert.equal(error.message.includes("HTTP"), false);
+        return true;
+      }
+    )
+  );
+  assert.ok(requested.includes("alpha"));
+  assert.equal(requested.includes("beta"), false);
+});
+
 test("converge plan: an agreed namespace plus a refusal is not reported as converged", async () => {
   const plan = await withPlanCursor((cursorDir) =>
     computeConvergePlan({
