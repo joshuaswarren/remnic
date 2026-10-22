@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildLineOffsetMap, byteOffsetToPosition, positionToByteOffset } from "./byte-position.js";
+import {
+  buildLineOffsetMap,
+  byteOffsetToPosition,
+  positionToByteOffset,
+} from "../packages/coding-graph/src/lsp/byte-position.js";
 
 test("line starts count UTF-8 bytes across CRLF, CR, and LF endings", () => {
   const content = "aé中😀\r\nβ\rz\n";
