@@ -552,14 +552,8 @@ export class CompoundingEngine {
     // PEDC: Run calibration consolidation during weekly synthesis
     if (resolveConsolidationCapabilities(this.config).calibration) {
       try {
-        const { runCalibrationConsolidation } = await import("../calibration.js");
-        const calRules = await runCalibrationConsolidation({
-          memoryDir: this.config.memoryDir,
-          gatewayConfig: this.config.gatewayConfig,
-          gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
-          modelChain: this.config.modelSource === "gateway" ? this.config.taskModelChain : undefined,
-          workspaceDir: this.config.workspaceDir,
-        });
+        const { calibrationConsolidationInput, runCalibrationConsolidation } = await import("../calibration.js");
+        const calRules = await runCalibrationConsolidation(calibrationConsolidationInput(this.config));
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);
       } catch (error) {
         log.warn(`[calibration] weekly consolidation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
