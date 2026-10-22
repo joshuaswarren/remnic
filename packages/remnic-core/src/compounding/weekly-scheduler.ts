@@ -22,10 +22,11 @@
  * process-local: a restart still keys off the completion marker.
  */
 
-import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveConsolidationCapabilities } from "../capabilities.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import { log as defaultLog } from "../logger.js";
 import type { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
@@ -98,9 +99,8 @@ async function defaultWeekDone(memoryDir: string, weekId: string): Promise<boole
 }
 
 async function defaultMarkWeekDone(memoryDir: string, weekId: string): Promise<void> {
-  const markerPath = compoundingWeeklyDoneMarkerPath(memoryDir, weekId);
-  await mkdir(path.dirname(markerPath), { recursive: true });
-  await writeFile(markerPath, `${new Date().toISOString()}\n`);
+  // Atomic: a partially written marker must never satisfy the skip check.
+  await writeFileAtomically(compoundingWeeklyDoneMarkerPath(memoryDir, weekId), `${new Date().toISOString()}\n`);
 }
 
 function isNotFound(error: unknown): boolean {
