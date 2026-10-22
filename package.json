@@ -33,9 +33,7 @@
     "url": "https://github.com/joshuaswarren/remnic/issues"
   },
   "author": "Joshua Warren",
-  "workspaces": [
-    "packages/*"
-  ],
+  "workspaces": ["packages/*"],
   "engines": {
     "node": ">=22.12.0"
   },
@@ -1564,12 +1562,7 @@
       "import": "./packages/remnic-core/dist/transfer/types.js"
     }
   },
-  "files": [
-    "dist",
-    "bin/engram-access.js",
-    "openclaw.plugin.json",
-    "scripts/ensure-better-sqlite3.mjs"
-  ],
+  "files": ["dist", "bin/engram-access.js", "openclaw.plugin.json", "scripts/ensure-better-sqlite3.mjs"],
   "dependencies": {
     "@honcho-ai/sdk": "^2.0.0",
     "@lancedb/lancedb": "^0.26.2",
@@ -1593,9 +1586,7 @@
   },
   "openclaw": {
     "plugin": "./openclaw.plugin.json",
-    "extensions": [
-      "./dist/index.js"
-    ]
+    "extensions": ["./dist/index.js"]
   },
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
@@ -1647,7 +1638,7 @@
     "relay:judge": "node scripts/relay/judge-package.mjs verify",
     "relay:demo": "node scripts/relay/judge-package.mjs serve",
     "relay:judge:clean-room": "node scripts/verify-relay-judge-package.mjs",
-    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json package.json",
+    "lint": "biome check --diagnostic-level=error --files-ignore-unknown=true biome.json package.json && node scripts/check-anti-slop.mjs",
     "preflight": "bash scripts/pr-preflight.sh full",
     "preflight:quick": "bash scripts/pr-preflight.sh quick",
     "review:cursor": "bash scripts/cursor-prepush-review.sh",
