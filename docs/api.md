@@ -16,7 +16,35 @@ Remnic exposes one shared local service layer through both HTTP and MCP adapters
 
 ### HTTP
 
-Two infrastructure routes carry no request envelope and sit outside the op-gated catalog: `GET /engram/v1/health` (service health plus projection/search availability) and `POST /mcp` (the [MCP-over-HTTP](#mcp-over-http) JSON-RPC delegate). Every other route below is op-gated and shares the write envelope, rate limits, and validation described later on this page.
+Infrastructure routes include health/readiness probes, capability discovery,
+authorization checks, and the MCP transport. They do not require the memory-write
+envelope. Application routes enforce their operation and namespace policies;
+write routes additionally use the validation and quota rules below.
+
+**Readiness and discovery**
+
+| Route | Contract |
+|-------|----------|
+| `GET /engram/v1/live` | Returns `{ "ok": true, "ready": true }` after readiness completes. |
+| `GET /engram/v1/health` | Returns service health, including projection/search availability; degraded readiness adds `degraded`, `warmupAttempts`, and `lastError`. |
+| `GET /engram/v1/capabilities` | Returns feature-support flags for client compatibility checks, not the presenting token's permissions. |
+| `GET /engram/v1/authorization?op=recall&op=memory_get` | Checks every named operation without executing its handler. Success returns `{ "authorized": true, "operations": ["recall", "memory_get"] }`. |
+
+Bearer authentication is the default for these routes once the server is ready.
+A host-supplied external request handler runs before bearer authorization and can
+fully handle a request; an integration that claims an infrastructure route this
+way must enforce authentication itself. During startup, `/live` and `/health`
+return HTTP 503 with `code: "not_ready"`, `ready: false`, `warmupAttempts`, and
+`lastError` before the bearer gate; a startup 503 does not establish that a
+token is valid.
+
+The authorization probe requires at least one supported `op`; repeat the query
+parameter for multiple operations. Unsupported operations return HTTP 400;
+denied operation or namespace checks return HTTP 403. An optional `namespace`
+is checked where it can be resolved from the request. A successful probe does
+not verify a resource-specific target or guarantee that a later operation
+succeeds. See [Authentication Model](architecture/auth-model.md) for token
+capabilities, principal resolution, and namespace ACLs.
 
 **Recall and query**
 
@@ -359,24 +387,30 @@ Run the server with:
 openclaw engram access mcp-serve
 ```
 
-Available MCP tools:
+Common MCP tools use underscore-prefixed canonical names:
 
-- `remnic.recall` — accepts optional `cwd` and `projectTag` for automatic project detection
-- `remnic.recall_explain`
-- `remnic.memory_get`
-- `remnic.memory_timeline`
-- `remnic.memory_store`
-- `remnic.suggestion_submit`
-- `remnic.entity_get`
-- `remnic.review_queue_list`
-- `remnic.observe` — accepts optional `cwd` and `projectTag` for automatic project detection
-- `remnic.lcm_search`
-- `remnic.lcm_compaction_flush`
-- `remnic.lcm_compaction_record`
-- `remnic.day_summary`
-- `remnic.set_coding_context` — attach or clear a session's coding context; accepts a full `codingContext` object or a `projectTag` shorthand
+- `remnic_recall` — accepts optional `cwd` and `projectTag` for automatic project detection
+- `remnic_recall_explain`
+- `remnic_memory_get`
+- `remnic_memory_timeline`
+- `remnic_memory_store`
+- `remnic_suggestion_submit`
+- `remnic_entity_get`
+- `remnic_review_queue_list`
+- `remnic_observe` — accepts optional `cwd` and `projectTag` for automatic project detection
+- `remnic_lcm_search`
+- `remnic_lcm_compaction_flush`
+- `remnic_lcm_compaction_record`
+- `remnic_day_summary`
+- `remnic_set_coding_context` — attach or clear a session's coding context; accepts a full `codingContext` object or a `projectTag` shorthand
 
-The legacy `engram.*` aliases remain available through the v1.x compatibility window.
+Use `tools/list` to discover the enabled tool set; HTTP connections filter that
+list by the presenting token's operation allow-list. Dotted `remnic.*` and
+legacy `engram.*` names remain callable aliases. `emitLegacyTools` controls
+advertising `engram.*` aliases, not whether those aliases can be called. The
+dotted names in the detailed sections below are compatibility aliases, not the
+canonical advertised spelling. The naming contract is implemented in
+[`access-mcp-tool-names.ts`](../packages/remnic-core/src/access-mcp-tool-names.ts).
 
 The MCP adapter calls the same `EngramAccessService` methods used by HTTP, so equivalent request classes return the same structured payloads.
 
@@ -443,13 +477,32 @@ Generate a structured end-of-day summary from memory content.
 
 ### MCP over HTTP
 
-The HTTP server also exposes an MCP JSON-RPC endpoint at `POST /mcp`, allowing remote MCP clients (e.g., Codex CLI, Claude Code) to use Engram tools over HTTP instead of STDIO:
+The HTTP server exposes the MCP transport at `/mcp`, allowing remote MCP clients
+(e.g., Codex CLI, Claude Code) to use Remnic tools over HTTP instead of STDIO:
 
 ```bash
 openclaw engram access http-serve --host 0.0.0.0 --port 4318 --token "$TOKEN"
 ```
 
-Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. Advertised MCP tools include both canonical `remnic.*` names and legacy `engram.*` aliases where supported. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`, `engram.lcm_compaction_flush`, `engram.lcm_compaction_record`) are rate-limited consistently with the REST write endpoints - dry runs and idempotency replays do not count toward the limit.
+Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an `Authorization: Bearer <token>` header. Advertised MCP tools use canonical `remnic_*` names and, when enabled, legacy `engram.*` aliases. Write operations (`engram.memory_store`, `engram.suggestion_submit`, `engram.observe`, `engram.lcm_compaction_flush`, `engram.lcm_compaction_record`) are rate-limited consistently with the REST write endpoints - dry runs and idempotency replays do not count toward the limit.
+
+The authenticated `/mcp` method contract is:
+
+- `POST`: successful JSON-RPC requests return HTTP 200 with the response.
+  `notifications/initialized` returns HTTP 202 with no body. A successful
+  `initialize` response supplies `Mcp-Session-Id`; send it on subsequent requests.
+- `GET`: requires `Accept: text/event-stream` and opens a comment-only SSE
+  keepalive stream. Without that accept value, it returns HTTP 405 with
+  `Allow: GET, POST, DELETE`.
+- `DELETE`: returns HTTP 204.
+
+`initialize` requires a non-empty string `params.protocolVersion`. Supported
+versions are `2025-06-18`, `2025-03-26`, and `2024-11-05`; a well-formed unsupported
+initialize version receives the newest supported version as a counter-offer.
+For POST requests, an unsupported non-empty `MCP-Protocol-Version` HTTP header
+instead returns HTTP 400. Session and version handling are implemented in
+[`access-mcp.ts`](../packages/remnic-core/src/access-mcp.ts) and
+[`access-http.ts`](../packages/remnic-core/src/access-http.ts).
 
 **Namespace-enabled deployments:** If you have `namespacesEnabled: true`, pass `--principal <name>` to set the authenticated principal for all MCP connections. The principal must appear in `writePrincipals` for the target namespace. Without `--principal`, the principal resolves to `"default"`, which may not have write access:
 
@@ -457,7 +510,10 @@ Clients send standard MCP JSON-RPC requests to `http://<host>:4318/mcp` with an 
 openclaw engram access http-serve --host 0.0.0.0 --principal generalist --token "$TOKEN"
 ```
 
-Deployments with `namespacesEnabled: false` (the default) do not need `--principal` — all writes are permitted.
+Deployments with `namespacesEnabled: false` (the default) do not need `--principal`
+for namespace ACLs. Bearer authentication and per-token operation/namespace
+restrictions still apply; disabling namespaces does not grant every token
+unrestricted write access.
 
 ## Agent Tools
 
