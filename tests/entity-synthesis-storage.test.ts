@@ -1078,7 +1078,7 @@ test("ensureDirectories skips malformed entity files and macOS replication junk"
   }
 });
 
-test("entity listing does not follow a symlink or fifo planted in entities", async () => {
+test("entity listing does not follow a symlink or fifo planted in entities", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-symlink-outside-"));
   try {
@@ -1115,7 +1115,7 @@ test("entity listing does not follow a symlink or fifo planted in entities", asy
   }
 });
 
-test("entity listing does not follow a symlinked entities directory", async () => {
+test("entity listing does not follow a symlinked entities directory", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-root-symlink-"));
   const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-root-outside-"));
   try {
