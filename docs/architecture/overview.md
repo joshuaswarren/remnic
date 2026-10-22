@@ -2,7 +2,7 @@
 
 ## System Design
 
-Remnic is a **local-first, multi-platform memory system** built around a host-agnostic core. `@remnic/core` owns memory semantics, `@remnic/server` exposes the shared HTTP/MCP runtime, and host adapters such as OpenClaw and Hermes translate that shared behavior into each platform's native integration model. All data stays on disk as plain markdown files. Outbound API calls occur for: (1) LLM extraction/consolidation, (2) embedding fallback recall when QMD is unavailable and an OpenAI key is present, and (3) hourly summaries when enabled (`hourlySummariesEnabled`, default on).
+Remnic is a **local-first, multi-platform memory system** built around a host-agnostic core. `@remnic/core` owns memory semantics, `@remnic/server` exposes the shared HTTP/MCP runtime, and host adapters such as OpenClaw and Hermes translate that shared behavior into each platform's native integration model. Memory records live in markdown files with YAML frontmatter; runtime state also uses JSON and SQLite. Outbound API calls occur for: (1) LLM extraction/consolidation, (2) embedding fallback recall when QMD is unavailable and an OpenAI key is present, and (3) hourly summaries when enabled (`hourlySummariesEnabled`, default on).
 
 OpenClaw is one adapter, not the architectural center. Standalone Remnic and shared-core behavior must remain correct without OpenClaw, Hermes, or any future host process.
 
@@ -71,6 +71,19 @@ OpenClaw-hosted installs commonly use the following memory layout:
 ```
 
 Standalone installs use the same logical structure under the configured Remnic memory directory.
+
+### Memory files and runtime state
+
+The file layout above is not an exhaustive list of runtime state. For example,
+[`memory-projection-store.ts`](../../packages/remnic-core/src/memory-projection-store.ts)
+opens the local SQLite projection at `<memoryDir>/state/memory-projection.sqlite`.
+That projection accelerates storage reads; it does not replace the markdown
+memory records. A projection open failure is logged and falls back to a
+full-corpus scan.
+
+Do not treat the entire `state/` directory as a disposable search index: it also
+contains pending turns and other operational state. See
+[Operations](../operations.md) for backup and restore guidance.
 
 ## Entity File Format
 

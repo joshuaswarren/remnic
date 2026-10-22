@@ -8,7 +8,7 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 
 Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
 
-- **Your files, your machine.** Every memory is a plain markdown file with YAML frontmatter on your disk. No database, no cloud dependency, no subscription. `cat`, `grep`, edit, and version-control your memory with the tools you already use.
+- **Your files, your machine.** Memory records are plain markdown files with YAML frontmatter on your disk. Remnic also keeps local JSON and SQLite state; it does not require an external database service. `cat`, `grep`, edit, and version-control your memory files with the tools you already use.
 - **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, Factory Droid, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
 - **Automatic extraction and recall.** Remnic watches conversations, distills durable knowledge, and injects the right context back when it is needed.
 - **Sharp retrieval.** Hybrid search (BM25 + vector + reranking) over rebuildable indexes, with graph recall, memory-worth scoring, and per-result provenance you can inspect.

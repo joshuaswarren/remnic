@@ -2,17 +2,27 @@
 
 ## Per-Plugin Tokens
 
-Each plugin/connector gets its own auth token. Tokens are stored at `~/.remnic/tokens.json` (a legacy `~/.engram/tokens.json` is read as a fallback):
+Each plugin/connector can have its own auth token. The current store contains a
+`tokens` array of entries at `~/.remnic/tokens.json`; a legacy
+`~/.engram/tokens.json` is read as a fallback. Entries record the token,
+connector id, creation time, and, for newly minted tokens, capabilities:
 
 ```json
 {
-  "openclaw": "remnic_oc_a1b2c3d4e5f6...",
-  "claude-code": "remnic_cc_f6e5d4c3b2a1...",
-  "codex": "remnic_cx_1a2b3c4d5e6f...",
-  "hermes": "remnic_hm_6f5e4d3c2b1a...",
-  "replit": "remnic_rl_b1c2d3e4f5a6..."
+  "tokens": [
+    {
+      "token": "${CONNECTOR_TOKEN}",
+      "connector": "claude-code",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "capabilities": { "version": 1 }
+    }
+  ]
 }
 ```
+
+The old flat `{ "connector": "token" }` map remains readable and is migrated
+best-effort to the entry format. A token prefix is a naming convention, not proof
+of a connector identity or permission; validation matches the complete stored token.
 
 ### Token Format
 
@@ -62,41 +72,64 @@ In embedded mode, OEO talks to the Orchestrator in-process — no HTTP, no token
 
 ## Token Validation
 
-EMO validates tokens using `crypto.timingSafeEqual` to prevent timing attacks. Invalid tokens return `401 Unauthorized`.
+The HTTP access layer compares bearer credentials using `crypto.timingSafeEqual`.
+Missing, invalid, or path-disallowed credentials return `401 Unauthorized`.
+The standalone server accepts its configured operator token and dynamically
+loaded connector entries. Without either, protected requests are rejected.
+
+The standalone entry loader caches one coherent token/connector/capability
+snapshot for up to five seconds. Token writes through `saveTokenStore()`
+invalidate that process's cache immediately; another process's changes become
+visible when the cached snapshot is refreshed. No server restart is required.
+
+ChatGPT connector tokens are restricted by the standalone server to `/mcp`;
+they do not authorize REST or operator-console routes.
 
 ## Audit Trail
 
-Each memory operation is attributed to the token's platform:
+On supported write paths, the matched token-store entry supplies
+`sourceConnector` provenance. It is not inferred from the token's prefix:
 
 ```yaml
 ---
 id: mem_abc123
 source: extraction
-extractedBy: claude-code    # ← from token prefix
+sourceConnector: claude-code
 created: 2026-04-05T10:30:00Z
 ---
 ```
 
-This enables:
-- Per-platform memory statistics
-- Debugging which agent stored incorrect information
-- Future per-platform permissions (read-only vs read-write)
+Connector provenance supports attribution and debugging. It is distinct from the
+principal that drives namespace ACLs: HTTP resolves a trusted principal header
+(when explicitly enabled), then the configured server principal, then an adapter
+default. A connector name is not automatically a namespace principal.
 
-## Future: Multi-User Support
+## Token Capabilities and Namespace ACLs
 
-The token model is designed to extend to multi-user scenarios:
+Per-token restrictions are implemented, not future work. `remnic token generate`
+accepts `--ops <comma-list>` and `--namespaces <comma-list>`. In the version-1
+capability record:
 
-```json
-{
-  "tokens": {
-    "remnic_cc_...": { "user": "alice", "platform": "claude-code", "scopes": ["read", "write"] },
-    "remnic_cx_...": { "user": "alice", "platform": "codex", "scopes": ["read", "write"] },
-    "remnic_cc_...": { "user": "bob", "platform": "claude-code", "scopes": ["read"] }
-  }
-}
-```
+- An absent `ops` or `namespaces` axis is unrestricted on that axis.
+- An empty array denies everything on that axis.
+- A non-empty array allows only its listed operations or namespaces.
 
-Each user's memories would be stored in separate directories, with optional cross-user sharing for team knowledge.
+New tokens always record capabilities; `{ "version": 1 }` explicitly means no
+token-level restrictions. Pre-feature entries without `capabilities` retain
+legacy unrestricted access. Static operator tokens are also unrestricted at the
+token-capability layer. Namespace ACLs and feature-specific checks still apply.
+
+HTTP and MCP enforce operation and effective-namespace restrictions. Denied
+authorization returns a forbidden error rather than granting access based on a
+client-supplied namespace. MCP `tools/list` filters tools by the token's operation
+allow-list. Use the authenticated
+[`GET /engram/v1/authorization`](../api.md#http) probe to check operations without
+executing them; resource-specific checks can still reject the actual call.
+
+The implementation contracts live in
+[`tokens.ts`](../../packages/remnic-core/src/tokens.ts),
+[`access-token-capabilities.ts`](../../packages/remnic-core/src/access-token-capabilities.ts),
+and [`access-http.ts`](../../packages/remnic-core/src/access-http.ts).
 
 ## Security Considerations
 
