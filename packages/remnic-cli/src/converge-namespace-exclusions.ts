@@ -20,13 +20,76 @@ export interface ConvergeNamespaceFailure extends ConvergeNamespaceExclusion {
   cause: unknown;
 }
 
+const TRANSPORT_MARKERS = [
+  "aborted due to timeout",
+  "operation was aborted",
+  "fetch failed",
+  "econnrefused",
+  "econnreset",
+  "enotfound",
+  "etimedout",
+  "eai_again",
+  "socket hang up",
+  "und_err_",
+];
+
+function hasHttpStatus(message: string): boolean {
+  let from = 0;
+  while (from < message.length) {
+    const at = message.indexOf("HTTP ", from);
+    if (at < 0) return false;
+    const start = at + 5;
+    if (
+      start + 2 < message.length &&
+      message.charCodeAt(start) >= 48 &&
+      message.charCodeAt(start) <= 57 &&
+      message.charCodeAt(start + 1) >= 48 &&
+      message.charCodeAt(start + 1) <= 57 &&
+      message.charCodeAt(start + 2) >= 48 &&
+      message.charCodeAt(start + 2) <= 57
+    ) {
+      return true;
+    }
+    from = start;
+  }
+  return false;
+}
+
+function hasTransportMarker(message: string): boolean {
+  const lower = message.toLowerCase();
+  for (const marker of TRANSPORT_MARKERS) {
+    if (lower.includes(marker)) return true;
+  }
+  return false;
+}
+
+/**
+ * A peer request that never produced an HTTP status. One timeout or
+ * connection failure used to reject the cycle; treating it as a per-namespace
+ * exclusion would wait out that timeout once per namespace.
+ * An HTTP status, including a namespace refusal, is not a transport failure.
+ */
+export function isPeerTransportCensusFailure(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== undefined && current !== null && !seen.has(current)) {
+    seen.add(current);
+    if (!(current instanceof Error)) return false;
+    if (hasHttpStatus(current.message)) return false;
+    if (current.name === "TimeoutError" || hasTransportMarker(current.message)) return true;
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
+
 /**
  * Record one namespace census failure.
  *
  * An aborted planning signal is not a census failure: the operator asked the
  * whole cycle to stop, and a partial plan must not be returned in its place.
- * A timeout abort on the request's own signal leaves the planning signal
- * un-aborted and is a per-namespace failure.
+ * A peer transport failure (timeout, connection loss) also rejects the cycle.
+ * The peer did not answer for this namespace, and repeating the wait for
+ * every remaining namespace stalls the watch. An HTTP refusal stays isolated.
  */
 export function recordNamespaceCensusFailure(
   excluded: Map<string, ConvergeNamespaceFailure>,
@@ -36,6 +99,7 @@ export function recordNamespaceCensusFailure(
   signal: AbortSignal | undefined
 ): void {
   if (signal?.aborted) throw error;
+  if (side === "peer" && isPeerTransportCensusFailure(error)) throw error;
   const message = error instanceof Error && error.message.length > 0 ? error.message : String(error);
   excluded.set(namespace, { namespace, side, error: message, cause: error });
 }

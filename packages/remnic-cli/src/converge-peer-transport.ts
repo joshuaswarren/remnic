@@ -128,6 +128,9 @@ export async function fetchPeerManifestStream(
   return null;
 }
 
+/** Bytes read from a failed snapshot body before the rest is cancelled. */
+const SNAPSHOT_ERROR_BODY_CAP_BYTES = 512;
+
 /** Bound a failed snapshot body so the cycle log can name the refusal. */
 function collapseWhitespace(value: string, max: number): string {
   let out = "";
@@ -151,10 +154,37 @@ function collapseWhitespace(value: string, max: number): string {
   return out;
 }
 
+async function readBoundedBody(response: Response, maxBytes: number): Promise<string> {
+  const body = response.body;
+  if (!body) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (received < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value || value.byteLength === 0) break;
+      const remaining = maxBytes - received;
+      if (value.byteLength > remaining) {
+        chunks.push(value.subarray(0, remaining));
+        received += remaining;
+        break;
+      }
+      chunks.push(value);
+      received += value.byteLength;
+    }
+  } catch {
+    return "";
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 async function readSnapshotErrorDetail(response: Response): Promise<string> {
   let raw = "";
   try {
-    raw = await response.text();
+    raw = await readBoundedBody(response, SNAPSHOT_ERROR_BODY_CAP_BYTES);
   } catch {
     return "";
   }

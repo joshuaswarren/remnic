@@ -4,9 +4,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
+import { MessageChannel } from "node:worker_threads";
 import { parseConfig } from "@remnic/core";
 import { defaultConvergeCursorPath, readConvergeCursor, writeConvergeCursor } from "@remnic/core/reconcile/cursor.js";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
+import { isPeerTransportCensusFailure, recordNamespaceCensusFailure } from "./converge-namespace-exclusions.js";
 import { formatConvergeExclusionLine, formatConvergeReport, formatConvergeWatchCycleLine } from "./converge-report.js";
 import { convergeWatch } from "./converge-watch.js";
 import { computeConvergePlan, executeConvergeApply } from "./converge.js";
@@ -198,6 +200,92 @@ test("converge plan: every namespace snapshot failing still rejects the cycle", 
       return true;
     }
   );
+});
+
+test("converge plan: a peer transport timeout fails the cycle instead of waiting out every namespace", async () => {
+  const requested: string[] = [];
+  const keepAlive = new MessageChannel();
+  keepAlive.port1.ref();
+  keepAlive.port2.ref();
+  const fetchImpl: typeof fetch = (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/offline-sync/capabilities")) {
+      return Promise.resolve(new Response(null, { status: 404 }));
+    }
+    const namespace = url.searchParams.get("namespace") ?? "";
+    requested.push(namespace);
+    if (namespace !== "alpha") {
+      return Promise.resolve(Response.json({ files: [], tombstones: [] }));
+    }
+    return new Promise((_resolve, reject) => {
+      const signal = init?.signal;
+      if (!signal) {
+        reject(new Error("missing signal"));
+        return;
+      }
+      const fail = () => reject(signal.reason);
+      if (signal.aborted) {
+        fail();
+        return;
+      }
+      signal.addEventListener("abort", fail, { once: true });
+    });
+  };
+  try {
+    await assert.rejects(
+      computeConvergePlan({
+        peerUrl: "https://peer.example.test",
+        peerRequestTimeoutMs: 30,
+        localFilesByNamespace: new Map<string, ReconcileFileState[]>([
+          ["alpha", []],
+          ["beta", []],
+        ]),
+        fetchImpl,
+      }),
+      /timeout|aborted/i
+    );
+    assert.ok(requested.includes("alpha"));
+    assert.equal(requested.includes("beta"), false);
+  } finally {
+    keepAlive.port1.close();
+    keepAlive.port2.close();
+  }
+});
+
+test("peer transport failures are not namespace exclusions; HTTP refusals are", () => {
+  const timeout = new Error("The operation was aborted due to timeout");
+  timeout.name = "TimeoutError";
+  assert.equal(isPeerTransportCensusFailure(timeout), true);
+  assert.equal(
+    isPeerTransportCensusFailure(
+      new Error("failed to fetch peer snapshot for namespace alpha: The operation was aborted due to timeout")
+    ),
+    true
+  );
+  assert.equal(
+    isPeerTransportCensusFailure(new Error("failed to fetch peer snapshot for namespace alpha: fetch failed")),
+    true
+  );
+  assert.equal(
+    isPeerTransportCensusFailure(
+      new Error("failed to fetch peer snapshot for namespace blocked: HTTP 400 namespace is not readable: blocked")
+    ),
+    false
+  );
+  assert.equal(isPeerTransportCensusFailure(new Error("peer manifest request failed: HTTP 500")), false);
+  const excluded = new Map();
+  assert.throws(() => recordNamespaceCensusFailure(excluded, "alpha", "peer", timeout, undefined), /timeout/i);
+  assert.equal(excluded.size, 0);
+  recordNamespaceCensusFailure(
+    excluded,
+    "blocked",
+    "peer",
+    new Error("failed to fetch peer snapshot for namespace blocked: HTTP 400 namespace is not readable"),
+    undefined
+  );
+  assert.equal(excluded.size, 1);
+  recordNamespaceCensusFailure(excluded, "local-ns", "local", timeout, undefined);
+  assert.equal(excluded.get("local-ns")?.side, "local");
 });
 
 test("converge plan: abort during one snapshot still rejects the whole plan", async () => {

@@ -162,6 +162,37 @@ test("peer transport rejects internal state paths before issuing a request", asy
   assert.equal(reads, 0);
 });
 
+test("peer snapshot error detail reads a bounded prefix and cancels the rest", { timeout: 2_000 }, async () => {
+  let pulls = 0;
+  let cancels = 0;
+  const snapshot = await fetchPeerSnapshot(
+    "http://peer",
+    "blocked",
+    undefined,
+    async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          const chunk = Buffer.alloc(64 * 1024, 0x20);
+          Buffer.from('{"error":"namespace is not readable: blocked"}').copy(chunk);
+          controller.enqueue(new Uint8Array(chunk));
+        },
+        cancel() {
+          cancels += 1;
+        },
+      });
+      return new Response(body, { status: 400, headers: { "content-type": "application/json" } });
+    },
+    1_000
+  ).catch((error: unknown) => error);
+  assert.ok(snapshot instanceof Error);
+  assert.match(snapshot.message, /HTTP 400 namespace is not readable: blocked/);
+  // Two routes, and each stream refills its queue once after the capped read.
+  // response.text() would pull this unending body until the test times out.
+  assert.equal(pulls, 4);
+  assert.ok(cancels >= 2);
+});
+
 test("peer transport aborts a stalled request at the configured timeout", async () => {
   const fetchImpl: typeof fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {
