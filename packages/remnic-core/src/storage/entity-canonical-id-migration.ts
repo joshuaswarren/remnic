@@ -818,10 +818,11 @@ async function migrateEntityFilePair(
     await assertNotSymlink(legacyPath, legacyId);
     await assertEntityContentUnchanged(deps, legacyPath, entityContent, legacyId);
     // A journal entry must not relocate Finder metadata or a record this scan
-    // would leave in place. The mapping stays, so a later repair can still move.
+    // would leave in place. readStorageSecureFile has already decrypted, so
+    // the check is on that plaintext. The mapping stays for a later repair.
     if (
       isMacOsReplicationJunkBasename(path.basename(legacyPath))
-      || (!entityEncrypted && isMalformedEntityRecord(entityContent))
+      || isMalformedEntityRecord(entityContent)
     ) {
       return { deferred: false, progressed: false };
     }

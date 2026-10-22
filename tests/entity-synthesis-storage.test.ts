@@ -22,6 +22,7 @@ import {
 } from "../packages/remnic-core/src/storage/entity-timeline.js";
 import {
   isEncryptedFile,
+  readMaybeEncryptedFile,
   writeMaybeEncryptedFile,
 } from "../packages/remnic-core/src/secure-store/secure-fs.js";
 import { rebuildMemoryProjection } from "../packages/remnic-core/src/maintenance/rebuild-memory-projection.js";
@@ -1257,6 +1258,38 @@ test("a retained canonical-id mapping does not move a malformed entity, and a re
     await resumed.ensureDirectories();
     await assert.rejects(() => readFile(legacyPath), { code: "ENOENT" });
     assert.match(await readFile(canonicalPath, "utf-8"), /# North Dome/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a retained mapping does not move an encrypted malformed entity", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-migration-encrypted-malformed-"));
+  try {
+    const key = Buffer.alloc(32, 0x71);
+    const seed = new StorageManager(dir);
+    seed.setSecureStoreKey(key, true);
+    await seed.ensureDirectories();
+    const malformed = "# \n**Type:** project\nRECOVERY-BYTES\n";
+    const legacyPath = path.join(dir, "entities", "project-notes.md");
+    const canonicalPath = path.join(dir, "entities", "project-north-dome.md");
+    await writeMaybeEncryptedFile(legacyPath, malformed, key, {}, dir);
+    await writeFile(
+      path.join(dir, "state", "entity-canonical-id-migration-v1.json"),
+      JSON.stringify({
+        version: 1,
+        complete: false,
+        mappings: { "project-notes": "project-north-dome" },
+      }),
+      "utf-8",
+    );
+
+    const held = new StorageManager(dir);
+    held.setSecureStoreKey(key, false);
+    await held.ensureDirectories();
+    assert.equal(isEncryptedFile(await readFile(legacyPath)), true);
+    assert.equal(await readMaybeEncryptedFile(legacyPath, key, dir), malformed);
+    await assert.rejects(() => readFile(canonicalPath), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

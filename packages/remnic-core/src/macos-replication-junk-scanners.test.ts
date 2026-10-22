@@ -7,7 +7,9 @@ import test from "node:test";
 import { readCalibrationCorrections } from "./calibration.js";
 import { CorrectionPlanner, type PlannerDeps } from "./correction/correction-planner.js";
 import { listJsonFiles } from "./json-store.js";
+import { parseConfig } from "./config.js";
 import { ProfilingCollector } from "./profiling.js";
+import { TranscriptManager } from "./transcript.js";
 import { resolveDefaultNamespaceRoot } from "./namespaces/storage.js";
 import { runDirectAgent } from "./retrieval-agents.js";
 import { scanMemoryDir } from "./search/document-scanner.js";
@@ -171,6 +173,50 @@ test("direct entity recall ignores AppleDouble sidecars and malformed entities",
     assert.deepEqual(
       hits.map((hit) => path.basename(hit.path)).sort(),
       ["project-real-locked.md", "project-real.md"],
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("transcript writes ignore AppleDouble jsonl sidecars", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-transcript-macos-junk-"));
+  try {
+    const transcript = new TranscriptManager(parseConfig({
+      memoryDir,
+      transcriptEnabled: true,
+      transcriptSkipChannelTypes: [],
+    }));
+    await transcript.initialize();
+    const sessionKey = "agent:main:desk";
+    const located = transcript.getTranscriptPath(sessionKey);
+    const channelDir = path.join(memoryDir, "transcripts", located.dir);
+    const toolDir = path.join(memoryDir, "state", "tool-usage", located.dir);
+    await mkdir(channelDir, { recursive: true });
+    await mkdir(toolDir, { recursive: true });
+    const sidecar = Buffer.from([0, 5, 22]);
+    await writeFile(path.join(channelDir, `._${located.file}`), sidecar);
+    await writeFile(path.join(toolDir, `._${located.file}`), sidecar);
+
+    await transcript.append({
+      timestamp: "2026-04-13T10:00:00.000Z",
+      role: "user",
+      content: "North Dome schedule",
+      sessionKey,
+      turnId: "turn-1",
+    });
+    await transcript.appendToolUse({
+      timestamp: "2026-04-13T10:00:01.000Z",
+      sessionKey,
+      tool: "lookup",
+    });
+
+    assert.match(await readFile(path.join(channelDir, located.file), "utf8"), /North Dome schedule/);
+    assert.match(await readFile(path.join(toolDir, located.file), "utf8"), /lookup/);
+    assert.deepEqual(await readFile(path.join(channelDir, `._${located.file}`)), sidecar);
+    await assert.rejects(
+      () => readFile(path.join(memoryDir, "transcripts", located.alternateDir, located.file)),
+      { code: "ENOENT" },
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
