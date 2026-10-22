@@ -1,6 +1,7 @@
 /**
- * Daemon weekly compounding run: once per completed ISO week, skip when the
- * report exists, and catch up the missed week after a restart.
+ * Daemon weekly compounding run: once per completed ISO week, skip only when
+ * a scheduled run already completed that week, and catch up the missed week
+ * after a restart.
  */
 
 import assert from "node:assert/strict";
@@ -16,9 +17,11 @@ import type { NamespaceSearchRouter } from "../namespaces/search.js";
 import { MaintenanceScheduler } from "../orchestration/maintenance.js";
 import type { SearchBackend } from "../search/port.js";
 import { CompoundingEngine } from "./engine.js";
+import { queueWeeklySynthesis } from "./weekly-synthesis-queue.js";
 import { isIsoWeekId, isoWeekId, msUntilNextIsoWeek, previousIsoWeekId } from "./iso-week.js";
 import {
   type CompoundingWeeklySchedulerOptions,
+  compoundingWeeklyDoneMarkerPath,
   compoundingWeeklyReportPath,
   startCompoundingWeeklyScheduler,
 } from "./weekly-scheduler.js";
@@ -111,7 +114,7 @@ test("startup synthesizes the completed ISO week and arms an unref'd boundary ti
   }
 });
 
-test("a week whose report already exists is skipped, including after a restart", async () => {
+test("a week a scheduled run completed is skipped, including after a restart", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-cron-"));
   const now = fixedClock("2026-03-18T12:00:00.000Z");
   const weekId = previousIsoWeekId(now());
@@ -131,8 +134,36 @@ test("a week whose report already exists is skipped, including after a restart",
     const restarted = startFor(memoryDir, { now, synthesizeWeekly });
     await restarted.handle.whenIdle();
     await restarted.handle.stop();
-    assert.deepEqual(calls, [weekId], "restart must not synthesize a week that already has a report");
+    assert.deepEqual(calls, [weekId], "restart must not re-run a week the scheduler completed");
     assert.equal(await readFile(compoundingWeeklyReportPath(memoryDir, weekId), "utf8"), `# ${weekId}\n`);
+    await stat(compoundingWeeklyDoneMarkerPath(memoryDir, weekId));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a manual access-surface report does not suppress the scheduled run", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-cron-"));
+  const now = fixedClock("2026-03-18T12:00:00.000Z");
+  const weekId = previousIsoWeekId(now());
+  const calls: string[] = [];
+  try {
+    // A manual compounding_weekly_synthesize call wrote the week's report
+    // while that week was still in progress; no scheduler marker exists.
+    const report = compoundingWeeklyReportPath(memoryDir, weekId);
+    await mkdir(path.dirname(report), { recursive: true });
+    await writeFile(report, `# ${weekId}\n`, "utf8");
+
+    const { handle } = startFor(memoryDir, {
+      now,
+      synthesizeWeekly: async (id) => {
+        calls.push(id);
+      },
+    });
+    await handle.whenIdle();
+    await handle.stop();
+    assert.deepEqual(calls, [weekId], "the report file alone must not satisfy the due check");
+    await stat(compoundingWeeklyDoneMarkerPath(memoryDir, weekId));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -253,6 +284,9 @@ test("an overlapping tick coalesces into one follow-up run", async () => {
   try {
     const { handle } = startFor(memoryDir, {
       now: fixedClock("2026-03-18T12:00:00.000Z"),
+      // Every tick reports the week as not yet done, so the follow-up run
+      // the coalescing produces is observable as a second synthesis.
+      weekDone: async () => false,
       synthesizeWeekly: async () => {
         calls += 1;
         if (calls === 1) await gate;
@@ -364,4 +398,29 @@ test("the daemon arms synthesizeWeekly, including its calibration pass, for the 
     await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("weekly synthesis serializes per memory directory across engines", async () => {
+  const order: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const first = queueWeeklySynthesis("dir-a", async () => {
+    order.push("first-start");
+    await firstGate;
+    order.push("first-end");
+  });
+  const second = queueWeeklySynthesis("dir-a", async () => {
+    order.push("second-start");
+  });
+  const otherDir = queueWeeklySynthesis("dir-b", async () => {
+    order.push("other-dir-start");
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["first-start", "other-dir-start"], "same-dir run waits; other dir does not");
+  releaseFirst?.();
+  await Promise.all([first, second, otherDir]);
+  assert.deepEqual(order, ["first-start", "other-dir-start", "first-end", "second-start"]);
 });

@@ -58,3 +58,19 @@ export function isIsoWeekId(weekId: string): boolean {
   const weekNum = Number(week);
   return weekNum >= 1 && weekNum <= 53;
 }
+
+/** How long a rubric cadence may go unreviewed before it counts as stale. */
+export function cadenceStaleWindowMs(cadence: "daily" | "weekly" | "monthly" | "quarterly"): number {
+  switch (cadence) {
+    case "daily":
+      return 2 * 24 * 60 * 60 * 1000;
+    case "weekly":
+      return 10 * 24 * 60 * 60 * 1000;
+    case "monthly":
+      return 45 * 24 * 60 * 60 * 1000;
+    case "quarterly":
+      return 120 * 24 * 60 * 60 * 1000;
+    default:
+      return 45 * 24 * 60 * 60 * 1000;
+  }
+}

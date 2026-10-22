@@ -8,19 +8,21 @@
  *
  * Each tick synthesizes the ISO week that most recently ended (previous week,
  * not the in-progress one) by calling `synthesizeWeekly`, which includes
- * calibration when that gate is on. The weekly markdown report is the durable
- * marker: a week whose report already exists is skipped, so a restart does not
- * write it twice. A daemon that was down at the Monday boundary still writes
- * that missed week on the next start. Older gaps are left alone — one missed
- * week, not a history backfill.
+ * calibration when that gate is on. A scheduler-owned completion marker is
+ * the durable skip signal: only a scheduled run writes it, so a manual
+ * access-surface synthesis of the in-progress week cannot suppress the week's
+ * scheduled run, and a restart does not write a completed week twice. A
+ * daemon that was down at the Monday boundary still writes that missed week
+ * on the next start. Older gaps are left alone — one missed week, not a
+ * history backfill.
  *
  * The timer is unref'd. Startup fires one tick immediately; later ticks land
  * on the next Monday 00:00 UTC. A failed tick remembers that week and retries
  * it before the newly due week, including after the boundary. That memory is
- * process-local: a restart still keys off the report file.
+ * process-local: a restart still keys off the completion marker.
  */
 
-import { lstat } from "node:fs/promises";
+import { lstat, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { resolveConsolidationCapabilities } from "../capabilities.js";
@@ -43,7 +45,10 @@ export interface CompoundingWeeklySchedulerOptions {
   /** Full `synthesizeWeekly` path, including its calibration pass. */
   synthesizeWeekly: (weekId: string) => Promise<unknown>;
   now?: () => Date;
-  reportExists?: (weekId: string) => Promise<boolean>;
+  /** Scheduler-owned completion check: has a scheduled run finished this week? */
+  weekDone?: (weekId: string) => Promise<boolean>;
+  /** Record a scheduled run's completion. Manual access-surface runs never do. */
+  markWeekDone?: (weekId: string) => Promise<void>;
   setTimer?: (fn: () => void, ms: number) => TimerHandle;
   clearTimer?: (handle: TimerHandle) => void;
   log?: CompoundingWeeklyLog;
@@ -69,14 +74,33 @@ export function compoundingWeeklyReportPath(memoryDir: string, weekId: string): 
   return path.join(memoryDir, "compounding", "weekly", `${weekId}.md`);
 }
 
-async function defaultReportExists(memoryDir: string, weekId: string): Promise<boolean> {
+/**
+ * Completion marker for scheduled runs only. A manual access-surface run can
+ * synthesize the in-progress current week early; its report file must not
+ * satisfy the scheduler's due check, or the evidence added after the manual
+ * run would never reach that week's scheduled synthesis.
+ */
+export function compoundingWeeklyDoneMarkerPath(memoryDir: string, weekId: string): string {
+  if (!isIsoWeekId(weekId)) {
+    throw new Error("compounding weekly cron: week id must be YYYY-Www");
+  }
+  return path.join(memoryDir, "compounding", "weekly", ".scheduler", `${weekId}.done`);
+}
+
+async function defaultWeekDone(memoryDir: string, weekId: string): Promise<boolean> {
   try {
-    await lstat(compoundingWeeklyReportPath(memoryDir, weekId));
+    await lstat(compoundingWeeklyDoneMarkerPath(memoryDir, weekId));
     return true;
   } catch (error) {
     if (isNotFound(error)) return false;
     throw error;
   }
+}
+
+async function defaultMarkWeekDone(memoryDir: string, weekId: string): Promise<void> {
+  const markerPath = compoundingWeeklyDoneMarkerPath(memoryDir, weekId);
+  await mkdir(path.dirname(markerPath), { recursive: true });
+  await writeFile(markerPath, `${new Date().toISOString()}\n`);
 }
 
 function isNotFound(error: unknown): boolean {
@@ -88,7 +112,8 @@ export function startCompoundingWeeklyScheduler(
 ): CompoundingWeeklySchedulerHandle {
   const now = options.now ?? (() => new Date());
   const logger = options.log ?? defaultLog;
-  const reportExists = options.reportExists ?? ((weekId) => defaultReportExists(options.memoryDir, weekId));
+  const weekDone = options.weekDone ?? ((weekId) => defaultWeekDone(options.memoryDir, weekId));
+  const markWeekDone = options.markWeekDone ?? ((weekId) => defaultMarkWeekDone(options.memoryDir, weekId));
   const setTimer =
     options.setTimer ??
     ((fn, ms) => {
@@ -106,13 +131,13 @@ export function startCompoundingWeeklyScheduler(
 
   const runWeek = async (weekId: string): Promise<CompoundingWeeklyTick> => {
     try {
-      if (await reportExists(weekId)) {
+      if (await weekDone(weekId)) {
         if (retryWeekId === weekId) retryWeekId = null;
-        logger.debug(`compounding weekly cron: ${weekId} report exists, skipping`);
+        logger.debug(`compounding weekly cron: ${weekId} already synthesized by the scheduler, skipping`);
         return { status: "skipped", weekId };
       }
       await options.synthesizeWeekly(weekId);
-      if (retryWeekId === weekId) retryWeekId = null;
+      await markWeekDone(weekId);
       logger.info(`compounding weekly cron: synthesized ${weekId}`);
       return { status: "synthesized", weekId };
     } catch (error) {

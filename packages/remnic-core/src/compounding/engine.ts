@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isoWeekId } from "./iso-week.js";
+import { cadenceStaleWindowMs, isoWeekId } from "./iso-week.js";
 import { log } from "../logger.js";
 import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -25,6 +25,7 @@ import {
   type WeeklyActionEvent,
   type WeeklyCorrectionEvidence,
 } from "./weekly-evidence.js";
+import { queueWeeklySynthesis } from "./weekly-synthesis-queue.js";
 
 type MistakesFile = {
   version?: number;
@@ -423,20 +424,18 @@ function monthIdFromIsoWeek(weekId: string): string {
   return isoMonthId(monday);
 }
 
-function cadenceStaleWindowMs(cadence: "daily" | "weekly" | "monthly" | "quarterly"): number {
-  switch (cadence) {
-    case "daily":
-      return 2 * 24 * 60 * 60 * 1000;
-    case "weekly":
-      return 10 * 24 * 60 * 60 * 1000;
-    case "monthly":
-      return 45 * 24 * 60 * 60 * 1000;
-    case "quarterly":
-      return 120 * 24 * 60 * 60 * 1000;
-    default:
-      return 45 * 24 * 60 * 60 * 1000;
-  }
-}
+export type WeeklySynthesisOptions = { weekId?: string };
+
+export type WeeklySynthesisResult = {
+  weekId: string;
+  reportPath: string;
+  reportJsonPath: string;
+  mistakesCount: number;
+  rubricsPath: string;
+  rubricsIndexPath: string;
+  promotionCandidateCount: number;
+};
+
 
 export class CompoundingEngine {
   private readonly weeklyDir: string;
@@ -475,17 +474,12 @@ export class CompoundingEngine {
     await mkdir(this.rubricsWorkflowsDir, { recursive: true });
   }
 
-  async synthesizeWeekly(opts?: {
-    weekId?: string;
-  }): Promise<{
-    weekId: string;
-    reportPath: string;
-    reportJsonPath: string;
-    mistakesCount: number;
-    rubricsPath: string;
-    rubricsIndexPath: string;
-    promotionCandidateCount: number;
-  }> {
+  /** Serialized per memory directory — see weekly-synthesis-queue.ts. */
+  async synthesizeWeekly(opts?: WeeklySynthesisOptions): Promise<WeeklySynthesisResult> {
+    return await queueWeeklySynthesis(this.config.memoryDir, () => this.synthesizeWeeklyExclusive(opts));
+  }
+
+  private async synthesizeWeeklyExclusive(opts?: WeeklySynthesisOptions): Promise<WeeklySynthesisResult> {
     await this.ensureDirs();
     const weekId = opts?.weekId ?? isoWeekId(new Date());
 
