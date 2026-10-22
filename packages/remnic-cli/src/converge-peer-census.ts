@@ -158,16 +158,23 @@ export async function planPeerNamespaceCensus(args: PeerCensusArgs): Promise<Pee
   for (const tombstonePath of TOMBSTONE_PATHS) {
     const state = peerData.files.find((file) => file.path === tombstonePath);
     if (!state) continue;
-    const remote = await fetchPeerFileContent(
-      peerUrl,
-      ns,
-      tombstonePath,
-      args.resolvedToken,
-      args.fetchFn,
-      args.timeoutMs,
-      args.signal,
-      true
-    );
+    let remote: PeerFileContent | null;
+    try {
+      remote = await fetchPeerFileContent(
+        peerUrl,
+        ns,
+        tombstonePath,
+        args.resolvedToken,
+        args.fetchFn,
+        args.timeoutMs,
+        args.signal,
+        true
+      );
+    } catch (error) {
+      // Name the tombstone read (#2954). The transport error stays the cause
+      // so a timeout or operator abort still fails the cycle.
+      throw new Error(`failed to read peer tombstone evidence: ${tombstonePath}`, { cause: error });
+    }
     // A transport-level failure here is FATAL on purpose: tombstone evidence
     // is what stops a plan from pushing a peer-retracted memory back
     // (resurrection). There is no safe "empty evidence" fallback — the

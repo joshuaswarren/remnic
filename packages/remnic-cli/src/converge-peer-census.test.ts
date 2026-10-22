@@ -1,6 +1,7 @@
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
+import { isPeerTransportCensusFailure } from "./converge-namespace-exclusions.js";
 import { planPeerNamespaceCensus } from "./converge-peer-census.js";
 
 function chunkResponse(content: Buffer, filePath: string): Response {
@@ -65,7 +66,12 @@ test("peer census threads the abort signal into snapshot, per-file, and tombston
       cache: null,
       signal: controller.signal,
     }),
-    /tombstone evidence/
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /tombstone evidence/);
+      assert.equal(isPeerTransportCensusFailure(error), true);
+      return true;
+    }
   );
 
   // Every captured request signal descends from the controller, so the abort
