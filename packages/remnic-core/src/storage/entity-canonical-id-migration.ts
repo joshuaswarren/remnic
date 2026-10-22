@@ -21,7 +21,7 @@ import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
-import { assertSafeEntityId } from "./entity-id-safety.js";
+import { assertSafeEntityId, isMalformedEntityRecord } from "./entity-id-safety.js";
 import {
   isMacOsReplicationJunkBasename,
   warnIgnoredMacOsReplicationJunk,
@@ -426,10 +426,7 @@ async function discoverMappings(
     const legacyPath = deps.resolveEntityFilePath(legacyId);
     if (legacyPath === null) continue;
     const entityContent = await deps.readStorageSecureFile(legacyPath);
-    if (
-      !/^#[ \t]+[^\r\n \t]/m.test(entityContent)
-      || !/^\*\*Type:\*\*[ \t]*[^\r\n \t]/m.test(entityContent)
-    ) {
+    if (isMalformedEntityRecord(entityContent)) {
       scanNotes?.malformed.add(entry);
       continue;
     }

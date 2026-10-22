@@ -15,6 +15,7 @@ import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { isMalformedEntityRecord } from "./entity-id-safety.js";
 import { log } from "../logger.js";
 import {
   warnIgnoredMacOsReplicationJunk,
@@ -395,6 +396,23 @@ export class EntityStore {
     return kept;
   }
 
+  /**
+   * Malformed entity files stay on disk (startup must not relocate them)
+   * and stay out of merge, so a fragment merge cannot delete them.
+   */
+  private async isIndexableEntityMarkdown(file: string): Promise<boolean> {
+    try {
+      const content = await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, file));
+      if (isMalformedEntityRecord(content)) return false;
+      const parsed = parseEntityFile(content, this.deps.entitySchemas);
+      return parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      return false;
+    }
+  }
+
   /** Return sorted list of entity filenames (without .md extension) */
   async listEntityNames(): Promise<string[]> {
     try {
@@ -421,8 +439,10 @@ export class EntityStore {
       // completed migration's reference scan.
       const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
         const raw = await this.readEntity(entityName);
-        if (!raw) return false;
-        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas, this.deps.okfConformanceEnabled());
+        if (!raw || isMalformedEntityRecord(raw)) return false;
+        const parsed = parseEntityFile(raw, this.deps.entitySchemas);
+        if (!parsed.name.trim() || !parsed.type.trim()) return false;
+        const serialized = serializeEntityFile(parsed, this.deps.entitySchemas, this.deps.okfConformanceEnabled());
         if (raw.trimEnd() === serialized.trimEnd()) return false;
         const filePath = this.deps.resolveEntityFilePath(entityName);
         if (filePath === null) return false;
@@ -556,7 +576,10 @@ export class EntityStore {
           }),
         );
         for (const content of results) {
-          if (content !== null) entities.push(parseEntityFile(content, this.deps.entitySchemas));
+          if (content === null || isMalformedEntityRecord(content)) continue;
+          const entity = parseEntityFile(content, this.deps.entitySchemas);
+          if (!entity.name.trim() || !entity.type.trim()) continue;
+          entities.push(entity);
         }
       }
       // A signal that fired during the last batch's await would otherwise publish
@@ -660,7 +683,12 @@ export class EntityStore {
     let merged = 0;
     try {
       const entries = await this.readEntityDirectoryNames();
-      const mdFiles = entries.filter((e) => e.endsWith(".md"));
+      const mdFiles: string[] = [];
+      for (const file of entries) {
+        if (!file.endsWith(".md")) continue;
+        if (!(await this.isIndexableEntityMarkdown(file))) continue;
+        mdFiles.push(file);
+      }
 
       // Group files by their canonical name
       const groups = new Map<string, string[]>();

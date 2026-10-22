@@ -25,6 +25,7 @@ import type { QmdClient } from "./qmd.js";
 import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
 import { isAbortError } from "./abort-error.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -154,7 +155,7 @@ export async function runDirectAgent(
 
     const results: ParallelSearchResult[] = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".md")) continue;
+      if (isMacOsReplicationJunkBasename(entry) || !entry.endsWith(".md")) continue;
 
       // Filename tokens: split on hyphens (normalizeEntityName uses hyphens)
       const nameWithoutExt = entry.slice(0, -3);

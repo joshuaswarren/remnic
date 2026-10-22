@@ -8,6 +8,7 @@ import { readCalibrationCorrections } from "./calibration.js";
 import { CorrectionPlanner, type PlannerDeps } from "./correction/correction-planner.js";
 import { listJsonFiles } from "./json-store.js";
 import { ProfilingCollector } from "./profiling.js";
+import { runDirectAgent } from "./retrieval-agents.js";
 import { scanMemoryDir } from "./search/document-scanner.js";
 import { StorageManager } from "./storage.js";
 import { hasSupersessionAudit } from "./storage/supersession-audit.js";
@@ -147,5 +148,21 @@ test("profiling prune keeps AppleDouble traces and deletes only real jsonl files
     await assert.rejects(() => readFile(older), { code: "ENOENT" });
   } finally {
     await rm(storageDir, { recursive: true, force: true });
+  }
+});
+
+test("direct entity recall ignores AppleDouble sidecars", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-direct-macos-junk-"));
+  try {
+    const entitiesDir = path.join(memoryDir, "entities");
+    await mkdir(entitiesDir, { recursive: true });
+    await writeFile(path.join(entitiesDir, "project-real.md"), "# Real\n**Type:** project\n");
+    await writeFile(path.join(entitiesDir, "._project-real.md"), Buffer.from([0, 5, 22]));
+    await writeFile(path.join(entitiesDir, ".DS_Store"), "finder");
+
+    const hits = await runDirectAgent("real", memoryDir);
+    assert.deepEqual(hits.map((hit) => path.basename(hit.path)), ["project-real.md"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
