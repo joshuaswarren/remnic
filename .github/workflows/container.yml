@@ -74,8 +74,8 @@ jobs:
           push: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
           tags: ${{ github.event_name == 'pull_request' && 'remnic-container-smoke' || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=qmd-${{ matrix.qmd-explicit-build }}
+          cache-to: type=gha,scope=qmd-${{ matrix.qmd-explicit-build }},mode=max
 
       - name: Smoke-test packaged QMD
         if: github.event_name == 'pull_request'
