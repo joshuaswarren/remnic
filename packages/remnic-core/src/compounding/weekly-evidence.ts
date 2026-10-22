@@ -12,6 +12,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
 import { namespaceIdentityFromToken } from "../namespaces/identity.js";
+import { resolveDefaultNamespaceRoot } from "../namespaces/storage.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { secureStoreDir } from "../secure-store/header.js";
 import * as keyring from "../secure-store/keyring.js";
@@ -19,7 +20,7 @@ import { readMaybeEncryptedFile } from "../secure-store/secure-fs.js";
 import { type SharedFeedbackEntry, SharedFeedbackEntrySchema } from "../shared-context/manager.js";
 import { readRawMemoryDocument } from "../storage/memory-frontmatter-metadata.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "../storage/secure-line-reader.js";
-import type { MemoryActionEvent, MemoryFile } from "../types.js";
+import type { MemoryActionEvent, MemoryFile, PluginConfig } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isIsoWeekId, isoWeekId } from "./iso-week.js";
@@ -291,8 +292,11 @@ function namespaceFromDirName(dirName: string): string | null {
   }
   if (dirName.startsWith("ns-")) {
     const decoded = namespaceIdentityFromToken(dirName);
-    if (!decoded || !isSafeRouteNamespace(decoded)) return null;
-    return decoded;
+    if (decoded === null) return null;
+    // `ns-default` is the empty identity. It is the migrated default store,
+    // not a foreign namespace.
+    if (decoded.length === 0) return "default";
+    return isSafeRouteNamespace(decoded) ? decoded : null;
   }
   return isSafeRouteNamespace(dirName) ? dirName : null;
 }
@@ -459,12 +463,54 @@ async function readCorrectionCandidate(
 }
 
 /**
- * Store-level recall and promotion already ran against root evidence.
- * Namespace ledger and correction provenance is kept on the weekly report,
- * and is not injected back through the root compounding section.
+ * Relative `namespaces/` prefix for the routed default store, or null when
+ * that store is still the flat memory root. Recall and promotion treat this
+ * prefix as the caller's own store.
  */
-export function provenanceVisibleInStoreRecall(provenance: readonly string[]): boolean {
-  return provenance.length === 0 || provenance.some((item) => !item.startsWith("namespaces/"));
+export async function defaultNamespaceRecallPrefix(config: PluginConfig): Promise<string | null> {
+  const root = await resolveDefaultNamespaceRoot(config);
+  const rel = path.relative(path.resolve(config.memoryDir), path.resolve(root));
+  if (rel === "" || rel === "." || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  const posix = rel.split(path.sep).join("/");
+  if (!posix.startsWith("namespaces/")) return null;
+  return `${posix}/`;
+}
+
+/**
+ * Store recall and promotion keep the flat root and the routed default
+ * namespace. Other `namespaces/` provenance stays on the weekly report.
+ */
+export function visibleRubricEntries<T extends {
+  observations: string[];
+  provenance: string[];
+  observationEntries?: Array<{ note: string; provenance: string[] }>;
+}>(
+  entries: T[],
+  observationsFor: (entry: T) => Array<{ note: string; provenance: string[] }>,
+  defaultNamespacePrefix: string | null,
+): T[] {
+  return entries.flatMap((entry) => {
+    const visible = observationsFor(entry).filter((item) =>
+      provenanceVisibleInStoreRecall(item.provenance, defaultNamespacePrefix),
+    );
+    if (visible.length === 0) return [];
+    return [{
+      ...entry,
+      observations: visible.map((item) => item.note),
+      provenance: [...new Set(visible.flatMap((item) => item.provenance))],
+      observationEntries: visible,
+    }];
+  });
+}
+
+export function provenanceVisibleInStoreRecall(
+  provenance: readonly string[],
+  defaultNamespacePrefix: string | null = null,
+): boolean {
+  return provenance.length === 0 || provenance.some((item) => {
+    if (!item.startsWith("namespaces/")) return true;
+    return defaultNamespacePrefix !== null && item.startsWith(defaultNamespacePrefix);
+  });
 }
 
 function collapseWhitespace(value: string): string {

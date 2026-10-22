@@ -500,43 +500,91 @@ export async function migrateLegacyFeedbackInbox(config: PluginConfig): Promise<
   const nextPath = resolveFeedbackInboxPath(config);
   const legacyPath = path.join(resolveSharedContextDir(config), "feedback", "inbox.jsonl");
   if (path.resolve(nextPath) === path.resolve(legacyPath)) return;
+  if (!(await legacyInboxCanMigrate(legacyPath))) return;
 
-  let nextStat: Stats | undefined;
-  try {
-    nextStat = await lstat(nextPath);
-  } catch (err) {
-    if (!isErrnoCode(err, "ENOENT")) throw err;
-  }
-  if (nextStat && (nextStat.isSymbolicLink() || !nextStat.isFile() || nextStat.size > 0)) return;
+  await mkdir(path.dirname(nextPath), { recursive: true });
+  await withFeedbackMigrateLock(`${nextPath}.migrate.lock`, async () => {
+    let nextStat: Stats | undefined;
+    try {
+      nextStat = await lstat(nextPath);
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    if (nextStat && (nextStat.isSymbolicLink() || !nextStat.isFile() || nextStat.size > 0)) return;
+    if (!(await legacyInboxCanMigrate(legacyPath))) return;
 
+    const workspaceReal = await realpath(expandTildePath(config.workspaceDir));
+    const legacyReal = await realpath(legacyPath);
+    if (!pathIsInside(workspaceReal, legacyReal)) return;
+    const memoryDir = expandTildePath(config.memoryDir);
+    const memoryReal = await realpath(memoryDir);
+    const nextParentReal = await realpath(path.dirname(nextPath));
+    if (!pathIsInside(memoryReal, nextParentReal)) return;
+    if (nextStat) {
+      const nextReal = await realpath(nextPath);
+      if (!pathIsInside(memoryReal, nextReal)) return;
+    }
+
+    const body = await readFile(legacyReal);
+    const tempPath = path.join(
+      path.dirname(nextPath),
+      `.${path.basename(nextPath)}.${process.pid}.${randomUUID()}.migrate.tmp`,
+    );
+    await writeFile(tempPath, body, { flag: "wx" });
+    try {
+      let current: Stats | undefined;
+      try {
+        current = await lstat(nextPath);
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+      if (current && (current.isSymbolicLink() || !current.isFile() || current.size > 0)) return;
+      await rename(tempPath, nextPath);
+    } finally {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  });
+}
+
+async function legacyInboxCanMigrate(legacyPath: string): Promise<boolean> {
   let legacyStat: Stats;
   try {
     legacyStat = await lstat(legacyPath);
   } catch (err) {
-    if (isErrnoCode(err, "ENOENT")) return;
+    if (isErrnoCode(err, "ENOENT")) return false;
     throw err;
   }
-  if (legacyStat.isSymbolicLink() || !legacyStat.isFile() || legacyStat.size === 0) return;
+  return !legacyStat.isSymbolicLink() && legacyStat.isFile() && legacyStat.size > 0;
+}
 
-  const workspaceReal = await realpath(expandTildePath(config.workspaceDir));
-  const legacyReal = await realpath(legacyPath);
-  if (!pathIsInside(workspaceReal, legacyReal)) return;
-
-  const memoryDir = expandTildePath(config.memoryDir);
-  await mkdir(path.dirname(nextPath), { recursive: true });
-  const memoryReal = await realpath(memoryDir);
-  const nextParentReal = await realpath(path.dirname(nextPath));
-  if (!pathIsInside(memoryReal, nextParentReal)) return;
-  if (nextStat) {
-    const nextReal = await realpath(nextPath);
-    if (!pathIsInside(memoryReal, nextReal)) return;
-    await rm(nextPath, { force: true });
-  }
-  const body = await readFile(legacyReal);
-  try {
-    await writeFile(nextPath, body, { flag: "wx" });
-  } catch (err) {
-    if (!isErrnoCode(err, "EEXIST")) throw err;
+/** One migration at a time. A lock older than 30s is stale and is replaced. */
+async function withFeedbackMigrateLock(lockPath: string, body: () => Promise<void>): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    try {
+      await writeFile(lockPath, "", { flag: "wx" });
+    } catch (err) {
+      if (!isErrnoCode(err, "EEXIST")) throw err;
+      let lockStat: Stats;
+      try {
+        lockStat = await lstat(lockPath);
+      } catch (statErr) {
+        if (isErrnoCode(statErr, "ENOENT")) continue;
+        throw statErr;
+      }
+      if (!lockStat.isSymbolicLink() && lockStat.isFile() && Date.now() - lockStat.mtimeMs > 30_000) {
+        await rm(lockPath, { force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      continue;
+    }
+    try {
+      await body();
+    } finally {
+      await rm(lockPath, { force: true });
+    }
+    return;
   }
 }
 

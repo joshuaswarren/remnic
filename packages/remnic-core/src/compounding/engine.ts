@@ -13,7 +13,9 @@ import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationC
 import { resolveConversationContextCapabilities } from "../capabilities.js";
 import {
   buildActionFailurePatterns,
+  defaultNamespaceRecallPrefix,
   provenanceVisibleInStoreRecall,
+  visibleRubricEntries,
   readFeedbackEntriesForWeekFile,
   readWeeklyActionEvents,
   readWeeklyCorrections,
@@ -502,8 +504,9 @@ export class CompoundingEngine {
     const previousMistakes = await this.readMistakes();
     const mistakes = this.buildMistakes(entries, actionPatterns, corrections, weekId, previousMistakes?.registry ?? []);
     const rubrics = this.buildRubricSnapshot(entries, outcomeSummary, corrections);
+    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
-      ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics)
+      ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics, defaultPrefix)
       : [];
     if (resolveConversationContextCapabilities(this.config).cmcConsolidation) {
       try {
@@ -905,9 +908,10 @@ export class CompoundingEngine {
     const maxPatterns = Math.max(0, Math.floor(opts?.maxPatterns ?? 40));
     const maxRubrics = Math.max(0, Math.floor(opts?.maxRubrics ?? 4));
     const queryTokens = tokenizeRecallQuery(query);
+    const defaultPrefix = await defaultNamespaceRecallPrefix(this.config);
 
     const activePatterns = (mistakes?.registry ?? [])
-      .filter((entry) => entry.status === "active" && provenanceVisibleInStoreRecall(entry.provenance))
+      .filter((entry) => entry.status === "active" && provenanceVisibleInStoreRecall(entry.provenance, defaultPrefix))
       .sort((a, b) =>
         b.recurrenceCount - a.recurrenceCount ||
         b.lastSeenAt.localeCompare(a.lastSeenAt) ||
@@ -915,21 +919,11 @@ export class CompoundingEngine {
       );
     const topPatterns = activePatterns.slice(0, maxPatterns);
 
-    const allRubrics = [
-      ...(rubrics?.workflows ?? []),
-      ...(rubrics?.agents ?? []),
-    ].flatMap((entry) => {
-      const visible = this.getRubricObservationEntries(entry).filter((item) =>
-        provenanceVisibleInStoreRecall(item.provenance),
-      );
-      if (visible.length === 0) return [];
-      return [{
-        ...entry,
-        observations: visible.map((item) => item.note),
-        provenance: [...new Set(visible.flatMap((item) => item.provenance))],
-        observationEntries: visible,
-      }];
-    });
+    const allRubrics = visibleRubricEntries(
+      [...(rubrics?.workflows ?? []), ...(rubrics?.agents ?? [])],
+      (entry) => this.getRubricObservationEntries(entry),
+      defaultPrefix,
+    );
     const scoredRubrics = allRubrics
       .map((entry) => ({
         entry,
@@ -1015,6 +1009,7 @@ export class CompoundingEngine {
     summary: ActionOutcomeSummary[],
     mistakes: MistakeRegistryEntry[],
     rubrics: RubricSnapshot,
+    defaultNamespacePrefix: string | null = null,
   ): PromotionCandidate[] {
     const deduped = new Map<string, PromotionCandidate>();
     const upsert = (candidate: PromotionCandidate) => {
@@ -1058,7 +1053,7 @@ export class CompoundingEngine {
 
     for (const entry of mistakes) {
       if (entry.status !== "active") continue;
-      if (!provenanceVisibleInStoreRecall(entry.provenance)) continue;
+      if (!provenanceVisibleInStoreRecall(entry.provenance, defaultNamespacePrefix)) continue;
       if (entry.recurrenceCount < 2) continue;
       const content = normalizePromotedGuidanceContent(lessonContentFromPattern(entry.pattern, entry.agent));
       if (content.length === 0) continue;
@@ -1082,7 +1077,7 @@ export class CompoundingEngine {
     for (const rubric of [...rubrics.workflows, ...rubrics.agents]) {
       for (const observation of this.getRubricObservationEntries(rubric)) {
         if (this.isSyntheticOutcomeRubricObservation(observation.note)) continue;
-        if (!provenanceVisibleInStoreRecall(observation.provenance)) continue;
+        if (!provenanceVisibleInStoreRecall(observation.provenance, defaultNamespacePrefix)) continue;
         const evidenceCount = observation.provenance.length;
         if (evidenceCount < 2) continue;
         const content = normalizePromotedGuidanceContent(observation.note);

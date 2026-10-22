@@ -12,7 +12,7 @@ import {
   secureStoreDir,
   writeMaybeEncryptedFile,
 } from "@remnic/core/secure-store";
-import { SharedContextManager } from "@remnic/core/shared-context/manager";
+import { migrateLegacyFeedbackInbox, SharedContextManager } from "@remnic/core/shared-context/manager";
 import { StorageManager } from "@remnic/core/storage";
 import type { PluginConfig } from "@remnic/core/types";
 
@@ -886,6 +886,74 @@ test("weekly report keeps namespace evidence while store recall stays on the roo
     assert.match(section, /root failure reason/);
     assert.equal(section.includes("Namespace lesson stays in the weekly report"), false);
     assert.equal(section.includes("namespace failure reason"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("store recall keeps corrections from the routed default namespace", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-default-ns-"));
+  try {
+    const cfg = parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      compoundingEnabled: true,
+      namespacesEnabled: true,
+    });
+    await writeCorrection(
+      path.join(memoryDir, "namespaces", "default", "corrections", `correction-${IN_WEEK_MS}-default.md`),
+      correctionDoc({ id: "default-store", content: "Default namespace lesson stays in recall" })
+    );
+    await writeCorrection(
+      path.join(memoryDir, "namespaces", "team-beta", "corrections", `correction-${IN_WEEK_MS}-other.md`),
+      correctionDoc({ id: "other-store", content: "Other namespace lesson stays out of recall" })
+    );
+    const eng = new CompoundingEngine(cfg);
+    await eng.synthesizeWeekly({ weekId: WEEK });
+    const patterns = (await eng.readMistakes())?.patterns ?? [];
+    assert.ok(patterns.some((pattern) => pattern.includes("Default namespace lesson stays in recall")));
+    assert.ok(patterns.some((pattern) => pattern.includes("Other namespace lesson stays out of recall")));
+    const section = await eng.buildRecallSection("lesson");
+    assert.ok(section);
+    assert.match(section, /Default namespace lesson stays in recall/);
+    assert.equal(section.includes("Other namespace lesson stays out of recall"), false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent legacy inbox migration keeps an append that lands during the copy", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-feedback-race-"));
+  try {
+    const cfg = config(memoryDir);
+    const legacyPath = path.join(cfg.workspaceDir, "shared-context", "feedback", "inbox.jsonl");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(
+      legacyPath,
+      `${JSON.stringify({
+        agent: "legacy-agent",
+        decision: "rejected",
+        reason: "Copy the existing inbox",
+        date: IN_WEEK,
+        learning: "Legacy line survives a concurrent append",
+      })}\n`,
+      "utf-8"
+    );
+    const manager = new SharedContextManager(cfg);
+    await Promise.all([
+      migrateLegacyFeedbackInbox(cfg),
+      manager.appendFeedback({
+        agent: "bench-agent",
+        decision: "approved",
+        reason: "Append while the legacy inbox is copied",
+        date: IN_WEEK,
+        learning: "Concurrent append survives migration",
+      }),
+    ]);
+    const copied = await readFile(path.join(memoryDir, "shared-context", "feedback", "inbox.jsonl"), "utf-8");
+    assert.match(copied, /Legacy line survives a concurrent append/);
+    assert.match(copied, /Concurrent append survives migration/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
