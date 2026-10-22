@@ -138,9 +138,19 @@ test("shared context defaults under configured workspace directory", async () =>
 
     assert.equal(manager.dir, path.join(workspaceDir, "shared-context"));
     await manager.ensureStructure();
+    await manager.appendFeedback({
+      agent: "bench-agent",
+      decision: "approved_with_feedback",
+      reason: "Keep the inbox with the store",
+      date: "2026-10-22T12:00:00.000Z",
+      learning: "Inbox replicates with the memory directory",
+    });
 
     const priorities = await readFile(path.join(workspaceDir, "shared-context", "priorities.md"), "utf-8");
     assert.match(priorities, /# Priorities/);
+    const inbox = await readFile(path.join(memoryDir, "shared-context", "feedback", "inbox.jsonl"), "utf-8");
+    assert.match(inbox, /Inbox replicates with the memory directory/);
+    await assert.rejects(readFile(path.join(workspaceDir, "shared-context", "feedback", "inbox.jsonl")));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

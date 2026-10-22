@@ -365,6 +365,8 @@ Behavior:
 
 Keep semantic cross-signals off until deterministic shared-context behavior is stable and load-tested.
 
+When `sharedContextDir` is omitted, `feedback/inbox.jsonl` is stored at `memoryDir/shared-context/feedback/inbox.jsonl` so it replicates with the memory store. Priorities and outputs still use `workspaceDir/shared-context`. Set `sharedContextDir` to keep the inbox in that directory.
+
 **Budget interaction:** Shared context is assembled at position 1 in the recall pipeline (before profile). With the default 8,000 char budget, 6,000 chars of shared context leaves very little room for profile and memories. If you use shared context, ensure `recallBudgetChars` is set high enough to accommodate all sections. A budget of 64,000+ is recommended when shared context is enabled alongside a full profile.
 
 ## 5) v5.0 Compounding
