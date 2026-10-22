@@ -193,6 +193,24 @@ test("peer snapshot error detail reads a bounded prefix and cancels the rest", {
   assert.ok(cancels >= 2);
 });
 
+test("peer snapshot error detail drops terminal control characters", async () => {
+  const snapshot = await fetchPeerSnapshot(
+    "http://peer",
+    "blocked",
+    undefined,
+    async () =>
+      Response.json(
+        { error: "namespace is not readable: \u001b[31mblocked\u001b[0m \u001b]0;forged\u0007" },
+        { status: 400 }
+      ),
+    1_000
+  ).catch((error: unknown) => error);
+  assert.ok(snapshot instanceof Error);
+  assert.equal(snapshot.message.includes("\u001b"), false);
+  assert.equal(snapshot.message.includes("\u0007"), false);
+  assert.match(snapshot.message, /HTTP 400 namespace is not readable: \[31mblocked\[0m/);
+});
+
 test("peer transport aborts a stalled request at the configured timeout", async () => {
   const fetchImpl: typeof fetch = async (_input, init) =>
     new Promise<Response>((_resolve, reject) => {

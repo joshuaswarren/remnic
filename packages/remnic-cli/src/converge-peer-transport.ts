@@ -143,6 +143,9 @@ function collapseWhitespace(value: string, max: number): string {
       pendingSpace = out.length > 0;
       continue;
     }
+    // Peer-controlled text is logged. Drop C0/C1 controls and DEL so an
+    // error body cannot carry ESC, BEL, or other terminal sequences.
+    if (code < 32 || code === 127 || (code >= 128 && code <= 159)) continue;
     if (pendingSpace) {
       if (out.length + 1 >= max) break;
       out += " ";
