@@ -76,6 +76,10 @@ remnic briefing --since 7d --focus project:acme-webshop --format markdown --save
 Startup runs entity canonical-ID migration in the background. Briefings read the existing corpus without waiting for that migration.
 Memory and entity writes still wait for migration. If migration moves an entity file during a read, the reader retries the journal's canonical ID.
 
+A briefing needs no search backend, so the command tears the orchestrator down once the briefing is written: the process exits when its output is done instead of lingering on background warmup.
+
+`remnic query --json` and `remnic briefing --format json` (or `--json`, or `briefing.defaultFormat: "json"`) send all log output to stderr, so stdout carries exactly one JSON document.
+
 ## Connectors & integrations
 
 | Command | What it does |

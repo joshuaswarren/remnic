@@ -46,6 +46,7 @@ import { writeFile as fsWriteFile } from "node:fs/promises";
 import * as childProcess from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
+import { STDERR_ONLY_LOGGER } from "./json-stdout.js";
 import {
   parseConfig,
   type PluginConfig,
@@ -4730,7 +4731,7 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
     return;
   }
 
-  initLogger();
+  initLogger(json ? STDERR_ONLY_LOGGER : undefined);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5710,7 +5711,7 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
 }
 
 async function cmdBriefing(rest: string[]): Promise<void> {
-  initLogger();
+  initLogger(STDERR_ONLY_LOGGER);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5789,66 +5790,78 @@ async function cmdBriefing(rest: string[]): Promise<void> {
   const format: "markdown" | "json" =
     effectiveFormatFlag === "json" ? "json" : effectiveFormatFlag === "markdown" ? "markdown" : config.briefing.defaultFormat;
 
+  initLogger(format === "json" ? STDERR_ONLY_LOGGER : undefined);
+
   const orchestrator = new Orchestrator(config);
-  await orchestrator.initialize();
-  const storage = await orchestrator.getStorage(config.defaultNamespace);
+  try {
+    await orchestrator.initialize();
+    const storage = await orchestrator.getStorage(config.defaultNamespace);
 
-  const calendarSource = config.briefing.calendarSource
-    ? new FileCalendarSource(config.briefing.calendarSource)
-    : undefined;
+    const calendarSource = config.briefing.calendarSource
+      ? new FileCalendarSource(config.briefing.calendarSource)
+      : undefined;
 
-  const result = await buildBriefing({
-    storage,
-    window,
-    focus,
-    namespace: config.defaultNamespace,
-    calendarSource,
-    maxFollowups: config.briefing.maxFollowups,
-    allowLlm: config.briefing.llmFollowups,
-    openaiApiKey: config.openaiApiKey,
-    openaiBaseUrl: config.openaiBaseUrl,
-    model: config.model,
-    // Without a direct OpenAI key, route follow-ups through the configured
-    // LLM chain (gateway model source or local LLM) — mirrors the access
-    // service so CLI and server briefings behave identically.
-    followupGenerator: config.openaiApiKey
-      ? undefined
-      : orchestrator.briefingChainFollowupGenerator,
-  });
+    const result = await buildBriefing({
+      storage,
+      window,
+      focus,
+      namespace: config.defaultNamespace,
+      calendarSource,
+      maxFollowups: config.briefing.maxFollowups,
+      allowLlm: config.briefing.llmFollowups,
+      openaiApiKey: config.openaiApiKey,
+      openaiBaseUrl: config.openaiBaseUrl,
+      model: config.model,
+      // Without a direct OpenAI key, route follow-ups through the configured
+      // LLM chain (gateway model source or local LLM) — mirrors the access
+      // service so CLI and server briefings behave identically.
+      followupGenerator: config.openaiApiKey
+        ? undefined
+        : orchestrator.briefingChainFollowupGenerator,
+    });
 
-  // Opt-in matched place names (issue #2925): same gate + section the
-  // access service appends, so CLI and server briefings stay identical.
-  if (includeLocation && locationTaggingEnabled(config.location)) {
-    const section = await briefingLocationSection(
-      storage.dir,
-      window.from.toISOString(),
-      config.location,
-    );
-    if (section) {
-      result.markdown += `\n\n${section}\n`;
-      result.json = { ...result.json, locationContext: section };
+    // Opt-in matched place names (issue #2925): same gate + section the
+    // access service appends, so CLI and server briefings stay identical.
+    if (includeLocation && locationTaggingEnabled(config.location)) {
+      const section = await briefingLocationSection(
+        storage.dir,
+        window.from.toISOString(),
+        config.location,
+      );
+      if (section) {
+        result.markdown += `\n\n${section}\n`;
+        result.json = { ...result.json, locationContext: section };
+      }
     }
-  }
 
-  const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;
-  console.log(payload);
+    const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;
+    console.log(payload);
 
-  if (save) {
+    if (save) {
+      try {
+        const saveDir = resolveBriefingSaveDir(config.briefing.saveDir);
+        fs.mkdirSync(saveDir, { recursive: true });
+        // Use the window's end time (not wall-clock) so the filename is stable
+        // regardless of when the command runs — a briefing covering --since 3d
+        // gets the same name whether run just before or after UTC midnight.
+        const filename = briefingFilename(new Date(result.window.to), format);
+        const filePath = path.join(saveDir, filename);
+        fs.writeFileSync(filePath, payload + (payload.endsWith("\n") ? "" : "\n"));
+        console.error(`Saved briefing: ${filePath}`);
+      } catch (err) {
+        console.error(`Failed to save briefing: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+      }
+    }
+  } catch (error) {
     try {
-      const saveDir = resolveBriefingSaveDir(config.briefing.saveDir);
-      fs.mkdirSync(saveDir, { recursive: true });
-      // Use the window's end time (not wall-clock) so the filename is stable
-      // regardless of when the command runs — a briefing covering --since 3d
-      // gets the same name whether run just before or after UTC midnight.
-      const filename = briefingFilename(new Date(result.window.to), format);
-      const filePath = path.join(saveDir, filename);
-      fs.writeFileSync(filePath, payload + (payload.endsWith("\n") ? "" : "\n"));
-      console.error(`Saved briefing: ${filePath}`);
-    } catch (err) {
-      console.error(`Failed to save briefing: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      await orchestrator.destroy();
+    } catch (teardownError) {
+      console.error("Failed to tear down briefing:", teardownError);
     }
+    throw error;
   }
+  await orchestrator.destroy();
 }
 
 async function cmdDoctor(): Promise<void> {

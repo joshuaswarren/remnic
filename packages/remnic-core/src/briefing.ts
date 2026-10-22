@@ -835,9 +835,10 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   const maxFollowups = clampFollowups(options.maxFollowups);
   const focus = options.focus ?? null;
 
-  const [allMemories, allEntities] = await Promise.all([
+  const [allMemories, allEntities, calendarLoadResult] = await Promise.all([
     safeReadMemories(options.storage, window).then(excludeSupportPassportPrivateMemories),
     safeReadEntities(options.storage),
+    options.calendarSource ? loadTodayCalendar(options.calendarSource, now) : undefined,
   ]);
 
   const memoriesInWindow = filterMemoriesByWindow(allMemories, window);
@@ -848,10 +849,6 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   const activeThreads = buildActiveThreads(focusedMemories);
   const recentEntities = buildRecentEntities(allEntities, window, focus);
   const openCommitments = buildOpenCommitments(focusedMemories);
-
-  const calendarLoadResult = options.calendarSource
-    ? await loadTodayCalendar(options.calendarSource, now)
-    : undefined;
 
   const calendarSourceErrors: BriefingCalendarSourceError[] =
     calendarLoadResult?.error ? [calendarLoadResult.error] : [];
