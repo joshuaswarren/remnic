@@ -2807,7 +2807,6 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
-    // #1955 review: entity fields are screened before entering the index (screenEntityForIndex).
     const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
     const entityScreenProfile = resolveSecurityCapabilities(this.deps.config).injectionScreenProfile;
     for (const entity of entities) {
@@ -2829,7 +2828,8 @@ export class ExtractionPersistCoordinator {
           recordDurableNonFactWrite();
         }
       } catch (err) {
-        log.warn(`persistExtraction: entity write failed: ${err}`);
+        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        throw err;
       }
     }
     // Persist entity relationships (v7.0). #1955 review: source/label/target are screened.
