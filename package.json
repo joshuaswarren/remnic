@@ -33,7 +33,9 @@
     "url": "https://github.com/joshuaswarren/remnic/issues"
   },
   "author": "Joshua Warren",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "engines": {
     "node": ">=22.12.0"
   },
@@ -1562,7 +1564,12 @@
       "import": "./packages/remnic-core/dist/transfer/types.js"
     }
   },
-  "files": ["dist", "bin/engram-access.js", "openclaw.plugin.json", "scripts/ensure-better-sqlite3.mjs"],
+  "files": [
+    "dist",
+    "bin/engram-access.js",
+    "openclaw.plugin.json",
+    "scripts/ensure-better-sqlite3.mjs"
+  ],
   "dependencies": {
     "@honcho-ai/sdk": "^2.0.0",
     "@lancedb/lancedb": "^0.26.2",
@@ -1586,7 +1593,9 @@
   },
   "openclaw": {
     "plugin": "./openclaw.plugin.json",
-    "extensions": ["./dist/index.js"]
+    "extensions": [
+      "./dist/index.js"
+    ]
   },
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
@@ -1652,14 +1661,16 @@
     "@axe-core/playwright": "^4.12.1",
     "@biomejs/biome": "1.9.4",
     "@openclaw/plugin-inspector": "0.3.10",
+    "@oxlint/plugins": "1.89.0",
     "@playwright/test": "^1.62.1",
     "@remnic/bench": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
+    "ajv": "^8.20.0",
+    "oxlint": "1.89.0",
     "semver": "^7.7.4",
     "tsup": "^8.5.1",
     "tsx": "^4.0.0",
     "turbo": "2.9.14",
-    "typescript": "^5.9.3",
-    "ajv": "^8.20.0"
+    "typescript": "^5.9.3"
   }
 }
