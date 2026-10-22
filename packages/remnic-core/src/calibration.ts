@@ -14,8 +14,9 @@
 
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { FallbackLlmClient } from "./fallback-llm.js";
+import { writeFileAtomically } from "./maintenance/atomic-file.js";
 import type { AgentPersonaModelConfig, GatewayConfig, MemoryFile } from "./types.js";
 import { listJsonFiles, readJsonFile } from "./json-store.js";
 import { isRecord } from "./store-contract.js";
@@ -42,6 +43,11 @@ export interface CalibrationIndex {
   rules: CalibrationRule[];
   updatedAt: string;
   totalCorrectionsAnalyzed: number;
+  /**
+   * Week whose rule reinforcement is already committed. A retry of that week
+   * must not increment `evidenceCount` again.
+   */
+  appliedWeekId?: string;
 }
 
 // ─── Storage ─────────────────────────────────────────────────────────────────
@@ -54,24 +60,59 @@ function calibrationIndexPath(memoryDir: string): string {
   return path.join(calibrationDir(memoryDir), "calibration-index.json");
 }
 
+/** Week ids are short (`YYYY-Www`). Longer values are not used as stamps. */
+const MAX_APPLIED_WEEK_ID_LENGTH = 32;
+
+export function appliedCalibrationWeekId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_APPLIED_WEEK_ID_LENGTH) return undefined;
+  return trimmed;
+}
+
 export async function readCalibrationIndex(memoryDir: string): Promise<CalibrationIndex> {
   try {
     const raw = JSON.parse(await readFile(calibrationIndexPath(memoryDir), "utf8"));
+    const appliedWeekId = appliedCalibrationWeekId(raw.appliedWeekId);
     return {
       rules: Array.isArray(raw.rules) ? raw.rules : [],
       updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
       totalCorrectionsAnalyzed: typeof raw.totalCorrectionsAnalyzed === "number" ? raw.totalCorrectionsAnalyzed : 0,
+      ...(appliedWeekId ? { appliedWeekId } : {}),
     };
   } catch {
     return { rules: [], updatedAt: new Date().toISOString(), totalCorrectionsAnalyzed: 0 };
   }
 }
 
+/**
+ * Attach the week stamp to the index that will be written with the reinforced
+ * rules. The stamp and the evidence increment commit together.
+ */
+export function withAppliedCalibrationWeek(
+  index: CalibrationIndex,
+  idempotencyKey: string | undefined,
+): CalibrationIndex {
+  const appliedWeekId = appliedCalibrationWeekId(idempotencyKey) ?? index.appliedWeekId;
+  return {
+    rules: index.rules,
+    updatedAt: index.updatedAt,
+    totalCorrectionsAnalyzed: index.totalCorrectionsAnalyzed,
+    ...(appliedWeekId ? { appliedWeekId } : {}),
+  };
+}
+
 async function writeCalibrationIndex(memoryDir: string, index: CalibrationIndex): Promise<void> {
   const dir = calibrationDir(memoryDir);
   await mkdir(dir, { recursive: true });
-  index.updatedAt = new Date().toISOString();
-  await writeFile(calibrationIndexPath(memoryDir), JSON.stringify(index, null, 2), "utf8");
+  const appliedWeekId = appliedCalibrationWeekId(index.appliedWeekId);
+  const stamped: CalibrationIndex = {
+    rules: index.rules,
+    updatedAt: new Date().toISOString(),
+    totalCorrectionsAnalyzed: index.totalCorrectionsAnalyzed,
+    ...(appliedWeekId ? { appliedWeekId } : {}),
+  };
+  await writeFileAtomically(calibrationIndexPath(memoryDir), JSON.stringify(stamped, null, 2));
 }
 
 // ─── Correction Reading ──────────────────────────────────────────────────────
@@ -354,8 +395,21 @@ export async function runCalibrationConsolidation(options: {
   gatewayAgentId?: string;
   modelChain?: AgentPersonaModelConfig;
   workspaceDir?: string;
+  /**
+   * When set, a week whose reinforcement is already in the index is returned
+   * as-is. Weekly synthesis passes the ISO week id so a retry after a later
+   * artifact failure does not count the same corrections twice.
+   */
+  idempotencyKey?: string;
 }): Promise<CalibrationRule[]> {
   try {
+    const idempotencyKey = appliedCalibrationWeekId(options.idempotencyKey);
+    const existingIndex = await readCalibrationIndex(options.memoryDir);
+    if (idempotencyKey && existingIndex.appliedWeekId === idempotencyKey) {
+      log.debug(`[calibration] week ${idempotencyKey} already applied — skipping`);
+      return existingIndex.rules;
+    }
+
     const llm = new FallbackLlmClient(options.gatewayConfig, {
       workspaceDir: options.workspaceDir,
     });
@@ -369,8 +423,6 @@ export async function runCalibrationConsolidation(options: {
       log.debug(`[calibration] only ${corrections.length} corrections — need at least 3`);
       return [];
     }
-
-    const existingIndex = await readCalibrationIndex(options.memoryDir);
 
     const newRules = await synthesizeCalibrationRules(corrections, llm, existingIndex.rules, options.gatewayAgentId, options.modelChain);
     if (newRules.length === 0) {
@@ -393,11 +445,12 @@ export async function runCalibrationConsolidation(options: {
     }
 
     const allRules = [...ruleMap.values()];
-    await writeCalibrationIndex(options.memoryDir, {
+    await writeCalibrationIndex(options.memoryDir, withAppliedCalibrationWeek({
       rules: allRules,
-      updatedAt: new Date().toISOString(),
+      updatedAt: existingIndex.updatedAt,
       totalCorrectionsAnalyzed: corrections.length,
-    });
+      appliedWeekId: existingIndex.appliedWeekId,
+    }, idempotencyKey));
 
     log.debug(`[calibration] synthesized ${newRules.length} new rule(s), ${allRules.length} total`);
     return allRules;

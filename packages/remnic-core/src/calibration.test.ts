@@ -1,8 +1,33 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { synthesizeCalibrationRules, type CorrectionMemory } from "./calibration.js";
+import {
+  readCalibrationIndex,
+  runCalibrationConsolidation,
+  synthesizeCalibrationRules,
+  withAppliedCalibrationWeek,
+  type CalibrationIndex,
+  type CalibrationRule,
+  type CorrectionMemory,
+} from "./calibration.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
+
+const existingRule: CalibrationRule = {
+  id: "cal-existing",
+  ruleType: "model_tendency",
+  condition: "When reporting status",
+  modelTendency: "It overstates progress",
+  userExpectation: "Report what finished",
+  calibration: "Name the checks that finished.",
+  confidence: 0.8,
+  evidenceCount: 2,
+  evidenceCorrectionIds: ["c1", "c2"],
+  createdAt: "2026-03-16T00:00:00.000Z",
+  lastReinforcedAt: "2026-03-16T00:00:00.000Z",
+};
 
 const corrections: CorrectionMemory[] = [
   {
@@ -96,4 +121,48 @@ test("synthesizeCalibrationRules clamps confidence and filters evidence IDs", as
   assert.equal(rules[0]?.evidenceCount, 2);
   assert.deepEqual(rules[1]?.evidenceCorrectionIds, []);
   assert.equal(rules[1]?.evidenceCount, 0);
+});
+
+test("withAppliedCalibrationWeek commits the week stamp with the reinforced index", () => {
+  const stamped = withAppliedCalibrationWeek({
+    rules: [existingRule],
+    updatedAt: "2026-03-16T00:00:00.000Z",
+    totalCorrectionsAnalyzed: 4,
+  }, " 2026-W11 ");
+  assert.equal(stamped.appliedWeekId, "2026-W11");
+  assert.equal(stamped.rules[0]?.evidenceCount, 2);
+
+  const preserved = withAppliedCalibrationWeek(stamped, " ");
+  assert.equal(preserved.appliedWeekId, "2026-W11");
+  assert.equal(withAppliedCalibrationWeek(stamped, "x".repeat(33)).appliedWeekId, "2026-W11");
+});
+
+test("runCalibrationConsolidation does not reinforce a week already stamped on the index", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "calibration-week-"));
+  try {
+    const index: CalibrationIndex = {
+      rules: [existingRule],
+      updatedAt: "2026-03-16T00:00:00.000Z",
+      totalCorrectionsAnalyzed: 3,
+      appliedWeekId: "2026-W11",
+    };
+    const indexDir = path.join(memoryDir, "state", "calibration");
+    await mkdir(indexDir, { recursive: true });
+    const indexPath = path.join(indexDir, "calibration-index.json");
+    const body = JSON.stringify(index, null, 2);
+    await writeFile(indexPath, body, "utf8");
+
+    const rules = await runCalibrationConsolidation({
+      memoryDir,
+      idempotencyKey: "2026-W11",
+    });
+    assert.equal(rules[0]?.evidenceCount, 2);
+    assert.equal(await readFile(indexPath, "utf8"), body);
+
+    const reread = await readCalibrationIndex(memoryDir);
+    assert.equal(reread.appliedWeekId, "2026-W11");
+    assert.equal(reread.rules[0]?.evidenceCount, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

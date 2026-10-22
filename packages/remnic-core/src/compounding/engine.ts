@@ -540,7 +540,9 @@ export class CompoundingEngine {
         log.warn(`[cmc] causal consolidation in synthesizeWeekly failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    // PEDC: Run calibration consolidation during weekly synthesis
+    // PEDC: Run calibration consolidation during weekly synthesis. The week id
+    // is the calibration idempotency key, so a retry after a later artifact
+    // failure does not reinforce the same rules again.
     if (resolveConsolidationCapabilities(this.config).calibration) {
       try {
         const { runCalibrationConsolidation } = await import("../calibration.js");
@@ -550,6 +552,7 @@ export class CompoundingEngine {
           gatewayAgentId: this.config.modelSource === "gateway" ? (this.config.gatewayAgentId || undefined) : undefined,
           modelChain: this.config.modelSource === "gateway" ? this.config.taskModelChain : undefined,
           workspaceDir: this.config.workspaceDir,
+          idempotencyKey: weekId,
         });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);
       } catch (error) {
