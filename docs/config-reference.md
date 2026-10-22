@@ -1870,6 +1870,9 @@ Polling never runs inline on the health request path: a probe reads the last com
 |---------|---------|-------------|
 | `converge.conflictPolicy` | `newest-wins` | Selects how `remnic converge` resolves revisions that conflict. |
 | `converge.peerRequestTimeoutMs` | `30000` | Per-request peer HTTP timeout (ms) for `converge plan/apply/watch`. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this instead of watching fetches time out. Positive integer, clamped to `3600000`. The `--timeout <seconds>` CLI flag and the `REMNIC_CONVERGE_PEER_TIMEOUT_MS` env var override it (flag > config > env). |
+| `converge.captureWriteLockInitialDelayMs` | `50` | First backoff window (ms) when a converge apply/watch transfer finds the tombstone-blocked capture write lock busy. Equal jitter draws the first wait from about half of this value up to the value itself (25–50ms at the default). Each later wait doubles until `converge.captureWriteLockMaxDelayMs`. Positive integer, clamped to `3600000`. `0` is rejected. Config wins over `REMNIC_CONVERGE_CAPTURE_LOCK_INITIAL_DELAY_MS` (legacy `ENGRAM_` name also read). |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | Cap on one capture-write-lock backoff wait, in ms. Positive integer, clamped to `3600000`. Must be greater than or equal to the initial delay and less than or equal to the deadline. `REMNIC_CONVERGE_CAPTURE_LOCK_MAX_DELAY_MS` is the env override. |
+| `converge.captureWriteLockDeadlineMs` | `60000` | Overall time (ms) a single transfer will wait for the capture write lock. When the deadline expires, that transfer fails and the rest of the cycle continues. Positive integer, clamped to `3600000`. A deadline below the default 2000ms max wait must also set `converge.captureWriteLockMaxDelayMs`, because omitted knobs are filled from the defaults when the acquire runs. `REMNIC_CONVERGE_CAPTURE_LOCK_DEADLINE_MS` is the env override. |
 
 Policy values:
 
@@ -1945,6 +1948,9 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `memoryExtensionsRoot` | `""` | Override memory extensions root directory |
 | `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786) |
 | `converge.conflictPolicy` | `newest-wins` | Default conflict policy for `remnic converge`; `--conflict-policy` overrides it per command |
+| `converge.captureWriteLockInitialDelayMs` | `50` | Capture write-lock backoff start (ms); see the convergence section |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | Cap on one capture write-lock wait (ms) |
+| `converge.captureWriteLockDeadlineMs` | `60000` | Capture write-lock acquire deadline (ms); expiry fails that transfer only |
 
 
 ## Schema-Complete Default and Recommended Settings
@@ -2530,6 +2536,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryExtensionsRoot` | `""` | `""` |
 | `offlineSyncExcludes` | `[]` | `[]` |
 | `converge.conflictPolicy` | `"newest-wins"` | `"newest-wins"` |
+| `converge.captureWriteLockInitialDelayMs` | `50` | `50` |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | `2000` |
+| `converge.captureWriteLockDeadlineMs` | `60000` | `60000` |
 | `activity.enabled` | `false` | `false` until a trusted local activity source is configured |
 | `activity.extractionMode` | `"off"` | `"off"`; set `"smart"` only to create trust-gated first-person memory candidates |
 | `activity.timezone` | `"UTC"` | Machine-local IANA timezone |

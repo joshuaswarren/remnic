@@ -72,6 +72,14 @@ export interface ContentHashIndexLockOptions {
   readonly retryBaseMs?: number;
   /** Max deferred-save retries before falling back to the corpus-rebuild safety net (default 5). */
   readonly retryMaxAttempts?: number;
+  /**
+   * Tombstone-blocked capture write-lock backoff (COS-392). These do not
+   * change the fact-hash index lock. Omitted fields use the 50ms / 2s / 60s
+   * defaults. Converge copies its config here before replicating a file.
+   */
+  readonly captureWriteLockInitialDelayMs?: number;
+  readonly captureWriteLockMaxDelayMs?: number;
+  readonly captureWriteLockDeadlineMs?: number;
 }
 
 /**

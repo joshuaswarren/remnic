@@ -14,7 +14,9 @@ import {
   normalizeConvergePeerRequestTimeoutMs,
   parseConfig,
   resolveAgentAccessAuthToken,
+  resolveConvergeCaptureWriteLockBackoff,
 } from "@remnic/core";
+import { isTombstoneBlockedCaptureWriteLockBusy } from "@remnic/core/storage/capture-write-lock-backoff.js";
 
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";
@@ -457,6 +459,9 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     envConvergePeerRequestTimeoutMs() ??
     DEFAULT_PEER_REQUEST_TIMEOUT_MS;
 
+  const captureWriteLockBackoff = resolveConvergeCaptureWriteLockBackoff(config?.converge);
+  const openStorageIo = (rootDir: string) =>
+    createOfflineStorageIo(rootDir, undefined, undefined, captureWriteLockBackoff);
   const rootMap = new Map<string, string>();
   if (config) {
     try {
@@ -533,7 +538,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         actualTransfers.failed += 1;
         return;
       }
-      const io = await createOfflineStorageIo(rootDir);
+      const io = await openStorageIo(rootDir);
       const expectedLocalSha256 = entry.action === "conflict" ? entry.localSha256 : entry.baseSha256;
       let transferComplete = false;
       let transferRejected = false;
@@ -626,7 +631,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         if (rootDir) {
           try {
             const filePath = path.join(rootDir, localPath);
-            const io = await createOfflineStorageIo(rootDir);
+            const io = await openStorageIo(rootDir);
             const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 !== entry.localSha256) {
               throw new Error(`local file changed during push: ${localPath}`);
@@ -726,7 +731,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         const rootDir = rootMap.get(entry.namespace);
         if (rootDir && entry.localSha256) {
           try {
-            const io = await createOfflineStorageIo(rootDir);
+            const io = await openStorageIo(rootDir);
             const filePath = path.join(rootDir, localPath);
             const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 === entry.localSha256) {
@@ -781,7 +786,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
           const rootDir = rootMap.get(entry.namespace);
           if (rootDir) {
             try {
-              const io = await createOfflineStorageIo(rootDir);
+              const io = await openStorageIo(rootDir);
               const filePath = path.join(rootDir, localPath);
               const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
               if (current.sha256 === entry.localSha256) {
@@ -834,8 +839,24 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     options.signal?.throwIfAborted();
     const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
     const results = await Promise.allSettled(batch.map((entry) => executeTransferEntry(entry)));
-    const rejected = results.find((result) => result.status === "rejected");
-    if (rejected && rejected.status === "rejected") throw rejected.reason;
+    for (let index = 0; index < results.length; index += 1) {
+      const result = results[index];
+      if (!result || result.status === "fulfilled") continue;
+      // A capture lock that stays busy fails this transfer only. Other
+      // entries in the batch, and later batches, still run. Census
+      // isolation (a separate change) is not required for this.
+      if (isTombstoneBlockedCaptureWriteLockBusy(result.reason)) {
+        actualTransfers.failed += 1;
+        const entry = batch[index];
+        const namespace = entry?.namespace ?? "unknown";
+        const entryPath = entry?.path ?? "";
+        process.stderr.write(
+          `converge: tombstone-blocked capture write lock remained busy for ${namespace} ${entryPath}; continuing the cycle\n`
+        );
+        continue;
+      }
+      throw result.reason;
+    }
   }
   options.signal?.throwIfAborted();
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {

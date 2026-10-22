@@ -38,6 +38,7 @@ import {
   readHeader,
   secureStoreDir,
 } from "@remnic/core/secure-store";
+import type { CaptureWriteLockBackoffLimits } from "@remnic/core/storage/capture-write-lock-backoff.js";
 
 export type OfflineFileChunkReader = (target: OfflineSyncFileTarget & { chunkSize: number }) => AsyncIterable<Buffer>;
 
@@ -140,7 +141,8 @@ export async function createOfflineStorageIo(
   persistedExclusion?: {
     persisted: ReadonlyMap<string, { statIdentity?: string; excluded?: boolean }>;
     updates: Map<string, { statIdentity: string; excluded: boolean }>;
-  }
+  },
+  captureWriteLockBackoff?: CaptureWriteLockBackoffLimits
 ): Promise<OfflineStorageIo> {
   // Sweep crash-orphaned decrypt staging dirs before any snapshot enumeration
   // (#2033 P1). The normal decrypt path removes its own staging dir in a
@@ -150,6 +152,14 @@ export async function createOfflineStorageIo(
   // same memory root is never removed mid-use.
   await cleanupOrphanedOfflineDecryptStaging(memoryDir);
   const { storage, secureStoreKey } = configuredStorage ?? (await createConfiguredOfflineStorage(memoryDir));
+  if (captureWriteLockBackoff) {
+    storage.factHashIndexLockOptions = {
+      ...storage.factHashIndexLockOptions,
+      captureWriteLockInitialDelayMs: captureWriteLockBackoff.initialDelayMs,
+      captureWriteLockMaxDelayMs: captureWriteLockBackoff.maxDelayMs,
+      captureWriteLockDeadlineMs: captureWriteLockBackoff.deadlineMs,
+    };
+  }
   return {
     // With persisted classifications the warm path skips the per-file
     // read+parse the plain exclusion performs for every candidate.
@@ -172,9 +182,16 @@ export async function createOfflineStorageIo(
       }),
     writeFile: async ({ filePath, content }) => storage.writeOfflineSyncFile(filePath, content),
     writeStagingFile: async ({ filePath, content, finalAadFilePath }) =>
-      storage.writeOfflineSyncStagingFile(filePath, content, finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }),
+      storage.writeOfflineSyncStagingFile(
+        filePath,
+        content,
+        finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }
+      ),
     readStagingFile: async ({ filePath, finalAadFilePath }) =>
-      storage.readOfflineSyncFile(filePath, finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }),
+      storage.readOfflineSyncFile(
+        filePath,
+        finalAadFilePath === undefined ? undefined : { aadFilePath: finalAadFilePath }
+      ),
     writeFileChunks: async ({ filePath, chunks }) => storage.writeOfflineSyncFileChunks(filePath, chunks),
     deleteFile: async ({ filePath, mtimeMs }) => storage.deleteOfflineSyncFile(filePath, mtimeMs ?? null),
     recordDeletionRevision: async ({ filePath, mtimeMs }) =>
