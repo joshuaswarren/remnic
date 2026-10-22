@@ -10,8 +10,8 @@ const WEEK = "2026-W43";
 const NEXT = "2026-W44";
 const IN_WEEK = "2026-10-22T12:00:00.000Z";
 
-function doc(id: string, content: string, status?: string): string {
-  const lines = ["---", `id: ${id}`, "category: correction", `created: ${IN_WEEK}`, `updated: ${IN_WEEK}`, "confidence: 0.9"];
+function doc(id: string, content: string, status?: string, created = IN_WEEK): string {
+  const lines = ["---", `id: ${id}`, "category: correction", `created: ${created}`, `updated: ${created}`, "confidence: 0.9"];
   if (status) lines.push(`status: ${status}`);
   lines.push("---", "", content, "");
   return lines.join("\n");
@@ -41,6 +41,55 @@ test("a forgotten correction retires its compounded mistake on the next synthesi
     const section = await eng.buildRecallSection("lesson") ?? "";
     assert.equal(section.includes("Forget this lesson"), false);
     assert.match(section, /Keep this lesson/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("forgetting corrections carried from earlier weeks retires every one of them", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-weekly-forget-many-"));
+  try {
+    const eng = new CompoundingEngine(parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      compoundingEnabled: true,
+    }));
+    const dir = path.join(memoryDir, "corrections");
+    await mkdir(dir, { recursive: true });
+    const writeWave = async (startMs: number, label: string) => {
+      for (let index = 0; index < 260; index += 1) {
+        const ms = startMs + index * 1000;
+        const created = new Date(ms).toISOString();
+        await writeFile(
+          path.join(dir, `correction-${ms}-${label}.md`),
+          doc(`${label}-${index}`, `${label} lesson ${index}`, undefined, created),
+        );
+      }
+    };
+    const forgetWave = async (startMs: number, label: string) => {
+      for (let index = 0; index < 260; index += 1) {
+        const ms = startMs + index * 1000;
+        const created = new Date(ms).toISOString();
+        await writeFile(
+          path.join(dir, `correction-${ms}-${label}.md`),
+          doc(`${label}-${index}`, `${label} lesson ${index}`, "forgotten", created),
+        );
+      }
+    };
+    const waveA = Date.parse("2026-10-22T00:00:00.000Z");
+    const waveB = Date.parse("2026-10-26T00:00:00.000Z");
+    await writeWave(waveA, "wavea");
+    await eng.synthesizeWeekly({ weekId: "2026-W43" });
+    await writeWave(waveB, "waveb");
+    await eng.synthesizeWeekly({ weekId: "2026-W44" });
+    await forgetWave(waveA, "wavea");
+    await forgetWave(waveB, "waveb");
+    await eng.synthesizeWeekly({ weekId: "2026-W45" });
+    const active = (await eng.readMistakes())?.registry?.filter((entry) =>
+      entry.status === "active" && entry.category === "correction"
+    ) ?? [];
+    assert.equal(active.length, 0);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

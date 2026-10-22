@@ -390,6 +390,11 @@ async function collectCorrectionDir(
   if (!names) return;
   for (const name of names) {
     if (!name.startsWith("correction-") || !name.endsWith(".md")) continue;
+    // A timestamped name outside this week is historical. Skip it before
+    // lstat or realpath so a large corrections directory stays inside the
+    // weekly budget.
+    const filenameMs = correctionFilenameTimestampMs(name);
+    if (filenameMs !== null && isoWeekId(new Date(filenameMs)) !== weekId) continue;
     const filePath = path.join(dir, name);
     let entryStat: Stats;
     try {
@@ -402,11 +407,7 @@ async function collectCorrectionDir(
     if (entryStat.size > CORRECTION_FILE_BYTE_LIMIT) continue;
     const fileReal = await realpath(filePath);
     assertPathInsideRoot(rootReal, fileReal, filePath);
-    const filenameMs = correctionFilenameTimestampMs(name);
     if (filenameMs !== null) {
-      // writeMemory stamps the id clock and `created` together. A filename
-      // clock outside the week skips the read.
-      if (!Number.isFinite(filenameMs) || isoWeekId(new Date(filenameMs)) !== weekId) continue;
       candidates.push({ filePath, sortMs: filenameMs, namespace });
       continue;
     }
@@ -580,11 +581,11 @@ export function capWeeklyPatternDetails<T extends { pattern: string; provenance:
   return [...visibleActions, ...visibleOther, ...foreign].slice(0, limit);
 }
 
-const FORGOTTEN_CORRECTION_CHECK_LIMIT = 500;
-
 /**
  * Active correction mistakes whose visible source files are all missing or
  * non-active. The next synthesis retires those registry entries immediately.
+ * Every active correction entry is checked. The weekly pattern cap and the
+ * retirement window already bound how many of those entries exist.
  */
 export async function forgottenCorrectionPatterns(
   storage: WeeklyEvidenceStorage,
@@ -593,7 +594,6 @@ export async function forgottenCorrectionPatterns(
   defaultNamespacePrefix: string | null,
 ): Promise<Set<string>> {
   const out = new Set<string>();
-  let reads = 0;
   for (const entry of registry) {
     if (entry.category !== "correction" || entry.status !== "active") continue;
     const visible = (entry.provenance ?? []).filter((item) =>
@@ -606,8 +606,6 @@ export async function forgottenCorrectionPatterns(
         stillActive = true;
         break;
       }
-      if (reads >= FORGOTTEN_CORRECTION_CHECK_LIMIT) return out;
-      reads += 1;
       let memory: MemoryFile | null;
       try {
         memory = await storage.readMemoryByPath(path.join(memoryDir, rel));
