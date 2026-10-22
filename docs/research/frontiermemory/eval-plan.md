@@ -41,8 +41,11 @@ Structural inspection exposed only field names, types, and counts. It found 537 
 
 The ingestion controller preserves the complete source text, including tool records and verifier lines. It splits oversized inputs into consecutive 400,000-character parts without omissions and appends the verified PASS/FAIL line to each part. Each part uses a distinct trajectory/part session key. The controller calls normal `observe`, then awaits `extractionForceFlush`. Input is historical source data, not instructions for the extractor.
 
-The ingestion-only `extractionMaxTurnChars` setting is 450,000, above the maximum wrapped part length. This avoids the default 4,000-character truncation. Recall settings retain their defaults. Source grounding remains enabled. At most two subscription calls run concurrently, including auxiliary calls.
+The ingestion-only `extractionMaxTurnChars` setting is 450,000, above the maximum wrapped part length. This avoids the default 4,000-character truncation. Recall settings retain their defaults. Source grounding remains enabled.
 
+The run began with two admission workers sharing one daemon. Raising admissions to six did not produce parallel extraction: Remnic's normal `ExtractionQueueCoordinator` is serial to prevent write races. After a clean checkpoint, six independent standalone instances now use separate memory, workspace, and Orama directories. Each instance retains its normal serial queue. A process-wide semaphore caps subscription calls at six. Provider events verified six concurrent requests.
+
+This is a sharded dream configuration. Its private handoff includes the original memory folder and all six worker memory folders. Workers do not share learned entities or consolidate across folders during extraction. Aggregate counts must identify this layout; they are not a single-store consolidation result.
 
 ## Remnic source and isolated configuration
 
@@ -72,18 +75,18 @@ The direct Codex CLI runner failed a real request with `invalid_refresh_token`, 
 
 The adapter disables context-file providers, tools, LSP, extensions, skills, rules, session persistence, model fallback, context promotion, and compaction. It passes requests through stdin, accepts only the exact requested provider/model, and records usage without transcript content. It captures the completed assistant event before stopping the child. CLI linger after a completed response is not counted as a model timeout.
 
-The request uses `--service-tier priority`. Upstream [Codex discussion](https://github.com/openai/codex/issues/32191) identifies `priority` as the Fast-mode request encoding, but also describes backend downgrades. OMP does not expose the effective backend tier here, so that field remains unverified. The adapter never claims verified Fast service.
+Earlier requests used `--service-tier priority`. After the authorized reset update, requests use `--service-tier default`, with Fast mode off. New provider metrics record that requested tier. OMP does not expose the effective backend tier here, so that field remains unverified.
 
 The private corpus controller runs in this form:
 
 ```bash
 node --conditions=remnic-source --import tsx \
-  "$EVAL_SCRIPTS/cos400-corpus-dream.mjs" "$RUN_ROOT"
+  "$EVAL_SCRIPTS/cos400-corpus-dream-six.mjs" "$RUN_ROOT"
 ```
 
-`EVAL_SCRIPTS` refers to private session artifacts, not a packaged repository command. The controller calls the real `startServer`, `service.observe`, and `service.extractionForceFlush` APIs. It creates fresh temporary state and stops the server afterward. It does not insert prewritten memories.
+`EVAL_SCRIPTS` refers to private session artifacts, not a packaged repository command. The controller calls the real `startServer`, `service.observe`, and `service.extractionForceFlush` APIs. It does not insert prewritten memories. Checked restarts retained 53 trajectories/103 parts, then 97 trajectories/183 parts. Atomic progress checkpoints and the trajectory ledger preserve completed work. The second restart canceled five queued parts before inference; those remain recorded and are retried after resume. No provider request failed during those restarts.
 
-No API fallback was used: the pane-native subscription route returned real extraction JSON. The approved $20 API fallback remains conditional on failure of that route; no API key was requested, loaded, or billed.
+The current authorization permits only this subscription route. On provider usage or rate limits, stop new admissions, drain existing work, stop the daemon, and retain state. Do not use a metered API, `OPENAI_API_KEY`, another extractor, or another model endpoint. No API fallback was used.
 
 ## Subscription and dream-stage outcome
 
@@ -140,7 +143,7 @@ No metered API fallback or downstream trial ran. Corpus extraction uses Codex su
 
 Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. A serial 674-trajectory pass has an average allowance of about 32 seconds per trajectory within that limit. The earlier synthetic provider calls took 24.6 to 30.3 seconds each, but they do not estimate corpus throughput. Corpus runtime will be reported separately.
 
-The selected route uses subscription quota, whose cost is not priced here. If that route becomes unusable, the approved metered API alternative requires a written reason and a hard $20 admission budget before any request. It must reserve each request's maximum input/output cost, include retries and maintenance calls, and reject work that would exceed the cap. That fallback was not activated.
+The selected route uses subscription quota, whose cost is not priced here. The current authorization prohibits metered fallback. A usage or rate limit pauses the run with its progress and private state intact. Failed requests can have unreported token use.
 
 The release lists mean downstream task costs of $0.77 and $2.80 for two Letta configurations, excluding dreaming. As a rough task-only estimate, 15 trials at those means cost $11.55 to $42.00. A matched Remnic/no-memory pair across 15 tasks costs an estimated $23.10 to $84.00. Generation, embeddings, sandboxes, reference reruns, and retries add cost. These figures are published-cost arithmetic, not observed Remnic prices.
 
