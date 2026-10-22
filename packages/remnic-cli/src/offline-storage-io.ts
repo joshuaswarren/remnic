@@ -19,6 +19,7 @@ import type {
   OfflineSyncFileState,
   OfflineSyncFileTarget,
 } from "@remnic/core";
+import type { CaptureWriteLockBackoffLimits } from "@remnic/core/capture-write-lock-backoff.js";
 import { OFFLINE_DECRYPT_STAGING_DIR_PREFIX } from "@remnic/core/offline-sync-exclude-globs";
 import {
   AUTH_TAG_LENGTH,
@@ -38,7 +39,6 @@ import {
   readHeader,
   secureStoreDir,
 } from "@remnic/core/secure-store";
-import type { CaptureWriteLockBackoffLimits } from "@remnic/core/storage/capture-write-lock-backoff.js";
 
 export type OfflineFileChunkReader = (target: OfflineSyncFileTarget & { chunkSize: number }) => AsyncIterable<Buffer>;
 

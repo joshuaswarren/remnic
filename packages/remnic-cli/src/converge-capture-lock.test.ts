@@ -5,11 +5,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { parseConfig } from "@remnic/core";
+import { TombstoneBlockedCaptureWriteLock, buildCapturePathLockIdentity } from "@remnic/core/capture-write-lock.js";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
-import {
-  TombstoneBlockedCaptureWriteLock,
-  buildCapturePathLockIdentity,
-} from "@remnic/core/storage/capture-write-lock.js";
 
 import { executeConvergeApply } from "./converge.js";
 

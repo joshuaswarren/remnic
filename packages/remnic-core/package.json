@@ -61,25 +61,25 @@
       "remnic-source": "./src/http-retry.ts",
       "import": "./dist/http-retry.js"
     },
-    "./storage/capture-write-lock-backoff": {
-      "types": "./dist/storage/capture-write-lock-backoff.d.ts",
-      "remnic-source": "./src/storage/capture-write-lock-backoff.ts",
-      "import": "./dist/storage/capture-write-lock-backoff.js"
+    "./capture-write-lock-backoff": {
+      "types": "./dist/capture-write-lock-backoff.d.ts",
+      "remnic-source": "./src/capture-write-lock-backoff.ts",
+      "import": "./dist/capture-write-lock-backoff.js"
     },
-    "./storage/capture-write-lock-backoff.js": {
-      "types": "./dist/storage/capture-write-lock-backoff.d.ts",
-      "remnic-source": "./src/storage/capture-write-lock-backoff.ts",
-      "import": "./dist/storage/capture-write-lock-backoff.js"
+    "./capture-write-lock-backoff.js": {
+      "types": "./dist/capture-write-lock-backoff.d.ts",
+      "remnic-source": "./src/capture-write-lock-backoff.ts",
+      "import": "./dist/capture-write-lock-backoff.js"
     },
-    "./storage/capture-write-lock": {
-      "types": "./dist/storage/capture-write-lock.d.ts",
-      "remnic-source": "./src/storage/capture-write-lock.ts",
-      "import": "./dist/storage/capture-write-lock.js"
+    "./capture-write-lock": {
+      "types": "./dist/capture-write-lock.d.ts",
+      "remnic-source": "./src/capture-write-lock.ts",
+      "import": "./dist/capture-write-lock.js"
     },
-    "./storage/capture-write-lock.js": {
-      "types": "./dist/storage/capture-write-lock.d.ts",
-      "remnic-source": "./src/storage/capture-write-lock.ts",
-      "import": "./dist/storage/capture-write-lock.js"
+    "./capture-write-lock.js": {
+      "types": "./dist/capture-write-lock.d.ts",
+      "remnic-source": "./src/capture-write-lock.ts",
+      "import": "./dist/capture-write-lock.js"
     },
     "./abort-error.js": {
       "types": "./dist/abort-error.d.ts",

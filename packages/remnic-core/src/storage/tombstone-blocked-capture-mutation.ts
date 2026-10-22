@@ -2,19 +2,19 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { log } from "../logger.js";
-import type { MemoryFile, MemoryFrontmatter } from "../types.js";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
-import { sleep } from "../utils/sleep.js";
 import {
   CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
   type CaptureWriteLockLimitSource,
   captureWriteLockDelayMs,
   resolveCaptureWriteLockBackoffLimits,
-} from "./capture-write-lock-backoff.js";
+} from "../capture-write-lock-backoff.js";
+import { log } from "../logger.js";
+import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { sleep } from "../utils/sleep.js";
 import type { CasRevisionTransaction } from "./cas-revision-store.js";
 
-export { isTombstoneBlockedCaptureWriteLockBusy } from "./capture-write-lock-backoff.js";
+export { isTombstoneBlockedCaptureWriteLockBusy } from "../capture-write-lock-backoff.js";
 
 const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
 /**

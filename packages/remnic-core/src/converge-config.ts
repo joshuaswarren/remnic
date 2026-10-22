@@ -1,9 +1,9 @@
-import { readEnvVar } from "./runtime/env.js";
 import {
   type CaptureWriteLockBackoffLimits,
   normalizeCaptureWriteLockWaitMs,
   resolveCaptureWriteLockBackoffLimits,
-} from "./storage/capture-write-lock-backoff.js";
+} from "./capture-write-lock-backoff.js";
+import { readEnvVar } from "./runtime/env.js";
 import type { ConvergeConfig, ConvergeConflictPolicy } from "./types.js";
 
 export const CONVERGE_CONFLICT_POLICIES = [

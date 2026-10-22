@@ -16,7 +16,7 @@ import {
   resolveAgentAccessAuthToken,
   resolveConvergeCaptureWriteLockBackoff,
 } from "@remnic/core";
-import { isTombstoneBlockedCaptureWriteLockBusy } from "@remnic/core/storage/capture-write-lock-backoff.js";
+import { isTombstoneBlockedCaptureWriteLockBusy } from "@remnic/core/capture-write-lock-backoff.js";
 
 import { resolveCorpusNamespaceRoots } from "@remnic/core/corpus-watermark.js";
 import { listNamespaces } from "@remnic/core/namespaces/migrate.js";

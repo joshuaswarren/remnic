@@ -5,4 +5,4 @@
 export {
   buildCapturePathLockIdentity,
   TombstoneBlockedCaptureWriteLock,
-} from "./tombstone-blocked-capture-mutation.js";
+} from "./storage/tombstone-blocked-capture-mutation.js";

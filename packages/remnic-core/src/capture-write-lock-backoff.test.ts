@@ -4,9 +4,6 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { parseConfig } from "../config.js";
-import { resolveConvergeCaptureWriteLockBackoff } from "../converge-config.js";
-import type { withHeldFileLock } from "../utils/serialize-mutations.js";
 import {
   CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
   DEFAULT_CAPTURE_WRITE_LOCK_DEADLINE_MS,
@@ -17,7 +14,10 @@ import {
   isTombstoneBlockedCaptureWriteLockBusy,
   resolveCaptureWriteLockBackoffLimits,
 } from "./capture-write-lock-backoff.js";
-import { TombstoneBlockedCaptureWriteLock } from "./tombstone-blocked-capture-mutation.js";
+import { parseConfig } from "./config.js";
+import { resolveConvergeCaptureWriteLockBackoff } from "./converge-config.js";
+import { TombstoneBlockedCaptureWriteLock } from "./storage/tombstone-blocked-capture-mutation.js";
+import type { withHeldFileLock } from "./utils/serialize-mutations.js";
 
 const LIMITS = {
   initialDelayMs: DEFAULT_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS,
