@@ -1154,6 +1154,7 @@ test("parseBenchArgs rejects --replay-extraction-mode await on adapters that can
     [],
     ["--runtime-profile", "baseline"],
     ["--quick"],
+    ["--quick", "--runtime-profile", "real"],
     ["--runtime-profile", "real", "--adapter", "mcp", "--mcp-demo"],
     ["--matrix", "baseline,real"],
   ];
@@ -1164,6 +1165,20 @@ test("parseBenchArgs rejects --replay-extraction-mode await on adapters that can
       `expected rejection for: ${extra.join(" ") || "(defaults)"}`,
     );
   }
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "locomo",
+        "--runtime-profile",
+        "real",
+        "--replay-extraction-mode",
+        "skip",
+        "--replay-extraction-mode",
+        "await",
+      ]),
+    /--replay-extraction-mode may be given only once/,
+  );
   // skip stays allowed everywhere LoCoMo runs, since it matches the default.
   const quickSkip = parseBenchArgs(["run", "locomo", "--quick", "--replay-extraction-mode", "skip"]);
   assert.equal(quickSkip.locomoReplayExtractionMode, "skip");

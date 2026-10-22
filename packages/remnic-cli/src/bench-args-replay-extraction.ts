@@ -64,7 +64,14 @@ export function parseLoCoMoReplayExtractionArgs(
   ctx: LoCoMoReplayExtractionContext,
 ): LoCoMoReplayExtractionArgs {
   const { action, publishedName, benchmarks } = ctx;
-  const raw = readBenchOptionValue(args, "--replay-extraction-mode");
+  const flag = "--replay-extraction-mode";
+  const occurrences = args.filter(
+    (arg) => arg === flag || arg.startsWith(`${flag}=`),
+  ).length;
+  if (occurrences > 1) {
+    throw new Error("ERROR: --replay-extraction-mode may be given only once.");
+  }
+  const raw = readBenchOptionValue(args, flag);
   if (raw === undefined) return {};
   if (!isLoCoMoReplayExtractionMode(raw)) {
     throw new Error("ERROR: --replay-extraction-mode must be one of: skip, await.");
@@ -85,13 +92,14 @@ export function parseLoCoMoReplayExtractionArgs(
     const capable =
       ctx.adapter !== "mcp" &&
       ctx.matrixProfiles === undefined &&
+      !args.includes("--quick") &&
       (EXTRACTION_CAPABLE_RUNTIME_PROFILES as readonly string[]).includes(
         ctx.runtimeProfile ?? "baseline",
       );
     if (!capable) {
       throw new Error(
         "ERROR: --replay-extraction-mode await requires the remnic adapter with " +
-          "--runtime-profile real or openclaw-chain (no --matrix); other " +
+          "--runtime-profile real or openclaw-chain (no --matrix or --quick); other " +
           "setups cannot run extraction.",
       );
     }
