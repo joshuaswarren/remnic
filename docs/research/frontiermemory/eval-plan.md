@@ -25,34 +25,24 @@ Access is gated. The terms restrict use to evaluation and prohibit training, fin
 
 The card links to a `letta-ai/frontier-memory` GitHub repository and tells users to install `frontier-memory` from it. No usable runner checkout was obtained. Task descriptions and board results are public, but the 15 adapted task environments, hidden filename mapping, and FrontierMemory verifiers were not obtained. The [submission page](https://frontiermemory.com/submit/) directs contributors to `research@letta.com`. No contact message was sent.
 
-## Corpus access attempt
+## Verified corpus download
 
-These commands ran with the existing authentication state and one download worker:
+The initial unauthenticated attempt failed with HTTP 401. An authenticated attempt remained gated with HTTP 403. Access was then granted outside this run. The successful download used the existing authentication state, pinned revision, and one worker:
 
 ```bash
-RUN_ROOT=$(mktemp -d /tmp/remnic-frontiermemory.XXXXXX)
-hf auth whoami
 hf download letta-ai/frontier-memory-corpus --repo-type dataset \
+  --revision 67250357405072066498c061f9af0eccfdac20c0 \
   --local-dir "$RUN_ROOT/corpus" --max-workers 1
 ```
 
-`hf auth whoami` returned `Not logged in`. The download obtained the README but then exited with `GatedRepoError: 401`. It reported that authenticated access was required. No sign-in or terms acceptance was attempted.
+All 677 repository files downloaded. `sha256sum --check --strict SHA256SUMS` passed for all 674 trajectories. The manifest's SHA-256 matched the digest above. Independent parsing verified 184 PASS and 490 FAIL outcomes, including each terminal verifier message. The corpus contains 558 JSON and 116 JSONL trajectories, totaling 314,063,575 input bytes. Download wall time was 125.11 seconds.
 
-Inspection found zero trajectory files and no `SHA256SUMS`. The download progress counter did not represent 676 downloaded trajectories. Neither file checksums nor the expected corpus digest could be verified.
+Structural inspection exposed only field names, types, and counts. It found 537 ATIF `steps` documents, 21 `messages` documents, and 116 JSONL streams. No trajectory or canary content was printed or committed. This run performed no HF login, terms acceptance, upload, push, or repository creation.
 
-Authentication was subsequently supplied outside this run, but dataset files remained gated with a reported HTTP 403. This run waits for an access-granted notice before another download. Authority is download-only: no HF upload, push, repository creation, sign-in, or terms acceptance.
+The ingestion controller preserves the complete source text, including tool records and verifier lines. It splits oversized inputs into consecutive 400,000-character parts without omissions and appends the verified PASS/FAIL line to each part. Each part uses a distinct trajectory/part session key. The controller calls normal `observe`, then awaits `extractionForceFlush`. Input is historical source data, not instructions for the extractor.
 
-Once access exists, verify the manifest before ingestion:
+The ingestion-only `extractionMaxTurnChars` setting is 450,000, above the maximum wrapped part length. This avoids the default 4,000-character truncation. Recall settings retain their defaults. Source grounding remains enabled. At most two subscription calls run concurrently, including auxiliary calls.
 
-```bash
-cd "$RUN_ROOT/corpus"
-printf '%s  %s\n' \
-  c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1 \
-  SHA256SUMS | sha256sum --check --strict
-sha256sum --check --strict SHA256SUMS
-```
-
-Those checksum commands are planned and were not run against absent files. Also check the file count and PASS/FAIL totals against the card before extraction.
 
 ## Remnic source and isolated configuration
 
@@ -72,7 +62,9 @@ The initial startup-only smoke disabled every extractor. The current extraction 
   "taskModelChain": {
     "primary": "codex-subscription/gpt-6.1-sol"
   },
-  "taskLlmTimeoutMs": 120000
+  "taskLlmTimeoutMs": 300000,
+  "extractionMaxTurnChars": 450000,
+  "extractionSourceGroundingEnabled": true
 }
 ```
 
@@ -82,11 +74,11 @@ The adapter disables context-file providers, tools, LSP, extensions, skills, rul
 
 The request uses `--service-tier priority`. Upstream [Codex discussion](https://github.com/openai/codex/issues/32191) identifies `priority` as the Fast-mode request encoding, but also describes backend downgrades. OMP does not expose the effective backend tier here, so that field remains unverified. The adapter never claims verified Fast service.
 
-The private smoke controller ran in this form:
+The private corpus controller runs in this form:
 
 ```bash
 node --conditions=remnic-source --import tsx \
-  "$EVAL_SCRIPTS/cos400-extraction-smoke.mjs" "$RUN_ROOT"
+  "$EVAL_SCRIPTS/cos400-corpus-dream.mjs" "$RUN_ROOT"
 ```
 
 `EVAL_SCRIPTS` refers to private session artifacts, not a packaged repository command. The controller calls the real `startServer`, `service.observe`, and `service.extractionForceFlush` APIs. It creates fresh temporary state and stops the server afterward. It does not insert prewritten memories.
@@ -109,11 +101,9 @@ These calls consumed 11,953 reported tokens in total. They used no corpus inputs
 
 Separate setup smokes covered the direct CLI auth failure, two context-inflated OMP attempts, a context-disabled JSON completion, and the private adapter itself. Some earlier diagnostics lack a complete usage record; the three-row table covers only independently recorded normal-pipeline calls and is not a total for all setup activity.
 
-The dream stage has not run. Gated corpus access remains the first blocker. No dataset checksums, dream runtime, dream token totals, generated-memory counts, or task-agent export exist yet. Keep those measurements null rather than reporting the empty synthetic stores as dream output. No downstream score exists.
+The real corpus dream stage started after integrity verification. Its aggregate progress and final measurements belong in [STATUS.md](STATUS.md) and the result exports. No downstream score exists.
 
-When access is granted, ingest every trajectory through Remnic's normal path. Retain user, assistant, and tool content plus the appended verifier message. Preserve trajectory boundaries, drain extraction, and record every failure. Inspect actual input formats before building the format adapter. The default 4,000-character extraction turn limit must not silently remove trajectory content; any ingestion-only adjustment must be recorded separately from unchanged recall settings.
-
-The intended handoff is the resulting memory folder or a supported export, with file counts and a local checksum. Keep its contents private or gated unless the benchmark authors permit publication. Record elapsed time, model identity, token usage, provider charge, and category counts. Use one worker initially and never exceed two.
+The run retains grounding and records empty output as an actual result. It does not substitute the earlier synthetic failures for corpus measurements. The intended handoff is the resulting private memory folder, with counts and a local checksum. Its contents remain outside this repository.
 
 ## Published board baselines
 
@@ -146,9 +136,9 @@ Do not invent task commands, replacement verifiers, or numeric scores. The exist
 
 ## Cost and runtime estimate
 
-No dream-stage provider charge was incurred and no downstream trial ran. Setup calls consumed Codex subscription quota. No metered OpenAI API fallback was used. Local probe usage from the earlier, superseded setup remains unknown.
+No metered API fallback or downstream trial ran. Corpus extraction uses Codex subscription quota. Dream-stage usage comes from completed provider events; partial failed requests can leave unreported usage.
 
-Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. A serial 674-trajectory pass has an average allowance of about 32 seconds per trajectory within that limit. The three tiny pipeline smokes each took 24.6 to 30.3 seconds at the provider boundary, but they do not estimate corpus throughput. No corpus-sized extraction has run.
+Letta reports a six-hour maximum for memory generation. That is a benchmark limit, not a measured Remnic runtime. A serial 674-trajectory pass has an average allowance of about 32 seconds per trajectory within that limit. The earlier synthetic provider calls took 24.6 to 30.3 seconds each, but they do not estimate corpus throughput. Corpus runtime will be reported separately.
 
 The selected route uses subscription quota, whose cost is not priced here. If that route becomes unusable, the approved metered API alternative requires a written reason and a hard $20 admission budget before any request. It must reserve each request's maximum input/output cost, include retries and maintenance calls, and reject work that would exceed the cap. That fallback was not activated.
 
