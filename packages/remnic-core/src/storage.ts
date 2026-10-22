@@ -3609,7 +3609,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return completionFingerprint;
   }
 
-  async ensureDirectories(): Promise<void> {
+  async ensureDirectories(options: { waitForEntityMigration?: boolean } = {}): Promise<void> {
     await mkdir(this.baseDir, { recursive: true });
     await entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir);
     const today = new Date().toISOString().slice(0, 10);
@@ -3626,12 +3626,13 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
-    await this.entityCanonicalIdMigration.ensure();
+    const waitForMigration = options.waitForEntityMigration !== false;
+    if (waitForMigration) await this.entityCanonicalIdMigration.ensure();
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
-    // engage the hot cache until the first mutation bumped it. The daemon calls
-    // ensureDirectories() at startup (orchestration/orchestrator-init.ts) before
+    // engage the hot cache until the first mutation bumped it. The daemon brings
+    // the store up at startup (orchestration/orchestrator-init.ts) before
     // serving recall reads, so seeding a nonzero version here makes the cache
     // engage from the first read. Fires once, only while the version is still 0.
     // Deliberately NOT done on the readAllMemories() path: a write-side-effect
@@ -3640,7 +3641,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    await this.entityCanonicalIdMigration.markDirectoriesInitialized();
+    const migrationBarrier = this.entityCanonicalIdMigration.markDirectoriesInitialized();
+    if (waitForMigration) return migrationBarrier;
+    void migrationBarrier.catch((error) => {
+      log.warn(`entity canonical-id migration deferred at startup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   }
 
   /**

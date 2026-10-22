@@ -305,7 +305,9 @@ export class OrchestratorInitCoordinator {
         logger: (message) => log.info(message),
       });
       await this.deps.storage.loadAliases();
-      await this.deps.storage.ensureDirectories();
+      // Issue #3139: the canonical-id replay can wait on another process' lock
+      // for up to 300 s, and every briefing awaits initialize() first.
+      await this.deps.storage.ensureDirectories({ waitForEntityMigration: false });
       await Promise.all(
         this.deps.config.externalWikis.map((wiki) =>
           assertExternalWikiRootOutsideMemoryDirCanonical(
@@ -323,7 +325,7 @@ export class OrchestratorInitCoordinator {
         for (const ns of namespaces) {
           const sm = await this.deps.storageRouter.storageFor(ns);
           await sm.loadAliases().catch(() => undefined);
-          await sm.ensureDirectories();
+          await sm.ensureDirectories({ waitForEntityMigration: false });
         }
         // Explicitly seed the catalog with all configured namespaces at startup
         // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the

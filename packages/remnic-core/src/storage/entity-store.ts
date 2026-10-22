@@ -534,7 +534,18 @@ export class EntityStore {
             } catch (err) {
               if (err instanceof SecureStoreLockedError) throw err;
               if (!isErrnoCode(err, "ENOENT")) throw err;
-              return null;
+              const legacyId = entry.slice(0, -".md".length);
+              const renamedTo = resolveHistoricalEntityCanonicalId(legacyId, this.deps.currentHistoricalIds());
+              if (renamedTo === legacyId) return null;
+              try {
+                return await this.deps.readStorageSecureFile(
+                  path.join(this.deps.entitiesDir, `${renamedTo}.md`),
+                );
+              } catch (retryErr) {
+                if (retryErr instanceof SecureStoreLockedError) throw retryErr;
+                if (!isErrnoCode(retryErr, "ENOENT")) throw retryErr;
+                return null;
+              }
             }
           }),
         );
