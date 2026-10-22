@@ -1,5 +1,5 @@
 import type { ReconcilePlan } from "@remnic/core/reconcile/plan.js";
-import type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
+import { type ConvergeNamespaceExclusion, singleLine } from "./converge-namespace-exclusions.js";
 
 type ReportPlan = ReconcilePlan & {
   excludedNamespaces?: readonly ConvergeNamespaceExclusion[];
@@ -17,27 +17,6 @@ type ApplyReportInput = {
     failed: number;
   };
 };
-
-function singleLine(value: string): string {
-  let out = "";
-  let pendingSpace = false;
-  for (let index = 0; index < value.length; index += 1) {
-    const char = value[index] ?? "";
-    const code = char.charCodeAt(0);
-    const isSpace = code === 32 || code === 9 || code === 10 || code === 13;
-    if (isSpace) {
-      pendingSpace = out.length > 0;
-      continue;
-    }
-    if (code < 32 || code === 127 || (code >= 128 && code <= 159)) continue;
-    if (pendingSpace) {
-      out += " ";
-      pendingSpace = false;
-    }
-    out += char;
-  }
-  return out;
-}
 
 export function formatConvergeReport(plan: ReportPlan): string {
   const excluded = plan.excludedNamespaces ?? [];

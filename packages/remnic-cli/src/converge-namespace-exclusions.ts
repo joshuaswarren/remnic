@@ -122,6 +122,34 @@ export function excludeNamespaceGroup(
   }
 }
 
+/** Drop C0/C1 controls and DEL so a peer error cannot write terminal sequences. */
+export function singleLine(value: string): string {
+  let out = "";
+  let pendingSpace = false;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index] ?? "";
+    const code = char.charCodeAt(0);
+    const isSpace = code === 32 || code === 9 || code === 10 || code === 13;
+    if (isSpace) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (code < 32 || code === 127 || (code >= 128 && code <= 159)) continue;
+    if (pendingSpace) {
+      out += " ";
+      pendingSpace = false;
+    }
+    out += char;
+  }
+  return out;
+}
+
+function loggedCensusFailure(failure: ConvergeNamespaceFailure): string {
+  const message = failure.error.length > 0 ? failure.error : String(failure.cause);
+  const cleaned = singleLine(message);
+  return `${singleLine(failure.namespace)} (${failure.side}): ${cleaned.length > 0 ? cleaned : "namespace census failed"}`;
+}
+
 function compareNamespaceSide(left: ConvergeNamespaceExclusion, right: ConvergeNamespaceExclusion): number {
   if (left.namespace < right.namespace) return -1;
   if (left.namespace > right.namespace) return 1;
@@ -140,8 +168,9 @@ export function listNamespaceExclusions(
 
 /**
  * Fail the cycle only when no namespace remains to plan. One rejection keeps
- * its original error so a fully unreadable peer still fails closed. Several
- * rejections are joined so the log names every namespace.
+ * its original message, with terminal controls removed, and the original
+ * rejection as cause. Several rejections are joined so the log names every
+ * namespace.
  */
 export interface ConvergeApplyExclusionInput {
   converged: boolean;
@@ -176,10 +205,12 @@ export function throwIfEveryNamespaceCensusFailed(
   if (plannedNamespaces > 0 || excluded.size === 0) return;
   const failures = [...excluded.values()].sort(compareNamespaceSide);
   const only = failures[0];
-  if (failures.length === 1 && only) throw only.cause;
-  throw new Error(
-    `converge: every namespace census failed: ${failures
-      .map((failure) => `${failure.namespace} (${failure.side}): ${failure.error}`)
-      .join("; ")}`
-  );
+  if (failures.length === 1 && only) {
+    const message = only.error.length > 0 ? only.error : String(only.cause);
+    const cleaned = singleLine(message);
+    // Keep the original rejection as cause so transport classification still
+    // sees it. The message is what stderr prints.
+    throw new Error(cleaned.length > 0 ? cleaned : "namespace census failed", { cause: only.cause });
+  }
+  throw new Error(`converge: every namespace census failed: ${failures.map(loggedCensusFailure).join("; ")}`);
 }

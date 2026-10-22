@@ -8,7 +8,11 @@ import { MessageChannel } from "node:worker_threads";
 import { parseConfig } from "@remnic/core";
 import { defaultConvergeCursorPath, readConvergeCursor, writeConvergeCursor } from "@remnic/core/reconcile/cursor.js";
 import type { ReconcileFileState } from "@remnic/core/reconcile/plan.js";
-import { isPeerTransportCensusFailure, recordNamespaceCensusFailure } from "./converge-namespace-exclusions.js";
+import {
+  isPeerTransportCensusFailure,
+  recordNamespaceCensusFailure,
+  throwIfEveryNamespaceCensusFailed,
+} from "./converge-namespace-exclusions.js";
 import { formatConvergeExclusionLine, formatConvergeReport, formatConvergeWatchCycleLine } from "./converge-report.js";
 import { convergeWatch } from "./converge-watch.js";
 import { computeConvergePlan, executeConvergeApply } from "./converge.js";
@@ -759,4 +763,41 @@ test("converge plan: a later alias refusal drops the shared root that already su
   } finally {
     await fs.rm(memoryDir, { recursive: true, force: true });
   }
+});
+
+test("every-namespace census failure strips terminal controls and keeps the cause", () => {
+  const cause = new Error("failed to fetch peer snapshot for namespace alpha: \u001b[31mblocked\u0007");
+  const excluded = new Map([["alpha", { namespace: "alpha", side: "peer" as const, error: cause.message, cause }]]);
+  assert.throws(
+    () => throwIfEveryNamespaceCensusFailed(0, excluded),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message.includes("\u001b"), false);
+      assert.equal(error.message.includes("\u0007"), false);
+      assert.match(error.message, /failed to fetch peer snapshot for namespace alpha: \[31mblocked/);
+      assert.equal(error.cause, cause);
+      return true;
+    }
+  );
+});
+
+test("joined census failures strip terminal controls from every namespace", () => {
+  const alpha = new Error("namespace is not readable: \u001b[31malpha\u0007");
+  const beta = new Error("namespace is not readable: beta");
+  const excluded = new Map([
+    ["beta", { namespace: "beta", side: "peer" as const, error: beta.message, cause: beta }],
+    ["alpha", { namespace: "alpha", side: "peer" as const, error: alpha.message, cause: alpha }],
+  ]);
+  assert.throws(
+    () => throwIfEveryNamespaceCensusFailed(0, excluded),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /every namespace census failed/);
+      assert.equal(error.message.includes("\u001b"), false);
+      assert.equal(error.message.includes("\u0007"), false);
+      assert.match(error.message, /alpha \(peer\): namespace is not readable: \[31malpha/);
+      assert.match(error.message, /beta \(peer\): namespace is not readable: beta/);
+      return true;
+    }
+  );
 });

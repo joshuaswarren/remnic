@@ -335,8 +335,10 @@ remnic converge watch --peer <url> [--token <token>] [--conflict-policy <policy>
   A peer timeout or connection failure is not an exclusion: the cycle fails as soon as the transport
   fails, so one hung snapshot or file-content download does not wait out every remaining namespace.
   A timeout on one snapshot alias is kept when the other alias answers with an HTTP error or a
-  malformed body. A timeout while reading the body of a failed snapshot is kept the same way,
+  malformed body.   A timeout while reading the body of a failed snapshot is kept the same way,
   and a plan that excluded any namespace reports `converged: false`.
+  When every census fails, the error written to the log has those same control
+  characters removed. The original rejection is kept as the error cause.
   An apply download that times out is still a failed transfer for that file.
 - A failed cycle (peer unreachable, every namespace census failed, transient network error) is
   reported and does NOT stop the watch — a peer being unreachable is exactly when the surviving
