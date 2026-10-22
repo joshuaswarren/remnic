@@ -31,7 +31,7 @@ import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { namespaceIdentityFromToken } from "../namespaces/identity.js";
-import { normalizeQmdResultPath } from "../namespaces/search.js";
+import { normalizeQmdResultPath, resolveNamespaceResultPath } from "../namespaces/search.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
@@ -134,6 +134,22 @@ export function qmdResultPathCandidates(storageDir: string, resultPath: string):
   }
 
   return [...candidates];
+}
+
+/** Canonicalize flat hot-memory identities before merging with native hits (#3194).
+ * This is a path-only map: no candidates, collections or namespace scopes are removed.
+ * Cold/explicit foreign collections keep their existing owner-resolution path.
+ */
+export function normalizeFlatQmdResults(
+  results: QmdSearchResult[],
+  config: PluginConfig,
+  collection = config.qmdCollection,
+): QmdSearchResult[] {
+  if (!collection || resolveNamespaceCapabilities(config).namespaces || collection !== config.qmdCollection) return results;
+  return results.map((result) => ({
+    ...result,
+    path: resolveNamespaceResultPath(config.memoryDir, collection, result.path),
+  }));
 }
 
 /**

@@ -27,7 +27,7 @@ import { inferIntentFromText, intentCompatibilityScore } from "../intent.js";
 import { log } from "../logger.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
-import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
+import { normalizeFlatQmdResults, qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./graph-recall-coordinator.js";
 import { RelevanceStore } from "../relevance.js";
@@ -394,25 +394,17 @@ export class RecallSearchPipelineCoordinator {
         break;
       }
 
-      const primaryResults = options.collection
-        ? options.abortSignal
-          ? await this.deps.qmd.search(
-              prompt,
-              options.collection,
-              fetchLimit,
-              primarySearchOptions,
-              {
-                signal: options.abortSignal,
-                onDegradation: options.onDegradation,
-              },
-            )
-          : await this.deps.qmd.search(
-              prompt,
-              options.collection,
-              fetchLimit,
-              primarySearchOptions,
-              { onDegradation: options.onDegradation },
-            )
+      let primaryResults = options.collection
+        ? await this.deps.qmd.search(
+            prompt,
+            options.collection,
+            fetchLimit,
+            primarySearchOptions,
+            {
+              ...(options.abortSignal ? { signal: options.abortSignal } : {}),
+              onDegradation: options.onDegradation,
+            },
+          )
         : await this.deps.searchAcrossNamespaces({
             query: prompt,
             namespaces: options.namespacesEnabled
@@ -426,6 +418,7 @@ export class RecallSearchPipelineCoordinator {
               onDegradation: options.onDegradation,
             },
           });
+      primaryResults = normalizeFlatQmdResults(primaryResults, this.deps.config, options.collection);
       lastPrimaryResultCount = primaryResults.length;
       lastHybridResultCount = 0;
       lastHybridTopUpUsed = false;
@@ -452,7 +445,7 @@ export class RecallSearchPipelineCoordinator {
           // uniform across primary + top-up (gotcha #39). Issue #1335 (codex review #1422).
           lastHybridTopUpSkippedReason = "lex_strategy";
         } else {
-          const hybridResults = options.collection
+          let hybridResults = options.collection
             ? await this.deps.qmd.hybridSearch(
                 prompt,
                 options.collection,
@@ -474,6 +467,7 @@ export class RecallSearchPipelineCoordinator {
                   onDegradation: options.onDegradation,
                 },
               });
+          hybridResults = normalizeFlatQmdResults(hybridResults, this.deps.config, options.collection);
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
@@ -1149,6 +1143,10 @@ export class RecallSearchPipelineCoordinator {
       : null;
     const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
       ...r,
+      // Render loaded flat memories, not QMD's front-matter/chunk preview (#3194).
+      ...(memory && !resolveNamespaceCapabilities(this.deps.config).namespaces
+        ? { snippet: memory.content, line: undefined }
+        : {}),
       sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
       origin: memory ? memory.frontmatter.origin : undefined,
       // #1952: an active state view carries the chain fields the inject
