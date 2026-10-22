@@ -60,10 +60,14 @@ case "$joined" in
     jq -c "\${!#}" "${binDir}/check-runs.json"
     exit 0
     ;;
-  *"/status"*)
-    # gh-side --jq applied: no statuses.
-    echo ''
+  *"/statuses"*)
+    jq -c "\${!#}" "${binDir}/statuses.json"
     exit 0
+    ;;
+  *"apps/"*)
+    slug="\${2#apps/}"
+    jq -er --arg slug "$slug" '.[$slug]' "${binDir}/apps.json"
+    exit $?
     ;;
   *"pulls"*)
     # Raw JSON array; the step pipes this through real jq itself.
@@ -113,7 +117,7 @@ const CONTEXTS = [
  * is what the merged-PR lookup returns as head.sha, so a test can feed the
  * step a good or a malformed value.
  */
-function runGate({ prHeadSha, integrationId = null, checkAppId = 15368 }) {
+function runGate({ prHeadSha, integrationId = null, checkAppId = 15368, statuses = [], apps = { "github-actions": 15368, "other-app": 999 }, extraRequired = [] }) {
   const run = readStepRun();
   const work = mkdtempSync(path.join(tmpdir(), "evalsha-"));
   const binDir = path.join(work, "bin");
@@ -123,10 +127,12 @@ function runGate({ prHeadSha, integrationId = null, checkAppId = 15368 }) {
     mkdirSync(path.join(work, "runner-temp"), { recursive: true });
     writeFileSync(githubEnv, "");
     writeStubGh(binDir);
+    writeFileSync(path.join(binDir, "statuses.json"), JSON.stringify(statuses));
+    writeFileSync(path.join(binDir, "apps.json"), JSON.stringify(apps));
     writeFileSync(path.join(binDir, "rules.json"), JSON.stringify([{
       type: "required_status_checks",
       parameters: {
-        required_status_checks: CONTEXTS.map((context) => ({ context, integration_id: integrationId })),
+        required_status_checks: [...CONTEXTS, ...extraRequired].map((context) => ({ context, integration_id: integrationId })),
       },
     }]));
     writeFileSync(
@@ -250,4 +256,47 @@ test("workflow refuses same-name green runs from the wrong integration", () => {
   assert.notEqual(r.status, 0, "another app must not authorize promotion");
   assert.match(r.stdout, /CI not green/);
   assert.match(r.stdout, /quality: missing/);
+});
+
+test("workflow accepts pinned legacy statuses only after resolving their GitHub App identity", () => {
+  const statuses = CONTEXTS.map((context, id) => ({
+    context, id, state: "success", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "github-actions[bot]", id: 41898282 },
+  }));
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, checkAppId: 999, statuses });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+});
+
+test("workflow cannot satisfy a pinned check with another app or a user-like status", () => {
+  for (const creator of [
+    { type: "Bot", login: "other-app[bot]", id: 15368 },
+    { type: "User", login: "github-actions[bot]", id: 15368 },
+    null,
+  ]) {
+    const statuses = CONTEXTS.map((context, id) => ({
+      context, id, state: "success", updated_at: "2026-10-02T12:01:00Z", creator,
+    }));
+    const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, checkAppId: 999, statuses });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout, /quality: missing/);
+  }
+});
+
+test("workflow fails closed when a required status app cannot be resolved", () => {
+  const statuses = [{
+    context: "quality", id: 1, state: "failure", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "unknown-app[bot]" },
+  }];
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, statuses, apps: {} });
+  assert.notEqual(r.status, 0, "a failed identity lookup must not silently discard a potentially blocking status");
+  assert.match(r.stdout, /Status app identity unavailable/);
+});
+
+test("workflow keeps its own promote context self-excluded during identity enrichment", () => {
+  const statuses = [{
+    context: "promote", id: 1, state: "failure", updated_at: "2026-10-02T12:01:00Z",
+    creator: { type: "Bot", login: "unknown-app[bot]" },
+  }];
+  const r = runGate({ prHeadSha: PR_HEAD_SHA, integrationId: 15368, statuses, extraRequired: ["promote"], apps: {} });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
 });

@@ -272,9 +272,33 @@ jobs:
           gh api --paginate "${REPO}/commits/${EVAL_SHA}/check-runs" \
             --jq '.check_runs[]? | {source: "check-run", id, name, app: {id: .app.id}, status, conclusion, started_at, completed_at}' \
             >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
-          gh api "${REPO}/commits/${EVAL_SHA}/status" \
-            --jq '.statuses[]? | {source: "status", id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at}' \
-            >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
+          # The combined /status response omits creator identity. The full,
+          # paginated /statuses response lets us resolve app-owned bot authors
+          # through GitHub's canonical app endpoint (user IDs are NOT app IDs).
+          gh api --paginate "${REPO}/commits/${EVAL_SHA}/statuses" \
+            --jq '.[] | {source: "status", id, name: .context, status: "completed", conclusion: .state, started_at: .updated_at, completed_at: .updated_at, creator: {login: .creator.login, type: .creator.type}}' \
+            > "${RUNNER_TEMP}/ci-gate-statuses.jsonl"
+          STATUS_APP_IDS='{}'
+          STATUS_LOGINS="$(jq -sr --argjson required "${REQUIRED_CTX}" '
+            [.[] | select(.creator.type == "Bot" and .name != "promote") |
+              select(.name as $name | any($required[]; .context == $name and .integration_id != null and .integration_id != -1)) |
+              .creator.login] | unique[]' "${RUNNER_TEMP}/ci-gate-statuses.jsonl")"
+          while IFS= read -r STATUS_LOGIN; do
+            [ -n "${STATUS_LOGIN}" ] || continue
+            if ! [[ "${STATUS_LOGIN}" =~ ^([A-Za-z0-9-]+)\[bot\]$ ]]; then
+              echo "::error title=Status app identity unavailable::Required status has an unverifiable bot author; refusing."
+              exit 1
+            fi
+            if ! STATUS_APP_ID="$(gh api "apps/${BASH_REMATCH[1]}" --jq '.id')" ||
+                ! [[ "${STATUS_APP_ID}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error title=Status app identity unavailable::Cannot resolve a required status author to a GitHub App; refusing."
+              exit 1
+            fi
+            STATUS_APP_IDS="$(jq -c --arg login "${STATUS_LOGIN}" --argjson id "${STATUS_APP_ID}" '. + {($login): $id}' <<< "${STATUS_APP_IDS}")"
+          done <<< "${STATUS_LOGINS}"
+          jq -c --argjson apps "${STATUS_APP_IDS}" \
+            '.app = {id: (if .creator.type == "Bot" then $apps[.creator.login] else null end)} | del(.creator)' \
+            "${RUNNER_TEMP}/ci-gate-statuses.jsonl" >> "${RUNNER_TEMP}/ci-gate-records.jsonl"
           {
             echo "{ \"type\": \"check-runs\", \"records\": ["
             jq -s '.' "${RUNNER_TEMP}/ci-gate-records.jsonl" | sed 's/^\[//; s/\]$//'

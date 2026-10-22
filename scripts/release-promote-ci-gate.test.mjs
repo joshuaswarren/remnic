@@ -657,7 +657,7 @@ test("script fails fast when --required-contexts is not provided", () => {
   );
 });
 
-test("an app-pinned required check cannot be satisfied by another app or a legacy status", () => {
+test("an app-pinned required check cannot be satisfied by another app or an unverified legacy status", () => {
   const required = [{ context: "quality", integration_id: 15368 }];
   for (const record of [
     { ...cr("quality"), app: { id: 999 } },
@@ -724,6 +724,31 @@ test("malformed integration requirements fail closed instead of becoming strings
     { integration_id: 15368 },
     { context: "" },
   ]) {
-    assert.throws(() => run([cr("[object Object]")], [requirement]), /required-contexts/);
+    assert.throws(
+      () => run([cr("[object Object]")], [requirement]),
+      (err) => err.status === 2 && /entries must be context strings/.test(String(err.stderr)),
+    );
   }
+});
+
+test("a pinned integration can satisfy its required context with a verified legacy status", () => {
+  const required = [{ context: "quality", integration_id: 15368 }];
+  const status = { ...cr("quality"), source: "status", app: { id: 15368 } };
+  const otherApp = { ...cr("quality"), source: "status", app: { id: 999 } };
+  assert.deepEqual(run([status], required), { decision: "allow", reasons: [] });
+  assert.deepEqual(run([status, { ...otherApp, conclusion: "failure" }], required), { decision: "allow", reasons: [] });
+  const check = { ...cr("quality"), source: "check-run", app: { id: 15368 } };
+  for (const records of [
+    [status, { ...check, conclusion: "failure" }],
+    [check, { ...status, conclusion: "failure" }],
+  ]) assert.deepEqual(run(records, required), { decision: "refuse", reasons: ["quality: failure"] });
+});
+
+test("an empty required-contexts list fails closed at the CLI", () => {
+  assert.throws(() => run([cr("quality")], []), (err) => {
+    assert.equal(err.status, 2);
+    assert.match(String(err.stderr), /must be a non-empty JSON array/);
+    assert.doesNotMatch(String(err.stdout), /"decision":"allow"/);
+    return true;
+  });
 });

@@ -25,7 +25,7 @@
  * CLI:
  *   --required-contexts <JSON array>   required strings or
  *     { context, integration_id? } pairs from the ruleset; null/omitted/-1
- *     integration_id means any app, a positive integer pins check-run app.id.
+ *     integration_id means any app, a positive integer pins verified app.id.
  *   --self-excluded    <JSON array of strings>    optional, names that never
  *                                                 block even if required
  *
@@ -38,10 +38,10 @@
  *     contexts (Dependabot, latest-openclaw-scanner, `checks`, etc.) cannot
  *     block. If the ruleset API cannot be read the workflow must NOT call
  *     this script with an empty required list — it fails the step.
- *   - Pinned requirements only consider check-runs from their integration.
- *     Another app's same-named run or an app-less legacy status cannot
- *     satisfy or supersede that requirement. Unpinned contexts keep
- *     independent check-run and legacy-status verdicts.
+ *   - Pinned requirements only consider records from their integration.
+ *     Check-runs carry app.id directly; legacy statuses are enriched by the
+ *     workflow using their bot creator and GitHub's app endpoint. Unverified
+ *     authors cannot satisfy a pin. Status/check-run verdicts stay independent.
  *   - For each required context, take the LATEST record (per
  *     `completed_at`; falls back to `started_at`; falls back to the
  *     record `id` when a record carries no timestamps at all — that
@@ -191,7 +191,7 @@ export function decide(records, requiredContexts, selfExcluded = SELF_EXCLUDED_D
     for (const r of records) {
       if (!r || r.name !== name) continue;
       const source = typeof r.source === "string" && r.source !== "" ? r.source : "check-run";
-      if (pinned && (source !== "check-run" || r.app?.id !== integrationId)) continue;
+      if (pinned && ((source !== "check-run" && source !== "status") || r.app?.id !== integrationId)) continue;
       const prev = bySource.get(source);
       const comparison = prev ? compareOrder(orderKey(r), orderKey(prev)) : 1;
       if (
