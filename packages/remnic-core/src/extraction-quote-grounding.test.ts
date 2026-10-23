@@ -410,6 +410,16 @@ test("a claim that inverts a negated quote is rejected, a restated exclusion is 
   assert.deepEqual(keptContents(grounded), ["Alice would avoid approving the budget."]);
 });
 
+test("a claim that inverts a denial verb in the quote is rejected", () => {
+  const source = "Notes: Alice denied approving the budget. Bob reviewed it.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([{ content: "Alice approved the budget.", quote: "Alice denied approving the budget." }]),
+    source,
+    source,
+  );
+  assert.equal(grounded.facts.length, 0);
+});
+
 test("an invented relationship label is not kept between two names in a kept quote window", () => {
   const grounded = filterExtractionResultBySource(
     resultOf(

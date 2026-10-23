@@ -27,7 +27,8 @@ export const QUOTE_ANCHOR_MIN_WINDOW_COVERAGE = 0.35;
 export const QUOTE_ANCHOR_MIN_SOURCE_COVERAGE = 0.75;
 const QUOTE_ANCHOR_MAX_OCCURRENCES = 8;
 const TURN_SEPARATOR = "\n\n";
-const NEGATOR_PATTERN = /\b(?:not|no|never|cannot|without|neither|nor)\b|n't\b/iu;
+const NEGATOR_PATTERN =
+  /\b(?:not|no|never|cannot|without|neither|nor|den(?:y|ies|ied|ying)|declin\w*|fail(?:s|ed|ing)?)\b|n't\b/iu;
 const EXCLUSION_PATTERN =
   /\b(?:exclu\w*|avoid\w*|omit\w*|skip\w*|ignor\w*|forbid\w*|prohibit\w*|disallow\w*|prevent\w*|reject\w*|refus\w*|insufficient|instead|rather|unless|except)\b/iu;
 
