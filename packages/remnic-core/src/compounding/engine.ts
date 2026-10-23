@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { isoWeekId } from "./iso-week.js";
+import { cadenceStaleWindowMs, isoWeekId } from "./iso-week.js";
 import { log } from "../logger.js";
 import { composeSalvagedEnvelope } from "../salvage-envelope.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
@@ -11,6 +11,7 @@ import { migrateLegacyFeedbackInbox, resolveFeedbackInboxPath, type SharedFeedba
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 import { resolveConversationContextCapabilities } from "../capabilities.js";
+import { writeFileAtomically } from "../maintenance/atomic-file.js";
 import {
   actionEventsVisibleInStore, capWeeklyPatternDetails,
   buildActionFailurePatterns,
@@ -24,6 +25,7 @@ import {
   type WeeklyActionEvent,
   type WeeklyCorrectionEvidence,
 } from "./weekly-evidence.js";
+import { queueWeeklySynthesis } from "./weekly-synthesis-queue.js";
 
 type MistakesFile = {
   version?: number;
@@ -422,20 +424,18 @@ function monthIdFromIsoWeek(weekId: string): string {
   return isoMonthId(monday);
 }
 
-function cadenceStaleWindowMs(cadence: "daily" | "weekly" | "monthly" | "quarterly"): number {
-  switch (cadence) {
-    case "daily":
-      return 2 * 24 * 60 * 60 * 1000;
-    case "weekly":
-      return 10 * 24 * 60 * 60 * 1000;
-    case "monthly":
-      return 45 * 24 * 60 * 60 * 1000;
-    case "quarterly":
-      return 120 * 24 * 60 * 60 * 1000;
-    default:
-      return 45 * 24 * 60 * 60 * 1000;
-  }
-}
+export type WeeklySynthesisOptions = { weekId?: string };
+
+export type WeeklySynthesisResult = {
+  weekId: string;
+  reportPath: string;
+  reportJsonPath: string;
+  mistakesCount: number;
+  rubricsPath: string;
+  rubricsIndexPath: string;
+  promotionCandidateCount: number;
+};
+
 
 export class CompoundingEngine {
   private readonly weeklyDir: string;
@@ -474,17 +474,12 @@ export class CompoundingEngine {
     await mkdir(this.rubricsWorkflowsDir, { recursive: true });
   }
 
-  async synthesizeWeekly(opts?: {
-    weekId?: string;
-  }): Promise<{
-    weekId: string;
-    reportPath: string;
-    reportJsonPath: string;
-    mistakesCount: number;
-    rubricsPath: string;
-    rubricsIndexPath: string;
-    promotionCandidateCount: number;
-  }> {
+  /** Serialized per memory directory — see weekly-synthesis-queue.ts. */
+  async synthesizeWeekly(opts?: WeeklySynthesisOptions): Promise<WeeklySynthesisResult> {
+    return await queueWeeklySynthesis(this.config.memoryDir, () => this.synthesizeWeeklyExclusive(opts));
+  }
+
+  private async synthesizeWeeklyExclusive(opts?: WeeklySynthesisOptions): Promise<WeeklySynthesisResult> {
     await this.ensureDirs();
     const weekId = opts?.weekId ?? isoWeekId(new Date());
 
@@ -559,11 +554,16 @@ export class CompoundingEngine {
         log.warn(`[cmc] causal consolidation in synthesizeWeekly failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    // PEDC: Run calibration consolidation during weekly synthesis
-    if (resolveConsolidationCapabilities(this.config).calibration) {
+    // PEDC: calibration consolidation, keyed by the week id so a retry does
+    // not reinforce the same rules. Only a completed week consolidates: a
+    // manual in-progress-week run must not double-count partial evidence.
+    if (resolveConsolidationCapabilities(this.config).calibration && weekId < isoWeekId(new Date())) {
       try {
         const { calibrationConsolidationInput, runCalibrationConsolidation } = await import("../calibration.js");
-        const calRules = await runCalibrationConsolidation(calibrationConsolidationInput(this.config));
+        const calRules = await runCalibrationConsolidation({
+          ...calibrationConsolidationInput(this.config),
+          idempotencyKey: weekId,
+        });
         log.debug(`[calibration] weekly synthesis produced ${calRules.length} calibration rule(s)`);
       } catch (error) {
         log.warn(`[calibration] weekly consolidation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
@@ -573,10 +573,10 @@ export class CompoundingEngine {
       ? await this.readContinuityAuditReferences(weekId)
       : { monthId: monthIdFromIsoWeek(weekId), weeklyPath: null, monthlyPath: null };
 
-    // Write weekly report (always, even if empty: "day-one outcomes").
+    // The markdown report is the completion marker, so it is written after the
+    // JSON, rubrics, and mistakes artifacts. A crash before that write retries.
     const reportPath = path.join(this.weeklyDir, `${weekId}.md`);
     const md = this.formatWeeklyReport(weekId, entries, mistakes.patterns, mistakes.details, continuity, outcomeSummary, promotionCandidates);
-    await writeFile(reportPath, md, "utf-8");
 
     const reportJsonPath = path.join(this.weeklyDir, `${weekId}.json`);
     const weeklyArtifact: WeeklyCompoundingArtifact = {
@@ -633,6 +633,7 @@ export class CompoundingEngine {
       }, null, 2) + "\n",
       "utf-8",
     );
+    await writeFileAtomically(reportPath, md);
 
     log.info(
       `compounding: wrote weekly=${reportPath} weeklyJson=${reportJsonPath} rubrics=${this.rubricsPath} rubricsIndex=${this.rubricsIndexPath} mistakes=${this.mistakesPath}`,

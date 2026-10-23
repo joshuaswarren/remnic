@@ -2,17 +2,30 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { raceAbort, throwIfAborted } from "../abort-error.js";
+import {
+  CAPTURE_WRITE_LOCK_BUSY_MESSAGE,
+  type CaptureWriteLockLimitSource,
+  captureWriteLockDelayMs,
+  resolveCaptureWriteLockBackoffLimits,
+} from "../capture-write-lock-backoff.js";
+import { log } from "../logger.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
+import { sleepAbortable } from "../utils/sleep.js";
 import type { CasRevisionTransaction } from "./cas-revision-store.js";
-const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
-const CAPTURE_WRITE_LOCK_MAX_ATTEMPTS = 3;
-const CAPTURE_WRITE_LOCK_RETRY_BASE_MS = 25;
-const CAPTURE_WRITE_LOCK_BUSY_MESSAGE = "tombstone-blocked capture write lock remained busy";
 
-export function isTombstoneBlockedCaptureWriteLockBusy(error: unknown): boolean {
-  return error instanceof Error && error.message === CAPTURE_WRITE_LOCK_BUSY_MESSAGE;
-}
+export { isTombstoneBlockedCaptureWriteLockBusy } from "../capture-write-lock-backoff.js";
+
+const TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS = 60_000;
+/**
+ * One exclusive-create probe. The bounded wait lives in the outer backoff,
+ * which runs only after every lock from this attempt has been released.
+ * A multi-second poll here would hold an already-acquired sibling lock.
+ */
+const CAPTURE_WRITE_LOCK_PROBE_MS = 1;
+const CAPTURE_WRITE_LOCK_RETRY = Symbol("capture-write-lock-retry");
+const CAPTURE_WRITE_LOCK_PERMANENT = Symbol("capture-write-lock-permanent-failure");
 
 export function normalizeExplicitCaptureContent(value: string): string {
   return value.toLowerCase().replace(/\s+/g, " ").trim();
@@ -46,6 +59,15 @@ export function captureIdentityHash(memory: MemoryFile): string {
 export type TombstoneBlockedCaptureWriteLockOptions = {
   readonly stateDir: string;
   readonly withHeldFileLock?: typeof withHeldFileLock;
+  /** Read when an acquire starts, after the caller has installed converge config. */
+  readonly lockOptions?: () => CaptureWriteLockLimitSource | undefined;
+  readonly now?: () => number;
+  readonly random?: () => number;
+  readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly logDebug?: (message: string) => void;
+  readonly logWarn?: (message: string) => void;
+  /** Direct seam. Converge passes the same signal through `lockOptions` instead. */
+  readonly signal?: AbortSignal;
 };
 
 export class TombstoneBlockedCaptureWriteLock {
@@ -59,45 +81,107 @@ export class TombstoneBlockedCaptureWriteLock {
     return path.join(this.options.stateDir, "tombstone-blocked-capture", filename);
   }
 
-  private async withSingleCaptureWriteLock<T>(lockPath: string, task: () => Promise<T>): Promise<T> {
-    await mkdir(path.dirname(lockPath), { recursive: true });
-    const retry = Symbol("retry");
-    const permanentFailure = Symbol("permanent-failure");
-    const runWithHeldFileLock = this.options.withHeldFileLock ?? withHeldFileLock;
-    for (let attempt = 0; attempt < CAPTURE_WRITE_LOCK_MAX_ATTEMPTS; attempt += 1) {
-      const result = await runWithHeldFileLock<T | typeof retry | typeof permanentFailure>(
-        lockPath,
-        {
-          staleMs: TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS,
-          maxWaitMs: 1_000,
-          pollMs: 25,
-        },
-        async (acquired, controller) => {
-          if (acquired) return await task();
-          return controller.failure === "error" ? permanentFailure : retry;
-        }
-      );
-      if (result === permanentFailure) {
-        throw new Error("tombstone-blocked capture write lock acquisition failed");
-      }
-      if (result !== retry) return result;
-      if (attempt === CAPTURE_WRITE_LOCK_MAX_ATTEMPTS - 1) break;
-      const delayState = Promise.withResolvers<void>();
-      setTimeout(delayState.resolve, CAPTURE_WRITE_LOCK_RETRY_BASE_MS * 2 ** attempt);
-      await delayState.promise;
-    }
-    throw new Error(CAPTURE_WRITE_LOCK_BUSY_MESSAGE);
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
   }
+
+  private debug(message: string): void {
+    if (this.options.logDebug) {
+      this.options.logDebug(message);
+      return;
+    }
+    log.debug(message);
+  }
+
+  private warn(message: string): void {
+    if (this.options.logWarn) {
+      this.options.logWarn(message);
+      return;
+    }
+    log.warn(message);
+  }
+
+  /** Prefer the constructor seam; converge installs the signal on lock options at acquire time. */
+  private captureAbortSignal(): AbortSignal | undefined {
+    return this.options.signal ?? this.options.lockOptions?.()?.captureWriteLockSignal;
+  }
+
+  /**
+   * One probe of a single lock file. Returns the retry symbol when the lock
+   * is busy and the permanent symbol on a filesystem error. Does not sleep:
+   * the caller backs off only after the whole chain has unwound.
+   */
+  private async withSingleCaptureWriteLockOnce<T>(
+    lockPath: string,
+    task: () => Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY>
+  ): Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY | typeof CAPTURE_WRITE_LOCK_PERMANENT> {
+    await mkdir(path.dirname(lockPath), { recursive: true });
+    const runWithHeldFileLock = this.options.withHeldFileLock ?? withHeldFileLock;
+    return await runWithHeldFileLock(
+      lockPath,
+      {
+        staleMs: TOMBSTONE_CAPTURE_WRITE_LOCK_STALE_MS,
+        maxWaitMs: CAPTURE_WRITE_LOCK_PROBE_MS,
+        pollMs: CAPTURE_WRITE_LOCK_PROBE_MS,
+      },
+      async (acquired, controller) => {
+        if (acquired) return await task();
+        return controller.failure === "error" ? CAPTURE_WRITE_LOCK_PERMANENT : CAPTURE_WRITE_LOCK_RETRY;
+      }
+    );
+  }
+
   private async withPhysicalCaptureWriteLocks<T>(
     task: () => Promise<T>,
     identityHashes: readonly string[]
   ): Promise<T> {
+    const signal = this.captureAbortSignal();
     const lockPaths = [...new Set(identityHashes.map((hash) => this.captureWriteLockPathForHash(hash)))];
-    const acquire = async (index: number): Promise<T> => {
-      if (index === lockPaths.length) return await task();
-      return await this.withSingleCaptureWriteLock(lockPaths[index], () => acquire(index + 1));
+    const limits = resolveCaptureWriteLockBackoffLimits(this.options.lockOptions?.());
+    const deadline = this.now() + limits.deadlineMs;
+    const giveUp = (): never => {
+      throwIfAborted(signal);
+      this.warn(
+        `tombstone-blocked capture write lock remained busy after ${limits.deadlineMs}ms; failing this write so the rest of the cycle can continue`
+      );
+      throw new Error(CAPTURE_WRITE_LOCK_BUSY_MESSAGE);
     };
-    return await acquire(0);
+    const acquire = async (
+      index: number
+    ): Promise<T | typeof CAPTURE_WRITE_LOCK_RETRY | typeof CAPTURE_WRITE_LOCK_PERMANENT> => {
+      throwIfAborted(signal);
+      // The deadline gates each probe: a chain that started before the
+      // deadline must not keep probing locks (or run the write) after it.
+      const runTask = async (): Promise<T> => {
+        if (this.now() >= deadline) giveUp();
+        return await task();
+      };
+      if (index === lockPaths.length) return await runTask();
+      const lockPath = lockPaths[index];
+      if (lockPath === undefined) return await runTask();
+      if (this.now() >= deadline) giveUp();
+      return await this.withSingleCaptureWriteLockOnce(lockPath, () => acquire(index + 1));
+    };
+    for (let attempt = 0; ; attempt += 1) {
+      throwIfAborted(signal);
+      const outcome = await acquire(0);
+      if (outcome === CAPTURE_WRITE_LOCK_PERMANENT) {
+        throw new Error("tombstone-blocked capture write lock acquisition failed");
+      }
+      if (outcome !== CAPTURE_WRITE_LOCK_RETRY) return outcome;
+      throwIfAborted(signal);
+      const now = this.now();
+      if (now >= deadline) giveUp();
+      const delay = Math.min(
+        captureWriteLockDelayMs(attempt, limits, this.options.random ?? Math.random),
+        deadline - now
+      );
+      if (delay <= 0) giveUp();
+      this.debug(`tombstone-blocked capture write lock busy; backing off ${delay}ms before retry ${attempt + 1}`);
+      // raceAbort covers seam sleeps that ignore the signal; the default
+      // sleepAbortable also clears its timer so abort holds no Timeout.
+      await raceAbort((this.options.sleep ?? sleepAbortable)(delay, signal), signal);
+    }
   }
 
   async withCaptureWriteLock<T>(task: () => Promise<T>, identity?: string | readonly string[]): Promise<T> {
@@ -125,6 +209,7 @@ export class TombstoneBlockedCaptureWriteLock {
     identities: readonly string[],
     identityHashes: readonly string[]
   ): Promise<T> {
+    throwIfAborted(this.captureAbortSignal());
     const current = this.context.getStore();
     const hashToken = (key: string): string =>
       `\u0000${key.length === 0 ? "" : createHash("sha256").update(key).digest("hex")}`;
@@ -179,7 +264,10 @@ export class TombstoneBlockedCaptureWriteLock {
       next.add(hashToken(key));
     }
     for (const hash of hashes) next.add(`\u0000${hash}`);
-    const run = () => this.context.run(next, task);
+    const run = () => {
+      throwIfAborted(this.captureAbortSignal());
+      return this.context.run(next, task);
+    };
     if (physicalMissing.length === 0) return await run();
     return await this.withPhysicalCaptureWriteLocks(run, physicalMissing);
   }
@@ -197,7 +285,10 @@ export type TombstoneBlockedMutationHost = {
   writeStorageSecureFile: (pathname: string, fileContent: string) => Promise<void>;
   withCaptureWriteLock: (task: () => Promise<void>, identity: string | readonly string[]) => Promise<void>;
   logWarning: (message: string) => void;
-  beginDurableMemoryRevision?: (pathname: string, expectedContent?: string | Buffer | null) => Promise<CasRevisionTransaction | undefined>;
+  beginDurableMemoryRevision?: (
+    pathname: string,
+    expectedContent?: string | Buffer | null
+  ) => Promise<CasRevisionTransaction | undefined>;
 };
 
 export type TombstoneBlockedMutation = {
@@ -263,7 +354,7 @@ export async function runTombstoneBlockedMutation(
             await transaction.abort();
           } catch (abortError) {
             host.logWarning(
-              `storage.tombstoneBlocked failed to abort the reserved receipt (pending marker preserved): ${abortError}`,
+              `storage.tombstoneBlocked failed to abort the reserved receipt (pending marker preserved): ${abortError}`
             );
           }
         }
@@ -280,7 +371,7 @@ export async function runTombstoneBlockedMutation(
           await transaction.writeLanded();
         } catch (evidenceError) {
           host.logWarning(
-            `storage.tombstoneBlocked failed to record receipt crash evidence (pending marker preserved): ${evidenceError}`,
+            `storage.tombstoneBlocked failed to record receipt crash evidence (pending marker preserved): ${evidenceError}`
           );
         }
         try {
@@ -292,7 +383,7 @@ export async function runTombstoneBlockedMutation(
           // and promotion/rollback refuse until recovery reconciles. The
           // reservation must NOT be aborted: the write is on disk.
           host.logWarning(
-            `storage.tombstoneBlocked receipt publication failed after the memory write (pending marker preserved for recovery): ${err}`,
+            `storage.tombstoneBlocked receipt publication failed after the memory write (pending marker preserved for recovery): ${err}`
           );
           await discardRebuildMarker();
           throw err;
@@ -317,7 +408,6 @@ export async function runTombstoneBlockedMutation(
     lockIdentity = [...new Set(identities)];
   }
 }
-
 
 export function tombstoneBlocked(frontmatter: MemoryFrontmatter): boolean {
   return frontmatter.status === "pending_review" && Boolean(frontmatter.blockedBy);
