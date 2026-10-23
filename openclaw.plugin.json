@@ -1609,19 +1609,19 @@
             "type": "integer",
             "minimum": 1,
             "default": 50,
-            "description": "First capture-write-lock backoff window in ms (equal jitter, so the first wait is about half of this). Default 50. Positive integer, clamped to 3600000. Must be <= captureWriteLockMaxDelayMs."
+            "description": "First backoff window in ms (equal jitter: first wait is about half). Default 50. Positive integer, clamped to 3600000. Must be <= captureWriteLockMaxDelayMs."
           },
           "captureWriteLockMaxDelayMs": {
             "type": "integer",
             "minimum": 1,
             "default": 2000,
-            "description": "Cap on one capture-write-lock backoff wait, in ms. Default 2000. Positive integer, clamped to 3600000. Must be <= captureWriteLockDeadlineMs."
+            "description": "Cap on one backoff wait, in ms. Default 2000. Positive integer, clamped to 3600000. Must be <= captureWriteLockDeadlineMs."
           },
           "captureWriteLockDeadlineMs": {
             "type": "integer",
             "minimum": 1,
             "default": 60000,
-            "description": "Overall deadline for one tombstone-blocked capture write-lock acquire, in ms. Default 60000. When it expires, that transfer fails and the rest of the converge cycle continues. A deadline below the 2000ms max wait must also set captureWriteLockMaxDelayMs."
+            "description": "Overall acquire deadline in ms. Default 60000. On expiry that transfer fails and the cycle continues. Below the 2000ms max wait, also set captureWriteLockMaxDelayMs."
           }
         }
       },
