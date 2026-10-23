@@ -19,6 +19,7 @@ import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
 import { FallbackLlmClient } from "./fallback-llm.js";
 import { listJsonFiles } from "./json-store.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { LocalLlmClient } from "./local-llm.js";
 import { log } from "./logger.js";
 import { writeFileAtomically } from "./maintenance/atomic-file.js";
@@ -195,7 +196,7 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
     for (const day of dayDirs) {
       const dayPath = path.join(factsDir, day);
       const dayFiles = (await readdir(dayPath))
-        .filter((f: string) => f.startsWith("correction-") && f.endsWith(".md"))
+        .filter((f: string) => !isMacOsReplicationJunkBasename(f) && f.startsWith("correction-") && f.endsWith(".md"))
         .map((f: string) => path.join(dayPath, f));
       files.push(...dayFiles);
     }
@@ -207,7 +208,7 @@ async function readCorrectionsImpl(memoryDir: string): Promise<CorrectionMemory[
   try {
     const { readdir } = await import("node:fs/promises");
     const corrFiles = (await readdir(correctionsDir))
-      .filter((f: string) => f.endsWith(".md"))
+      .filter((f: string) => !isMacOsReplicationJunkBasename(f) && f.endsWith(".md"))
       .map((f: string) => path.join(correctionsDir, f));
     files.push(...corrFiles);
   } catch {

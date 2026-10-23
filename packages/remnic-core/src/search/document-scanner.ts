@@ -3,6 +3,7 @@ import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 
 export interface IndexableDocument {
   /** Memory ID from frontmatter or filename stem */
@@ -60,6 +61,9 @@ async function scanDir(dir: string, memoryRootReal: string): Promise<IndexableDo
     const entries = await readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
+      // QMD's indexer already skips hidden paths. This scanner is the
+      // non-QMD index input and must ignore the same Finder metadata.
+      if (isMacOsReplicationJunkBasename(entry.name)) continue;
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
