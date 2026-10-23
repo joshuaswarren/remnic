@@ -305,7 +305,11 @@ export class OrchestratorInitCoordinator {
         logger: (message) => log.info(message),
       });
       await this.deps.storage.loadAliases();
-      await this.deps.storage.ensureDirectories();
+      // #3139: startup serves READ readiness (daemon boot, CLI briefing)
+      // without running the entity canonical-id migration; safe-root and
+      // entity-entry validation still gate it, and the next default
+      // ensureDirectories() (writes, unlock) still awaits the migration.
+      await this.deps.storage.ensureDirectories({ awaitEntityCanonicalMigration: false });
       await Promise.all(
         this.deps.config.externalWikis.map((wiki) =>
           assertExternalWikiRootOutsideMemoryDirCanonical(
@@ -323,7 +327,8 @@ export class OrchestratorInitCoordinator {
         for (const ns of namespaces) {
           const sm = await this.deps.storageRouter.storageFor(ns);
           await sm.loadAliases().catch(() => undefined);
-          await sm.ensureDirectories();
+          // Same #3139 startup deferral as the main storage above.
+          await sm.ensureDirectories({ awaitEntityCanonicalMigration: false });
         }
         // Explicitly seed the catalog with all configured namespaces at startup
         // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the

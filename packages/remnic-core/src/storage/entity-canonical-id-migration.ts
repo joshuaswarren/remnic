@@ -370,7 +370,14 @@ async function assertEntityContentUnchanged(
   }
 }
 
-async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
+/**
+ * Fail-closed entity-entry validation for the startup path: refuses a
+ * symlinked or non-directory entities root and any symlinked entry, without
+ * taking the migration lock. Exported so `ensureDirectories()` can run it
+ * before deferring the migration (#3139) — the same check
+ * `migrateLegacyEntityCanonicalIds` performs under the lock.
+ */
+export async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   const rootStat = await lstat(entitiesDir);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     throw new Error("Refusing entity canonical-id migration through a symlinked or non-directory entities root.");
