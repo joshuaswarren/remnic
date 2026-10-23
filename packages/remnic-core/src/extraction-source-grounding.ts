@@ -36,7 +36,7 @@ export function applyExtractionSourceGrounding(
     sourceForGrounding(assertionSourceText) ?? assertionSourceText,
     groundedRoleSources,
     messageTimestamp,
-    options,
+    { ...options, quoteTransform: (quote) => sourceForGrounding(quote) ?? quote },
   );
 }
 
@@ -100,6 +100,15 @@ export function filterExtractionResultBySource(
   roleAssertionSources?: ExtractionGroundingRoleSources,
   eventTimeNormalizer?: (eventTime: string) => string,
   spanMode: "off" | "shadow" | "on" = "off",
+  quoteTransform?: (quote: string) => string,
 ): ExtractionResult {
-  return filterGroundingRules(result, source, assertionSource, roleAssertionSources, eventTimeNormalizer, spanMode);
+  return filterGroundingRules(
+    result,
+    source,
+    assertionSource,
+    roleAssertionSources,
+    eventTimeNormalizer,
+    spanMode,
+    quoteTransform,
+  );
 }
