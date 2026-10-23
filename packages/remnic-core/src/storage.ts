@@ -1919,6 +1919,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   onCatalogWrite?: () => void;
   /** Post-write embedding hook (#2019). Installed by the orchestrator; fire-and-forget. */
   onMemoryWrite?: (filePath: string) => void;
+  /** Request search maintenance after a completed entity replay. */
+  onEntityMigrationComplete?: () => void;
   private notifyMemoryWrite(filePath: string): void {
     try {
       this.onMemoryWrite?.(filePath);

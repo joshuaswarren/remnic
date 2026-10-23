@@ -1497,14 +1497,6 @@ export class Orchestrator {
         (namespace) => this.namespaceSearchRouter.backendForNamespace(namespace),
         (msg) => log.debug(msg),
       );
-      const defaultNs = this.config.defaultNamespace;
-      this.storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, defaultNs);
-      this.storageRouter.onStorageCreated = (storage, namespace) => {
-        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
-      };
-      this.storageRouter.forEachCachedStorage((storage, namespace) => {
-        storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
-      });
     }
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
@@ -1514,6 +1506,13 @@ export class Orchestrator {
       getStorage: () => this.storage, storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
       onActivitySynced: (summary) => { if (!this.config.meetings.enabled) return; void this.getMeetingsService().then((s) => s.requestBuildForActivitySync(summary.ranAt, this.config.activity.timezone, summary.touchedDates)).catch((err) => log.warn(`meetings: activity tail-step build failed to schedule: ${err instanceof Error ? err.message : String(err)}`)); },
     });
+    const bindStorage = (storage: StorageManager, namespace: string) => {
+      storage.onEntityMigrationComplete = () => { if (!this.destroyed) this.requestQmdMaintenance(); };
+      if (this.prioritizedEmbedding) storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
+    };
+    bindStorage(this.storage, this.config.defaultNamespace);
+    this.storageRouter.onStorageCreated = bindStorage;
+    this.storageRouter.forEachCachedStorage(bindStorage);
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
 
