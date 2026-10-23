@@ -14,6 +14,7 @@
     "packages/remnic-core/src/runtime/better-sqlite.test.ts",
     "tests/amb-integration.test.ts",
     "tests/export-import-sqlite.test.ts",
+    "tests/import-conflict-policies.test.ts",
     "tests/lcm-gateway-summarizer.test.ts",
     "tests/lcm.test.ts",
     "tests/memory-projection.test.ts"
