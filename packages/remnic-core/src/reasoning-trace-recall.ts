@@ -88,6 +88,8 @@ export interface BoostableResult {
   path: string;
   score: number;
   docid?: string;
+  /** Effective relevance carried forward by an upstream rerank stage. */
+  effectiveScore?: number;
 }
 
 /**
@@ -116,6 +118,17 @@ export interface ApplyReasoningTraceBoostOptions {
   enabled: boolean;
   query: string;
   boost?: number;
+}
+
+/**
+ * The relevance a row is compared on: its effective relevance when a rerank
+ * stage left one (MMR ranks on the same basis), else the raw retrieval score.
+ */
+function comparisonRelevance(row: BoostableResult): number {
+  if (typeof row.effectiveScore === "number" && Number.isFinite(row.effectiveScore)) {
+    return row.effectiveScore;
+  }
+  return typeof row.score === "number" && Number.isFinite(row.score) ? row.score : 0;
 }
 
 /**
@@ -167,7 +180,18 @@ export function applyReasoningTraceBoost<R extends BoostableResult>(
     if (isReasoningTracePath(r.path)) {
       changed = true;
       const baseScore = typeof r.score === "number" && Number.isFinite(r.score) ? r.score : 0;
-      boosted.push({ ...r, score: baseScore + boostAmount } as R);
+      // Compose the boost into the effective relevance too: a downstream MMR
+      // pass prefers it over the raw score, so a stale value would drop the
+      // boost.
+      const effective =
+        typeof r.effectiveScore === "number" && Number.isFinite(r.effectiveScore)
+          ? r.effectiveScore + boostAmount
+          : undefined;
+      boosted.push(
+        effective === undefined
+          ? ({ ...r, score: baseScore + boostAmount } as R)
+          : ({ ...r, score: baseScore + boostAmount, effectiveScore: effective } as R),
+      );
     } else {
       boosted.push(r);
     }
@@ -175,21 +199,22 @@ export function applyReasoningTraceBoost<R extends BoostableResult>(
   if (!changed) return boosted;
 
   // Step 2: promote each boosted trace upward past any non-trace neighbor
-  // whose score is strictly lower than the boosted score. Non-trace items
-  // never move past each other, so reranker-driven ordering on non-trace
-  // items is preserved.
+  // whose relevance is strictly lower than the boosted trace's. The
+  // comparison uses the SAME basis MMR ranks on — the effective relevance a
+  // rerank stage left behind, else the raw score — so the boost cannot
+  // promote a trace the pipeline deliberately demoted. Non-trace items never
+  // move past each other, so reranker-driven ordering on non-trace items is
+  // preserved.
   const out = boosted.slice();
   for (let i = 0; i < out.length; i++) {
     if (!isReasoningTracePath(out[i].path)) continue;
     const trace = out[i];
-    const traceScore =
-      typeof trace.score === "number" && Number.isFinite(trace.score) ? trace.score : 0;
+    const traceScore = comparisonRelevance(trace);
     let j = i;
     while (j > 0) {
       const prev = out[j - 1];
       if (isReasoningTracePath(prev.path)) break; // don't reorder traces vs each other
-      const prevScore =
-        typeof prev.score === "number" && Number.isFinite(prev.score) ? prev.score : 0;
+      const prevScore = comparisonRelevance(prev);
       if (prevScore >= traceScore) break;
       out[j] = prev;
       j -= 1;
