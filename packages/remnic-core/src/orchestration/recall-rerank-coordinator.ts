@@ -317,16 +317,16 @@ export class RecallRerankCoordinator {
     // we only reorder. Writing the synthetic rank-weighted score back
     // would contaminate downstream logic (telemetry, confidence gates)
     // that expects the original QMD/rerank score semantics.
-    // The stage's own score (rank × multiplier) is the relevance MMR must
-    // rank by. Attached only when the stage adjusted a score (every
-    // multiplier exactly 1 means it changed nothing).
+    // Divide rank × multiplier by pool size: a positive scaling preserves
+    // MMR's normalized relevance while keeping additive boosts meaningful.
+    // Neutral stages leave upstream metadata untouched.
     const adjusted = filtered.some((item) => item.multiplier !== 1);
     const byPath = new Map(results.map((r) => [memoryMapKey(r), r]));
     const reordered: QmdSearchResult[] = [];
     for (const item of filtered) {
       const original = byPath.get(item.path);
       if (!original) continue;
-      reordered.push(adjusted ? { ...original, effectiveScore: item.score } : original);
+      reordered.push(adjusted ? { ...original, effectiveScore: item.score / results.length } : original);
     }
     return reordered;
   }
@@ -455,7 +455,7 @@ export class RecallRerankCoordinator {
           ? byKey.get(key)?.shift()
           : results.find((result) => result.path === item.path);
       if (!original) continue;
-      admitted.push(adjusted ? { ...original, effectiveScore: item.score } : original);
+      admitted.push(adjusted ? { ...original, effectiveScore: item.score / results.length } : original);
     }
     return { results: admitted, trustByPath };
   }
@@ -610,9 +610,9 @@ export class RecallRerankCoordinator {
         now: new Date(),
       });
 
-      // The drift stage ranks by `input rank × multiplier`; that product is
-      // its relevance. Attached only when it damped something — an
-      // annotation-only run leaves the upstream metadata alone.
+      // Normalize rank × multiplier by pool size, as in the other stages.
+      // Attach only when damping changed something; annotation-only runs
+      // leave upstream relevance untouched.
       const adjusted = ordered.some((item) => item.multiplier !== 1);
       const byKey = new Map(results.map((r) => [memoryMapKey(r), r]));
       const rankByKey = new Map(ranked.map((r) => [r.key, r.rank]));
@@ -629,7 +629,7 @@ export class RecallRerankCoordinator {
         const rank = rankByKey.get(item.key);
         reordered.push(
           adjusted && rank !== undefined
-            ? { ...annotated, effectiveScore: rank * item.multiplier }
+            ? { ...annotated, effectiveScore: rank * item.multiplier / results.length }
             : annotated,
         );
       }

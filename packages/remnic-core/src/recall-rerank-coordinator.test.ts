@@ -912,3 +912,26 @@ for (const boostCase of [
     );
   });
 }
+
+for (const poolSize of [10, 40]) {
+  test(`#3226: reasoning boost keeps its scale in a ${poolSize}-candidate adjusted pool`, async () => {
+    const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: true, recallMmrLambda: 1 }));
+    const candidates = [
+      result("fact", 0.9),
+      { ...result("trace", 0.8), path: "/reasoning-traces/trace.md" },
+      ...Array.from({ length: poolSize - 3 }, (_, index) => result(`plain-${index}`, 0.7)),
+      result("bad", 0.1),
+    ];
+    const frontmatter = new Map(candidates.map((candidate) => [
+      candidate.path,
+      memAt(candidate.path, candidate.path === "/facts/bad.md" ? { mw_success: 0, mw_fail: 10 } : {}),
+    ]));
+    const staged = await coord.applyMemoryWorthRerank(candidates, ["default"], frontmatter);
+    const boosted = applyReasoningTraceBoost(staged, { enabled: true, query: "how do I fix this?" });
+    assert.equal(
+      coord.diversifyAndLimitRecallResults("memories", boosted, 1)[0]?.path,
+      "/reasoning-traces/trace.md",
+      "a neutral adjacent trace must retain a meaningful boost when another candidate is adjusted",
+    );
+  });
+}

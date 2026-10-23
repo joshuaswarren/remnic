@@ -14,3 +14,7 @@ prefers that over the raw score. These rerank stages leave raw scores intact;
 the existing reasoning-trace boost still adds to raw scores and now composes
 into effective relevance too. A neutral stage leaves its results unchanged,
 and annotation-only drift preserves the upstream effective relevance.
+
+Normalize the stage's rank-weighted relevance by candidate-pool size before
+carrying it forward, preserving its MMR ordering while keeping the existing
+additive reasoning-trace boost meaningful in larger pools.

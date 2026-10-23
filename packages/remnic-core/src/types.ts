@@ -3461,8 +3461,8 @@ export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, 
   snippet: string;
   score: number;
   /**
-   * Effective relevance from the rerank stage that last adjusted this result
-   * (the stage's own score). MMR prefers it over `score`.
+   * Pool-normalized rank × multiplier from the last adjusted rerank stage.
+   * MMR prefers it over `score`; additive boosts compose on this scale.
    */
   effectiveScore?: number;
   line?: number;
