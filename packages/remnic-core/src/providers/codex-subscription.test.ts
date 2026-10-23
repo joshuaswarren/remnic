@@ -1103,7 +1103,12 @@ test(
           return true;
         }
       );
-      // The detached child group must be untracked after settle — no leak.
+      // The timeout settles before close; tracking must remain until the child
+      // actually exits so forced cleanup can still find it.
+      const cleanupUntil = Date.now() + 2_000;
+      while (__codexSubscriptionTestHooks.activeCodexChildCount(runner) > 0 && Date.now() < cleanupUntil) {
+        await flushLoop();
+      }
       assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
     } finally {
       await rm(dir, { force: true, recursive: true }).catch(() => {});
