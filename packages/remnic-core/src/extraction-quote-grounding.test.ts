@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { quoteAnchors } from "./extraction-quote-grounding.js";
-import { filterExtractionResultBySource } from "./extraction-source-grounding.js";
+import {
+  applyExtractionSourceGrounding,
+  filterExtractionResultBySource,
+} from "./extraction-source-grounding.js";
 import type { ExtractionResult } from "./types.js";
 
 // Minimal excerpts of a replayed dream run: the model's reworded `content` plus
@@ -388,4 +391,103 @@ test("quoteAnchors keeps a quote with `;` as one sentence", () => {
   assert.ok(anchor !== undefined);
   assert.ok(anchor.quote.includes(";"));
   assert.ok(anchor.window.includes("packets, do not synthesize"));
+});
+
+const BUDGET_SOURCE = [
+  "Notes: Alice did not approve the budget. Bob reviewed the budget with the finance team.",
+].join("\n\n");
+
+test("a claim that inverts a negated quote is rejected, a restated exclusion is kept", () => {
+  const quote = "Alice did not approve the budget.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Alice approved the budget after the finance review.", quote },
+      { content: "Alice would avoid approving the budget.", quote },
+    ]),
+    BUDGET_SOURCE,
+    BUDGET_SOURCE,
+  );
+  assert.deepEqual(keptContents(grounded), ["Alice would avoid approving the budget."]);
+});
+
+test("an invented relationship label is not kept between two names in a kept quote window", () => {
+  const grounded = filterExtractionResultBySource(
+    resultOf(
+      [
+        {
+          content: "James Wilson and Carol White work together in the TechCorp Solutions Team.",
+          quote: "I (James Wilson) and Carol White are working in the TechCorp Solutions Team",
+        },
+      ],
+      {
+        relationships: [
+          { source: "james-wilson", target: "carol-white", label: "fired" },
+          { source: "james-wilson", target: "carol-white", label: "" },
+          { source: "james-wilson", target: "carol-white", label: "works with" },
+        ],
+      },
+    ),
+    TRAJECTORY_118_SOURCE,
+    TRAJECTORY_118_SOURCE,
+  );
+  assert.deepEqual(grounded.relationships?.map((relationship) => relationship.label), ["works with"]);
+});
+
+test("an entity keeps facts from both the whole-source path and the quote anchors", () => {
+  const grounded = filterExtractionResultBySource(
+    resultOf(
+      [
+        {
+          content: "James Wilson and Carol White work together in the TechCorp Solutions Team.",
+          quote: "I (James Wilson) and Carol White are working in the TechCorp Solutions Team",
+        },
+      ],
+      {
+        entities: [
+          {
+            name: "carol-white",
+            type: "person",
+            facts: [
+              "Carol White are working in the TechCorp Solutions Team",
+              "Carol White works with James Wilson in the TechCorp Solutions Team.",
+            ],
+          },
+        ],
+      },
+    ),
+    TRAJECTORY_118_SOURCE,
+    TRAJECTORY_118_SOURCE,
+  );
+  assert.equal(grounded.entities[0]?.facts.length, 2);
+});
+
+test("spanMode on keeps the embedded-quote path and does not use anchors", () => {
+  const grounded = filterExtractionResultBySource(
+    resultOf(TRAJECTORY_300_FACTS),
+    TRAJECTORY_300_SOURCE,
+    TRAJECTORY_300_SOURCE,
+    undefined,
+    undefined,
+    "on",
+  );
+  assert.equal(grounded.facts.length, 0);
+});
+
+test("a quote naming rewritten text is located after temporal anchoring", () => {
+  const source = "The deploy finished yesterday and the Atlas team signed off on the production rollout plan.";
+  const options = { sourceGrounding: true, anchorTemporalExpressions: true };
+  const grounded = applyExtractionSourceGrounding(
+    resultOf([
+      {
+        content: "The Atlas team approved the production rollout plan once the deploy finished.",
+        quote: "The deploy finished yesterday and the Atlas team signed off on the production rollout plan.",
+      },
+    ]),
+    source,
+    source,
+    undefined,
+    new Date("2026-10-20T12:00:00.000Z"),
+    options,
+  );
+  assert.equal(grounded.facts.length, 1);
 });

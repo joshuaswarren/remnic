@@ -27,6 +27,9 @@ export const QUOTE_ANCHOR_MIN_WINDOW_COVERAGE = 0.35;
 export const QUOTE_ANCHOR_MIN_SOURCE_COVERAGE = 0.75;
 const QUOTE_ANCHOR_MAX_OCCURRENCES = 8;
 const TURN_SEPARATOR = "\n\n";
+const NEGATOR_PATTERN = /\b(?:not|no|never|cannot|without|neither|nor)\b|n't\b/iu;
+const EXCLUSION_PATTERN =
+  /\b(?:exclu\w*|avoid\w*|omit\w*|skip\w*|ignor\w*|forbid\w*|prohibit\w*|disallow\w*|prevent\w*|reject\w*|refus\w*|insufficient|instead|rather|unless|except)\b/iu;
 
 /** A verbatim quote and the text around it inside its turn. */
 export interface QuoteAnchor {
@@ -60,18 +63,7 @@ function normalizeWhitespaceWithMap(source: string): { text: string; originalInd
   return { text: chars.join(""), originalIndex };
 }
 
-/**
- * Returns one anchor per place `quote` occurs verbatim in `source`, or [] when
- * the quote is absent, too short, or not an exact substring. A quote that
- * spans a turn separator is not one turn's words and yields no anchor; windows
- * never extend past their turn.
- *
- * The quote is one evidence unit: a `;` inside it is rewritten to `,` in the
- * window so sentence splitting cannot cut it, or a claim that merges two of
- * its clauses could never be grounded in a single sentence.
- */
-export function quoteAnchors(quote: string | undefined, source: string): QuoteAnchor[] {
-  if (typeof quote !== "string") return [];
+function findQuoteAnchors(quote: string, source: string): QuoteAnchor[] {
   const needle = quote.replace(/\s+/gu, " ").trim();
   if (needle.length < QUOTE_ANCHOR_MIN_CHARS) return [];
   const normalized = normalizeWhitespaceWithMap(source);
@@ -100,19 +92,60 @@ export function quoteAnchors(quote: string | undefined, source: string): QuoteAn
   return anchors;
 }
 
+/**
+ * Returns one anchor per place `quote` occurs verbatim in `source`, or [] when
+ * the quote is absent, too short, or not an exact substring. A quote that
+ * spans a turn separator is not one turn's words and yields no anchor; windows
+ * never extend past their turn.
+ *
+ * The quote is one evidence unit: a `;` inside it is rewritten to `,` in the
+ * window so sentence splitting cannot cut it, or a claim that merges two of
+ * its clauses could never be grounded in a single sentence.
+ *
+ * `source` may have been rewritten before grounding (temporal anchoring,
+ * pronoun resolution) while the model quoted the original words. When the raw
+ * quote is not found, `transformQuote` applies the same rewrite to the quote.
+ */
+export function quoteAnchors(
+  quote: string | undefined,
+  source: string,
+  transformQuote?: (quote: string) => string,
+): QuoteAnchor[] {
+  if (typeof quote !== "string") return [];
+  const exact = findQuoteAnchors(quote, source);
+  if (exact.length > 0 || transformQuote === undefined) return exact;
+  return findQuoteAnchors(transformQuote(quote), source);
+}
+
 export function tokenPool(tokens: ReadonlySet<string>): TokenPool {
   const list = [...tokens];
   return (token) => tokens.has(token) || list.some((poolToken) => areGroundingTokensCompatible(token, poolToken));
 }
 
 /**
+ * True when the claim states the opposite of a negated quote clause it
+ * restates: "did not approve the budget" reworded as "approved the budget".
+ * A claim that keeps any negator or exclusion word ("do not X" reworded as
+ * "X is excluded") is not inverted.
+ */
+function invertsNegatedQuote(content: string, quote: string): boolean {
+  if (NEGATOR_PATTERN.test(content) || EXCLUSION_PATTERN.test(content)) return false;
+  const contentHas = tokenPool(tokenize(content));
+  return quote.split(/[;.!?\n]+/u).some((clause) => {
+    if (!NEGATOR_PATTERN.test(clause)) return false;
+    const clauseTokens = [...tokenize(clause)];
+    const shared = clauseTokens.filter(contentHas).length;
+    return shared >= GROUNDING_MIN_SHARED_TOKENS && shared / clauseTokens.length >= 0.5;
+  });
+}
+
+/**
  * A claim is supported by a verbatim quote when it shares at least
  * GROUNDING_MIN_SHARED_TOKENS content words with the quote, a good part of its
- * words sit in the text around the quote, and nearly all of them occur in the
- * source at all. Reworded and lightly elaborated claims pass; claims that bring
- * words the conversation never used, or that have nothing to do with the
- * quote, do not. No polarity check: it misreads reworded imperatives
- * ("do not X" restated as "X is excluded").
+ * words sit in the text around the quote, nearly all of them occur in the
+ * source at all, and it does not invert a negated clause of the quote. Reworded
+ * and lightly elaborated claims pass; claims that bring words the conversation
+ * never used, or that have nothing to do with the quote, do not.
  */
 export function isQuoteAnchoredClaim(content: string, anchor: QuoteAnchor, sourceHas: TokenPool): boolean {
   const contentTokens = [...tokenize(content)];
@@ -123,7 +156,8 @@ export function isQuoteAnchoredClaim(content: string, anchor: QuoteAnchor, sourc
   if (contentTokens.filter(windowHas).length / contentTokens.length < QUOTE_ANCHOR_MIN_WINDOW_COVERAGE) {
     return false;
   }
-  return contentTokens.filter(sourceHas).length / contentTokens.length >= QUOTE_ANCHOR_MIN_SOURCE_COVERAGE;
+  return contentTokens.filter(sourceHas).length / contentTokens.length >= QUOTE_ANCHOR_MIN_SOURCE_COVERAGE
+    && !invertsNegatedQuote(content, anchor.quote);
 }
 
 /** Keeps the entity facts (flat and sectioned) `isSupported` accepts; undefined when none remain. */
@@ -144,35 +178,38 @@ export function filterEntityFacts(entity: Entity, isSupported: (fact: string) =>
   };
 }
 
-export function entityFactCount(entity: Entity): number {
-  return entity.facts.length
-    + (entity.structuredSections ?? []).reduce((total, section) => total + section.facts.length, 0);
-}
-
-/** Entities carry no quote of their own; the anchors of facts that kept support them. */
-export function filterQuoteAnchoredEntity(
+/**
+ * Entities carry no quote of their own; the anchors of facts that kept support
+ * them. Returns a fact predicate, or undefined when no anchor window names the entity.
+ */
+export function quoteAnchoredEntitySupport(
   entity: Entity,
   anchors: readonly QuoteAnchor[],
   sourceHas: TokenPool,
-): Entity | undefined {
+): ((fact: string) => boolean) | undefined {
   const nameAnchors = anchors.filter((anchor) => isGroundedEntityName(entity.name, anchor.window));
   if (nameAnchors.length === 0) return undefined;
-  return filterEntityFacts(entity, (fact) =>
-    nameAnchors.some((anchor) => isQuoteAnchoredClaim(fact, anchor, sourceHas)));
+  return (fact) => nameAnchors.some((anchor) => isQuoteAnchoredClaim(fact, anchor, sourceHas));
 }
 
+/** Both names and the label must sit in one anchor window; an invented or empty label never passes. */
 export function isQuoteAnchoredRelationship(
   relationship: Relationship,
   anchors: readonly QuoteAnchor[],
   sourceHas: TokenPool,
 ): boolean {
+  const labelTokens = [...tokenize(relationship.label)];
+  if (labelTokens.length === 0) return false;
   const relationText = [
     normalizedEntityIdentifierTokens(relationship.source).join(" "),
     relationship.label,
     normalizedEntityIdentifierTokens(relationship.target).join(" "),
   ].join(" ");
-  return anchors.some((anchor) =>
-    isGroundedEntityName(relationship.source, anchor.window)
-    && isGroundedEntityName(relationship.target, anchor.window)
-    && isQuoteAnchoredClaim(relationText, anchor, sourceHas));
+  return anchors.some((anchor) => {
+    const windowHas = tokenPool(tokenize(anchor.window));
+    return labelTokens.every(windowHas)
+      && isGroundedEntityName(relationship.source, anchor.window)
+      && isGroundedEntityName(relationship.target, anchor.window)
+      && isQuoteAnchoredClaim(relationText, anchor, sourceHas);
+  });
 }
