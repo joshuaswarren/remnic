@@ -41,7 +41,7 @@ test("real storage fires the completion slot once per actual pass and fails open
   }
 });
 
-test("orchestrator wires the completion slot with auto-embed off and guards it with destroyed", async () => {
+test("orchestrator wires completion with auto-embed off and blocks it from teardown admission", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-migration-complete-orch-"));
   const orchestrator = new Orchestrator(
     parseConfig({
@@ -68,6 +68,7 @@ test("orchestrator wires the completion slot with auto-embed off and guards it w
     storage: StorageManager;
     storageRouter: { storageFor(namespace: string): Promise<StorageManager> };
     requestQmdMaintenance: () => void;
+    maintenanceScheduler: { dispose: () => Promise<void> };
   };
   try {
     // Wiring must exist independent of auto-embed.
@@ -95,7 +96,24 @@ test("orchestrator wires the completion slot with auto-embed off and guards it w
     onNamespaceMigrationComplete();
     assert.deepEqual(rearmRequests, ["rearm", "rearm"], "a completion must re-arm QMD maintenance");
 
-    await orchestrator.destroy().catch(() => undefined);
+    const { promise: disposeGate, resolve: releaseDispose } = Promise.withResolvers<void>();
+    const { promise: disposing, resolve: signalDispose } = Promise.withResolvers<void>();
+    const originalDispose = internals.maintenanceScheduler.dispose.bind(internals.maintenanceScheduler);
+    internals.maintenanceScheduler.dispose = async () => {
+      signalDispose();
+      await disposeGate;
+      await originalDispose();
+    };
+    const teardown = orchestrator.destroy();
+    try {
+      await disposing;
+      onMigrationComplete();
+      onNamespaceMigrationComplete();
+      assert.deepEqual(rearmRequests, ["rearm", "rearm"], "teardown admission must stop completion re-arms before drains");
+    } finally {
+      releaseDispose();
+      await teardown;
+    }
     onMigrationComplete();
     onNamespaceMigrationComplete();
     assert.deepEqual(
