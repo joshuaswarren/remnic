@@ -4,6 +4,32 @@ All 674 trajectories and 1,183 source parts were attempted. One part remains pro
 
 Keep [draft PR #3212](https://github.com/joshuaswarren/remnic/pull/3212) draft. Do not merge or mark ready.
 
+## Corrected run with quote-anchored grounding (2026-10-23)
+
+A second full dream run used the quote-anchored grounding fix from [PR #3236](https://github.com/joshuaswarren/remnic/pull/3236), with grounding still enabled. It used the same corpus, the same Codex subscription extractor, and the same six isolated worker stores plus the original store. The first attempt stopped on a fatal 300-second call timeout at 74 of 674 trajectories. It resumed from its progress checkpoint, not from scratch, with 3 concurrent calls, a 900-second per-call timeout, and non-fatal timeouts.
+
+| Measurement | Corrected run | First run |
+| --- | ---: | ---: |
+| Trajectories fully attempted | 674 of 674 | 674 of 674 |
+| Trajectories completed without a blocked part | 673 | 673 |
+| Content-blocked parts | 1 (trajectory 468, part 0) | 1 (same part) |
+| Source parts completed | 1,182 of 1,183 | 1,182 of 1,183 |
+| Subscription calls | 1,345 | 1,184 |
+| Failed calls | 6 (timeout, rate limit, aborted) | 2 |
+| Timeout-skipped parts | 0 | n/a |
+| Recorded trajectory errors | 11 | 7 |
+| Reported input tokens | 131,918,612 | 131,040,618 |
+| Reported output tokens | 1,784,381 | 1,631,388 |
+| Reported total tokens | 133,702,993 | 132,672,006 |
+| Fact files | 1,590 | 9 |
+| Correction files | 537 | 5 |
+| Entity files | 255 | 33 |
+| Metered API spend | $0 | $0 |
+
+The corrected run started at 02:56:14 UTC and ended at 12:07:38 UTC on 2026-10-23, 9h 11m of wall time. That includes the paused period between the fatal timeout and the resume, so it is not comparable to the first run's 4h 47m.
+
+Quote-anchored grounding raised stored facts from 9 to 1,590 with about the same token use. File counts still do not measure accuracy or unique semantic memories, and downstream scores stay `null` until Letta's task environments and verifiers are available.
+
 ## Final dream measurements
 
 The run started at 15:46:31 UTC and stopped at 20:34:00 UTC on 2026-10-22. Wall time includes startup, restarts, and diagnostic pauses. Download and earlier synthetic setup are separate.
