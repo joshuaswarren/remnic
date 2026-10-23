@@ -317,11 +317,16 @@ export class RecallRerankCoordinator {
     // we only reorder. Writing the synthetic rank-weighted score back
     // would contaminate downstream logic (telemetry, confidence gates)
     // that expects the original QMD/rerank score semantics.
+    // The stage's own score (rank × multiplier) is the relevance MMR must
+    // rank by. Attached only when the stage adjusted a score (every
+    // multiplier exactly 1 means it changed nothing).
+    const adjusted = filtered.some((item) => item.multiplier !== 1);
     const byPath = new Map(results.map((r) => [memoryMapKey(r), r]));
     const reordered: QmdSearchResult[] = [];
     for (const item of filtered) {
       const original = byPath.get(item.path);
-      if (original) reordered.push(original);
+      if (!original) continue;
+      reordered.push(adjusted ? { ...original, effectiveScore: item.score } : original);
     }
     return reordered;
   }
@@ -439,13 +444,19 @@ export class RecallRerankCoordinator {
       if (bucket) bucket.push(result);
       else byKey.set(key, [result]);
     }
-    const admitted = stage.admitted
-      .map((item) => {
-        const key = item.key ?? item.path;
-        if (item.key !== undefined) return byKey.get(key)?.shift();
-        return results.find((result) => result.path === item.path);
-      })
-      .filter((r): r is QmdSearchResult => r !== undefined);
+    // Same rule as the Memory Worth stage. Quarantined items keep multiplier
+    // 1, so they never make the stage look adjusted.
+    const adjusted = stage.admitted.some((item) => item.multiplier !== 1);
+    const admitted: QmdSearchResult[] = [];
+    for (const item of stage.admitted) {
+      const key = item.key ?? item.path;
+      const original =
+        item.key !== undefined
+          ? byKey.get(key)?.shift()
+          : results.find((result) => result.path === item.path);
+      if (!original) continue;
+      admitted.push(adjusted ? { ...original, effectiveScore: item.score } : original);
+    }
     return { results: admitted, trustByPath };
   }
 
@@ -599,15 +610,28 @@ export class RecallRerankCoordinator {
         now: new Date(),
       });
 
+      // The drift stage ranks by `input rank × multiplier`; that product is
+      // its relevance. Attached only when it damped something — an
+      // annotation-only run leaves the upstream metadata alone.
+      const adjusted = ordered.some((item) => item.multiplier !== 1);
       const byKey = new Map(results.map((r) => [memoryMapKey(r), r]));
+      const rankByKey = new Map(ranked.map((r) => [r.key, r.rank]));
       const reordered: QmdSearchResult[] = [];
       for (const item of ordered) {
         const original = byKey.get(item.key);
         if (!original) continue;
         // `driftNote` is copied onto a NEW result object — never mutated in
         // place — so a shared upstream result can't leak an annotation into an
-        // unrelated branch.
-        reordered.push(item.note ? { ...original, driftNote: item.note } : original);
+        // unrelated branch. The copy keeps the upstream effective relevance.
+        const annotated: QmdSearchResult = item.note
+          ? { ...original, driftNote: item.note }
+          : original;
+        const rank = rankByKey.get(item.key);
+        reordered.push(
+          adjusted && rank !== undefined
+            ? { ...annotated, effectiveScore: rank * item.multiplier }
+            : annotated,
+        );
       }
       return reordered;
     } catch (err) {

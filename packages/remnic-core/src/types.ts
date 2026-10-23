@@ -3460,6 +3460,11 @@ export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, 
   path: string;
   snippet: string;
   score: number;
+  /**
+   * Effective relevance from the rerank stage that last adjusted this result
+   * (the stage's own score). MMR prefers it over `score`.
+   */
+  effectiveScore?: number;
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";

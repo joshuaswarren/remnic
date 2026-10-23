@@ -24,6 +24,8 @@ import test from "node:test";
 import { parseConfig } from "./config.js";
 import { resolveCapabilities } from "./capabilities.js";
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
+import { applyReasoningTraceBoost } from "./reasoning-trace-recall.js";
+import { DRIFT_DETECTION_DEFAULTS } from "./preferences/drift-config.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { PluginConfig, QmdSearchResult, MemoryFile } from "./types.js";
 import type { StorageManager } from "./index.js";
@@ -720,3 +722,193 @@ test("#2859 linkless superseded status does not consume a packet slot", () => {
     "status-only superseded rows are rejected before the packet cap",
   );
 });
+
+
+// ─── #3226 — the rerank stages' relevance survives the MMR pass ───────────
+/**
+ * The rerank stages decide an order, but the MMR pass re-derived relevance
+ * from the RAW retrieval score and undid it. Each stage now carries its own
+ * relevance (`QmdSearchResult.effectiveScore`) forward and MMR ranks by that.
+ *
+ * The raw scores are WIDELY SEPARATED (100 vs 0.1) on purpose: a fix that
+ * approximates the stage's decision with `raw score × multiplier` still fails.
+ */
+
+/** Frontmatter double at an explicit path (the cast mirrors `mem` above). */
+function memAt(memPath: string, frontmatter: Record<string, unknown>): MemoryFile {
+  return { path: memPath, frontmatter: frontmatter as unknown as MemoryFile["frontmatter"], content: memPath };
+}
+
+/** `/facts/<id>.md` frontmatter map from `[id, mw_success?, mw_fail?]` rows. */
+function facts(rows: Array<[string, number?, number?]>): Map<string, MemoryFile> {
+  return new Map(rows.map(([id, ok, fail]) => [`/facts/${id}.md`, mem(id, ok, fail)]));
+}
+
+function coordinatorFor(config: PluginConfig): RecallRerankCoordinator {
+  const corpus = makeFakes([]);
+  return new RecallRerankCoordinator({
+    getConfig: () => config,
+    getStorage: corpus.getStorage,
+    readQmdResultMemory: async () => null,
+  });
+}
+
+const WORTH_RESULTS = [result("bad", 100), result("good", 0.1)];
+const WORTH_FM = facts([["bad", 0, 10], ["good", 10, 0]]);
+const TRUST_CONFIG = { recallMemoryWorthFilterEnabled: false, trustScoreEnabled: true, recallMmrEnabled: true, recallMmrLambda: 1 };
+
+for (const lambda of [1, 0.7]) {
+  test(`#3226: a Memory-Worth promotion survives MMR (lambda ${lambda})`, async () => {
+    const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: true, recallMmrLambda: lambda }));
+    const before = WORTH_RESULTS.map((r) => ({ ...r }));
+    const staged = await coord.applyMemoryWorthRerank(WORTH_RESULTS, ["default"], WORTH_FM);
+    const applied = coord.diversifyAndLimitRecallResults("memories", staged, 1);
+    assert.deepEqual(applied.map((r) => r.path), ["/facts/good.md"], "MMR must not undo the promotion");
+    assert.deepEqual(WORTH_RESULTS, before, "the stage must not mutate its input");
+  });
+}
+
+type Scenario = {
+  name: string;
+  config: Partial<PluginConfig>;
+  stage: (c: RecallRerankCoordinator, r: QmdSearchResult[], p: Map<string, MemoryFile>) => Promise<QmdSearchResult[]>;
+  results: QmdSearchResult[];
+  preloaded: Map<string, MemoryFile>;
+  applied: string[];
+};
+
+const SCENARIOS: Scenario[] = [
+  {
+    name: "a TrustScore demotion survives MMR",
+    config: TRUST_CONFIG,
+    stage: async (c, r, p) => (await c.applyTrustScoreRerank(r, ["default"], p)).results,
+    results: [result("untrusted", 100), result("trusted", 1), result("plain", 0.1)],
+    preloaded: facts([["untrusted", 0, 10], ["trusted", 10, 0], ["plain"]]),
+    applied: ["/facts/trusted.md"],
+  },
+  {
+    name: "a quarantined memory is not resurrected by MMR",
+    config: TRUST_CONFIG,
+    stage: async (c, r, p) => (await c.applyTrustScoreRerank(r, ["default"], p)).results,
+    results: [result("contradicted", 100), result("kept", 0.1)],
+    preloaded: new Map([
+      ["/facts/contradicted.md", memAt("/facts/contradicted.md", { faithfulness: { verdict: "contradicted" } })],
+      ["/facts/kept.md", mem("kept")],
+    ]),
+    applied: ["/facts/kept.md"],
+  },
+  {
+    name: "preference-drift damping survives MMR",
+    config: { recallMmrEnabled: true, recallMmrLambda: 1, driftDetection: { ...DRIFT_DETECTION_DEFAULTS, recallDamping: true, stalePenalty: 0.25 } },
+    stage: (c, r, p) => c.applyPreferenceDriftStage(r, ["default"], p),
+    results: [result("stale", 100), result("fresh", 0.1)],
+    preloaded: new Map([
+      ["/facts/stale.md", memAt("/facts/stale.md", { category: "preference", driftState: "stale" })],
+      ["/facts/fresh.md", memAt("/facts/fresh.md", { category: "fact" })],
+    ]),
+    applied: ["/facts/fresh.md"],
+  },
+];
+
+for (const scenario of SCENARIOS) {
+  test(`#3226: ${scenario.name}`, async () => {
+    const coord = coordinatorFor(await baseConfig(scenario.config));
+    const before = scenario.results.map((r) => ({ ...r }));
+    const staged = await scenario.stage(coord, scenario.results, scenario.preloaded);
+    const applied = coord.diversifyAndLimitRecallResults("memories", staged, 1);
+    assert.deepEqual(applied.map((r) => r.path), scenario.applied, "MMR must not undo the stage");
+    assert.deepEqual(scenario.results, before, "the stage must not mutate its input");
+  });
+}
+
+test("#3226: MMR off leaves the branch order verbatim", async () => {
+  const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: false }));
+  // Two near-duplicates plus one orthogonal candidate: with MMR on, lambda 0.3
+  // promotes the orthogonal candidate into slot 2 — this pins that MMR was off.
+  const branch: QmdSearchResult[] = [
+    { docid: "d1", path: "p/d1", snippet: "rocket thrust vectoring", score: 0.99 },
+    { docid: "d2", path: "p/d2", snippet: "rocket thrust vectoring", score: 0.98 },
+    { docid: "o1", path: "p/o1", snippet: "coffee brewing at high altitude", score: 0.4 },
+  ];
+  const applied = coord.diversifyAndLimitRecallResults("memories", branch, 2);
+  assert.deepEqual(applied.map((r) => r.docid), ["d1", "d2"], "MMR off: the branch order is the applied order");
+});
+
+test("#3226: without a rerank stage MMR keeps using the raw score", async () => {
+  const config = await baseConfig({ recallMemoryWorthFilterEnabled: false, trustScoreEnabled: false });
+  const coord = coordinatorFor(config);
+  const results = [result("a", 0.9), result("b", 0.8)];
+  const outcome = await coord.applyTrustScoreToBranch(results, ["default"], resolveCapabilities(config), "test");
+  assert.deepEqual(outcome.results, results, "no stage ran: the results come back untouched");
+  for (const r of outcome.results) assert.equal(r.effectiveScore, undefined, "no relevance is attached");
+});
+
+test("#3226: a no-op stage leaves the results byte-identical", async () => {
+  const coord = coordinatorFor(await baseConfig());
+  const results = [result("a", 0.9), result("b", 0.8)];
+  const staged = await coord.applyMemoryWorthRerank(results, ["default"], facts([["a"], ["b"]]));
+  assert.deepEqual(staged, results, "a neutral stage returns the input unchanged");
+  for (const r of staged) assert.equal(r.effectiveScore, undefined, "a no-op stage attaches no relevance");
+});
+
+test("#3226: an annotation-only drift stage keeps the upstream effective relevance", async () => {
+  const config = await baseConfig({ driftDetection: { ...DRIFT_DETECTION_DEFAULTS, annotateAfterDays: 30 } });
+  const coord = coordinatorFor(config);
+  const preloaded = new Map<string, MemoryFile>([
+    ["/facts/bad.md", memAt("/facts/bad.md", { mw_success: 0, mw_fail: 10 })],
+    ["/facts/good.md", memAt("/facts/good.md", { mw_success: 10, mw_fail: 0, category: "preference", lastCorroborated: "2020-01-01" })],
+  ]);
+  const staged = await coord.applyMemoryWorthRerank(WORTH_RESULTS, ["default"], preloaded);
+  const annotated = await coord.applyPreferenceDriftStage(staged, ["default"], preloaded);
+  assert.deepEqual(annotated.map((r) => r.path), ["/facts/good.md", "/facts/bad.md"], "the order is unchanged");
+  assert.ok(annotated[0]?.driftNote, "the age note is still attached");
+  assert.equal(typeof staged[0]?.effectiveScore, "number", "the stage attached a relevance");
+  assert.equal(annotated[0]?.effectiveScore, staged[0]?.effectiveScore, "the upstream relevance survives");
+});
+
+for (const boostCase of [
+  {
+    name: "a strongly demoted trace does not leapfrog a high-effective fact",
+    frontmatter: { mw_success: 0, mw_fail: 10 },
+    applied: "/facts/fact.md",
+  },
+  {
+    name: "a near-equal effective relevance lets the boost promote the trace",
+    frontmatter: { mw_success: 1000, mw_fail: 0 },
+    applied: "/reasoning-traces/trace.md",
+  },
+]) {
+  test(`#3226: the reasoning-trace boost — ${boostCase.name}`, async () => {
+    // The boost capability is off here: the boost is applied explicitly so the
+    // MMR pass sees exactly the boosted array.
+    const coord = coordinatorFor(await baseConfig({ recallMmrEnabled: true, recallMmrLambda: 1 }));
+    const staged = await coord.applyMemoryWorthRerank(
+      [
+        { ...result("fact", 0.9), path: "/facts/fact.md" },
+        { ...result("trace", 0.8), path: "/reasoning-traces/trace.md" },
+      ],
+      ["default"],
+      new Map([
+        ["/facts/fact.md", memAt("/facts/fact.md", {})],
+        ["/reasoning-traces/trace.md", memAt("/reasoning-traces/trace.md", boostCase.frontmatter)],
+      ]),
+    );
+    const trace = staged.find((r) => r.path === "/reasoning-traces/trace.md");
+    assert.ok(trace, "the trace is staged");
+    const boosted = applyReasoningTraceBoost(staged, { enabled: true, query: "how do I fix the build?" });
+    const boostedTrace = boosted.find((r) => r.path === "/reasoning-traces/trace.md");
+    assert.ok(boostedTrace, "the trace survives the boost");
+    assert.equal(boostedTrace.score, trace.score + 0.15, "the raw score keeps its boost");
+    assert.equal(
+      boostedTrace.effectiveScore,
+      trace.effectiveScore! + 0.15,
+      "the exact adjustment is attached to the effective relevance",
+    );
+    const applied = coord.diversifyAndLimitRecallResults("memories", boosted, 1);
+    assert.deepEqual(
+      applied.map((r) => r.path),
+      [boostCase.applied],
+      "the final order follows the effective relevance",
+    );
+  });
+}
