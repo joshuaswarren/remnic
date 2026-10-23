@@ -55,6 +55,9 @@ This wires `pre-commit` to `npm run preflight:quick` and `pre-push` to `npm run 
 - `npm run check:docs-parity` — required when you touch docs that contain CLI commands; every fenced `remnic <cmd>` must be a real registered command.
 - `npm run test:entity-hardening` — required when you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, `config.ts`, or anything under `storage/` or `orchestration/`.
 
+Run `npm run lint:anti-slop -- path/to/changed-file.ts` for the generic anti-slop rules in `.oxlintrc.json`.
+Fix violations introduced by the change. Existing findings in untouched source remain outside a focused change.
+
 For retrieval/planner/cache/config changes, also run the mandatory hardening gate described in [docs/ops/pr-review-hardening-playbook.md](docs/ops/pr-review-hardening-playbook.md).
 
 ## PR quality bar
