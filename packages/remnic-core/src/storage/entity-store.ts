@@ -377,22 +377,17 @@ export class EntityStore {
   }
 
   async readEntity(name: string): Promise<string> {
-    if (this.deps.resolveEntityFilePath(name) === null) return "";
-    const canonical = resolveHistoricalEntityCanonicalId(name, this.deps.currentHistoricalIds());
-    const candidates = canonical === name ? [name] : [canonical, name];
-    const readCandidates = async (): Promise<string | undefined> => {
-      for (const candidate of candidates) {
-        const filePath = this.deps.resolveEntityFilePath(candidate);
-        if (filePath === null) continue;
-        try {
-          return await this.deps.readStorageSecureFile(filePath);
-        } catch (err) {
-          if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
-        }
+    const filePath = this.deps.resolveEntityFilePath(name);
+    if (filePath === null) return "";
+    const readDirect = async (): Promise<string | undefined> => {
+      try {
+        return await this.deps.readStorageSecureFile(filePath);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+        return undefined;
       }
-      return undefined;
     };
-    const direct = await readCandidates();
+    const direct = await readDirect();
     if (direct !== undefined) return direct;
     // ponytail: scan only canonical misses; add a normalized-ID index if legacy misses become hot.
     let legacy: string | undefined;
@@ -408,12 +403,12 @@ export class EntityStore {
       if (isMalformedEntityRecord(content)) continue;
       const entity = parseEntityFile(content, this.deps.entitySchemas);
       if (!entity.name.trim() || !entity.type.trim()) continue;
-      if (this.deps.normalizeEntityName(entity.name, entity.type) !== canonical) continue;
+      if (this.deps.normalizeEntityName(entity.name, entity.type) !== name) continue;
       if (legacy !== undefined) throw new Error(`Ambiguous legacy entity id: ${name}`);
       legacy = content;
     }
     // A peer may have renamed the legacy entry after the directory listing.
-    return (await readCandidates()) ?? legacy ?? "";
+    return (await readDirect()) ?? legacy ?? "";
   }
 
   /**
