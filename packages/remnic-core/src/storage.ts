@@ -3218,7 +3218,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       memoryDir: this.baseDir,
       secureStoreKeyProvider: () => this._secureStoreKey,
       secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
-      lockOptions: () => this.captureLockLimitSource(),
+      lockOptions: () => this.factHashIndexLockOptions,
+      captureLockLimitSource: () => this.captureLockLimitSource(),
       parseMemory: (filePath, content) =>
         parseTombstoneBlockedOfflineSyncMemory(
           filePath,
