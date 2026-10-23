@@ -16,6 +16,7 @@ import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-can
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { assertSafeEntityId } from "./entity-id-safety.js";
+import { getFingerprint } from "./entity-canonical-id-migration.js";
 import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
 import {
@@ -442,9 +443,9 @@ export class EntityStore {
     if (direct !== undefined) return direct;
     const renamed = await this.readEntityFileResolvingRename(filePath, name);
     if (renamed !== null) return renamed.content;
-    // Skip body scan when a completed journal already attests migration finished.
-    // (ae0768 / later fingerprint validation refine this further.)
-    if (entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"))) {
+    // Skip body scan only when journal completion attests to live migration inputs.
+    if (await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
+      getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(this.deps.getEntityMutationVersion())))) {
       return "";
     }
     // Deferred / no-journal path: match a legacy filename by physical requested id.
