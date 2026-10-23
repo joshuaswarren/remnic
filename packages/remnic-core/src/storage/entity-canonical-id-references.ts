@@ -104,6 +104,19 @@ function readJournalFileNoFollow(statePath: string): JournalRead {
   }
 }
 
+/** A completed journal makes legacy fallback scans unnecessary on read misses. */
+export function entityCanonicalIdMigrationCompleted(stateDir: string): boolean {
+  const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+  if (result.kind !== "ok") return false;
+  try {
+    const parsed: unknown = JSON.parse(result.raw);
+    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      && "version" in parsed && parsed.version === 1 && "complete" in parsed && parsed.complete === true;
+  } catch {
+    return false;
+  }
+}
+
 export function loadHistoricalEntityCanonicalIds(stateDir: string): Readonly<Record<string, string>> {
   const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
   if (result.kind !== "ok") return {};

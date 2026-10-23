@@ -44,6 +44,30 @@ test("ambiguous legacy canonical matches are refused rather than picking a claim
   }
 });
 
+test("completed migration skips corpus reads on repeated misses in a fresh read-only store", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-completed-miss-"));
+  try {
+    const seed = new StorageManager(dir);
+    await seed.writeEntity("Existing Person", "person", ["Synthetic fact."]);
+    await seed.ensureDirectories();
+    const reader = new StorageManager(dir);
+    await reader.ensureDirectories({ awaitEntityCanonicalMigration: false });
+    const internals = reader as unknown as { readStorageSecureFile: (filePath: string) => Promise<string> };
+    const originalRead = internals.readStorageSecureFile.bind(internals);
+    const reads: string[] = [];
+    internals.readStorageSecureFile = async (filePath) => {
+      reads.push(path.basename(filePath));
+      return originalRead(filePath);
+    };
+    assert.equal(await reader.readEntity("person-missing"), "");
+    assert.equal(await reader.readEntity("person-missing"), "");
+    assert.deepEqual(reads, ["person-missing.md", "person-missing.md"], "completed-store misses must not scan entity contents");
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 const mutations = [
   {
     name: "relationship",

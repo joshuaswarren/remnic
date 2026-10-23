@@ -36,6 +36,7 @@ import type {
 import { isErrnoCode } from "../utils/errno.js";
 import { pathIsInside } from "../utils/path-containment.js";
 import {
+  entityCanonicalIdMigrationCompleted,
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
   resolveHistoricalEntityCanonicalId,
@@ -389,7 +390,8 @@ export class EntityStore {
     };
     const direct = await readDirect();
     if (direct !== undefined) return direct;
-    // ponytail: scan only canonical misses; add a normalized-ID index if legacy misses become hot.
+    if (entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"))) return "";
+    // ponytail: scan pending-migration misses; index if those legacy misses become hot.
     let legacy: string | undefined;
     for (const file of await this.readEntityDirectoryNames()) {
       if (!file.endsWith(".md") || !(await this.isContainedRegularEntityFile(file))) continue;
