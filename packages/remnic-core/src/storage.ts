@@ -4883,10 +4883,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const readDir = async (dir: string) => {
       try {
-        const entries = await readdir(dir, { withFileTypes: true });
+        const entries = (await readdir(dir, { withFileTypes: true })).filter((e) => !isMacOsReplicationJunkBasename(e.name));
         for (const entry of entries) {
           checkCorpusReadAbort(options);
-          if (isMacOsReplicationJunkBasename(entry.name)) continue;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             await readDir(fullPath);
