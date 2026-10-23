@@ -15,6 +15,8 @@ the existing reasoning-trace boost still adds to raw scores and now composes
 into effective relevance too. A neutral stage leaves its results unchanged,
 and annotation-only drift preserves the upstream effective relevance.
 
-Normalize the stage's rank-weighted relevance by candidate-pool size before
-carrying it forward, preserving its MMR ordering while keeping the existing
-additive reasoning-trace boost meaningful in larger pools.
+Normalize carried relevance before additive boosts. TrustScore recomputes
+dense admitted ranks after quarantine and scales over the admitted scores,
+so excluded rows cannot leave relevance holes. Active drift damping composes
+with upstream effective relevance, retaining both neutral scores and gaps
+instead of replacing them with fresh position scores.

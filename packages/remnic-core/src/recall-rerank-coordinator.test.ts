@@ -955,3 +955,43 @@ test("#3226: quarantined prefixes do not compress survivor relevance", async () 
     "excluded candidates must not change the surviving pool's relevance scale",
   );
 });
+
+test("#3226: quarantine placement does not change survivor relevance", async () => {
+  const coord = coordinatorFor(await baseConfig(TRUST_CONFIG));
+  const survivors = [result("trusted", 0.9), result("untrusted", 0.8), result("plain", 0.7)];
+  const excluded = Array.from({ length: 20 }, (_, index) => result(`excluded-${index}`, 1));
+  const frontmatter = new Map([
+    ...facts([["trusted", 10, 0], ["untrusted", 0, 10], ["plain"]]),
+    ...excluded.map((candidate) => [
+      candidate.path, memAt(candidate.path, { faithfulness: { verdict: "contradicted" } }),
+    ] as const),
+  ]);
+  const baseline = (await coord.applyTrustScoreRerank(survivors, ["default"], frontmatter)).results;
+  for (const split of [0, 1, 2, 3]) {
+    const input = [...survivors.slice(0, split), ...excluded, ...survivors.slice(split)];
+    const admitted = (await coord.applyTrustScoreRerank(input, ["default"], frontmatter)).results;
+    assert.deepEqual(
+      admitted.map((candidate) => [candidate.path, candidate.effectiveScore]),
+      baseline.map((candidate) => [candidate.path, candidate.effectiveScore]),
+      `excluded rows at position ${split} must not leave rank holes`,
+    );
+  }
+});
+
+test("#3226: active drift damping composes upstream effective relevance", async () => {
+  const coord = coordinatorFor(await baseConfig({
+    driftDetection: { ...DRIFT_DETECTION_DEFAULTS, recallDamping: true, stalePenalty: 0.25 },
+  }));
+  const candidates = [
+    { ...result("top", 0.1), effectiveScore: 0.95 },
+    { ...result("stale", 100), effectiveScore: 0.9 },
+    { ...result("tail", 0.8), effectiveScore: 0.1 },
+  ];
+  const frontmatter = new Map(candidates.map((candidate) => [
+    candidate.path,
+    memAt(candidate.path, candidate.path === "/facts/stale.md" ? { category: "preference", driftState: "stale" } : {}),
+  ]));
+  const damped = await coord.applyPreferenceDriftStage(candidates, ["default"], frontmatter);
+  assert.deepEqual(damped.map((candidate) => candidate.effectiveScore), [0.95, 0.9 * 0.25, 0.1]);
+  assert.deepEqual(candidates.map((candidate) => candidate.effectiveScore), [0.95, 0.9, 0.1], "inputs remain unmodified");
+});

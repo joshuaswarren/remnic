@@ -434,6 +434,13 @@ export class RecallRerankCoordinator {
       maxMultiplier: config.trustScoreMaxMultiplier,
       quarantine: config.trustScoreQuarantine,
     });
+    if (stage.quarantined.length > 0) {
+      const survivors = stage.all.filter((item) => !item.quarantined);
+      for (const [index, item] of survivors.entries()) {
+        item.score = (survivors.length - index) * item.multiplier;
+      }
+      stage.admitted = survivors.sort((a, b) => b.score - a.score);
+    }
     const trustByPath = new Map(
       stage.all.map((item) => [item.key ?? item.path, item] as const),
     );
@@ -599,12 +606,12 @@ export class RecallRerankCoordinator {
         }
       }
 
-      // Synthetic monotone-decreasing rank score so neutral candidates keep
-      // their upstream order and only the damped ones move — same technique the
-      // Memory Worth stage uses, for the same reason.
+      // Preserve upstream effective relevance when available; otherwise use
+      // normalized input position, not stale raw retrieval scores.
       const ranked = results.map((r, i) => ({
         key: memoryMapKey(r),
-        rank: results.length - i,
+        rank: typeof r.effectiveScore === "number" && Number.isFinite(r.effectiveScore)
+          ? r.effectiveScore : (results.length - i) / results.length,
         frontmatter: frontmatterByKey.get(memoryMapKey(r)),
       }));
       const ordered = applyPreferenceDriftRanking(ranked, {
@@ -612,8 +619,7 @@ export class RecallRerankCoordinator {
         now: new Date(),
       });
 
-      // Normalize rank × multiplier by pool size, as in the other stages.
-      // Attach only when damping changed something; annotation-only runs
+      // Compose damping into the upstream scale. Annotation-only runs
       // leave upstream relevance untouched.
       const adjusted = ordered.some((item) => item.multiplier !== 1);
       const byKey = new Map(results.map((r) => [memoryMapKey(r), r]));
@@ -631,7 +637,7 @@ export class RecallRerankCoordinator {
         const rank = rankByKey.get(item.key);
         reordered.push(
           adjusted && rank !== undefined
-            ? { ...annotated, effectiveScore: rank * item.multiplier / results.length }
+            ? { ...annotated, effectiveScore: rank * item.multiplier }
             : annotated,
         );
       }
