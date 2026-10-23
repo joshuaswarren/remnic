@@ -60,7 +60,7 @@ export type TombstoneBlockedCaptureWriteLockOptions = {
   readonly stateDir: string;
   readonly withHeldFileLock?: typeof withHeldFileLock;
   /** Read when an acquire starts, after the caller has installed converge config. */
-  readonly lockOptions?: () => CaptureWriteLockLimitSource;
+  readonly lockOptions?: () => CaptureWriteLockLimitSource | undefined;
   readonly now?: () => number;
   readonly random?: () => number;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -103,7 +103,7 @@ export class TombstoneBlockedCaptureWriteLock {
 
   /** Prefer the constructor seam; converge installs the signal on lock options at acquire time. */
   private captureAbortSignal(): AbortSignal | undefined {
-    return this.options.signal ?? this.options.lockOptions?.().captureWriteLockSignal;
+    return this.options.signal ?? this.options.lockOptions?.()?.captureWriteLockSignal;
   }
 
   /**

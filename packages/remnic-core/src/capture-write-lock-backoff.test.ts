@@ -505,7 +505,6 @@ test("a capture without lock options keeps the short legacy backoff", async () =
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capture-lock-legacy-"));
   try {
     let now = 0;
-    let probes = 0;
     const sleeps: number[] = [];
     const lock = new TombstoneBlockedCaptureWriteLock({
       stateDir: dir,
@@ -516,7 +515,6 @@ test("a capture without lock options keeps the short legacy backoff", async () =
         now += ms;
       },
       withHeldFileLock: (async (_lockPath, _options, task) => {
-        probes += 1;
         return await task(false, { failure: "timeout", refresh: async () => false });
       }) as typeof withHeldFileLock,
     });
@@ -525,10 +523,11 @@ test("a capture without lock options keeps the short legacy backoff", async () =
       lock.withCaptureWriteLock(async () => "unreachable", "held-identity"),
       (error: unknown) => isTombstoneBlockedCaptureWriteLockBusy(error)
     );
-    // Three quick probes, 25ms apart, then the busy error — the pre-backoff
-    // behavior a plain daemon or inline capture still expects.
-    assert.equal(probes, 3);
-    assert.deepEqual(sleeps, [25, 25, 25]);
+    // Bounded legacy tolerance: short waits, the ~3s pre-backoff deadline,
+    // then the busy error — not the 60s converge deadline.
+    assert.ok(sleeps.length >= 3);
+    assert.ok(sleeps.every((ms) => ms >= 12 && ms <= 50), `sleeps out of legacy range: ${sleeps.join(",")}`);
+    assert.ok(now >= 3_000 && now < 3_100, `expected the ~3s legacy deadline, stopped at ${now}`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

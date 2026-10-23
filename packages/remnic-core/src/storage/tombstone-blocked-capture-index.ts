@@ -53,7 +53,7 @@ export type TombstoneBlockedCaptureIndexOptions = {
   readonly memoryDir: string;
   readonly secureStoreKeyProvider: () => Buffer | null;
   readonly secureStoreWriteKeyProvider: () => Buffer | null;
-  readonly lockOptions: () => ContentHashIndexLockOptions;
+  readonly lockOptions: () => ContentHashIndexLockOptions | undefined;
   readonly readAllMemories: () => Promise<MemoryFile[]>;
   readonly readAllColdMemories: () => Promise<MemoryFile[]>;
   readonly parseMemory?: OfflineSyncMemoryParser;
@@ -86,7 +86,7 @@ export class TombstoneBlockedCaptureIndex {
       this.options.secureStoreKeyProvider,
       this.options.secureStoreWriteKeyProvider,
       this.options.memoryDir,
-      this.options.lockOptions()
+      this.options.lockOptions() ?? {}
     );
   }
 
@@ -333,7 +333,7 @@ export class TombstoneBlockedCaptureIndex {
           else throw err;
         }
         if (!persisted) {
-          const lockOptions = this.options.lockOptions();
+          const lockOptions = this.options.lockOptions() ?? {};
           const maxAttempts = lockOptions.retryMaxAttempts ?? REBUILD_MAX_ATTEMPTS;
           const baseMs = lockOptions.retryBaseMs ?? REBUILD_RETRY_BASE_MS;
           let rebuilt = false;

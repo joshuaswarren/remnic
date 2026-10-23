@@ -3218,7 +3218,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       memoryDir: this.baseDir,
       secureStoreKeyProvider: () => this._secureStoreKey,
       secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
-      lockOptions: () => this.factHashIndexLockOptions,
+      lockOptions: () => this.captureLockLimitSource(),
       parseMemory: (filePath, content) =>
         parseTombstoneBlockedOfflineSyncMemory(
           filePath,
@@ -3232,6 +3232,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       readAllColdMemories: () => this.readAllColdMemories(),
     };
   }
+
+  /**
+   * Lock-limit source for tombstone-blocked captures. Undefined until the
+   * converge path installs capture-lock limits, so an ordinary capture
+   * resolves to the legacy short bounds instead of the converge deadline.
+   */
+  private captureLockLimitSource(): ContentHashIndexLockOptions | undefined {
+    const options = this.factHashIndexLockOptions;
+    const keys = ["captureWriteLockInitialDelayMs", "captureWriteLockMaxDelayMs", "captureWriteLockDeadlineMs", "captureWriteLockSignal"] as const;
+    return keys.some((key) => options[key] !== undefined) ? options : undefined;
+  }
+
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;

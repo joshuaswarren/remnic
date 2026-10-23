@@ -88,13 +88,13 @@ function pickWaitMs(value: number | undefined, fallback: number, label: string):
 
 /**
  * Limits for a capture with no lock-options source — the plain daemon or an
- * inline capture. These preserve the pre-backoff behavior (three probes
- * about 25ms apart) so ordinary capture contention still fails fast instead
- * of blocking for the converge-scale deadline.
+ * inline capture. The deadline matches the pre-backoff tolerance of about 3s
+ * (three probe waits of up to 1s each plus short retry sleeps), so ordinary
+ * capture contention keeps that wait and still fails in bounded time.
  */
 export const LEGACY_CAPTURE_WRITE_LOCK_INITIAL_DELAY_MS = 25;
-export const LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS = 25;
-export const LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS = 75;
+export const LEGACY_CAPTURE_WRITE_LOCK_MAX_DELAY_MS = 50;
+export const LEGACY_CAPTURE_WRITE_LOCK_DEADLINE_MS = 3_000;
 
 /** Fill omitted knobs from the defaults and reject an inverted schedule. */
 export function resolveCaptureWriteLockBackoffLimits(
