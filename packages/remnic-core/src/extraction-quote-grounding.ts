@@ -12,8 +12,12 @@ import type { ExtractionResult } from "./types.js";
 import {
   GROUNDING_MIN_SHARED_TOKENS,
   areGroundingTokensCompatible,
+  entityNameStart,
+  hasDenialReporting,
+  hasNonAssertiveReporting,
   isGroundedEntityName,
   normalizedEntityIdentifierTokens,
+  sourceSentences,
   tokenize,
 } from "./extraction-source-grounding-helpers.js";
 
@@ -27,8 +31,7 @@ export const QUOTE_ANCHOR_MIN_WINDOW_COVERAGE = 0.35;
 export const QUOTE_ANCHOR_MIN_SOURCE_COVERAGE = 0.75;
 const QUOTE_ANCHOR_MAX_OCCURRENCES = 8;
 const TURN_SEPARATOR = "\n\n";
-const NEGATOR_PATTERN =
-  /\b(?:not|no|never|cannot|without|neither|nor|den(?:y|ies|ied|ying)|declin\w*|fail(?:s|ed|ing)?)\b|n't\b/iu;
+const NEGATOR_PATTERN = /\b(?:not|no|never|cannot|without|neither|nor)\b|n't\b/iu;
 const EXCLUSION_PATTERN =
   /\b(?:exclu\w*|avoid\w*|omit\w*|skip\w*|ignor\w*|forbid\w*|prohibit\w*|disallow\w*|prevent\w*|reject\w*|refus\w*|insufficient|instead|rather|unless|except)\b/iu;
 
@@ -123,17 +126,25 @@ export function tokenPool(tokens: ReadonlySet<string>): TokenPool {
   return (token) => tokens.has(token) || list.some((poolToken) => areGroundingTokensCompatible(token, poolToken));
 }
 
+function hasNegation(text: string): boolean {
+  return NEGATOR_PATTERN.test(text.replace(/[\u2018\u2019]/gu, "'")) || hasDenialReporting(text);
+}
+
 /**
- * True when the claim states the opposite of a negated quote clause it
- * restates: "did not approve the budget" reworded as "approved the budget".
- * A claim that keeps any negator or exclusion word ("do not X" reworded as
- * "X is excluded") is not inverted.
+ * True when the claim asserts what a quote clause denies or does not assert:
+ * "did not approve the budget" or "denied approving it" restated as "approved
+ * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
+ * plain statement. A claim that keeps a negator, exclusion word, or reporting
+ * marker ("do not X" reworded as "X is excluded") is not a misstatement.
  */
-function invertsNegatedQuote(content: string, quote: string): boolean {
-  if (NEGATOR_PATTERN.test(content) || EXCLUSION_PATTERN.test(content)) return false;
+function misstatesQuote(content: string, quote: string): boolean {
+  const keepsNegation = hasNegation(content) || EXCLUSION_PATTERN.test(content);
+  const keepsReporting = hasNonAssertiveReporting(content) || content.trim().endsWith("?");
   const contentHas = tokenPool(tokenize(content));
-  return quote.split(/[;.!?\n]+/u).some((clause) => {
-    if (!NEGATOR_PATTERN.test(clause)) return false;
+  return (quote.match(/[^;.!?\n]+[;.!?]*/gu) ?? []).some((clause) => {
+    const negated = hasNegation(clause) && !keepsNegation;
+    const unasserted = (clause.trim().endsWith("?") || hasNonAssertiveReporting(clause)) && !keepsReporting;
+    if (!negated && !unasserted) return false;
     const clauseTokens = [...tokenize(clause)];
     const shared = clauseTokens.filter(contentHas).length;
     return shared >= GROUNDING_MIN_SHARED_TOKENS && shared / clauseTokens.length >= 0.5;
@@ -158,7 +169,7 @@ export function isQuoteAnchoredClaim(content: string, anchor: QuoteAnchor, sourc
     return false;
   }
   return contentTokens.filter(sourceHas).length / contentTokens.length >= QUOTE_ANCHOR_MIN_SOURCE_COVERAGE
-    && !invertsNegatedQuote(content, anchor.quote);
+    && !misstatesQuote(content, anchor.quote);
 }
 
 /** Keeps the entity facts (flat and sectioned) `isSupported` accepts; undefined when none remain. */
@@ -193,7 +204,10 @@ export function quoteAnchoredEntitySupport(
   return (fact) => nameAnchors.some((anchor) => isQuoteAnchoredClaim(fact, anchor, sourceHas));
 }
 
-/** Both names and the label must sit in one anchor window; an invented or empty label never passes. */
+/**
+ * The label words and both names must sit in one anchor-window sentence, source
+ * before target, so an invented label or a reversed edge never passes.
+ */
 export function isQuoteAnchoredRelationship(
   relationship: Relationship,
   anchors: readonly QuoteAnchor[],
@@ -209,8 +223,10 @@ export function isQuoteAnchoredRelationship(
   return anchors.some((anchor) => {
     const windowHas = tokenPool(tokenize(anchor.window));
     return labelTokens.every(windowHas)
-      && isGroundedEntityName(relationship.source, anchor.window)
-      && isGroundedEntityName(relationship.target, anchor.window)
+      && sourceSentences(anchor.window).some((sentence) => {
+        const sourceStart = entityNameStart(relationship.source, sentence);
+        return sourceStart >= 0 && entityNameStart(relationship.target, sentence) > sourceStart;
+      })
       && isQuoteAnchoredClaim(relationText, anchor, sourceHas);
   });
 }

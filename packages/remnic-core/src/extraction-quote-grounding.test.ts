@@ -420,6 +420,49 @@ test("a claim that inverts a denial verb in the quote is rejected", () => {
   assert.equal(grounded.facts.length, 0);
 });
 
+test("a claim that states what the quote only suspects or asks is rejected", () => {
+  const source = "Notes: Alice suspects Bob stole funds. Is Alice the CEO at Acme? Carol audited the ledger.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Bob stole funds.", quote: "Alice suspects Bob stole funds." },
+      { content: "Alice is the CEO at Acme.", quote: "Is Alice the CEO at Acme?" },
+      { content: "Alice suspects that Bob stole the funds.", quote: "Alice suspects Bob stole funds." },
+    ]),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), ["Alice suspects that Bob stole the funds."]);
+});
+
+test("a curly apostrophe still counts as a negator", () => {
+  const source = "Notes: Alice didn\u2019t approve the budget. Bob reviewed it.";
+  const quote = "Alice didn\u2019t approve the budget.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Alice approved the budget.", quote },
+      { content: "Alice would avoid approving the budget.", quote },
+    ]),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), ["Alice would avoid approving the budget."]);
+});
+
+test("a reversed relationship is not kept", () => {
+  const source = "Notes: Alice uses PostgreSQL on the platform team. Carol audited the ledger.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([{ content: "Alice uses PostgreSQL on the platform team.", quote: "Alice uses PostgreSQL on the platform team." }], {
+      relationships: [
+        { source: "alice", target: "postgresql", label: "uses" },
+        { source: "postgresql", target: "alice", label: "uses" },
+      ],
+    }),
+    source,
+    source,
+  );
+  assert.deepEqual(grounded.relationships, [{ source: "alice", target: "postgresql", label: "uses" }]);
+});
+
 test("an invented relationship label is not kept between two names in a kept quote window", () => {
   const grounded = filterExtractionResultBySource(
     resultOf(
