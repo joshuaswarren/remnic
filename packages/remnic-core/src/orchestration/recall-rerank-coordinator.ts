@@ -447,6 +447,8 @@ export class RecallRerankCoordinator {
     // Same rule as the Memory Worth stage. Quarantined items keep multiplier
     // 1, so they never make the stage look adjusted.
     const adjusted = stage.admitted.some((item) => item.multiplier !== 1);
+    // Excluded rows must not compress relevance against MMR's diversity term.
+    const relevanceScale = stage.admitted.reduce((max, item) => Math.max(max, item.score), 0) || 1;
     const admitted: QmdSearchResult[] = [];
     for (const item of stage.admitted) {
       const key = item.key ?? item.path;
@@ -455,7 +457,7 @@ export class RecallRerankCoordinator {
           ? byKey.get(key)?.shift()
           : results.find((result) => result.path === item.path);
       if (!original) continue;
-      admitted.push(adjusted ? { ...original, effectiveScore: item.score / results.length } : original);
+      admitted.push(adjusted ? { ...original, effectiveScore: item.score / relevanceScale } : original);
     }
     return { results: admitted, trustByPath };
   }

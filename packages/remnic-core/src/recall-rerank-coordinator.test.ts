@@ -935,3 +935,23 @@ for (const poolSize of [10, 40]) {
     );
   });
 }
+
+test("#3226: quarantined prefixes do not compress survivor relevance", async () => {
+  const coord = coordinatorFor(await baseConfig(TRUST_CONFIG));
+  const survivors = [result("trusted", 0.9), result("untrusted", 0.8)];
+  const quarantined = Array.from({ length: 20 }, (_, index) => result(`quarantined-${index}`, 1));
+  const frontmatter = new Map([
+    ...facts([["trusted", 10, 0], ["untrusted", 0, 10]]),
+    ...quarantined.map((candidate) => [
+      candidate.path,
+      memAt(candidate.path, { faithfulness: { verdict: "contradicted" } }),
+    ] as const),
+  ]);
+  const baseline = (await coord.applyTrustScoreRerank(survivors, ["default"], frontmatter)).results;
+  const prefixed = (await coord.applyTrustScoreRerank([...quarantined, ...survivors], ["default"], frontmatter)).results;
+  assert.deepEqual(
+    prefixed.map((candidate) => [candidate.path, candidate.effectiveScore]),
+    baseline.map((candidate) => [candidate.path, candidate.effectiveScore]),
+    "excluded candidates must not change the surviving pool's relevance scale",
+  );
+});
