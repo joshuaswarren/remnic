@@ -15,6 +15,7 @@ import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { assertSafeEntityId } from "./entity-id-safety.js";
 import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
 import {
@@ -111,6 +112,7 @@ export class EntityStore {
     method: string,
     historicalIds: Readonly<Record<string, string>>,
   ): Promise<{ filePath: string; entity: EntityFile } | null> {
+    assertSafeEntityId(name);
     const canonical = resolveHistoricalEntityCanonicalId(name, historicalIds);
     for (const candidate of canonical === name ? [name] : [canonical, name]) {
       const filePath = path.join(this.deps.entitiesDir, `${candidate}.md`);
@@ -143,6 +145,7 @@ export class EntityStore {
     method: string,
     mutate: (entity: EntityFile, historicalIds: Readonly<Record<string, string>>) => boolean,
   ): Promise<boolean> {
+    await this.deps.ensureDirectories();
     const stateDir = path.join(this.deps.baseDir, "state");
     return withEntityCanonicalMutationLock(stateDir, async () => {
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -408,9 +411,7 @@ export class EntityStore {
 
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
-    if (filePath === null) {
-      return "";
-    }
+    if (filePath === null) return "";
     // Batch reads retry renames unconditionally (a listed file that ENOENTs
     // is definitionally a race), but a DIRECT lookup of a legacy id must stop
     // resolving once the journal says migration completed and its file is gone.
@@ -424,7 +425,31 @@ export class EntityStore {
         throw err;
       }
     }
-    return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
+    const renamed = await this.readEntityFileResolvingRename(filePath, name);
+    if (renamed !== null) return renamed.content;
+    // Deferred / no-journal path: match a legacy filename by normalized body id.
+    // ponytail: scan only incomplete-migration misses; index if those become hot.
+    const canonical = resolveHistoricalEntityCanonicalId(name, this.deps.currentHistoricalIds());
+    let legacy: string | undefined;
+    for (const file of await this.readEntityDirectoryNames()) {
+      if (!file.endsWith(".md") || !(await this.isContainedRegularEntityFile(file))) continue;
+      let content: string;
+      try {
+        content = await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, file));
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
+        throw err;
+      }
+      if (isMalformedEntityRecord(content)) continue;
+      const entity = parseEntityFile(content, this.deps.entitySchemas);
+      if (!entity.name.trim() || !entity.type.trim()) continue;
+      if (this.deps.normalizeEntityName(entity.name, entity.type) !== canonical) continue;
+      if (legacy !== undefined) throw new Error(`Ambiguous legacy entity id: ${name}`);
+      legacy = content;
+    }
+    // A peer may have renamed the legacy entry after the directory listing.
+    return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? legacy ?? "";
   }
 
   /**
@@ -595,6 +620,7 @@ export class EntityStore {
 
   /** Re-serialize every entity file into the compiled-truth timeline shape. */
   async migrateEntityFilesToCompiledTruthTimeline(): Promise<{ total: number; migrated: number }> {
+    await this.deps.ensureDirectories();
     const entityNames = await this.listEntityNames();
     const stateDir = path.join(this.deps.baseDir, "state");
     let migrated = 0;
@@ -605,14 +631,20 @@ export class EntityStore {
       // path bumps only the status version, which never re-triggers the
       // completed migration's reference scan.
       const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
-        const raw = await this.readEntity(entityName);
+        const filePath = this.deps.resolveEntityFilePath(entityName);
+        if (filePath === null) return false;
+        let raw: string;
+        try {
+          raw = await this.deps.readStorageSecureFile(filePath);
+        } catch (err) {
+          if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+          return false;
+        }
         if (!raw || isMalformedEntityRecord(raw)) return false;
         const parsed = parseEntityFile(raw, this.deps.entitySchemas);
         if (!parsed.name.trim() || !parsed.type.trim()) return false;
         const serialized = serializeEntityFile(parsed, this.deps.entitySchemas, this.deps.okfConformanceEnabled());
         if (raw.trimEnd() === serialized.trimEnd()) return false;
-        const filePath = this.deps.resolveEntityFilePath(entityName);
-        if (filePath === null) return false;
         await this.deps.writeStorageSecureFile(filePath, serialized);
         this.deps.bumpEntityMutationVersion();
         return true;
@@ -641,6 +673,7 @@ export class EntityStore {
       incrementVersion?: boolean;
     } = {},
   ): Promise<void> {
+    await this.deps.ensureDirectories();
     return withEntityCanonicalMutationLock(
       path.join(this.deps.baseDir, "state"),
       () => this.updateEntitySynthesisUnlocked(name, synthesis, options),
@@ -659,17 +692,9 @@ export class EntityStore {
       incrementVersion?: boolean;
     } = {},
   ): Promise<void> {
-    const filePath = path.join(this.deps.entitiesDir, `${name}.md`);
-    let entity: EntityFile;
-    try {
-      const content = await this.deps.readStorageSecureFile(filePath);
-      entity = parseEntityFile(content, this.deps.entitySchemas);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      log.debug(`updateEntitySynthesis: entity file ${name}.md not found`);
-      return;
-    }
+    const located = await this.readEntityForMutation(name, "updateEntitySynthesis", this.deps.currentHistoricalIds());
+    if (!located) return;
+    const { filePath, entity } = located;
 
     const updatedAt = options.updatedAt?.trim() || entity.synthesisUpdatedAt?.trim() || undefined;
     const entityUpdatedAt = options.entityUpdatedAt?.trim() || updatedAt || entity.updated || new Date().toISOString();
@@ -873,6 +898,7 @@ export class EntityStore {
    * Returns count of files merged.
    */
   async mergeFragmentedEntities(): Promise<number> {
+    await this.deps.ensureDirectories();
     return withEntityCanonicalMutationLock(
       path.join(this.deps.baseDir, "state"),
       () => this.mergeFragmentedEntitiesUnlocked(),

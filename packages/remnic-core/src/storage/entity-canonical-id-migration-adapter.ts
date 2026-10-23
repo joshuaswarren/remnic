@@ -1,3 +1,4 @@
+import { log } from "../logger.js";
 import type { EntityFile, MemoryFile } from "../types.js";
 import {
   getFingerprint,
@@ -30,6 +31,7 @@ export interface EntityCanonicalIdMigrationHost {
   invalidateColdMemoriesCache(): void;
   bumpMemoryStatusVersion(): void;
   getEntityMutationVersion(): number;
+  onEntityMigrationComplete?: () => void;
 }
 
 export async function runLegacyEntityCanonicalIdMigration(
@@ -68,6 +70,13 @@ export async function runLegacyEntityCanonicalIdMigration(
     bumpMemoryStatusVersion: host.bumpMemoryStatusVersion.bind(host),
     readMigrationFingerprint,
   } satisfies EntityCanonicalIdMigrationDependencies);
+  if (completionFingerprint !== undefined) {
+    try {
+      host.onEntityMigrationComplete?.();
+    } catch {
+      log.warn("entity migration: search maintenance scheduling failed");
+    }
+  }
   // An undefined completion fingerprint is a deliberate signal (issue #2213):
   // a reconcile marker landed while the run scanned, and recomputing the
   // fingerprint here would seal that pending request into the runner's
