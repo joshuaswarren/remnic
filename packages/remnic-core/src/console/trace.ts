@@ -32,6 +32,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { createReadStream } from "node:fs";
 import type { Writable } from "node:stream";
+import { sleepAbortable } from "../utils/sleep.js";
 
 import { renderFrame } from "./tui.js";
 import type { ConsoleStateSnapshot } from "./state.js";
@@ -465,43 +466,11 @@ function normalizeSpeed(speed: number | undefined): number {
 }
 
 /**
- * Abortable sleep used by `replayTrace` between frames.
- *
- * Codex P2 (PR #732): unlike a plain `setTimeout` wrapper, this
- * variant REJECTS with `AbortError` when `signal` fires (or is
- * already aborted on entry). That gives callers a way to
- * *distinguish* timer-expiry from signal-driven early exit, instead
- * of silently resolving on both. The replay loop catches the
- * `AbortError` and exits cleanly so Ctrl-C does not have to wait for
- * the current inter-frame `setTimeout` (capped at 60s) to elapse.
- *
- * Resolves only on timer expiry. Rejects with `AbortError` (DOMException-
- * shaped: `name === "AbortError"`) on abort. Exported so callers in
- * tests and adjacent modules can reuse the same primitive.
+ * Abortable sleep used by `replayTrace` between frames: resolves on timer
+ * expiry, rejects with `AbortError` on abort so Ctrl-C exits without waiting
+ * out the inter-frame delay. Shared implementation lives in utils/sleep.js.
  */
-export function sleepAbortable(
-  ms: number,
-  signal?: AbortSignal,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(makeAbortError());
-      return;
-    }
-    const timer = setTimeout(() => {
-      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    let onAbort: (() => void) | null = null;
-    if (signal) {
-      onAbort = () => {
-        clearTimeout(timer);
-        reject(makeAbortError());
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    }
-  });
-}
+export { sleepAbortable };
 
 /**
  * Construct an `AbortError`-shaped error. Prefers the standard

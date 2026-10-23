@@ -72,7 +72,7 @@ import {
 } from "./converge-report.js";
 import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
 import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
-import { createOfflineStorageIo } from "./offline-storage-io.js";
+import { createConvergeStorageIoOpener, handleConvergeTransferResults } from "./converge-capture-lock.js";
 
 export type { ConvergePlanProgressEvent } from "./converge-plan-cache.js";
 export type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
@@ -517,6 +517,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     envConvergePeerRequestTimeoutMs() ??
     DEFAULT_PEER_REQUEST_TIMEOUT_MS;
 
+  const openStorageIo = createConvergeStorageIoOpener(config?.converge, options.signal);
   const rootMap = new Map<string, string>();
   if (config) {
     try {
@@ -593,7 +594,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         actualTransfers.failed += 1;
         return;
       }
-      const io = await createOfflineStorageIo(rootDir);
+      const io = await openStorageIo(rootDir);
       const expectedLocalSha256 = entry.action === "conflict" ? entry.localSha256 : entry.baseSha256;
       let transferComplete = false;
       let transferRejected = false;
@@ -686,7 +687,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         if (rootDir) {
           try {
             const filePath = path.join(rootDir, localPath);
-            const io = await createOfflineStorageIo(rootDir);
+            const io = await openStorageIo(rootDir);
             const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 !== entry.localSha256) {
               throw new Error(`local file changed during push: ${localPath}`);
@@ -786,7 +787,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
         const rootDir = rootMap.get(entry.namespace);
         if (rootDir && entry.localSha256) {
           try {
-            const io = await createOfflineStorageIo(rootDir);
+            const io = await openStorageIo(rootDir);
             const filePath = path.join(rootDir, localPath);
             const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 === entry.localSha256) {
@@ -841,7 +842,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
           const rootDir = rootMap.get(entry.namespace);
           if (rootDir) {
             try {
-              const io = await createOfflineStorageIo(rootDir);
+              const io = await openStorageIo(rootDir);
               const filePath = path.join(rootDir, localPath);
               const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
               if (current.sha256 === entry.localSha256) {
@@ -894,8 +895,9 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
     options.signal?.throwIfAborted();
     const batch = actionable.slice(i, i + TRANSFER_BATCH_SIZE);
     const results = await Promise.allSettled(batch.map((entry) => executeTransferEntry(entry)));
-    const rejected = results.find((result) => result.status === "rejected");
-    if (rejected && rejected.status === "rejected") throw rejected.reason;
+    handleConvergeTransferResults(results, batch, () => {
+      actualTransfers.failed += 1;
+    });
   }
   options.signal?.throwIfAborted();
   if (options.peerUrl && peerMutatedNamespaces.size > 0) {
