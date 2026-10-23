@@ -425,11 +425,21 @@ export class EntityStore {
         throw err;
       }
     }
+    const readDirect = async (): Promise<string | undefined> => {
+      try {
+        return await this.deps.readStorageSecureFile(filePath);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) return undefined;
+        throw err;
+      }
+    };
+    const direct = await readDirect();
+    if (direct !== undefined) return direct;
     const renamed = await this.readEntityFileResolvingRename(filePath, name);
     if (renamed !== null) return renamed.content;
-    // Deferred / no-journal path: match a legacy filename by normalized body id.
+    // Deferred / no-journal path: match a legacy filename by physical requested id.
     // ponytail: scan only incomplete-migration misses; index if those become hot.
-    const canonical = resolveHistoricalEntityCanonicalId(name, this.deps.currentHistoricalIds());
     let legacy: string | undefined;
     for (const file of await this.readEntityDirectoryNames()) {
       if (!file.endsWith(".md") || !(await this.isContainedRegularEntityFile(file))) continue;
@@ -444,12 +454,37 @@ export class EntityStore {
       if (isMalformedEntityRecord(content)) continue;
       const entity = parseEntityFile(content, this.deps.entitySchemas);
       if (!entity.name.trim() || !entity.type.trim()) continue;
-      if (this.deps.normalizeEntityName(entity.name, entity.type) !== canonical) continue;
+      if (this.deps.normalizeEntityName(entity.name, entity.type) !== name) continue;
       if (legacy !== undefined) throw new Error(`Ambiguous legacy entity id: ${name}`);
       legacy = content;
     }
     // A peer may have renamed the legacy entry after the directory listing.
+    return (await readDirect()) ?? legacy ?? "";
+  }
+    let legacy: string | undefined;
+    for (const file of await this.readEntityDirectoryNames()) {
+      if (!file.endsWith(".md") || !(await this.isContainedRegularEntityFile(file))) continue;
+      let content: string;
+      try {
+        content = await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, file));
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
+        throw err;
+      }
+      if (isMalformedEntityRecord(content)) continue;
+      const entity = parseEntityFile(content, this.deps.entitySchemas);
+      if (!entity.name.trim() || !entity.type.trim()) continue;
+      if (this.deps.normalizeEntityName(entity.name, entity.type) !== name) continue;
+      if (legacy !== undefined) throw new Error(`Ambiguous legacy entity id: ${name}`);
+      legacy = content;
+    }
+    // A peer may have renamed the legacy entry after the directory listing.
+<<<<<<< HEAD
     return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? legacy ?? "";
+=======
+    return (await readDirect()) ?? legacy ?? "";
+>>>>>>> ec42ba442 (fix(core): retain physical entity read semantics after replay)
   }
 
   /**
