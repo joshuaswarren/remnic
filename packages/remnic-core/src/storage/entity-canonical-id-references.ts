@@ -104,14 +104,20 @@ function readJournalFileNoFollow(statePath: string): JournalRead {
   }
 }
 
-/** A completed journal makes legacy fallback scans unnecessary on read misses. */
-export function entityCanonicalIdMigrationCompleted(stateDir: string): boolean {
+/** Skip compatibility scans only when journal completion attests to the live inputs. */
+export async function entityCanonicalIdMigrationCompleted(
+  stateDir: string,
+  readFingerprint: () => Promise<string>,
+): Promise<boolean> {
   const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
   if (result.kind !== "ok") return false;
   try {
     const parsed: unknown = JSON.parse(result.raw);
-    return !!parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      && "version" in parsed && parsed.version === 1 && "complete" in parsed && parsed.complete === true;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || !("version" in parsed) || parsed.version !== 1
+      || !("complete" in parsed) || parsed.complete !== true
+      || !("completionFingerprint" in parsed) || typeof parsed.completionFingerprint !== "string") return false;
+    return parsed.completionFingerprint === await readFingerprint();
   } catch {
     return false;
   }

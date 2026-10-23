@@ -16,6 +16,7 @@ import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-can
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { assertSafeEntityId } from "./entity-id-safety.js";
+import { getFingerprint } from "./entity-canonical-id-migration.js";
 import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
 import {
@@ -390,7 +391,8 @@ export class EntityStore {
     };
     const direct = await readDirect();
     if (direct !== undefined) return direct;
-    if (entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"))) return "";
+    if (await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
+      getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(this.deps.getEntityMutationVersion())))) return "";
     // ponytail: scan pending-migration misses; index if those legacy misses become hot.
     let legacy: string | undefined;
     for (const file of await this.readEntityDirectoryNames()) {

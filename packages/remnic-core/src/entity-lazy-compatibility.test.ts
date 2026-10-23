@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -67,6 +67,39 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+for (const change of ["aliases", "raw legacy write"]) {
+  test(`stale completed journals do not hide canonical reads after ${change}`, async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-completion-"));
+    try {
+      const seed = new StorageManager(dir);
+      const previousId = await seed.writeEntity("Café", "project", ["Synthetic legacy fact."]);
+      await seed.ensureDirectories();
+      const journalPath = path.join(dir, "state", "entity-canonical-id-migration-v1.json");
+      const journal = await readFile(journalPath, "utf8");
+      assert.equal(JSON.parse(journal).complete, true);
+      if (change === "aliases") {
+        await mkdir(path.join(dir, "config"), { recursive: true });
+        await writeFile(path.join(dir, "config", "aliases.json"), JSON.stringify({ café: "coffee" }));
+      } else {
+        await rename(path.join(dir, "entities", `${previousId}.md`), path.join(dir, "entities", "legacy-cafe.md"));
+        await writeFile(path.join(dir, "state", "entity-canonical-id-reconcile.pending"), "synthetic raw writer\n");
+      }
+      const lock = path.join(dir, "state", "entity-canonical-id-migration.lock");
+      await writeFile(lock, `${process.pid} test-holder ${new Date().toISOString()}\n`);
+      const reader = new StorageManager(dir);
+      await reader.ensureDirectories({ awaitEntityCanonicalMigration: false });
+      const canonical = reader.normalizeEntityName("Café", "project");
+      if (change === "aliases") assert.notEqual(canonical, previousId);
+      assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
+      assert.equal(await readFile(journalPath, "utf8"), journal, "read compatibility must not replay migration");
+      assert.ok(await readFile(lock));
+    } finally {
+      StorageManager.clearAllStaticCaches();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 const mutations = [
   {

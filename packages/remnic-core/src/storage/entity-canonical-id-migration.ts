@@ -47,6 +47,7 @@ const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),
   mappings: z.record(z.string().min(1)),
+  completionFingerprint: z.string().optional(),
   /**
    * Pairs the migration refused to resolve, PARKED rather than dropped.
    * Deleting the record would strand the collision: once an operator removes
@@ -894,14 +895,11 @@ export async function migrateLegacyEntityCanonicalIds(
           if (!isErrnoCode(error, "ENOENT")) throw error;
         }
       }
-      let state = await readState(deps);
-      if (!state) {
-        state = {
-          version: ENTITY_CANONICAL_ID_MIGRATION_VERSION,
-          complete: false,
-          mappings: {},
-        };
-      }
+      let state: EntityCanonicalIdMigrationState = await readState(deps) ?? {
+        version: ENTITY_CANONICAL_ID_MIGRATION_VERSION,
+        complete: false,
+        mappings: {},
+      };
       const blocked: BlockedEntityPairs = new Map();
       const scanNotes: EntityScanNotes = { junk: new Set(), malformed: new Set() };
       // Parks for pairs whose files are GONE, tracked separately from
@@ -958,6 +956,10 @@ export async function migrateLegacyEntityCanonicalIds(
         // fingerprint could SEAL a marker the check never saw.
         const completionFingerprint = await deps.readMigrationFingerprint?.();
         if (await fileExists(reconcileMarkerPath)) return undefined;
+        if (completionFingerprint !== undefined && state.completionFingerprint !== completionFingerprint) {
+          state = { ...state, complete: true, completionFingerprint };
+          await publishState(deps, state);
+        }
         return completionFingerprint;
       };
       /**
