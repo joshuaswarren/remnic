@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1547,3 +1548,49 @@ test("startupSearchSync composes its caller abort into the QMD probe", async () 
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
 });
+
+// Both startup call sites must open read readiness without migration replay.
+for (const namespace of ["default", "shared"]) {
+  test(`startup defers entity migration for ${namespace} storage`, async () => {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-init-migration-defer-"));
+    const orchestrator = new Orchestrator(
+      parseConfig({
+        memoryDir,
+        workspaceDir: path.join(memoryDir, "workspace"),
+        qmdEnabled: false,
+        namespacesEnabled: namespace === "shared",
+        namespaceCatalogEnabled: false,
+        defaultNamespace: "default",
+        sharedNamespace: "shared",
+        namespacePolicies: [],
+        embeddingFallbackEnabled: false,
+        identityContinuityEnabled: false,
+        transcriptEnabled: false,
+        hourlySummariesEnabled: false,
+        compoundingEnabled: false,
+        knowledgeIndexEnabled: false,
+      }),
+    );
+    const storage = await orchestrator.getStorage(namespace);
+    const lockPath = path.join(storage.dir, "state", "entity-canonical-id-migration.lock");
+    const journalPath = path.join(storage.dir, "state", "entity-canonical-id-migration-v1.json");
+    try {
+      await mkdir(path.dirname(lockPath), { recursive: true });
+      await writeFile(lockPath, `${process.pid} init-migration-test ${new Date().toISOString()}\n`);
+      const outcome = await withTestDeadline(
+        orchestrator.initialize().then(() => "settled" as const, () => "rejected" as const),
+      );
+      assert.equal(outcome, "settled", "startup must succeed while the migration lock is held");
+      assert.equal(existsSync(lockPath), true);
+      assert.equal(existsSync(journalPath), false, "startup must not run the migration");
+      await rm(lockPath);
+      await storage.ensureDirectories();
+      const state = JSON.parse(await readFile(journalPath, "utf8")) as { complete?: boolean };
+      assert.equal(state.complete, true, "default setup must still run migration");
+    } finally {
+      await rm(lockPath, { force: true });
+      await orchestrator.destroy();
+      await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    }
+  });
+}
