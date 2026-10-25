@@ -660,7 +660,7 @@ test("MCP capsule tools reject invalid arguments before calling service", async 
       arguments: { namespace: 42 },
     },
   });
-  assert.match(toolCallErrorMessage(badList), /namespace: expected string/);
+  assert.match(toolCallErrorMessage(badList), /namespace: .*expected string/);
   assert.equal(listCalls, 0);
 
   const typoList = await server.handleRequest({
