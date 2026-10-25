@@ -43,6 +43,7 @@ function stubInitializeDependencies(
 ) {
   setTestDependency(orchestrator, "storage", {
     ensureDirectories: async () => {},
+    drainEntityCanonicalIdMigration: async () => {},
     loadAliases: async () => {},
     readAllMemories: async () => [],
     readAllEntityFiles: async () => [],
