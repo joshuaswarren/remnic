@@ -284,7 +284,7 @@ design note is in
 
 - [Connect your tools](guides/quickstart.md#step-3-connect-your-tool) — per-platform connectors
 - [Search backends](search-backends.md) — choose, tune, and upgrade your search engine
-- [Config reference](config-reference.md) — every setting with defaults and presets
+- [Config reference](config-reference.md) - Config keys, defaults, and presets
 - [Procedural memory](procedural-memory.md) — how-to/runbook memories, default-on; set `procedural.enabled` to `false` to opt out
 - [Operations](operations.md) — backups, exports, summaries
 - [Architecture overview](architecture/overview.md) — how it all fits together
