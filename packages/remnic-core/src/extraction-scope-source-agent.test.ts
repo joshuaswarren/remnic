@@ -95,9 +95,9 @@ test("scope prompt qualifies tool knowledge as project, requires naming the agen
 // zod 4: superRefine attaches checks to the object itself — the schema stays
 // a ZodObject, so the scope field's describe text is on `.shape` directly.
 function scopeDescribe(): string {
-  const schema = ExtractedFactSchema as unknown as {
-    shape: Record<string, { description?: string }>;
-  };
+  // SAFETY: ExtractedFactSchema is a ZodObject in zod 4 (superRefine attaches
+  // checks in place); its `.shape` maps field names to schema nodes.
+  const schema = ExtractedFactSchema as { shape: Record<string, { description?: string }> };
   return schema.shape.scope?.description ?? "";
 }
 
