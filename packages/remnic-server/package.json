@@ -1,6 +1,6 @@
 {
   "name": "@remnic/server",
-  "version": "10.0.6",
+  "version": "10.0.17",
   "description": "Standalone Remnic memory server — HTTP + MCP without OpenClaw",
   "type": "module",
   "main": "dist/index.js",
@@ -37,7 +37,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@remnic/core": "workspace:^",
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2"

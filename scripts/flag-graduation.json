@@ -186,7 +186,7 @@
       "flag": "compoundingWeeklyCronEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,
-      "graduationCriterion": "The scheduled job completes unattended across a 7-day beta soak with no operator intervention, no unbounded growth in the store it writes, and no data-loss report."
+      "graduationCriterion": "The daemon weekly compounding run (compoundingEnabled and compoundingWeeklyCronEnabled, both default off) completes unattended across a 7-day beta soak: one report for the ISO week that just ended, a restart skips that report, a missed week is caught up once, older weeks are not backfilled, compounding/weekly does not grow without bound, and there is no data-loss report."
     },
     {
       "flag": "compressionGuidelineLearningEnabled",

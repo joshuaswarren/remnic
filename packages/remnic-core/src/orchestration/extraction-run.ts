@@ -1,24 +1,10 @@
 /**
- * Extraction-run coordinator — extracted from the orchestrator
- * (issue #1526, seam 15).
- *
- * Owns the buffer→extract→persist pipeline orchestration:
- *   - `runExtraction` — the main extraction pipeline coordinator
- *     (normalize → threshold gate → namespace resolve → dedupe
- *     fingerprint → extract → validate → persist → post-write hooks)
- *   - dedupe support: `shouldQueueExtraction`,
- *     `buildExtractionFingerprint`, `normalizeExtractionFingerprintTurns`
- *   - `recordProcessedExtractionFingerprint` — meta recording
- *
- * The orchestrator constructs one instance and delegates the extraction
- * run to it. `persistExtraction`, `maybeCapturePassiveCorrections`, and
- * all post-write side-effect helpers arrive as injectable delegates so
- * the orchestrator keeps ownership of cross-subsystem routing and the
- * behavior-critical chokepoints it hosts.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods so existing call sites
- * and tests that exercise the public API continue to work.
+ * Buffer → extract → persist coordinator (issue #1526, seam 15).
+ * Owns runExtraction, shouldQueueExtraction, buildExtractionFingerprint,
+ * normalizeExtractionFingerprintTurns and recordProcessedExtractionFingerprint.
+ * The orchestrator delegates here and retains cross-subsystem routing,
+ * persistence and post-write side effects via injected dependencies.
+ * Extracted from orchestrator.ts without behavior changes.
  */
 
 import { createHash } from "node:crypto";

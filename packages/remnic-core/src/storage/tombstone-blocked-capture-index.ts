@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:
 import path from "node:path";
 import { promisify } from "node:util";
 import { log } from "../logger.js";
+import type { CaptureWriteLockLimitSource } from "../capture-write-lock-backoff.js";
 import type { MemoryFile, MemoryFrontmatter } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -54,6 +55,8 @@ export type TombstoneBlockedCaptureIndexOptions = {
   readonly secureStoreKeyProvider: () => Buffer | null;
   readonly secureStoreWriteKeyProvider: () => Buffer | null;
   readonly lockOptions: () => ContentHashIndexLockOptions;
+  /** Capture-write-lock limit source; undefined until converge installs limits. */
+  readonly captureLockLimitSource?: () => CaptureWriteLockLimitSource | undefined;
   readonly readAllMemories: () => Promise<MemoryFile[]>;
   readonly readAllColdMemories: () => Promise<MemoryFile[]>;
   readonly parseMemory?: OfflineSyncMemoryParser;
@@ -77,7 +80,11 @@ export class TombstoneBlockedCaptureIndex {
 
   constructor(options: TombstoneBlockedCaptureIndexOptions) {
     this.options = options;
-    this.captureWriteLock = new TombstoneBlockedCaptureWriteLock(options);
+    this.captureWriteLock = new TombstoneBlockedCaptureWriteLock({
+      stateDir: options.stateDir,
+      withHeldFileLock: options.withHeldFileLock,
+      lockOptions: options.captureLockLimitSource,
+    });
   }
 
   private createIndex(): ContentHashIndex {

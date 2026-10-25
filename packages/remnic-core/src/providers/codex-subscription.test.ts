@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   callCodexCliFallback,
   isCodexCliFallbackRunnerRegistered,
+  type CodexCliFallbackRunner,
   setCodexCliFallbackRunnerForProcess,
 } from "../cli-fallback.js";
 import {
@@ -681,6 +682,17 @@ async function flushLoop(turns = 2): Promise<void> {
   }
 }
 
+/** A runner's child untracks on the child's async exit event, which can
+ * land after the runner promise already settled. Poll for the count to
+ * clear instead of asserting it immediately (CI load made that flaky). */
+async function waitForCodexChildUntrack(runner: CodexCliFallbackRunner, timeoutMs = 2_000): Promise<void> {
+  const waitUntil = Date.now() + timeoutMs;
+  while (__codexSubscriptionTestHooks.activeCodexChildCount(runner) !== 0 && Date.now() < waitUntil) {
+    await flushLoop();
+  }
+  assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
+}
+
 test("shared login check: each caller times out on its own budget, without cancelling others", async () => {
   __codexSubscriptionTestHooks.resetLoginStatusCache();
   let clock = 0;
@@ -1103,13 +1115,8 @@ test(
           return true;
         }
       );
-      // The timeout settles before close; tracking must remain until the child
-      // actually exits so forced cleanup can still find it.
-      const cleanupUntil = Date.now() + 2_000;
-      while (__codexSubscriptionTestHooks.activeCodexChildCount(runner) > 0 && Date.now() < cleanupUntil) {
-        await flushLoop();
-      }
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
+      // The detached child group must be untracked after settle — no leak.
+      await waitForCodexChildUntrack(runner);
     } finally {
       await rm(dir, { force: true, recursive: true }).catch(() => {});
     }
@@ -1225,7 +1232,7 @@ test(
       assert.equal(process.listenerCount("exit"), before.exit);
       terminateActiveCodexSubscriptionChildren("SIGKILL", runner);
       await pendingDone;
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(runner), 0);
+      await waitForCodexChildUntrack(runner);
       assert.equal(process.listenerCount("SIGINT"), before.sigint);
       assert.equal(process.listenerCount("SIGTERM"), before.sigterm);
     } finally {
@@ -1288,7 +1295,7 @@ test(
       assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(second), 1);
       terminateActiveCodexSubscriptionChildren("SIGKILL", first);
       await firstPending;
-      assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(first), 0);
+      await waitForCodexChildUntrack(first);
       assert.equal(__codexSubscriptionTestHooks.activeCodexChildCount(second), 1);
     } finally {
       terminateActiveCodexSubscriptionChildren("SIGKILL", first);

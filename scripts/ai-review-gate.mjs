@@ -179,6 +179,8 @@ export function evaluateAiReviewGate({
   groups,
   headSha,
   headCommittedAt,
+  authorLogin,
+  trustedAgentLogins = [],
   reviews = [],
   issueComments = [],
   reviewComments = [],
@@ -198,24 +200,38 @@ export function evaluateAiReviewGate({
   const positiveCheckRunTimesByAlias = new Map();
   const blockers = [];
   const configuredAliases = new Set(groups.flat());
+  const author = normalizeLogin(authorLogin);
+  const trustedAgents = new Set(
+    (Array.isArray(trustedAgentLogins) ? trustedAgentLogins : [])
+      .map(normalizeLogin)
+      .filter((login) => login && author && login !== author),
+  );
   /**
    * Configured reviewers that produced ANY current-head activity, regardless of
    * verdict — an APPROVED review, a CHANGES_REQUESTED, a bare COMMENTED review,
    * a comment with no recognized verdict phrase, or a check run.
    *
-   * The waiver path in the workflow is only for heads where no required
-   * reviewer participated at all. Without this signal it also fired when a bot
-   * posted a non-positive COMMENTED review, converting real reviewer output
-   * into a waived gate.
+   * Keep non-positive participation visible in workflow diagnostics.
    */
   const participatedAliases = new Set();
 
   const latestReviews = new Map();
   for (const review of reviews) {
     const login = normalizeLogin(review.user?.login);
-    if (!login || !configuredAliases.has(login)) continue;
+    if (!login) continue;
+    if (!configuredAliases.has(login)) {
+      // Agent trust comes from repository settings, not review text or association.
+      // Only formal reviews carry an exact GitHub-provided commit binding.
+      if (!trustedAgents.has(login) || !/^[0-9a-f]{40}$/i.test(headSha ?? "") || review.commit_id !== headSha) continue;
+      if (review.state !== "APPROVED" && !NEGATIVE_REVIEW_STATES.has(review.state)) continue;
+    }
     if (!isCurrentActivity(review, headSha, headCommittedAt)) continue;
     participatedAliases.add(login);
+    // Only verdict states compete for "latest": a later COMMENTED/PENDING
+    // review (e.g. a reviewer's follow-up summary) must not overwrite an
+    // earlier current-head APPROVED. Only CHANGES_REQUESTED or DISMISSED
+    // supersede an approval (COS-404, PR #3233).
+    if (review.state !== "APPROVED" && !NEGATIVE_REVIEW_STATES.has(review.state)) continue;
     const previous = latestReviews.get(login);
     if (!previous || activityTime(review) >= activityTime(previous)) {
       latestReviews.set(login, review);
@@ -275,8 +291,9 @@ export function evaluateAiReviewGate({
 
   const present = [];
   const missing = [];
+  const trustedApproval = [...trustedAgents].find((alias) => positiveByAlias.has(alias));
   for (const group of groups) {
-    const matchedAlias = group.find((alias) => positiveByAlias.has(alias));
+    const matchedAlias = group.find((alias) => positiveByAlias.has(alias)) ?? trustedApproval;
     if (matchedAlias) {
       present.push({ group, ...positiveByAlias.get(matchedAlias) });
     } else {
@@ -323,7 +340,7 @@ export function evaluateAiReviewGate({
   };
 }
 
-/** True when the only gate miss is that required bots never posted. */
+/** True when a required positive verdict is missing without an explicit blocker. */
 export function isMissingReviewOnlyFailure(result) {
   return (
     result?.ok === false &&

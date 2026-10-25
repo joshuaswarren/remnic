@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "10.0.6",
+  "version": "10.0.17",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -60,6 +60,26 @@
       "types": "./dist/http-retry.d.ts",
       "remnic-source": "./src/http-retry.ts",
       "import": "./dist/http-retry.js"
+    },
+    "./capture-write-lock-backoff": {
+      "types": "./dist/capture-write-lock-backoff.d.ts",
+      "remnic-source": "./src/capture-write-lock-backoff.ts",
+      "import": "./dist/capture-write-lock-backoff.js"
+    },
+    "./capture-write-lock-backoff.js": {
+      "types": "./dist/capture-write-lock-backoff.d.ts",
+      "remnic-source": "./src/capture-write-lock-backoff.ts",
+      "import": "./dist/capture-write-lock-backoff.js"
+    },
+    "./capture-write-lock": {
+      "types": "./dist/capture-write-lock.d.ts",
+      "remnic-source": "./src/capture-write-lock.ts",
+      "import": "./dist/capture-write-lock.js"
+    },
+    "./capture-write-lock.js": {
+      "types": "./dist/capture-write-lock.d.ts",
+      "remnic-source": "./src/capture-write-lock.ts",
+      "import": "./dist/capture-write-lock.js"
     },
     "./abort-error.js": {
       "types": "./dist/abort-error.d.ts",
@@ -3334,7 +3354,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^10.0.6"
+    "@remnic/coding-graph": "^10.0.17"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

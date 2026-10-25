@@ -8,6 +8,7 @@ import {
   filterBenchWorkItemsForPreviousStatus,
   parseBenchArgs,
 } from "./bench-args.js";
+import { resolveLoCoMoReplayExtractionMode } from "./bench-args-replay-extraction.js";
 
 test("parseBenchArgs accepts the packaged MCP demo path", () => {
   const parsed = parseBenchArgs(["run", "longmemeval", "--quick", "--adapter", "mcp", "--mcp-demo"]);
@@ -1111,4 +1112,100 @@ test("parseBenchArgs --matrix empty error lists local-lab alongside the other pr
   // even though parseBenchRuntimeProfile accepts local-lab, so the message was
   // an outdated allow-list.
   assert.throws(() => parseBenchArgs(["run", "locomo", "--matrix", " , , "]), /local-lab/);
+});
+
+test("parseBenchArgs leaves LoCoMo replay extraction mode unset by default (CLI default skip)", () => {
+  const parsed = parseBenchArgs(["run", "locomo"]);
+  assert.equal(parsed.locomoReplayExtractionMode, undefined);
+  assert.equal(resolveLoCoMoReplayExtractionMode(parsed), "skip");
+});
+
+test("parseBenchArgs accepts --replay-extraction-mode for a single LoCoMo run", () => {
+  for (const mode of ["skip", "await"] as const) {
+    const parsed = parseBenchArgs([
+      "run",
+      "locomo",
+      "--runtime-profile",
+      "real",
+      "--replay-extraction-mode",
+      mode,
+    ]);
+    assert.equal(parsed.locomoReplayExtractionMode, mode);
+    assert.equal(resolveLoCoMoReplayExtractionMode(parsed), mode);
+  }
+  const published = parseBenchArgs([
+    "published",
+    "--name",
+    "locomo",
+    "--dataset",
+    "/tmp",
+    "--model",
+    "m",
+    "--runtime-profile",
+    "openclaw-chain",
+    "--replay-extraction-mode",
+    "await",
+  ]);
+  assert.equal(published.locomoReplayExtractionMode, "await");
+});
+
+test("parseBenchArgs rejects --replay-extraction-mode await on adapters that cannot extract", () => {
+  const nonExtracting: string[][] = [
+    [],
+    ["--runtime-profile", "baseline"],
+    ["--quick"],
+    ["--quick", "--runtime-profile", "real"],
+    ["--runtime-profile", "real", "--adapter", "mcp", "--mcp-demo"],
+    ["--matrix", "baseline,real"],
+  ];
+  for (const extra of nonExtracting) {
+    assert.throws(
+      () => parseBenchArgs(["run", "locomo", ...extra, "--replay-extraction-mode", "await"]),
+      /--replay-extraction-mode await requires the remnic adapter/,
+      `expected rejection for: ${extra.join(" ") || "(defaults)"}`,
+    );
+  }
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "locomo",
+        "--runtime-profile",
+        "real",
+        "--replay-extraction-mode",
+        "skip",
+        "--replay-extraction-mode",
+        "await",
+      ]),
+    /--replay-extraction-mode may be given only once/,
+  );
+  // skip stays allowed everywhere LoCoMo runs, since it matches the default.
+  const quickSkip = parseBenchArgs(["run", "locomo", "--quick", "--replay-extraction-mode", "skip"]);
+  assert.equal(quickSkip.locomoReplayExtractionMode, "skip");
+});
+
+test("parseBenchArgs rejects invalid or non-LoCoMo --replay-extraction-mode", () => {
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--replay-extraction-mode", "background"]),
+    /--replay-extraction-mode must be one of: skip, await/,
+  );
+  assert.throws(
+    () => parseBenchArgs(["run", "longmemeval", "--replay-extraction-mode", "await"]),
+    /--replay-extraction-mode is currently supported only for a single LoCoMo run/,
+  );
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "published",
+        "--name",
+        "longmemeval",
+        "--dataset",
+        "/tmp",
+        "--model",
+        "m",
+        "--replay-extraction-mode",
+        "await",
+      ]),
+    /--replay-extraction-mode is currently supported only for a single LoCoMo run/,
+  );
 });
