@@ -147,7 +147,7 @@ Do not invent task commands, replacement verifiers, or numeric scores. The exist
 
 No metered API fallback or downstream trial ran. Corpus extraction uses Codex subscription quota. Dream-stage usage comes from completed provider events; partial failed requests can leave unreported usage.
 
-Letta reports a six-hour maximum for memory generation. This corpus attempt took 4h 47m 29.368s, including startup, restarts, and diagnostic pauses. It attempted every input but retained one provider refusal. For another dream attempt, reserve up to the published six-hour window; that allowance does not guarantee provider acceptance.
+Letta reports a six-hour maximum for memory generation. The FIRST run (2026-10-22, superseded by the corrected rerun in STATUS.md) took 4h 47m 29.368s, including startup, restarts, and diagnostic pauses. It attempted every input but retained one provider refusal. For another dream attempt, reserve up to the published six-hour window; that allowance does not guarantee provider acceptance.
 
 The selected route uses subscription quota, whose cost is not priced here. The current authorization prohibits metered fallback. A usage or rate limit pauses the run with its progress and private state intact. Failed requests can have unreported token use.
 

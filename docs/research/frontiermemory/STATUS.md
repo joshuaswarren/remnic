@@ -26,11 +26,11 @@ A second full dream run used the quote-anchored grounding fix from [PR #3236](ht
 | Entity files | 255 | 33 |
 | Metered API spend | $0 | $0 |
 
-The corrected run started at 02:56:14 UTC and ended at 12:07:38 UTC on 2026-10-23, 9h 11m of wall time. That includes the paused period between the fatal timeout and the resume, so it is not comparable to the first run's 4h 47m.
+The corrected run started at 02:56:14 UTC and ended at 12:07:38 UTC on 2026-10-23, 9h 11m of wall time. That includes the paused period between the fatal timeout and the resume, so it is not comparable to the first run's 4h 47m. FrontierMemory's published limit is six hours of memory generation; the runner's clock does not separate active generation from the checkpoint pause, and neither the public FAQ nor the repository README states whether a pause counts toward the limit, so this report does not claim the corrected run met it. Active-generation time excluding the pause was not recorded.
 
 Quote-anchored grounding raised stored facts from 9 to 1,590 with about the same token use. File counts still do not measure accuracy or unique semantic memories, and downstream scores stay `null` until Letta's task environments and verifiers are available.
 
-## Final dream measurements
+## Final dream measurements (first run, 2026-10-22 — superseded by the corrected run above)
 
 The run started at 15:46:31 UTC and stopped at 20:34:00 UTC on 2026-10-22. Wall time includes startup, restarts, and diagnostic pauses. Download and earlier synthetic setup are separate.
 
