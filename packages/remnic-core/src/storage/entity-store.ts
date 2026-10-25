@@ -544,7 +544,11 @@ export class EntityStore {
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
           const entityId = file.slice(0, -3);
           try {
-            if (await this.isIndexableEntityMarkdown(file)) return entityId;
+            // Report the canonical id for every indexable file so legacy
+            // names surface as their canonical identity from the start.
+            if (await this.isIndexableEntityMarkdown(file)) {
+              return resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+            }
           } catch (err) {
             // Lock errors abort the listing; anything else (EACCES, decrypt)
             // fails only this entry — one unhealthy file must not empty it.
@@ -552,10 +556,15 @@ export class EntityStore {
           }
           // Indexable-check miss: a vanished listed entry raced a background
           // migration rename — resolve its canonical id through the journal
-          // so the listing does not drop the entity.
-          if (await this.isMissingEntry(file)) {
-            const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
-            if (canonical !== entityId) return canonical;
+          // so the listing does not drop the entity. Lstat failures stay
+          // within this entry too.
+          try {
+            if (await this.isMissingEntry(file)) {
+              const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+              if (canonical !== entityId) return canonical;
+            }
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError) throw err;
           }
           return null;
         }));
@@ -725,16 +734,24 @@ export class EntityStore {
           batch.map(async (entry) => {
             const entityId = entry.slice(0, -".md".length);
             const entryPath = path.join(this.deps.entitiesDir, entry);
-            if (!(await this.isContainedRegularEntityFile(entry))) {
-              // A listed entry that vanished races a background migration
-              // rename: resolve through historical ids like a direct read.
-              // Still-present symlinks/dirs stay skipped.
-              if (await this.isMissingEntry(entry)) {
-                return this.readEntityFileResolvingRename(entryPath, entityId);
+            try {
+              if (!(await this.isContainedRegularEntityFile(entry))) {
+                // A listed entry that vanished races a background migration
+                // rename: resolve through historical ids like a direct read.
+                // Still-present symlinks/dirs stay skipped.
+                if (await this.isMissingEntry(entry)) {
+                  return await this.readEntityFileResolvingRename(entryPath, entityId);
+                }
+                return null;
               }
+              return await this.readEntityFileResolvingRename(entryPath, entityId);
+            } catch (err) {
+              // One unreadable entity must not fail the whole corpus read:
+              // lock failures abort, everything else isolates to this entry.
+              if (err instanceof SecureStoreLockedError) throw err;
+              log.warn(`entity read isolated failure for ${entry}: ${err instanceof Error ? err.message : String(err)}`);
               return null;
             }
-            return this.readEntityFileResolvingRename(entryPath, entityId);
           }),
         );
         for (const result of results) {

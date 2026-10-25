@@ -28,10 +28,12 @@ export const noServiceConstructorImportsRule = defineRule({
 		},
 	},
 	createOnce(context) {
-		const isTestFile = TEST_FILE.test(context.filename.replaceAll("\\", "/"));
-
+		// Evaluated per file: createOnce runs once per lint run, so a captured
+		// filename would freeze one verdict for every file (issue found in
+		// review). The visitor receives the current file's context each time.
 		return {
 			ImportDeclaration(node) {
+				const isTestFile = TEST_FILE.test(context.filename.replaceAll("\\", "/"));
 				if (isTestFile || !isProjectLocalImport(node.source.value)) return;
 
 				for (const specifier of node.specifiers) {
