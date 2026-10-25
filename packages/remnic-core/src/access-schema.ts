@@ -658,16 +658,13 @@ export const offlineSyncSnapshotRequestSchema = z.object({
     .optional(),
 });
 
-export const offlineSyncApplyRequestSchema = z
-  .object({
-    namespace: namespaceSchema,
-    changeset: z.unknown(),
-    returnCurrentFiles: z.boolean().optional(),
-  })
-  .refine((value) => value.changeset !== undefined && value.changeset !== null, {
-    message: "changeset is required",
-    path: ["changeset"],
-  });
+export const offlineSyncApplyRequestSchema = z.object({
+  namespace: namespaceSchema,
+  // zod 4: refine messages cannot override its synthesized nonoptional check,
+  // so presence is enforced on the field itself.
+  changeset: z.custom<unknown>((value) => value !== undefined && value !== null, "changeset is required"),
+  returnCurrentFiles: z.boolean().optional(),
+});
 
 export const offlineSyncFilesRequestSchema = z.object({
   namespace: namespaceSchema,
