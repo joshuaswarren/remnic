@@ -1577,7 +1577,7 @@
     "meilisearch": "^0.46.0",
     "node-gyp": "^12.3.0",
     "openai": "^6.0.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.6"
   },
   "optionalDependencies": {
     "@lancedb/lancedb-darwin-arm64": "^0.26.2",
