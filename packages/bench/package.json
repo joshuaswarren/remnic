@@ -50,7 +50,7 @@
     "@remnic/core": "workspace:^",
     "hyparquet": "^1.25.7",
     "yaml": "^2.4.2",
-    "zod": "^3.24.0"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "tsup": "^8.5.1",
