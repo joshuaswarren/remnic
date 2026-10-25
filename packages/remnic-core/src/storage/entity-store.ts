@@ -23,7 +23,7 @@ import {
 } from "../utils/macos-replication-junk.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
-import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
+import { SecureStoreDecryptError, SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import type {
   EntityActivityEntry,
   EntityFile,
@@ -541,13 +541,18 @@ export class EntityStore {
       const names: string[] = [];
       const batchSize = 100;
       for (let i = 0; i < mdFiles.length; i += batchSize) {
+        // Snapshot the journal table once per listing call: resolving each
+        // entry through currentHistoricalIds() would re-read the journal
+        // file per entry (quadratic I/O on large corpora).
+        const historicalIds = this.deps.currentHistoricalIds();
+        const resolveCanonical = (entityId: string): string => resolveHistoricalEntityCanonicalId(entityId, historicalIds);
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
           const entityId = file.slice(0, -3);
           try {
             // Report the canonical id for every indexable file so legacy
             // names surface as their canonical identity from the start.
             if (await this.isIndexableEntityMarkdown(file)) {
-              return resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+              return resolveCanonical(entityId);
             }
           } catch (err) {
             // Lock errors abort the listing; anything else (EACCES, decrypt)
@@ -746,9 +751,9 @@ export class EntityStore {
               }
               return await this.readEntityFileResolvingRename(entryPath, entityId);
             } catch (err) {
-              // One unreadable entity must not fail the whole corpus read:
-              // lock failures abort, everything else isolates to this entry.
-              if (err instanceof SecureStoreLockedError) throw err;
+              // Lock and decrypt failures abort the corpus read (the store
+              // is unusable or tampered); anything else isolates to this entry.
+              if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
               log.warn(`entity read isolated failure for ${entry}: ${err instanceof Error ? err.message : String(err)}`);
               return null;
             }
