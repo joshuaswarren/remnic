@@ -544,6 +544,59 @@ test("MCP tools/list warning fires when the first attempt exhausts the budget", 
   assert.match(String(warning[1]?.error ?? ""), /timed out|aborted/i);
 });
 
+test("a malformed tools/list catalog fails the listing and warns", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (url.endsWith("/mcp")) {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { id?: number; method?: string };
+      if (body.method === "tools/list") {
+        // 200 with no tools array: must not count as a successful empty listing.
+        return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: body.id, result: {} }), { status: 200 });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const registeredTools: Record<string, unknown>[] = [];
+  const entries: Array<[string, Record<string, unknown>]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      statusEnabled: false,
+      mcpToolsEnabled: true,
+      requestTimeoutMs: 60000,
+      startupRequestTimeoutMs: 2_000,
+    },
+  });
+  await extension({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: (tool: Record<string, unknown>) => {
+      registeredTools.push(tool);
+    },
+    appendEntry: (type: string, data?: unknown) => {
+      if (data && typeof data === "object") entries.push([type, data as Record<string, unknown>]);
+    },
+  });
+
+  assert.deepEqual(registeredTools, []);
+  const warning = entries.find(([, payload]) => payload.code === "MCP_TOOLS_LIST_FAILED");
+  assert.ok(warning, "a malformed catalog must warn, not register nothing silently");
+  assert.match(String(warning[1]?.error ?? ""), /malformed catalog/i);
+});
+
 test("session_start renders 'Remnic starting' when health answers 503 not_ready (issue #2215)", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
