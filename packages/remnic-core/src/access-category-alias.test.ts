@@ -672,9 +672,10 @@ test("#2829/#2866 transformed write schemas still require an authorized namespac
   assert.ok(suggestion);
   const wrapper: unknown = suggestion.spec.schema;
   assert.ok(
-    typeof wrapper === "object" && wrapper !== null && "in" in wrapper,
+    wrapper instanceof Object && "in" in wrapper,
     "suggestion_submit wraps preprocess around the transform",
   );
+  // SAFETY: the assertion above established `in` exists on this object.
   const inner = (wrapper as { in: unknown }).in;
   assert.equal(
     inner instanceof z.ZodObject,

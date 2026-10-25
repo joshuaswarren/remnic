@@ -23,11 +23,12 @@ export function applySpanMode(opts: {
 // document for v4 schemas, so the dependency is dropped here. `io: "input"`
 // matches the old effectStrategy: "input" (advertise the input shape of
 // transforms/preprocess to providers).
+// SAFETY: z.toJSONSchema returns a JSON-Schema document — always an object at
+// the root; the record shape is what omitFactSpan walks.
 const EXTRACTION_PROVIDER_JSON_SCHEMA_WITH_SPAN = z.toJSONSchema(
   ExtractionProviderOutputSchema,
   { target: "draft-7", io: "input" },
 ) as Record<string, unknown>;
-
 type FactItems = {
   properties?: Record<string, unknown>;
   required?: string[];
