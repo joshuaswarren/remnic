@@ -34,3 +34,22 @@ export async function readStoreFileBuffer(filePath: string, memoryDir: string): 
     await handle.close();
   }
 }
+
+
+/**
+ * Atomic-replacement-tolerant variant: entity writes ship as temp-file +
+ * rename, so an open/lstat identity mismatch during a concurrent write is an
+ * ordinary race, not tampering. Retry a bounded number of times with fresh
+ * containment checks before surfacing the mismatch as unsafe.
+ */
+export async function readStoreFileBufferTolerant(filePath: string, memoryDir: string, attempts = 3): Promise<Buffer> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readStoreFileBuffer(filePath, memoryDir);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const identityRace = /unsafe entity (?:file|directory)/.test(message);
+      if (!identityRace || attempt >= attempts - 1) throw err;
+    }
+  }
+}

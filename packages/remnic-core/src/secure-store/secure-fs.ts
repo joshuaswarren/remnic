@@ -61,7 +61,7 @@ import {
 } from "./cipher.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { readStoreFileBuffer } from "./entity-file-read.js";
+import { readStoreFileBufferTolerant as readStoreFileBuffer } from "./entity-file-read.js";
 
 // ---------------------------------------------------------------------------
 // Error classes

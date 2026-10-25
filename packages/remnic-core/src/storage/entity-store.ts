@@ -474,6 +474,16 @@ export class EntityStore {
    * Symlinks, FIFOs, and devices are skipped before any read. The entities
    * root is refused separately, before the directory is listed.
    */
+  private async isMissingEntry(file: string): Promise<boolean> {
+    try {
+      await lstat(path.join(this.deps.entitiesDir, file));
+      return false;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return true;
+      throw err;
+    }
+  }
+
   private async isContainedRegularEntityFile(file: string): Promise<boolean> {
     const filePath = path.join(this.deps.entitiesDir, file);
     let entryStat;
@@ -704,12 +714,18 @@ export class EntityStore {
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (entry) => {
-            // Containment skip for planted symlinks/fifos/vanished files; a
-            // REPLACED entities parent still reaches the secure read through
-            // the remaining regular entries and rejects there.
-            if (!(await this.isContainedRegularEntityFile(entry))) return null;
             const entityId = entry.slice(0, -".md".length);
-            return this.readEntityFileResolvingRename(path.join(this.deps.entitiesDir, entry), entityId);
+            const entryPath = path.join(this.deps.entitiesDir, entry);
+            if (!(await this.isContainedRegularEntityFile(entry))) {
+              // A listed entry that vanished races a background migration
+              // rename: resolve through historical ids like a direct read.
+              // Still-present symlinks/dirs stay skipped.
+              if (await this.isMissingEntry(entry)) {
+                return this.readEntityFileResolvingRename(entryPath, entityId);
+              }
+              return null;
+            }
+            return this.readEntityFileResolvingRename(entryPath, entityId);
           }),
         );
         for (const result of results) {

@@ -27,7 +27,7 @@ export const noServiceConstructorImportsRule = defineRule({
 				'Do not import Effect service constructor "{{name}}" into runtime code. Import the owning Layer, yield the contextual service, and allow its requirements to propagate to the composition root.',
 		},
 	},
-	create(context) {
+	createOnce(context) {
 		const isTestFile = TEST_FILE.test(context.filename.replaceAll("\\", "/"));
 
 		return {
