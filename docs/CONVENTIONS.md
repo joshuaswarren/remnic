@@ -58,8 +58,13 @@ Conventions and patterns used throughout the Remnic codebase. The repo is a pnpm
 |--------|---------|
 | `npm run build` | Build `@remnic/core`, sync the OpenClaw plugin manifest, then bundle the root plugin with `tsup` |
 | `npm run check-types` | Type-check with `tsc --noEmit` (plus each package's own `check-types`) |
-| `npm run lint` | Lint with Biome (`biome check`) |
+| `npm run lint` | Required Biome checks, strict plugin types, anti-slop regressions, then scoped Oxlint checks |
+| `npm run lint:anti-slop` | Fail anti-slop findings overlapping added/changed JS/TS lines |
+| `npm run test:anti-slop` | Run real Oxlint rule and scope regression tests with one worker |
+| `npm run check:anti-slop-types` | Strict type-check of the restored plugin and its rules only |
 | `npm test` | Build core, then run the root test suite |
 | `npm run preflight` | Full pre-PR gate (`scripts/pr-preflight.sh full`) |
 | `npm run preflight:quick` | Fast pre-PR gate (`scripts/pr-preflight.sh quick`) |
 | `npm run check-config-contract` | Verify config types match the plugin manifest schema |
+
+The [anti-slop rollout](../CONTRIBUTING.md#anti-slop-rollout) documents base selection, unchanged-debt handling, failure behavior, and the limits of added-line scope. CI runs this through `checks`, which is a dependency of the required `quality` check.
