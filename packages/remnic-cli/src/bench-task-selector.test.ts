@@ -179,3 +179,23 @@ test("bench published LoCoMo dry-run rejects an unknown pinned task id", async (
     assert.match(result.stderr, /Unknown LoCoMo task id: unknown-task/);
   });
 });
+
+test("LoCoMo published options default replay extraction to skip and honor await opt-in", () => {
+  const defaults = __benchDatasetTestHooks.buildPublishedBenchmarkOptionsForTest(
+    "locomo",
+    {},
+  );
+  assert.equal(defaults?.replayExtractionMode, "skip");
+
+  const optedIn = __benchDatasetTestHooks.buildPublishedBenchmarkOptionsForTest(
+    "locomo",
+    { locomoReplayExtractionMode: "await" },
+  );
+  assert.equal(optedIn?.replayExtractionMode, "await");
+
+  const other = __benchDatasetTestHooks.buildPublishedBenchmarkOptionsForTest(
+    "longmemeval",
+    { locomoReplayExtractionMode: "await" },
+  );
+  assert.equal(other?.replayExtractionMode, undefined);
+});

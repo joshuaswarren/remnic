@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.6",
+  "version": "10.0.24",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -1213,7 +1213,7 @@
       "compoundingWeeklyCronEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "If true, compounding weekly synthesis can be scheduled externally via cron."
+        "description": "When true together with compoundingEnabled, the standalone daemon runs synthesizeWeekly once per completed ISO week (including calibration when calibration is enabled). Default off. Skips a week whose report already exists and catches up one missed week after a restart."
       },
       "compressionGuidelineLearningEnabled": {
         "type": "boolean",
@@ -1604,6 +1604,24 @@
             "minimum": 1,
             "default": 30000,
             "description": "Per-request peer HTTP timeout in milliseconds for converge plan/apply/watch. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this rather than watching manifest fetches time out. Clamped to 3600000 (one hour)."
+          },
+          "captureWriteLockInitialDelayMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 50,
+            "description": "First backoff window in ms (equal jitter: first wait is about half). Default 50. Positive integer, clamped to 3600000. Must be <= captureWriteLockMaxDelayMs."
+          },
+          "captureWriteLockMaxDelayMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 2000,
+            "description": "Cap on one backoff wait, in ms. Default 2000. Positive integer, clamped to 3600000. Must be <= captureWriteLockDeadlineMs."
+          },
+          "captureWriteLockDeadlineMs": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 60000,
+            "description": "Overall acquire deadline in ms. Default 60000. On expiry that transfer fails and the cycle continues. Below the 2000ms max wait, also set captureWriteLockMaxDelayMs."
           }
         }
       },
@@ -5896,7 +5914,7 @@
       },
       "sharedContextDir": {
         "type": "string",
-        "description": "Override shared-context directory (default: ~/.openclaw/workspace/shared-context)."
+        "description": "Override shared-context directory (default: ~/.openclaw/workspace/shared-context). When unset, feedback/inbox.jsonl is stored under memoryDir/shared-context."
       },
       "sharedContextEnabled": {
         "type": "boolean",

@@ -13,14 +13,14 @@ Shared context is a file-based coordination layer that multiple agents read and 
 }
 ```
 
-`sharedContextDir` is optional and defaults to `~/.openclaw/workspace/shared-context/`.
+`sharedContextDir` is optional. Priorities, outputs, and roundtable default to `~/.openclaw/workspace/shared-context/`. When `sharedContextDir` is unset, `feedback/inbox.jsonl` is stored at `<memoryDir>/shared-context/feedback/inbox.jsonl` so the inbox replicates with the memory store. The first synthesis, feedback append, or shared-context init copies a non-empty legacy `<workspaceDir>/shared-context/feedback/inbox.jsonl` into that file when the memory-dir inbox is missing or empty. A non-empty memory-dir inbox is left as-is before the migration lock is taken, and the legacy file is not read again. Set `sharedContextDir` to keep the inbox beside the other shared-context files; an explicit directory is not migrated.
 
 ## Directory structure
 
 - `priorities.md`: curated living priority stack (agents read before acting)
 - `priorities.inbox.md`: append-only inbox for new priority notes
 - `agent-outputs/<agent>/<YYYY-MM-DD>/*.md`: work products written by agents
-- `feedback/inbox.jsonl`: append-only approvals/rejections with optional learning/outcome
+- `feedback/inbox.jsonl`: append-only approvals/rejections with optional learning/outcome. With no `sharedContextDir`, this file is under the memory directory (`<memoryDir>/shared-context/feedback/inbox.jsonl`); an explicit `sharedContextDir` keeps it in that tree
 - `roundtable/<YYYY-MM-DD>.md`: daily synthesis written by the curator tool
 - `cross-signals/<YYYY-MM-DD>.md`: human-readable recurring themes, risks, and promotion candidates with provenance
 - `cross-signals/<YYYY-MM-DD>.json`: deterministic overlap report (topics/entities) across daily outputs + feedback totals

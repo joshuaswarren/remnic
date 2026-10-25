@@ -380,11 +380,13 @@ remain. Work with this, not against it:
    run as a product defect.
 5. A positive CodeRabbit review on the current head satisfies
    `ai-reviewers` when Cursor never starts. Cursor remains accepted.
-   When no required bot posts before the poll deadline, the workflow reports
-   success with `Reviewers never posted — gate waived`. This waives the bot
-   availability check only. Ask another agent to review the PR before merging,
-   fix its findings, and keep all other required checks green. A posted
-   `CHANGES_REQUESTED` still fails the gate.
+   A trusted alternate agent can submit a formal `APPROVED` review on the
+   exact current head. Configure its GitHub login in the comma-separated
+   repository variable `TRUSTED_AI_AGENT_REVIEWERS` (empty disables this path).
+   The PR author cannot approve their own change. Comments, stale-head reviews,
+   and repository association alone do not establish agent trust.
+   Without a bot or trusted-agent verdict, the gate fails at the poll deadline.
+   A posted `CHANGES_REQUESTED` or dismissed review still fails the gate.
 6. Rulesets evaluate the LATEST check-run per required context, not the best
    one. A `neutral` check-run posted after a `success` on the same head keeps
    `mergeable_state: blocked` indefinitely — the gate reads red even though a

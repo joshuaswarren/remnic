@@ -28,22 +28,26 @@ export const noUnknownTypeAliasesRule = defineRule({
 	createOnce(context) {
 		const aliases = new Map<string, ESTree.TSTypeAliasDeclaration>();
 
-		const resolvesToUnknown = (type: ESTree.TSType, visited = new Set<string>()): boolean => {
-			if (type.type === "TSUnknownKeyword") return true;
-			if (type.type === "TSParenthesizedType")
-				return resolvesToUnknown(type.typeAnnotation, visited);
-			const name = referencedAliasName(type);
-			if (name === null || visited.has(name)) return false;
-			const alias = aliases.get(name);
-			if (
-				alias === undefined ||
-				(alias.typeParameters !== null && alias.typeParameters !== undefined)
-			) {
-				return false;
+		const resolvedTopType = (
+			type: ESTree.TSType,
+			visited = new Set<string>(),
+			shadowed = new Set<string>(),
+		): "any" | "unknown" | null => {
+			if (type.type === "TSUnknownKeyword") return "unknown";
+			if (type.type === "TSAnyKeyword") return "any";
+			if (type.type === "TSParenthesizedType") return resolvedTopType(type.typeAnnotation, visited, shadowed);
+			if (type.type === "TSUnionType") {
+				const members = type.types.map((member) => resolvedTopType(member, visited, shadowed));
+				if (members.includes("any")) return "any";
+				return members.includes("unknown") ? "unknown" : null;
 			}
+			const name = referencedAliasName(type);
+			if (name === null || visited.has(name) || shadowed.has(name)) return null;
+			const alias = aliases.get(name);
+			if (alias === undefined || (alias.typeParameters !== null && alias.typeParameters !== undefined)) return null;
 			const nextVisited = new Set(visited);
 			nextVisited.add(name);
-			return resolvesToUnknown(alias.typeAnnotation, nextVisited);
+			return resolvedTopType(alias.typeAnnotation, nextVisited, shadowed);
 		};
 
 		return {
@@ -57,7 +61,16 @@ export const noUnknownTypeAliasesRule = defineRule({
 					}
 				}
 				for (const alias of aliases.values()) {
-					if (!resolvesToUnknown(alias.typeAnnotation, new Set([alias.id.name]))) continue;
+					// A declaration's own type parameters shadow module-level aliases:
+					// `type Identity<Value> = Value` must not resolve `Value` to an
+					// unrelated module alias when deciding whether Identity hides unknown.
+					const shadowed = new Set<string>();
+					if (alias.typeParameters) {
+						for (const parameter of alias.typeParameters.params) shadowed.add(parameter.name.name);
+					}
+					if (resolvedTopType(alias.typeAnnotation, new Set([alias.id.name]), shadowed) !== "unknown") {
+						continue;
+					}
 					context.report({
 						node: alias.id,
 						messageId: "unknownAlias",

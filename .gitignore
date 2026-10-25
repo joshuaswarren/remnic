@@ -82,6 +82,11 @@ graphify-out/
 # Only the fixture bundle, preregistration, and final report are committed.
 docs/research/data/
 
+# FrontierMemory gated inputs and derived memory must stay local.
+/docs/research/frontiermemory/corpus/
+/docs/research/frontiermemory/memory/
+/frontiermemory-corpus/
+
 # Operator run handoff notes: deployment-specific paths, hosts, and
 # endpoints. The shareable research artifacts are preregistration.md
 # and report.md.

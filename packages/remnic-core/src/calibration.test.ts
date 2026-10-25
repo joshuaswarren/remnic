@@ -1,8 +1,32 @@
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { synthesizeCalibrationRules, type CorrectionMemory } from "./calibration.js";
+import {
+  readCalibrationIndex,
+  runCalibrationConsolidation,
+  synthesizeCalibrationRules,
+  withAppliedCalibrationWeek,
+  type CalibrationRule,
+  type CorrectionMemory,
+} from "./calibration.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
+
+const existingRule: CalibrationRule = {
+  id: "cal-existing",
+  ruleType: "model_tendency",
+  condition: "When reporting status",
+  modelTendency: "It overstates progress",
+  userExpectation: "Report what finished",
+  calibration: "Name the checks that finished.",
+  confidence: 0.8,
+  evidenceCount: 2,
+  evidenceCorrectionIds: ["c1", "c2"],
+  createdAt: "2026-03-16T00:00:00.000Z",
+  lastReinforcedAt: "2026-03-16T00:00:00.000Z",
+};
 
 const corrections: CorrectionMemory[] = [
   {
@@ -96,4 +120,59 @@ test("synthesizeCalibrationRules clamps confidence and filters evidence IDs", as
   assert.equal(rules[0]?.evidenceCount, 2);
   assert.deepEqual(rules[1]?.evidenceCorrectionIds, []);
   assert.equal(rules[1]?.evidenceCount, 0);
+});
+
+test("withAppliedCalibrationWeek commits the week stamp with the reinforced index", () => {
+  const stamped = withAppliedCalibrationWeek({
+    rules: [existingRule],
+    updatedAt: "2026-03-16T00:00:00.000Z",
+    totalCorrectionsAnalyzed: 4,
+  }, " 2026-W11 ");
+  assert.deepEqual(stamped.appliedWeekIds, ["2026-W11"]);
+  assert.equal(stamped.rules[0]?.evidenceCount, 2);
+
+  const preserved = withAppliedCalibrationWeek(stamped, " ");
+  assert.deepEqual(preserved.appliedWeekIds, ["2026-W11"]);
+  assert.deepEqual(withAppliedCalibrationWeek(stamped, "x".repeat(33)).appliedWeekIds, ["2026-W11"]);
+
+  // A later week keeps the earlier stamp: an out-of-order retry of week A
+  // after week B must still be recognized as already applied.
+  assert.deepEqual(withAppliedCalibrationWeek(stamped, "2026-W13").appliedWeekIds, ["2026-W11", "2026-W13"]);
+});
+
+test("runCalibrationConsolidation does not reinforce an already-applied week", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "calibration-week-"));
+  try {
+    // Legacy on-disk shape: the pre-list index persisted a single appliedWeekId.
+    const indexDir = path.join(memoryDir, "state", "calibration");
+    await mkdir(indexDir, { recursive: true });
+    const indexPath = path.join(indexDir, "calibration-index.json");
+    const body = JSON.stringify(
+      {
+        rules: [existingRule],
+        updatedAt: "2026-03-16T00:00:00.000Z",
+        totalCorrectionsAnalyzed: 3,
+        appliedWeekId: "2026-W11",
+      },
+      null,
+      2
+    );
+    await writeFile(indexPath, body, "utf8");
+
+    // Retry of the stamped week: no reinforcement, no rewrite.
+    const rules = await runCalibrationConsolidation({
+      memoryDir,
+      idempotencyKey: "2026-W11",
+    });
+    assert.equal(rules[0]?.evidenceCount, 2);
+    assert.equal(await readFile(indexPath, "utf8"), body);
+
+    // A retry of an older week stays recognized after a newer week applied:
+    // the reader folds the legacy single stamp into the applied-week list.
+    const reread = await readCalibrationIndex(memoryDir);
+    assert.deepEqual(reread.appliedWeekIds, ["2026-W11"]);
+    assert.equal(reread.rules[0]?.evidenceCount, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });

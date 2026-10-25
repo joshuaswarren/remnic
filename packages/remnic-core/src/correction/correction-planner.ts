@@ -26,6 +26,7 @@ import { readFile, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { throwIfAborted } from "../abort-error.js";
 import { writeFileAtomically } from "../maintenance/atomic-file.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 import {
   CORRECTION_TEXT_MAX,
@@ -576,7 +577,7 @@ export class CorrectionPlanner {
     }
     const plans: CorrectionPlan[] = [];
     for (const f of files) {
-      if (!f.endsWith(".json")) continue;
+      if (isMacOsReplicationJunkBasename(f) || !f.endsWith(".json")) continue;
       let plan: CorrectionPlan | null = null;
       try {
         plan = await this.loadPlan(namespace, f.replace(/\.json$/, ""));
@@ -702,7 +703,7 @@ export class CorrectionPlanner {
     }
     const recovered: string[] = [];
     for (const f of files) {
-      if (!f.endsWith(".json")) continue;
+      if (isMacOsReplicationJunkBasename(f) || !f.endsWith(".json")) continue;
       const planId = f.replace(/\.json$/, "");
       let plan: CorrectionPlan | null;
       try {

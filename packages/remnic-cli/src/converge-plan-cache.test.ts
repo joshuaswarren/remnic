@@ -6,7 +6,6 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { ContentHashIndex, parseConfig } from "@remnic/core";
-import type { ReconcilePlan } from "@remnic/core/reconcile/plan.js";
 import type { ReconcileManifestFile } from "@remnic/core/reconcile/manifest.js";
 import {
   CONVERGE_PLAN_CACHE_MAX_AGE_MS,
@@ -213,7 +212,7 @@ async function convergedPlan(
   memoryDir: string,
   mock: PeerMock,
   overrides: Partial<Parameters<typeof computeConvergePlan>[0]> = {}
-): Promise<ReconcilePlan> {
+): Promise<Awaited<ReturnType<typeof computeConvergePlan>>> {
   return computeConvergePlan({
     config: parseConfig({ memoryDir, namespacesEnabled: true }),
     peerUrl: PEER_URL,
@@ -223,23 +222,35 @@ async function convergedPlan(
   });
 }
 
-test("converge plan: a late peer failure preserves earlier namespaces and a retry resumes at the failure (#2803)", async () => {
+test("converge plan: one namespace manifest failure is excluded and a retry recomputes only that namespace (#2803)", async () => {
   const memoryDir = await fs.mkdtemp(path.join(os.tmpdir(), "remnic-converge-resume-"));
   try {
     const corpus = convergedCorpus();
     await writeLocalCorpus(memoryDir, corpus);
     const failing = createPeerMock(corpus);
-    failing.failManifestFor.add("default"); // sorted order: alpha, beta, default
-    await assert.rejects(convergedPlan(memoryDir, failing), /peer manifest request failed: HTTP 500/);
-    // alpha + beta completed BEFORE the failure and must be checkpointed.
-    assert.deepEqual(failing.manifestStreamNamespaces, ["alpha", "beta"]);
+    failing.failManifestFor.add("default"); // sorted order: alpha, beta, default, shared
+    const excludedPlan = await convergedPlan(memoryDir, failing);
+    // The failed namespace is omitted. Later namespaces still complete, and
+    // the ones that finished are checkpointed for the retry.
+    assert.equal(
+      excludedPlan.excludedNamespaces?.some(
+        (exclusion) => exclusion.namespace === "default" && exclusion.side === "peer",
+      ),
+      true,
+    );
+    assert.equal(
+      excludedPlan.entries.some((entry) => entry.namespace === "default"),
+      false,
+    );
+    assert.deepEqual(failing.manifestStreamNamespaces, ["alpha", "beta", "shared"]);
 
     const resuming = createPeerMock(corpus);
     const events: ConvergePlanProgressEvent[] = [];
     const plan = await convergedPlan(memoryDir, resuming, { onProgress: (event) => events.push(event) });
     assert.equal(plan.converged, true, JSON.stringify(plan.byNamespace));
+    assert.equal(plan.excludedNamespaces, undefined);
     // Only the namespace that never completed refetches its manifest.
-    assert.deepEqual(resuming.manifestStreamNamespaces, ["default", "shared"]);
+    assert.deepEqual(resuming.manifestStreamNamespaces, ["default"]);
     // Snapshots are always fetched — they ARE the cache-validity check.
     assert.deepEqual(resuming.snapshotNamespaces.sort(), NAMESPACES);
     const reusedPeer = events

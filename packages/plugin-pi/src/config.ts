@@ -51,7 +51,7 @@ export interface RemnicPiConfig {
   daemonCooldownMs: number;
   /**
    * Number of explicit recall timeout errors in the last {@link recallTimeoutWindow}
-   * recall calls that permanently disables automatic recall for the process lifetime.
+   * recall calls that pause automatic recall until the fixed 5 minute cooldown elapses.
    */
   recallTimeoutThreshold: number;
   /**
@@ -86,7 +86,7 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   observeMaxRetries: 2,
   // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
   daemonCooldownMs: 5000,
-  // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls trip permanently.
+  // Recall-timeout circuit breaker: 7 timeouts in the last 10 recall calls pause recall for a 5 minute cooldown.
   recallTimeoutThreshold: 7,
   recallTimeoutWindow: 10,
 };

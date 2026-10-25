@@ -41,6 +41,15 @@ export interface ConvergeConfig {
   conflictPolicy: ConvergeConflictPolicy;
   /** Per-request peer HTTP timeout in ms (plan/apply/watch). Default 30000; clamped to <= 3600000. */
   peerRequestTimeoutMs?: number;
+  /**
+   * Tombstone-blocked capture write-lock backoff for converge apply/watch.
+   * Defaults: 50ms initial (jittered to 25–50), 2000ms cap per wait, 60000ms
+   * deadline. Positive integers, clamped to <= 3600000. An inverted schedule
+   * (initial > max, or max > deadline) is rejected.
+   */
+  captureWriteLockInitialDelayMs?: number;
+  captureWriteLockMaxDelayMs?: number;
+  captureWriteLockDeadlineMs?: number;
 }
 export type SignalLevel = "none" | "low" | "medium" | "high";
 export type MemoryCategory =
@@ -3451,6 +3460,11 @@ export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, 
   path: string;
   snippet: string;
   score: number;
+  /**
+   * Pool-normalized rank × multiplier from the last adjusted rerank stage.
+   * MMR prefers it over `score`; additive boosts compose on this scale.
+   */
+  effectiveScore?: number;
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";

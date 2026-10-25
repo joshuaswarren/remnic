@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import packageJson from "../package.json" with { type: "json" };
+
 import type { RemnicPiConfig } from "./config.js";
 
 export interface RecallResponse {
@@ -93,12 +96,15 @@ interface ObserveBody {
 }
 
 const encoder = new TextEncoder();
+const pluginVersion = packageJson.version;
 const RETRY_BASE_DELAY_MS = 200;
+const STORE_JITTER_MS = 250;
 const MAX_COOLDOWN_MS = 60_000;
 const TRUNCATION_MARKER = "\n\n[Remnic observe truncated: payload exceeded client size cap]";
 
 export class RemnicClient {
   private requestId = 0;
+  private versionCheckStarted = false;
   // Circuit-breaker state: when the daemon is known-unreachable, observe/recall
   // callers skip fast instead of blocking every turn on a doomed request (#1626).
   private unreachableUntil = 0;
@@ -131,6 +137,31 @@ export class RemnicClient {
 
   async health(options: RequestOptions = {}): Promise<Record<string, unknown>> {
     return this.request("GET", "/engram/v1/health", undefined, options);
+  }
+
+  /** Best-effort startup diagnostic, once per extension instance; never gates recall. */
+  async warnIfVersionMismatch(options: RequestOptions = {}): Promise<void> {
+    if (this.versionCheckStarted) return;
+    this.versionCheckStarted = true;
+    try {
+      // Health has no release version; MCP initialize advertises serverInfo.version.
+      const result = await this.mcpRequest("initialize", {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "remnic-plugin-pi", version: pluginVersion },
+      }, options);
+      const serverInfo = result.serverInfo as { version?: unknown } | undefined;
+      const daemonVersion = serverInfo?.version;
+      if (
+        typeof daemonVersion === "string" &&
+        /^\d{1,8}\.\d{1,8}\.\d{1,8}(?:[-+][0-9A-Za-z.+-]{1,100})?$/.test(daemonVersion) &&
+        daemonVersion !== pluginVersion
+      ) {
+        console.warn(`[remnic] Version mismatch: plugin-pi ${pluginVersion}, daemon ${daemonVersion}; update both to the same release and restart the session.`);
+      }
+    } catch {
+      // An unavailable/older daemon must not turn a diagnostic into a startup failure.
+    }
   }
 
   /**
@@ -281,13 +312,15 @@ export class RemnicClient {
   }
 
   async storeMemory(content: string, sessionKey: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {
-    return this.requestWithRetry("POST", "/engram/v1/memories", {
+    const body = {
+      idempotencyKey: randomUUID(),
       content,
       category: "fact",
       sourceReason: "Captured from Pi via Remnic extension",
       sessionKey,
       namespace: this.config.namespace,
-    }, options);
+    };
+    return this.storeWithRetry(() => this.request("POST", "/engram/v1/memories", body, options), options);
   }
 
   async lcmSearch(query: string, sessionKey: string, limit = 10): Promise<Record<string, unknown>> {
@@ -326,7 +359,13 @@ export class RemnicClient {
   async mcpListTools(options: RequestOptions = {}): Promise<McpTool[]> {
     const result = await this.mcpRequest("tools/list", {}, options);
     const tools = result.tools;
-    return Array.isArray(tools) ? tools.filter(isMcpTool) : [];
+    // A malformed catalog (no tools array) must fail the listing, not pass as
+    // an empty one: registerMcpTools would treat it as a successful
+    // zero-tool listing and leave the session silently without Remnic tools.
+    if (!Array.isArray(tools)) {
+      throw new Error("Remnic MCP tools/list returned a malformed catalog (tools is not an array)");
+    }
+    return tools.filter(isMcpTool);
   }
 
   async mcpTool(
@@ -334,10 +373,42 @@ export class RemnicClient {
     args: Record<string, unknown>,
     options: RequestOptions = {},
   ): Promise<Record<string, unknown>> {
+    if (name === "remnic.memory_store" || name === "remnic_memory_store") {
+      const storeArgs = { ...args, idempotencyKey: args.idempotencyKey ?? randomUUID() };
+      return this.storeWithRetry(() => this.mcpRequest("tools/call", {
+        name,
+        arguments: storeArgs,
+      }, options), options);
+    }
     return this.mcpRequest("tools/call", {
       name,
       arguments: args,
     }, options);
+  }
+
+  /**
+   * Stores alone get jitter and at most one retry, protected by a stable key.
+   * Each attempt keeps its full store timeout so even a timed-out write can be
+   * replayed: at most 2 * timeoutMs + 700ms including both jitter/backoff waits.
+   * Recall/observe keep their existing shared deadlines and retry policy.
+   */
+  private async storeWithRetry(
+    send: () => Promise<Record<string, unknown>>,
+    options: RequestOptions,
+  ): Promise<Record<string, unknown>> {
+    for (let attempt = 0; ; attempt++) {
+      await sleep(attempt * RETRY_BASE_DELAY_MS + Math.floor(Math.random() * (STORE_JITTER_MS + 1)), options.signal);
+      try {
+        return await send();
+      } catch (err) {
+        if (
+          attempt >= 1 || options.maxRetries === 0 ||
+          !(err instanceof RemnicRequestTimeoutError ||
+            (err instanceof RemnicHttpError && err.status === 503) ||
+            isTransientNetworkError(err))
+        ) throw err;
+      }
+    }
   }
 
   /**

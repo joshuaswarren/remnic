@@ -113,11 +113,11 @@ test("retries 5xx with exponential backoff and eventually throws", async () => {
     jsonResponse({}, 500),
     jsonResponse({}, 502),
     jsonResponse({}, 503),
-    jsonResponse({}, 504),
+    jsonResponse({}, 503),
   ]);
   await assert.rejects(
     client.listLifelogs({ date: "2026-06-10", timezone: "UTC" }),
-    (err: unknown) => err instanceof LimitlessApiError && err.status === 504,
+    (err: unknown) => err instanceof LimitlessApiError && err.status === 503,
   );
   assert.equal(sleeps.length, 3);
 });
@@ -166,4 +166,132 @@ test("verifyAuth returns ok:true on success", async () => {
   const { client } = makeClient([jsonResponse(lifelogsPayload([]))]);
   const result = await client.verifyAuth();
   assert.equal(result.ok, true);
+});
+
+test("gateway timeouts shrink pages, not the candidate set or cursor scope", async () => {
+  const ids = Array.from({ length: 23 }, (_, i) => `lifelog-${i}`);
+  const calls: URL[] = [];
+  const sleeps: number[] = [];
+  const client = new LimitlessClient({
+    apiKey: "test-key-not-real",
+    fetchImpl: (async (input) => {
+      const url = new URL(String(input));
+      calls.push(url);
+      const limit = Number(url.searchParams.get("limit"));
+      if (limit > 2) return jsonResponse({}, 504);
+      const offset = Number(url.searchParams.get("cursor") ?? 0);
+      const next = offset + limit;
+      return jsonResponse(lifelogsPayload(
+        ids.slice(offset, next), next < ids.length ? String(next) : undefined,
+      ));
+    }) as typeof fetch,
+    sleep: async (ms) => { sleeps.push(ms); },
+  });
+  const found: string[] = [];
+  const batchSizes: number[] = [];
+  let cursor: string | null = null;
+  do {
+    const page = await client.listLifelogs({
+      date: "2026-06-10", timezone: "America/Chicago", cursor,
+    });
+    batchSizes.push(page.lifelogs.length);
+    found.push(...page.lifelogs.map((log) => log.id));
+    cursor = page.nextCursor;
+  } while (cursor);
+  assert.deepEqual(found, ids);
+  assert.deepEqual(batchSizes, [10, 10, 3], "smaller requests retain the outer page ceiling's capacity");
+  assert.deepEqual(calls.slice(0, 8).map((url) => url.searchParams.get("limit")),
+    ["10", "10", "10", "10", "5", "5", "5", "5"]);
+  assert.ok(calls.slice(0, 8).every((url) => !url.searchParams.has("cursor")));
+  assert.deepEqual(calls.slice(8).map((url) => url.searchParams.get("cursor")),
+    [null, "2", "4", "6", "8", "10", "12", "14", "16", "18", "20", "22"]);
+  for (const url of calls) {
+    assert.equal(url.searchParams.get("date"), "2026-06-10");
+    assert.equal(url.searchParams.get("timezone"), "America/Chicago");
+    assert.equal(url.searchParams.get("includeContents"), "true");
+    assert.equal(url.searchParams.get("direction"), "asc");
+  }
+  assert.ok(sleeps.includes(1_000) && sleeps.includes(2_000) && sleeps.includes(4_000));
+});
+
+test("request timeouts recover at the same cursor with unchanged 30s deadlines", async (t) => {
+  const deadlines: number[] = [];
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (ms: number) => {
+    deadlines.push(ms);
+    return deadlines.length <= 4
+      ? AbortSignal.abort(new DOMException("mock deadline", "TimeoutError"))
+      : realTimeout(ms);
+  });
+  const calls: URL[] = [];
+  const client = new LimitlessClient({
+    apiKey: "test-key-not-real",
+    fetchImpl: (async (input, init) => {
+      calls.push(new URL(String(input)));
+      init?.signal?.throwIfAborted();
+      return jsonResponse(lifelogsPayload(["after-timeout"]));
+    }) as typeof fetch,
+    sleep: async () => {},
+  });
+  const page = await client.listLifelogs({
+    date: "2026-06-10", timezone: "UTC", cursor: "resume-here",
+  });
+  assert.deepEqual(page.lifelogs.map((log) => log.id), ["after-timeout"]);
+  assert.equal(page.nextCursor, null);
+  assert.deepEqual(deadlines, [30_000, 30_000, 30_000, 30_000, 30_000]);
+  assert.deepEqual(calls.map((url) => url.searchParams.get("limit")), ["10", "10", "10", "10", "5"]);
+  assert.ok(calls.every((url) => url.searchParams.get("cursor") === "resume-here"));
+});
+
+test("a timed-out response body is recoverable, not malformed JSON", async () => {
+  const stalled = jsonResponse({});
+  stalled.json = async () => { throw new DOMException("mock body timeout", "TimeoutError"); };
+  const { client, calls } = makeClient([stalled, jsonResponse(lifelogsPayload(["body-recovered"]))]);
+  const page = await client.listLifelogs({ date: "2026-06-10", timezone: "UTC" });
+  assert.deepEqual(page.lifelogs.map((log) => log.id), ["body-recovered"]);
+  assert.deepEqual(calls.map((call) => new URL(call.url).searchParams.get("limit")), ["10", "5"]);
+});
+
+test("persistent gateway timeouts fail at page size one without advancing", async () => {
+  const { client, calls } = makeClient(Array.from({ length: 16 }, () => jsonResponse({}, 504)));
+  await assert.rejects(
+    client.listLifelogs({ date: "2026-06-10", timezone: "UTC", cursor: "unchanged" }),
+    (err: unknown) => err instanceof LimitlessApiError && err.status === 504,
+  );
+  assert.equal(calls.length, 16);
+  assert.ok(calls.every((call) => new URL(call.url).searchParams.get("cursor") === "unchanged"));
+});
+
+test("caller cancellation is never converted to timeout recovery", async () => {
+  const controller = new AbortController();
+  const reason = new Error("caller stopped");
+  const calls: URL[] = [];
+  const client = new LimitlessClient({
+    apiKey: "test-key-not-real",
+    fetchImpl: (async (input) => {
+      calls.push(new URL(String(input)));
+      controller.abort(reason);
+      throw reason;
+    }) as typeof fetch,
+    sleep: async () => { assert.fail("must not back off after caller cancellation"); },
+  });
+  await assert.rejects(client.listLifelogs({
+    date: "2026-06-10", timezone: "UTC", signal: controller.signal,
+  }), (err: unknown) => err === reason);
+  assert.equal(calls.length, 1);
+});
+
+test("adaptive pages leave empty and repeated cursors visible to the sync safety guard", async () => {
+  for (const ids of [[], ["a"]]) {
+    const { client, calls } = makeClient([
+      ...Array.from({ length: 4 }, () => jsonResponse({}, 504)),
+      jsonResponse(lifelogsPayload(ids, "same-cursor")),
+    ]);
+    const page = await client.listLifelogs({
+      date: "2026-06-10", timezone: "UTC", cursor: "same-cursor",
+    });
+    assert.deepEqual(page.lifelogs.map((log) => log.id), ids);
+    assert.equal(page.nextCursor, "same-cursor");
+    assert.equal(calls.length, 5);
+  }
 });

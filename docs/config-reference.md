@@ -1,8 +1,19 @@
 # Config Reference
 
-All settings live in `openclaw.json` under `plugins.entries.openclaw-remnic.config`. (Installs created before the rename may still use the legacy `openclaw-engram` entry key; Remnic reads either.)
+OpenClaw stores core settings in `openclaw.json` under
+`plugins.entries.openclaw-remnic.config`. Legacy installs may use the
+`openclaw-engram` entry key. Standalone installs put core settings in the `remnic`
+block of their config file and HTTP settings in a separate `server` block.
+Legacy standalone `engram` blocks and flat core settings remain supported;
+the selected nested block overrides flat values.
 
-Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key. Remnic ships 752 schema-validated top-level options plus 4 tuning presets, so treat the appendix as the source of truth and reach for a preset before hand-tuning individual keys.
+Use `openclaw engram config-review` for tuning recommendations and
+`openclaw engram doctor` for runtime or config problems. Standalone users can run
+`remnic doctor` and inspect their config file with `remnic config`.
+The tables below cover feature groups and defaults, but do not list every shipped
+key. The [plugin schema](../openclaw.plugin.json) and
+[core parser](../packages/remnic-core/src/config.ts) define accepted values and
+defaults. Four optional tuning presets provide starting points.
 
 ## Core
 
@@ -1272,7 +1283,7 @@ See [shared-context.md](shared-context.md).
 |---------|---------|-------------|
 | `sharedContextAllowBindingAuthority` | `false` | Allow shared-context items to carry binding authority. Writers must still request it explicitly. MCP and OpenClaw tool surfaces can request `binding`; the write is rejected unless this flag is true |
 | `sharedContextEnabled` | `false` | Enable shared cross-agent context. Accepts boolean and CLI string forms (`true`/`false`/`1`/`0`/`yes`/`no`/`on`/`off`); a deployment already carrying the string `"true"` (previously ignored by the strict parser) now activates on upgrade. An unrecognized value warns and stays off — malformed input never silently enables |
-| `sharedContextDir` | `(unset)` | Directory for shared context files |
+| `sharedContextDir` | `(unset)` | Directory for shared-context files. When unset, `feedback/inbox.jsonl` is stored at `memoryDir/shared-context/feedback/inbox.jsonl` and other shared-context files stay under the workspace shared-context directory. An explicit path keeps the inbox there |
 | `sharedContextMaxInjectChars` | `4000` | Max chars injected from shared context |
 | `sharedCrossSignalSemanticEnabled` | `false` | Enable optional semantic overlap enhancement during daily curation |
 | `sharedCrossSignalSemanticTimeoutMs` | `4000` | Timeout budget for semantic enhancement pass (fail-open on timeout) |
@@ -1870,6 +1881,9 @@ Polling never runs inline on the health request path: a probe reads the last com
 |---------|---------|-------------|
 | `converge.conflictPolicy` | `newest-wins` | Selects how `remnic converge` resolves revisions that conflict. |
 | `converge.peerRequestTimeoutMs` | `30000` | Per-request peer HTTP timeout (ms) for `converge plan/apply/watch`. Boot-scale namespaces (~100k files) can take over 30s to serve a manifest; raise this instead of watching fetches time out. Positive integer, clamped to `3600000`. The `--timeout <seconds>` CLI flag and the `REMNIC_CONVERGE_PEER_TIMEOUT_MS` env var override it (flag > config > env). |
+| `converge.captureWriteLockInitialDelayMs` | `50` | First backoff window (ms) when a converge apply/watch transfer finds the tombstone-blocked capture write lock busy. Equal jitter draws the first wait from about half of this value up to the value itself (25–50ms at the default). Each later wait doubles until `converge.captureWriteLockMaxDelayMs`. Positive integer, clamped to `3600000`. `0` is rejected. Config wins over `REMNIC_CONVERGE_CAPTURE_LOCK_INITIAL_DELAY_MS` (legacy `ENGRAM_` name also read). |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | Cap on one capture-write-lock backoff wait, in ms. Positive integer, clamped to `3600000`. Must be greater than or equal to the initial delay and less than or equal to the deadline. `REMNIC_CONVERGE_CAPTURE_LOCK_MAX_DELAY_MS` is the env override. |
+| `converge.captureWriteLockDeadlineMs` | `60000` | Overall time (ms) a single transfer will wait for the capture write lock. When the deadline expires, that transfer fails and the rest of the cycle continues. Positive integer, clamped to `3600000`. A deadline below the default 2000ms max wait must also set `converge.captureWriteLockMaxDelayMs`, because omitted knobs are filled from the defaults when the acquire runs. `REMNIC_CONVERGE_CAPTURE_LOCK_DEADLINE_MS` is the env override. |
 
 Policy values:
 
@@ -1943,13 +1957,18 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `recallAuditAnomalyHighCardinalityLimit` | `50` | Max candidate memory IDs in a single recall response before high-cardinality flag |
 | `recallAuditAnomalyRapidFireLimit` | `30` | Max queries in window before rapid-fire flag |
 | `memoryExtensionsRoot` | `""` | Override memory extensions root directory |
-| `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786) |
+| `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786). Finder `._*` and `.DS_Store` are already excluded on both sides in every namespace and are not configured here. |
 | `converge.conflictPolicy` | `newest-wins` | Default conflict policy for `remnic converge`; `--conflict-policy` overrides it per command |
+| `converge.captureWriteLockInitialDelayMs` | `50` | Capture write-lock backoff start (ms); see the convergence section |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | Cap on one capture write-lock wait (ms) |
+| `converge.captureWriteLockDeadlineMs` | `60000` | Capture write-lock acquire deadline (ms); expiry fails that transfer only |
 
 
-## Schema-Complete Default and Recommended Settings
+## Default and recommended settings
 
-This appendix is flattened from the runtime config schema and the live `parseConfig({})` defaults so the page stays complete even when newer or advanced settings have not yet been expanded in the narrative sections above. Unless noted otherwise, the recommended value matches the shipped default.
+This appendix lists defaults and recommended settings for the keys below.
+It is not a complete schema listing. Unless noted otherwise, the recommended
+value matches the shipped default.
 
 | Setting | Default | Recommended |
 |---------|---------|-------------|
@@ -2385,7 +2404,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `sharedCrossSignalSemanticTimeoutMs` | `4000` | `4000` |
 | `sharedCrossSignalSemanticMaxCandidates` | `120` | `120` |
 | `compoundingEnabled` | `false` | `false` unless you are ready to curate weekly syntheses |
-| `compoundingWeeklyCronEnabled` | `false` | `false` |
+| `compoundingWeeklyCronEnabled` | `false` | `false` unless the standalone daemon should write one compounding report per completed ISO week (`compoundingEnabled` must also be true) |
 | `compoundingSemanticEnabled` | `false` | `false` |
 | `compoundingSynthesisTimeoutMs` | `15000` | `15000` |
 | `compoundingInjectEnabled` | `true` | `true` |
@@ -2404,7 +2423,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `lifecycleStaleDecayThreshold` | `0.65` | `0.65` |
 | `lifecycleArchiveDecayThreshold` | `0.85` | `0.85` |
 | `lifecycleProtectedCategories` | `["decision","principle","commitment","preference","procedure"]` | `["decision","principle","commitment","preference","procedure"]` |
-| `lifecycleMetricsEnabled` | `false` | `true` when `lifecyclePolicyEnabled=true` |
+| `lifecycleMetricsEnabled` | `true` | `true` when lifecycle policy is enabled. When omitted, it follows the resolved `dreams.phases.lightSleep.enabled` gate. |
 | `procedural.enabled` | `true` | `true` (default-on since issue #567 PR 4/5) or `false` to opt out. See [procedural-memory.md](procedural-memory.md). |
 | `procedural.minOccurrences` | `3` | `3` (use `0` only to intentionally disable mining; see narrative section) |
 | `procedural.successFloor` | `0.75` | `0.75` (raised from `0.7` in issue #567 PR 3/5) |
@@ -2530,6 +2549,9 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `memoryExtensionsRoot` | `""` | `""` |
 | `offlineSyncExcludes` | `[]` | `[]` |
 | `converge.conflictPolicy` | `"newest-wins"` | `"newest-wins"` |
+| `converge.captureWriteLockInitialDelayMs` | `50` | `50` |
+| `converge.captureWriteLockMaxDelayMs` | `2000` | `2000` |
+| `converge.captureWriteLockDeadlineMs` | `60000` | `60000` |
 | `activity.enabled` | `false` | `false` until a trusted local activity source is configured |
 | `activity.extractionMode` | `"off"` | `"off"`; set `"smart"` only to create trust-gated first-person memory candidates |
 | `activity.timezone` | `"UTC"` | Machine-local IANA timezone |

@@ -120,14 +120,20 @@ export function applyPreferenceDriftRanking(
     };
   });
 
-  scored.sort((a, b) => {
-    if (a.damped !== b.damped) return a.damped > b.damped ? -1 : 1;
-    // Equal damped score → preserve upstream order, then key, so the
-    // comparator returns 0 only for genuinely identical entries.
-    if (a.index !== b.index) return a.index < b.index ? -1 : 1;
-    if (a.key !== b.key) return a.key < b.key ? -1 : 1;
-    return 0;
-  });
+  // Sorting only matters when damping applies. On a neutral pass (every
+  // multiplier 1) keep input order: damped values mix upstream effective
+  // scores with position-derived ranks, so sorting them reorders results
+  // even though nothing was damped.
+  if (scored.some((s) => s.multiplier !== 1)) {
+    scored.sort((a, b) => {
+      if (a.damped !== b.damped) return a.damped > b.damped ? -1 : 1;
+      // Equal damped score → preserve upstream order, then key, so the
+      // comparator returns 0 only for genuinely identical entries.
+      if (a.index !== b.index) return a.index < b.index ? -1 : 1;
+      if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+      return 0;
+    });
+  }
 
   return scored.map((s) => (s.note ? { key: s.key, multiplier: s.multiplier, note: s.note } : { key: s.key, multiplier: s.multiplier }));
 }

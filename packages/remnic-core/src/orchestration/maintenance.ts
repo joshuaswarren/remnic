@@ -63,6 +63,7 @@ import {
   type LifecyclePendingIo,
 } from "../storage/memory-lifecycle-ledger-access.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
+import { createCompoundingWeeklyCron, type CompoundingWeeklySchedulerHandle } from "../compounding/weekly-scheduler.js";
 import { startLocationAutoSync, type LocationAutoSyncHandle } from "../location/scheduler.js";
 import { ActivitySyncRegistrar } from "../activity/sync-registration.js";
 import type { ActivitySyncRunSummary } from "../activity/runner.js";
@@ -158,6 +159,7 @@ export class MaintenanceScheduler {
   // ── Location day-sync scheduler (issue #2047) — master default-off; the
   // timer + lifecycle contract lives in location/scheduler.ts.
   private locationAutoSync: LocationAutoSyncHandle | null = null;
+  private compoundingWeekly: CompoundingWeeklySchedulerHandle | null = null;
 
 
   constructor(private readonly deps: MaintenanceSchedulerDeps) {
@@ -247,6 +249,8 @@ export class MaintenanceScheduler {
       });
     }
   }
+
+  armCompoundingWeeklyCron(): boolean { if (this.disposed) return false; this.compoundingWeekly ??= createCompoundingWeeklyCron(this.deps); return this.compoundingWeekly !== null; }
 
   async autoRegisterDaySummaryCron(): Promise<void> {
     const home = resolveHomeDir();
@@ -1176,14 +1180,14 @@ export class MaintenanceScheduler {
     // await it last so the rest of teardown runs while the aborted tick unwinds.
     const activityDrain = this.activityRegistrar.dispose();
     const locationDrain = this.locationAutoSync?.stop() ?? Promise.resolve();
-    this.locationAutoSync = null;
+    this.locationAutoSync = null; const weeklyDrain = this.compoundingWeekly?.stop() ?? Promise.resolve(); this.compoundingWeekly = null;
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);
       this.qmdMaintenanceTimer = null;
     }
     this.qmdMaintenancePending = false;
     await activityDrain;
-    await locationDrain;
+    await locationDrain; await weeklyDrain;
     // Belt-and-suspenders: clear anything a late tick armed before the latch.
     if (this.qmdMaintenanceTimer) {
       clearTimeout(this.qmdMaintenanceTimer);

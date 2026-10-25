@@ -65,6 +65,7 @@ import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
 import { assertSafeEntityId } from "./storage/entity-id-safety.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
@@ -3219,6 +3220,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       secureStoreKeyProvider: () => this._secureStoreKey,
       secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
       lockOptions: () => this.factHashIndexLockOptions,
+      captureLockLimitSource: () => this.captureLockLimitSource(),
       parseMemory: (filePath, content) =>
         parseTombstoneBlockedOfflineSyncMemory(
           filePath,
@@ -3232,6 +3234,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       readAllColdMemories: () => this.readAllColdMemories(),
     };
   }
+
+  /**
+   * Lock-limit source for tombstone-blocked captures. Undefined until the
+   * converge path installs capture-lock limits, so an ordinary capture
+   * resolves to the legacy short bounds instead of the converge deadline.
+   */
+  private captureLockLimitSource(): ContentHashIndexLockOptions | undefined {
+    const options = this.factHashIndexLockOptions;
+    const keys = ["captureWriteLockInitialDelayMs", "captureWriteLockMaxDelayMs", "captureWriteLockDeadlineMs", "captureWriteLockSignal"] as const;
+    return keys.some((key) => options[key] !== undefined) ? options : undefined;
+  }
+
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;
@@ -4879,7 +4893,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const readDir = async (dir: string) => {
       try {
-        const entries = await readdir(dir, { withFileTypes: true });
+        const entries = (await readdir(dir, { withFileTypes: true })).filter((e) => !isMacOsReplicationJunkBasename(e.name));
         for (const entry of entries) {
           checkCorpusReadAbort(options);
           const fullPath = path.join(dir, entry.name);
@@ -7130,7 +7144,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const summaries: MemorySummary[] = [];
 
       for (const file of files) {
-        if (!file.endsWith(".json")) continue;
+        if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".json")) continue;
         const filePath = path.join(this.summariesDir, file);
         const raw = await this.readStorageSecureFile(filePath);
         summaries.push(JSON.parse(raw) as MemorySummary);
