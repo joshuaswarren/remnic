@@ -68,6 +68,27 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
   }
 });
 
+test("an external entities change invalidates the amortized completion verdict on the same reader", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-completed-cache-"));
+  try {
+    const seed = new StorageManager(dir);
+    const id = await seed.writeEntity("Café", "project", ["Synthetic legacy fact."]);
+    await seed.ensureDirectories();
+    const reader = new StorageManager(dir);
+    await reader.ensureDirectories({ awaitEntityCanonicalMigration: false });
+    const canonical = reader.normalizeEntityName("Café", "project");
+    // First miss computes and caches the completion verdict.
+    assert.equal(await reader.readEntity("project-missing"), "");
+    // An external rename changes the entities directory; the cached verdict
+    // must not keep hiding the now-legacy file from the same reader.
+    await rename(path.join(dir, "entities", `${id}.md`), path.join(dir, "entities", "legacy-cafe.md"));
+    assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 for (const change of ["aliases", "raw legacy write"]) {
   test(`stale completed journals do not hide canonical reads after ${change}`, async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-completion-"));
