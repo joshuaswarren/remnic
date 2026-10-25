@@ -427,7 +427,7 @@ export function formatZodIssues(error: z.ZodError): string {
       : issue.path.length > 0 ? issue.path.join(".") : "(root)";
     const options = enumOptionsFromIssue(issue);
     const suffix = options ? `. Valid: ${options.join(", ")}` : "";
-    parts.push(`${path}: ${humanReadableIssueMessage(issue)}${suffix}`);
+    parts.push(`${path}: ${humanReadableIssueMessage(issue, path, hasNumeric)}${suffix}`);
   }
   return parts.length > 0
     ? `request validation failed: ${parts.join("; ")}`
@@ -447,16 +447,18 @@ function enumOptionsFromIssue(issue: z.core.$ZodIssue): readonly string[] | unde
  * Human-readable "must be a <type>" message for generic type mismatches
  * (rule 51). zod 4 removed parse-time error maps, so the boundary applies
  * this post-parse in formatZodIssues instead — same messages, one place.
+ * The caller supplies the collapsed path label and its numeric-segment
+ * verdict so this helper runs no representation checks of its own.
  */
-function humanReadableIssueMessage(issue: z.core.$ZodIssue): string {
+function humanReadableIssueMessage(issue: z.core.$ZodIssue, pathLabel: string, hasNumericPath: boolean): string {
   if (issue.code !== "invalid_type") return issue.message;
-  const expected = "expected" in issue && typeof issue.expected === "string" ? issue.expected : undefined;
-  const received = "received" in issue && typeof issue.received === "string" ? issue.received : undefined;
+  const expected = issue.expected;
+  // SAFETY: v4 invalid_type issues carry `received` at runtime; the public
+  // $ZodIssueInvalidType typing omits the field.
+  const received = (issue as { received?: string }).received;
   if (received === "undefined") return issue.message;
-  const hasNumeric = issue.path.some((p) => typeof p === "number");
-  if (hasNumeric && expected) {
-    const arrField = issue.path.filter((p) => typeof p === "string").join(".");
-    return `${arrField} must be an array of ${expected}s`;
+  if (hasNumericPath && expected) {
+    return `${pathLabel} must be an array of ${expected}s`;
   }
   const fieldName = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "value";
   switch (expected) {
@@ -515,11 +517,13 @@ export function operationRequiresAuthorizedNamespace(name: OperationName): boole
   // .in), preprocess wraps as ZodPreprocess (base schema on .out). Unwrap
   // until the base schema appears — one unwrap left suggestion_submit
   // looking namespace-free after the category transform, so the loop stays.
-  while (typeof schema === "object" && schema !== null && !(schema instanceof z.ZodObject)) {
-    const wrapper = schema as { constructor?: { name?: string }; in?: unknown; out?: unknown };
-    if (wrapper.constructor?.name === "ZodPipe" && "in" in wrapper) {
+  while (schema instanceof z.ZodType && !(schema instanceof z.ZodObject)) {
+    // SAFETY: a zod schema outside ZodObject whose constructor is ZodPipe or
+    // ZodPreprocess exposes that wrapper's base side as `in` / `out`.
+    const wrapper = schema as { constructor: { name: string }; in?: unknown; out?: unknown };
+    if (wrapper.constructor.name === "ZodPipe" && "in" in wrapper) {
       schema = wrapper.in;
-    } else if (wrapper.constructor?.name === "ZodPreprocess" && "out" in wrapper) {
+    } else if (wrapper.constructor.name === "ZodPreprocess" && "out" in wrapper) {
       schema = wrapper.out;
     } else {
       break;
