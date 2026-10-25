@@ -92,13 +92,13 @@ test("scope prompt qualifies tool knowledge as project, requires naming the agen
   assert.match(captured.system, /"`git status --short` emits compact output" -> "global"/);
 });
 
-// ExtractedFactSchema is z.object(...).superRefine(...); unwrap the ZodEffects
-// to reach the scope field's describe text (named const, not an inline cast).
+// zod 4: superRefine attaches checks to the object itself — the schema stays
+// a ZodObject, so the scope field's describe text is on `.shape` directly.
 function scopeDescribe(): string {
-  const unwrapped = ExtractedFactSchema as unknown as {
-    innerType(): { shape: Record<string, { description?: string }> };
+  const schema = ExtractedFactSchema as unknown as {
+    shape: Record<string, { description?: string }>;
   };
-  return unwrapped.innerType().shape.scope?.description ?? "";
+  return schema.shape.scope?.description ?? "";
 }
 
 test("scope field schema describe no longer lists tool configs and qualifies by agent", () => {
