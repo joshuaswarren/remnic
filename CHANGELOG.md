@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## Merged changes — 2026-10-08 to 2026-10-22
+## [v10.0.8] merged changes — 2026-10-08 to 2026-10-22
 
 Retrospective of 24 PRs merged to `main` through
 [`1bc7f64d7`](https://github.com/joshuaswarren/remnic/commit/1bc7f64d77f561deb4e78399834cdec79b915729)
