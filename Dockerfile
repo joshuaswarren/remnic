@@ -12,6 +12,8 @@ RUN apt-get update \
 # Stock `npm install -g @tobilu/qmd@2.8.3` prints the same version and lacks the
 # per-collection vector index plus these patches. Pin the commit.
 COPY docs/patches/qmd-2.8.3-mcp-cancel.patch docs/patches/qmd-2.8.3-stdio-stdout.patch docs/patches/qmd-2.8.3-rerank-mocks.patch /tmp/qmd-patches/
+# Opt in with --build-arg QMD_EXPLICIT_BUILD=true; prepare already builds by default.
+ARG QMD_EXPLICIT_BUILD=false
 RUN git init /tmp/qmd \
   && git -C /tmp/qmd remote add origin https://github.com/tobi/qmd.git \
   && git -C /tmp/qmd fetch --depth 1 origin 93d211f9ef4a869a9aed0d075ca767dda552627f \
@@ -21,6 +23,7 @@ RUN git init /tmp/qmd \
   && git -C /tmp/qmd apply /tmp/qmd-patches/qmd-2.8.3-rerank-mocks.patch \
   && npm install --prefix /tmp/qmd \
   && mkdir /tmp/qmd-pack \
+  && case "$QMD_EXPLICIT_BUILD" in true) npm --prefix /tmp/qmd run build ;; false) ;; *) echo "QMD_EXPLICIT_BUILD must be true or false" >&2; exit 1 ;; esac \
   && npm pack /tmp/qmd --pack-destination /tmp/qmd-pack \
   && npm install -g /tmp/qmd-pack/*.tgz \
   && rm -rf /tmp/qmd /tmp/qmd-pack /tmp/qmd-patches
