@@ -546,7 +546,9 @@ export class EntityStore {
           try {
             if (await this.isIndexableEntityMarkdown(file)) return entityId;
           } catch (err) {
-            if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+            // Lock errors abort the listing; anything else (EACCES, decrypt)
+            // fails only this entry — one unhealthy file must not empty it.
+            if (err instanceof SecureStoreLockedError) throw err;
           }
           // Indexable-check miss: a vanished listed entry raced a background
           // migration rename — resolve its canonical id through the journal
