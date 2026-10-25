@@ -488,6 +488,62 @@ test("MCP tools/list failure records a warning state entry instead of silently r
   assert.equal(warning[1]?.level, "warning");
 });
 
+test("MCP tools/list warning fires when the first attempt exhausts the budget", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let mcpCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (url.endsWith("/mcp")) {
+      mcpCalls += 1;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+        );
+      });
+    }
+    return new Response(JSON.stringify({}), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const registeredTools: Record<string, unknown>[] = [];
+  const entries: Array<[string, Record<string, unknown>]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      statusEnabled: false,
+      mcpToolsEnabled: true,
+      requestTimeoutMs: 60000,
+      // A budget this small cannot fund a second attempt after the first
+      // times out; the warning must still be recorded.
+      startupRequestTimeoutMs: 2,
+    },
+  });
+  await extension({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: (tool: Record<string, unknown>) => {
+      registeredTools.push(tool);
+    },
+    appendEntry: (type: string, data?: unknown) => {
+      if (data && typeof data === "object") entries.push([type, data as Record<string, unknown>]);
+    },
+  });
+
+  assert.deepEqual(registeredTools, []);
+  const warning = entries.find(([, payload]) => payload.code === "MCP_TOOLS_LIST_FAILED");
+  assert.ok(warning, "the warning must fire even when the retry never starts");
+  assert.match(String(warning[1]?.error ?? ""), /timed out|aborted/i);
+});
+
 test("session_start renders 'Remnic starting' when health answers 503 not_ready (issue #2215)", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
