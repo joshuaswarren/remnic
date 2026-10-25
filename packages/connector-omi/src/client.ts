@@ -46,15 +46,15 @@ export interface OmiTranscriptSegment {
 export interface OmiConversation {
   id: string;
   created_at?: string;
-  started_at?: string;
-  finished_at?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
   structured?: {
     title?: string;
     overview?: string;
     category?: string;
     action_items?: Array<{ description?: string; completed?: boolean }>;
   };
-  transcript_segments?: OmiTranscriptSegment[];
+  transcript_segments?: OmiTranscriptSegment[] | null;
   geolocation?: { address?: string | null } | null;
   status?: string;
   discarded?: boolean;
