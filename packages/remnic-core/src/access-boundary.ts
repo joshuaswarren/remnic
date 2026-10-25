@@ -513,21 +513,18 @@ export function operationRequiresAuthorizedNamespace(name: OperationName): boole
   if (name === "namespace_writable") return false;
   if (IMPLICIT_HTTP_NAMESPACE_OPERATIONS.has(name)) return true;
   let schema: unknown = registry.get(name)?.spec.schema;
-  // zod 4 has no ZodEffects. Transforms wrap as ZodPipe (base schema on
-  // .in), preprocess wraps as ZodPreprocess (base schema on .out). Unwrap
-  // until the base schema appears — one unwrap left suggestion_submit
-  // looking namespace-free after the category transform, so the loop stays.
+  // zod 4 has no ZodEffects. Transforms and preprocessors wrap as pipes with
+  // the base schema on the side opposite the ZodTransform. Unwrap until the
+  // base object appears — one unwrap left suggestion_submit looking
+  // namespace-free after the category transform, so the loop stays.
   while (schema instanceof z.ZodType && !(schema instanceof z.ZodObject)) {
-    // SAFETY: a zod schema outside ZodObject whose constructor is ZodPipe or
-    // ZodPreprocess exposes that wrapper's base side as `in` / `out`.
-    const wrapper = schema as { constructor: { name: string }; in?: unknown; out?: unknown };
-    if (wrapper.constructor.name === "ZodPipe" && "in" in wrapper) {
-      schema = wrapper.in;
-    } else if (wrapper.constructor.name === "ZodPreprocess" && "out" in wrapper) {
-      schema = wrapper.out;
-    } else {
-      break;
-    }
+    // SAFETY: pipe wrappers expose their two sides as `in` / `out`.
+    const wrapper = schema as { in?: unknown; out?: unknown };
+    const sides = [wrapper.in, wrapper.out].filter(
+      (side) => side instanceof z.ZodType && !(side instanceof z.ZodTransform),
+    );
+    if (sides.length !== 1) break;
+    schema = sides[0];
   }
   return schema instanceof z.ZodObject && Object.hasOwn(schema.shape, "namespace");
 }
