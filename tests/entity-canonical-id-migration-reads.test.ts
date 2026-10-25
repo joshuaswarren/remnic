@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
 
 const STAMP = "2026-03-01T00:00:00.000Z";
@@ -162,6 +162,39 @@ test("readAllEntityFiles keeps parked collision claimants as distinct entities",
       "a parked collision keeps both claimants",
     );
   } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("listing reports the canonical id for an indexable legacy-named file", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-canonical-listing-id-");
+  try {
+    // The legacy file is STILL present and readable (migration has not
+    // renamed it yet), but the journal already records the mapping.
+    await writeFile(path.join(entitiesDir, `${LEGACY_ID}.md`), entityFileBody(LEGACY_ID, "automation", "Runs Mondays."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: false, mappings: { [LEGACY_ID]: CANONICAL_ID } });
+    const store = new StorageManager(baseDir);
+    const names = await store.listEntityNames();
+    assert.deepEqual(names, [CANONICAL_ID], "an indexable legacy-named file must surface as its canonical id");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("one unreadable entity does not fail the corpus read", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-canonical-isolated-read-");
+  try {
+    const lockedPath = path.join(entitiesDir, "project-locked.md");
+    await writeFile(path.join(entitiesDir, "project-fine.md"), entityFileBody("project-fine", "project", "Fine."), "utf8");
+    await writeFile(lockedPath, entityFileBody("project-locked", "project", "Locked."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: true, mappings: {} });
+    await chmod(lockedPath, 0o000);
+    const store = new StorageManager(baseDir);
+    const entities = await store.readAllEntityFiles();
+    assert.equal(entities.length, 1, "the healthy entity must still be read; the unreadable one is isolated");
+    assert.match(entities[0]?.name ?? "", /Weekly Report/);
+  } finally {
+    await chmod(path.join(entitiesDir, "project-locked.md"), 0o644).catch(() => undefined);
     await rm(baseDir, { recursive: true, force: true });
   }
 });
