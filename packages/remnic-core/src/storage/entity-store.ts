@@ -92,6 +92,15 @@ export interface EntityStoreDeps {
 export class EntityStore {
   /** Filename → file identity of the last indexable check. Unchanged files are not reread. */
   private readonly entityIndexableCache = new Map<string, { identity: string; ok: boolean }>();
+  /**
+   * Amortized migration-completion verdict, keyed on the entity mutation
+   * version and the entities directory stat. Local writes bump the version;
+   * external adds/removes/renames change the directory stat — both invalidate.
+   * ponytail: external in-place content edits (no membership change, no local
+   * version bump) skip revalidation; drop the cache for a full per-read
+   * fingerprint if that ceiling ever matters.
+   */
+  private migrationCompletedCache: { version: number; dirSig: string; completed: boolean } | undefined;
 
   constructor(
     private readonly deps: EntityStoreDeps,
@@ -414,6 +423,24 @@ export class EntityStore {
     return null;
   }
 
+  /** Amortized entityCanonicalIdMigrationCompleted — see migrationCompletedCache. */
+  private async migrationCompletedCached(): Promise<boolean> {
+    const version = this.deps.getEntityMutationVersion();
+    let dirSig: string;
+    try {
+      const dirStat = await lstat(this.deps.entitiesDir);
+      dirSig = `${dirStat.ino}:${dirStat.mtimeMs}:${dirStat.ctimeMs}:${dirStat.size}`;
+    } catch {
+      dirSig = `missing:${Math.random()}`; // no directory to key on — never cache
+    }
+    const cached = this.migrationCompletedCache;
+    if (cached && cached.version === version && cached.dirSig === dirSig) return cached.completed;
+    const completed = await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
+      getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(version)));
+    this.migrationCompletedCache = { version, dirSig, completed };
+    return completed;
+  }
+
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) return "";
@@ -443,11 +470,8 @@ export class EntityStore {
     if (direct !== undefined) return direct;
     const renamed = await this.readEntityFileResolvingRename(filePath, name);
     if (renamed !== null) return renamed.content;
-    // Skip body scan only when journal completion attests to live migration inputs.
-    if (await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
-      getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(this.deps.getEntityMutationVersion())))) {
-      return "";
-    }
+    // Skip body scan when amortized completion attests live inputs still match.
+    if (await this.migrationCompletedCached()) return "";
     // Deferred / no-journal path: match a legacy filename by physical requested id.
     // ponytail: scan only incomplete-migration misses; index if those become hot.
     let legacy: string | undefined;
