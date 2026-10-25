@@ -442,7 +442,7 @@ async function registerMcpTools(
     const reason = lastError === undefined ? "no attempt completed" : errorMessage(lastError);
     const message =
       `Remnic MCP tools/list failed (${reason}) — no Remnic tools registered for this session. ` +
-      "Resolve the reported error, then restart the session (or run /remnic-status) to retry.";
+      "Resolve the reported error, then restart the session (tool registration runs at extension load; /remnic-status checks health but does not re-register).";
     console.warn(`[remnic] ${message}`);
     pi.appendEntry(STATE_CUSTOM_TYPE, {
       level: "warning",
