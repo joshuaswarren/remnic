@@ -61,6 +61,15 @@ test("unknown absorbs union members unless any is present", () => {
   assert.deepEqual(lint("type BoundaryValue = (string | (unknown | any));", "no-unknown-type-aliases"), []);
 });
 
+test("a declaration's type parameters shadow module-level aliases", () => {
+  // Identity's Value parameter shadows the unrelated module alias of the
+  // same name; the diagnostic must not fire on the generic declaration.
+  const messages = lint("type Value = unknown; export type Identity<Value> = Value;", "no-unknown-type-aliases").map((entry) => entry.message);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0] ?? "", /Type alias `Value` hides/);
+  assert.deepEqual(lint("export type Identity<Value> = Value;", "no-unknown-type-aliases"), []);
+});
+
 function unsafeValue(diagnostics) {
   const diagnostic = diagnostics.find((entry) => /This dictionary's (\S+) value type/.test(entry.message));
   return diagnostic?.message.match(/This dictionary's (\S+) value type/)?.[1] ?? null;
