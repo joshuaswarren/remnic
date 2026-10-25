@@ -35,8 +35,8 @@ export interface RemnicPiExtensionOptions extends LoadConfigOptions {
 }
 
 const STATE_CUSTOM_TYPE = "remnic_state";
-/** Never attempt a tools/list with less than this much budget left. */
-const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 1_000;
+/** A retry needs at least this much remaining startup budget to be worth starting. */
+const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 250;
 const MAX_OBSERVED_HASHES = 2000;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
@@ -425,9 +425,12 @@ async function registerMcpTools(
   let lastError: unknown;
   for (let attempt = 0; attempt <= 1 && !listed; attempt += 1) {
     const remaining = config.startupRequestTimeoutMs - (Date.now() - budgetStartedAt);
+    if (remaining <= 0) break;
     if (attempt > 0 && remaining < MCP_TOOLS_LIST_RETRY_FLOOR_MS) break;
     try {
-      tools = await client.mcpListTools({ timeoutMs: Math.max(remaining, MCP_TOOLS_LIST_RETRY_FLOOR_MS) });
+      // Honor the configured budget exactly: the floor only decides whether
+      // a retry may start, never how long a request may take.
+      tools = await client.mcpListTools({ timeoutMs: remaining });
       listed = true;
     } catch (err) {
       lastError = err;
@@ -439,7 +442,7 @@ async function registerMcpTools(
     const reason = lastError === undefined ? "no attempt completed" : errorMessage(lastError);
     const message =
       `Remnic MCP tools/list failed (${reason}) — no Remnic tools registered for this session. ` +
-      "The daemon was unreachable at startup; restart the session (or run /remnic-status) to retry.";
+      "Resolve the reported error, then restart the session (or run /remnic-status) to retry.";
     console.warn(`[remnic] ${message}`);
     pi.appendEntry(STATE_CUSTOM_TYPE, {
       level: "warning",
