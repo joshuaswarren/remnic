@@ -379,7 +379,10 @@ export class EntityStore {
     try {
       return { id: entityId, content: await this.deps.readStorageSecureFile(firstPath) };
     } catch (err) {
-      if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+      if (err instanceof SecureStoreLockedError) throw err;
+      // ENOENT: renamed away (retry below). ELOOP: planted symlink — skip.
+      if (isErrnoCode(err, "ELOOP")) return null;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
     }
     const historicalIds = this.deps.currentHistoricalIds();
     const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
@@ -394,7 +397,10 @@ export class EntityStore {
           path.join(this.deps.entitiesDir, `${candidate}.md`),
         ) };
       } catch (err) {
-        if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT/ELOOP: gone or a planted symlink — try the next candidate.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
+        throw err;
       }
     }
     return null;
@@ -412,8 +418,10 @@ export class EntityStore {
       try {
         return await this.deps.readStorageSecureFile(filePath);
       } catch (err) {
-        if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
-        return "";
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT: gone. ELOOP: a planted symlink the open refused to follow.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) return "";
+        throw err;
       }
     }
     return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
@@ -668,7 +676,16 @@ export class EntityStore {
     if (cached) return cached;
 
     try {
-      const entries = await this.readEntityDirectoryNames();
+      // A symlinked/replaced entities root has no readable entries (merged
+      // #3207 semantics): resolve empty rather than following it. Within a
+      // trusted root, readdir directly so planted entries reach the secure
+      // read instead of being swallowed by the listing guards.
+      if (!(await this.isTrustedEntitiesRoot())) return [];
+      const listed = await readdir(this.deps.entitiesDir);
+      const { kept: entries, ignored } = withoutMacOsReplicationJunk(listed, (name) => name);
+      warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
+        log.warn(`entity load ${message}`);
+      });
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
       if (mdFiles.length === 0) return [];
 
@@ -687,6 +704,9 @@ export class EntityStore {
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (entry) => {
+            // Containment skip for planted symlinks/fifos/vanished files; a
+            // REPLACED entities parent still reaches the secure read through
+            // the remaining regular entries and rejects there.
             if (!(await this.isContainedRegularEntityFile(entry))) return null;
             const entityId = entry.slice(0, -".md".length);
             return this.readEntityFileResolvingRename(path.join(this.deps.entitiesDir, entry), entityId);

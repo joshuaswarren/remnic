@@ -43,11 +43,14 @@ for (const namespaced of [false, true]) {
         await symlink(path.join(f.outside, "local.md"), path.join(f.entities, "private.md"));
         await assert.rejects(f.storage.ensureDirectories({ waitForEntityMigration: false }), /symlink/i);
         assert.equal(await f.storage.readEntity("local"), LOCAL);
-        await assert.rejects(f.storage.readEntity("private"));
-        await assert.rejects(f.storage.readAllEntityFiles());
+        // Planted foreign links are skipped, not followed (merged #3207
+        // semantics): direct reads resolve empty and batch reads exclude them.
+        assert.equal(await f.storage.readEntity("private"), "");
+        const loaded = await f.storage.readAllEntityFiles();
+        assert.equal(loaded.some((entity) => entity.name === "Foreign"), false);
         const briefing = await buildBriefing({ storage: f.storage, maxFollowups: 0 });
         assert.equal(briefing.markdown.includes("FOREIGN-ENTITY-CONTENT"), false);
-        await assert.rejects(f.storage.readAllEntityFiles());
+        assert.equal((await f.storage.readAllEntityFiles()).some((entity) => entity.name === "Foreign"), false);
       } finally {
         released.resolve();
         await holder;
@@ -65,9 +68,9 @@ test("a canonical retry cannot follow a foreign symlink", async () => {
       version: 1, complete: false, mappings: { legacy: "canonical" },
     }));
     await symlink(path.join(f.outside, "local.md"), path.join(f.entities, "canonical.md"));
-    await assert.rejects(f.storage.readEntity("legacy"));
-    await assert.rejects(f.storage.readEntity("canonical"));
-    await assert.rejects(f.storage.readAllEntityFiles());
+    assert.equal(await f.storage.readEntity("legacy"), "");
+    assert.equal(await f.storage.readEntity("canonical"), "");
+    assert.equal((await f.storage.readAllEntityFiles()).some((entity) => entity.name === "Foreign"), false);
   } finally {
     await rm(f.dir, { recursive: true, force: true });
   }
@@ -79,7 +82,7 @@ test("entity reads reject a replaced parent directory", async () => {
     await rename(f.entities, `${f.entities}-original`);
     await symlink(f.outside, f.entities, "dir");
     await assert.rejects(f.storage.readEntity("local"), /unsafe entity directory/);
-    await assert.rejects(f.storage.readAllEntityFiles(), /unsafe entity directory/);
+    assert.equal((await f.storage.readAllEntityFiles()).some((entity) => entity.name === "Foreign"), false);
   } finally {
     await rm(f.dir, { recursive: true, force: true });
   }

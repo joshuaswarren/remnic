@@ -197,6 +197,7 @@ export type HistoricalEntityIdsEntry = {
   complete: boolean;
 };
 
+
 export class HistoricalEntityCanonicalIdCache {
   private mappings: Readonly<Record<string, string>> = {};
   private complete = false;

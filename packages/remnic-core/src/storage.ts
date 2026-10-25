@@ -2323,10 +2323,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private _entityStore: EntityStore | undefined;
 
   private get entityStore(): EntityStore {
-    if (!this._entityStore) {
-      this._entityStore = new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this));
-    }
-    return this._entityStore;
+    return (this._entityStore ??= new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this)));
   }
 
   /** IdentityContinuityStore (storage.ts decomposition). Lazy; selfDeps live wiring. */
@@ -3538,10 +3535,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
 
-  /** Journal completion for EntityStore's legacy-id retry gate. */
-  entityCanonicalMigrationComplete(): boolean {
-    return this.historicalEntityCanonicalIds.getEntry(this.stateDir).complete;
-  }
+  /** Journal completion for EntityStore's legacy-id retry gate (live view). */
+  entityCanonicalMigrationComplete = (): boolean => this.historicalEntityCanonicalIds.getEntry(this.stateDir).complete;
   /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
   private _entityRefRepair: EntityRefRepair | undefined;
   private get entityRefRepair(): EntityRefRepair {
@@ -3645,14 +3640,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
-    const waitForMigration = options.waitForEntityMigration !== false;
-    if (!waitForMigration) await entityMigration.readSafeEntityEntries(this.entitiesDir);
-    if (waitForMigration) await this.entityCanonicalIdMigration.ensure();
+    await this.entityCanonicalIdMigration.begin(options.waitForEntityMigration !== false, this.entitiesDir);
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
-    // engage the hot cache until the first mutation bumped it. The daemon brings
-    // the store up at startup (orchestration/orchestrator-init.ts) before
+    // engage the hot cache until the first mutation bumped it. The daemon calls
+    // ensureDirectories() at startup (orchestration/orchestrator-init.ts) before
     // serving recall reads, so seeding a nonzero version here makes the cache
     // engage from the first read. Fires once, only while the version is still 0.
     // Deliberately NOT done on the readAllMemories() path: a write-side-effect
@@ -3661,17 +3654,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    const migrationBarrier = this.entityCanonicalIdMigration.markDirectoriesInitialized();
-    if (waitForMigration) return migrationBarrier;
-    void migrationBarrier.catch((error) => {
-      log.warn(`entity canonical-id migration deferred at startup failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    return this.entityCanonicalIdMigration.finishBegin(options.waitForEntityMigration !== false);
   }
-
-  async drainEntityCanonicalIdMigration(): Promise<void> {
-    await this.entityCanonicalIdMigration.drain();
-  }
-
+  drainEntityCanonicalIdMigration = (): Promise<void> => this.entityCanonicalIdMigration.drain();
   /**
    * Resolve the on-disk write path for a memory of the given category, creating
    * the target directory. Category routing goes through the shared
