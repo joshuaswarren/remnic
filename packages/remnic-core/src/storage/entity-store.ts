@@ -542,26 +542,27 @@ export class EntityStore {
       const batchSize = 100;
       for (let i = 0; i < mdFiles.length; i += batchSize) {
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
+          const entityId = file.slice(0, -3);
           try {
-            if (await this.isIndexableEntityMarkdown(file)) return file.slice(0, -3);
+            if (await this.isIndexableEntityMarkdown(file)) return entityId;
           } catch (err) {
-            if (err instanceof SecureStoreLockedError) throw err;
+            if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
           }
           // Indexable-check miss: a vanished listed entry raced a background
           // migration rename — resolve its canonical id through the journal
           // so the listing does not drop the entity.
           if (await this.isMissingEntry(file)) {
-            const canonical = resolveHistoricalEntityCanonicalId(file.slice(0, -3), this.deps.currentHistoricalIds());
-            if (canonical !== file.slice(0, -3)) return canonical;
+            const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+            if (canonical !== entityId) return canonical;
           }
           return null;
         }));
-        for (const name of resolved) {
-          if (name) names.push(name);
-        }
+        names.push(...resolved.filter((name): name is string => name !== null));
       }
-      names.sort();
-      return names;
+      // The copy-before-unlink migration window can snapshot both the legacy
+      // and canonical names; the legacy fallback then resolves to the same
+      // canonical id. Deduplicate so the total stays correct.
+      return [...new Set(names)].sort();
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       return [];
