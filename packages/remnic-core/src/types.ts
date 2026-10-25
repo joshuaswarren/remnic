@@ -3460,6 +3460,11 @@ export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, 
   path: string;
   snippet: string;
   score: number;
+  /**
+   * Pool-normalized rank × multiplier from the last adjusted rerank stage.
+   * MMR prefers it over `score`; additive boosts compose on this scale.
+   */
+  effectiveScore?: number;
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";
