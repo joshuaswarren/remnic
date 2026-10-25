@@ -60,6 +60,13 @@ function parseJournalMappings(raw: string): Readonly<Record<string, string>> {
   return cleaned;
 }
 
+/** Whether the journal says its migration completed. Throws like the mapping parser. */
+function parseJournalComplete(raw: string): boolean {
+  // SAFETY: JSON.parse output is unknown; the shape is validated on access.
+  const parsed = JSON.parse(raw) as { complete?: unknown };
+  return parsed !== null && parsed.complete === true;
+}
+
 type JournalRead =
   | { kind: "ok"; raw: string; key: string }
   | { kind: "missing" }
@@ -183,13 +190,29 @@ export async function appendCanonicalizedTombstone(
  * identity, so the next lookup retries instead of caching an empty table
  * under a valid key.
  */
+
+/** Journal lookup result: mapping table plus its completion flag. */
+export type HistoricalEntityIdsEntry = {
+  mappings: Readonly<Record<string, string>>;
+  complete: boolean;
+};
+
 export class HistoricalEntityCanonicalIdCache {
   private mappings: Readonly<Record<string, string>> = {};
+  private complete = false;
   private key: string | null = null;
   private stateDir: string | null = null;
 
   get(stateDir: string): Readonly<Record<string, string>> {
-    const lastKnown = this.stateDir === stateDir ? this.mappings : {};
+    return this.getEntry(stateDir).mappings;
+  }
+
+
+  /** Table plus the journal's completion flag, cached under one identity. */
+  getEntry(stateDir: string): HistoricalEntityIdsEntry {
+    const lastKnownMappings = this.stateDir === stateDir ? this.mappings : {};
+    const lastKnownComplete = this.stateDir === stateDir ? this.complete : false;
+    const lastKnown: HistoricalEntityIdsEntry = { mappings: lastKnownMappings, complete: lastKnownComplete };
     const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
     if (result.kind === "refused") {
       // Symlinked/non-regular journal: never follow it, never adopt its
@@ -208,9 +231,11 @@ export class HistoricalEntityCanonicalIdCache {
     const key = result.kind === "missing" ? "missing" : result.key;
     if (key !== this.key || stateDir !== this.stateDir) {
       let table: Readonly<Record<string, string>> = {};
+      let complete = false;
       if (result.kind === "ok") {
         try {
           table = parseJournalMappings(result.raw);
+          complete = parseJournalComplete(result.raw);
         } catch {
           // Parse failed under a VALID identity: do not commit the key —
           // the next lookup retries instead of pinning an empty table.
@@ -218,10 +243,11 @@ export class HistoricalEntityCanonicalIdCache {
         }
       }
       this.mappings = table;
+      this.complete = complete;
       this.key = key;
       this.stateDir = stateDir;
     }
-    return this.mappings;
+    return { mappings: this.mappings, complete: this.complete };
   }
 }
 

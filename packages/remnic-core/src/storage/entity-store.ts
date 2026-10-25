@@ -67,6 +67,8 @@ export interface EntityStoreDeps {
   readonly entitiesDir: string;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
   currentHistoricalIds(): Readonly<Record<string, string>>;
+  /** True when the entity canonical-id journal says migration completed. */
+  entityCanonicalMigrationComplete(): boolean;
   findMatchingEntity(proposedName: string, type: string): Promise<string | null>;
   getEntityCacheSecureStoreKey(): string;
   getEntityMutationVersion(): number;
@@ -402,6 +404,17 @@ export class EntityStore {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) {
       return "";
+    }
+    // Batch reads retry renames unconditionally (a listed file that ENOENTs
+    // is definitionally a race), but a DIRECT lookup of a legacy id must stop
+    // resolving once the journal says migration completed and its file is gone.
+    if (this.deps.entityCanonicalMigrationComplete()) {
+      try {
+        return await this.deps.readStorageSecureFile(filePath);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError || !isErrnoCode(err, "ENOENT")) throw err;
+        return "";
+      }
     }
     return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
   }

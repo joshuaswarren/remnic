@@ -3537,6 +3537,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
+
+  /** Journal completion for EntityStore's legacy-id retry gate. */
+  entityCanonicalMigrationComplete(): boolean {
+    return this.historicalEntityCanonicalIds.getEntry(this.stateDir).complete;
+  }
   /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
   private _entityRefRepair: EntityRefRepair | undefined;
   private get entityRefRepair(): EntityRefRepair {
