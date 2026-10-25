@@ -35,6 +35,8 @@ export interface RemnicPiExtensionOptions extends LoadConfigOptions {
 }
 
 const STATE_CUSTOM_TYPE = "remnic_state";
+/** Never attempt a tools/list with less than this much budget left. */
+const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 1_000;
 const MAX_OBSERVED_HASHES = 2000;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
@@ -414,11 +416,34 @@ async function registerMcpTools(
   recallTimeoutBreaker: RecallTimeoutBreaker,
 ): Promise<void> {
   let tools: McpTool[] = [];
-  try {
-    tools = await client.mcpListTools({ timeoutMs: config.startupRequestTimeoutMs });
-  } catch {
-    return;
+  // A transient failure at session start used to silently register zero
+  // tools for the whole session (recall kept working, so the session looked
+  // healthy). Retry once inside the remaining startup budget, and record a
+  // warning state entry when the catalog still cannot be listed.
+  const budgetStartedAt = Date.now();
+  let listed = false;
+  for (let attempt = 0; attempt <= 1 && !listed; attempt += 1) {
+    const remaining = config.startupRequestTimeoutMs - (Date.now() - budgetStartedAt);
+    if (attempt > 0 && remaining <= MCP_TOOLS_LIST_RETRY_FLOOR_MS) break;
+    try {
+      tools = await client.mcpListTools({ timeoutMs: Math.max(remaining, MCP_TOOLS_LIST_RETRY_FLOOR_MS) });
+      listed = true;
+    } catch (err) {
+      if (attempt === 1) {
+        const message =
+          `Remnic MCP tools/list failed (${errorMessage(err)}) — no Remnic tools registered for this session. ` +
+          "The daemon was unreachable at startup; restart the session (or run /remnic-status) to retry.";
+        console.warn(`[remnic] ${message}`);
+        pi.appendEntry(STATE_CUSTOM_TYPE, {
+          level: "warning",
+          code: "MCP_TOOLS_LIST_FAILED",
+          message,
+          error: errorMessage(err),
+        });
+      }
+    }
   }
+  if (!listed) return;
   let registeredCount = 0;
   const seenPiToolNames = new Set<string>();
   for (const tool of tools) {
