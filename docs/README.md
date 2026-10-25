@@ -129,8 +129,8 @@ packaged adapter is.
 
 ## Reference
 
-- [CLI reference](cli.md) — Every standalone `remnic` command, plus the hosted `openclaw engram` surface.
-- [Config reference](config-reference.md) — Every setting with defaults, recommended values, and operator guidance.
+- [CLI reference](cli.md) - Common standalone `remnic` commands, plus the hosted `openclaw engram` surface.
+- [Config reference](config-reference.md) - Config keys, defaults, recommended values, and operator guidance.
 - [API reference](api.md) — HTTP and MCP surface, headers, and the standalone command contract.
 - [Setup, configuration, and tuning](setup-config-tuning.md) — The operational runbook for enabling and tuning features.
 - [Tags](tags.md) — Tag frontmatter and the recall/propose tag filter.

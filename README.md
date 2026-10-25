@@ -411,7 +411,7 @@ The search index lives separately and is rebuildable from these files at any tim
 
 See [docs/importers.md](docs/importers.md) for input formats, provenance metadata, and the full privacy breakdown.
 
-**Open Knowledge Format (OKF).** The memory directory doubles as an OKF v0.1 knowledge bundle: every memory file ships an inert `type` field next to Remnic's canonical `category`, so OKF-aware consumers can read your store without a converter. `category` stays authoritative — `type` is interop metadata and never overrides it on parse. Two commands keep the bundle conformant:
+**Open Knowledge Format (OKF).** The memory directory doubles as an OKF v0.1 knowledge bundle: every memory file ships an inert `type` field next to Remnic's canonical `category`, so OKF-aware consumers can read your store without a converter. `category` stays authoritative — `type` is interop metadata and never overrides it on parse. These commands inspect, repair, and export the bundle:
 
 | Command | What it does |
 |---------|--------------|
@@ -476,14 +476,21 @@ The complete package map, dependency graph, and publish order are in [docs/archi
 
 ## Configuration
 
-Remnic is zero-config by default: `remnic init` writes a working `remnic.config.json` and every subsystem ships a sensible default. When you need control, there are hundreds of options grouped under four presets, selectable with a single `memoryOsPreset` key:
+`remnic init` writes `./remnic.config.json` with separate `remnic` and `server` blocks.
+The generated file references `OPENAI_API_KEY` and `REMNIC_AUTH_TOKEN`; configure those
+variables or replace the provider and auth settings for your setup. Four optional
+`memoryOsPreset` values seed defaults before explicit settings override them:
 
-- `conservative` — minimal footprint, extraction judge and heavier features off.
-- `balanced` — the general-purpose default.
-- `research-max` — every quality feature enabled, highest cost.
+- `conservative` keeps the footprint small and disables reranking, graph features, and procedural memory.
+- `balanced` is a general-purpose preset, selected explicitly by `remnic init`.
+- `research-max` enables graph and experimental learning features, but not every optional subsystem.
 - `local-llm-heavy` — tuned for local-model extraction and rerank.
 
-Extraction routing (`gateway`, OpenAI, or a local LLM), recall budget, search backend, lifecycle, namespaces, and encryption are all configurable. Every setting, its default, and operator guidance live in [docs/config-reference.md](docs/config-reference.md).
+Without `memoryOsPreset`, the parser uses individual setting defaults rather than
+applying `balanced`. Extraction routing (`gateway`, OpenAI, or a local LLM), recall
+budget, search backend, lifecycle, namespaces, and encryption are all configurable.
+See [docs/config-reference.md](docs/config-reference.md) for config keys, defaults,
+and operator guidance.
 
 ## Self-hosting and operators
 

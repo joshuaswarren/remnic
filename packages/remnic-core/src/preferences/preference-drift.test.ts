@@ -688,3 +688,18 @@ test("the recall stage annotates results without mutating the input array", () =
   assert.ok(ordered[0]!.note, "note is produced for an uncorroborated preference");
   assert.equal(results[0]!.driftNote, undefined, "the pure ranker never touches result objects");
 });
+
+test("a neutral drift pass preserves input order even with mixed rank sources", () => {
+  const config = parseDriftDetectionConfig({ enabled: true, annotateAfterDays: 30 });
+  const ordered = applyPreferenceDriftRanking(
+    [
+      // Upstream effective score on the first entry, position-derived rank on
+      // the second: sorting those raw values would move the second ahead.
+      { key: "scored.md", rank: 0.1, frontmatter: { category: "preference", created: NOW.toISOString() } },
+      { key: "positional.md", rank: 0.5, frontmatter: undefined },
+    ],
+    { config, now: NOW },
+  );
+  assert.deepEqual(ordered.map((item) => item.key), ["scored.md", "positional.md"]);
+  assert.ok(ordered.every((item) => item.multiplier === 1));
+});
