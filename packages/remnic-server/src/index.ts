@@ -863,7 +863,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let host: string;
   let port: number;
   try {
-    ({ host, port } = await httpServer.start());
+    ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron();
   } catch (err) {
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
