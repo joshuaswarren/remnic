@@ -543,12 +543,18 @@ export class EntityStore {
       for (let i = 0; i < mdFiles.length; i += batchSize) {
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
           try {
-            if (!(await this.isIndexableEntityMarkdown(file))) return null;
+            if (await this.isIndexableEntityMarkdown(file)) return file.slice(0, -3);
           } catch (err) {
             if (err instanceof SecureStoreLockedError) throw err;
-            return null;
           }
-          return file.slice(0, -3);
+          // Indexable-check miss: a vanished listed entry raced a background
+          // migration rename — resolve its canonical id through the journal
+          // so the listing does not drop the entity.
+          if (await this.isMissingEntry(file)) {
+            const canonical = resolveHistoricalEntityCanonicalId(file.slice(0, -3), this.deps.currentHistoricalIds());
+            if (canonical !== file.slice(0, -3)) return canonical;
+          }
+          return null;
         }));
         for (const name of resolved) {
           if (name) names.push(name);
