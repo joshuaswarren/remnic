@@ -50,6 +50,20 @@ function lintFiles(files) {
 const RUNTIME_SOURCE = 'import { makeScheduler } from "./scheduler.js";\nexport const x = makeScheduler;\n';
 const TEST_SOURCE = 'import { makeScheduler } from "./scheduler.js";\nmakeScheduler();\n';
 
+test("the test-file filter holds with the test file listed first", () => {
+  // Reversed order: a once-captured TEST filename would suppress the runtime
+  // file's diagnostics too.
+  const counts = lintFiles({
+    "runtime.test.ts": TEST_SOURCE,
+    "runtime.ts": RUNTIME_SOURCE,
+  });
+  const entries = Object.entries(counts);
+  const runtimeEntry = entries.find(([file]) => file.endsWith("runtime.ts"));
+  const testEntry = entries.find(([file]) => file.endsWith("runtime.test.ts"));
+  assert.equal(runtimeEntry?.[1] ?? 0, 1, "runtime file is flagged");
+  assert.equal(testEntry?.[1] ?? 0, 0, "test file is not flagged");
+});
+
 test("the test-file filter is evaluated per file across one run", () => {
   // Runtime file FIRST: with a once-captured filename (the bug), the runtime
   // verdict would apply to the test file too, or vice versa.

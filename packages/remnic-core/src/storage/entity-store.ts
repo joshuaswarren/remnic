@@ -555,9 +555,10 @@ export class EntityStore {
               return resolveCanonical(entityId);
             }
           } catch (err) {
-            // Lock errors abort the listing; anything else (EACCES, decrypt)
-            // fails only this entry — one unhealthy file must not empty it.
-            if (err instanceof SecureStoreLockedError) throw err;
+            // Lock and decrypt errors abort the listing; anything else
+            // (EACCES) fails only this entry — one unhealthy file must not
+            // empty it.
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
           }
           // Indexable-check miss: a vanished listed entry raced a background
           // migration rename — resolve its canonical id through the journal
@@ -569,7 +570,7 @@ export class EntityStore {
               if (canonical !== entityId) return canonical;
             }
           } catch (err) {
-            if (err instanceof SecureStoreLockedError) throw err;
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
           }
           return null;
         }));
