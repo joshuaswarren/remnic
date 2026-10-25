@@ -95,7 +95,7 @@ Full successful extraction needs the mandated provider route to accept that unch
 
 ## Verified corpus
 
-Revision: `67250357405072066498c061f9af0eccfdac20c0`. All 677 repository files downloaded with one worker. All 674 trajectory checksums passed. Parsing verified 184 PASS and 490 FAIL outcomes, across 558 JSON and 116 JSONL inputs. Input files total 314,063,575 bytes.
+Revision: `67250357405072066498c061f9af0eccfdac20c0`. All 677 repository files downloaded with one worker. All 674 trajectory checksums passed. Parsing verified 184 PASS and 490 FAIL outcomes (the v1.0 corpus snapshot; the dataset card now describes v1.1 with 182 PASS and 492 FAIL), across 558 JSON and 116 JSONL inputs. Input files total 314,063,575 bytes.
 
 The SHA-256 of `SHA256SUMS` matched:
 

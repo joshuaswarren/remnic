@@ -13,7 +13,7 @@ The published board reports the better full-pass rate of the two task models at 
 
 ## What is available
 
-The [dream corpus card](https://huggingface.co/datasets/letta-ai/frontier-memory-corpus) describes 674 trajectories: 184 passing and 490 failing. Its files include 558 JSON and 116 JSONL trajectories. Public metadata identifies revision `67250357405072066498c061f9af0eccfdac20c0`.
+The [dream corpus card](https://huggingface.co/datasets/letta-ai/frontier-memory-corpus) described 674 trajectories at the pinned v1.0 revision: 184 passing and 490 failing. (The card has since moved to v1.1 with 182 PASS and 492 FAIL; every count and checksum in this document refers to the pinned v1.0 snapshot.) Its files include 558 JSON and 116 JSONL trajectories. Public metadata identifies revision `67250357405072066498c061f9af0eccfdac20c0`.
 
 The card defines the corpus digest as the SHA-256 of `SHA256SUMS`:
 
