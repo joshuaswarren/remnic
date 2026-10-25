@@ -662,24 +662,25 @@ test("project-shaped category aliases store as fact and the response reports the
 // ---------------------------------------------------------------------------
 
 test("#2829/#2866 transformed write schemas still require an authorized namespace", () => {
+  // zod 4 replaced ZodEffects with ZodPipe/ZodPreprocess (both expose .out).
   assert.equal(
-    memoryStoreRequestSchema instanceof z.ZodEffects,
-    true,
+    memoryStoreRequestSchema instanceof z.ZodObject,
+    false,
     "memory_store schema is a category transform",
   );
   const suggestion = getOperation("suggestion_submit");
   assert.ok(suggestion);
+  const wrapper: unknown = suggestion.spec.schema;
   assert.ok(
-    suggestion.spec.schema instanceof z.ZodEffects,
+    typeof wrapper === "object" && wrapper !== null && "in" in wrapper,
     "suggestion_submit wraps preprocess around the transform",
   );
-  const inner = suggestion.spec.schema.innerType();
+  const inner = (wrapper as { in: unknown }).in;
   assert.equal(
-    inner instanceof z.ZodEffects,
-    true,
+    inner instanceof z.ZodObject,
+    false,
     "one unwrap still lands on the category transform, not the object",
   );
-  assert.equal(inner instanceof z.ZodObject, false);
 
   for (const operation of ["memory_store", "suggestion_submit"] as const) {
     assert.equal(

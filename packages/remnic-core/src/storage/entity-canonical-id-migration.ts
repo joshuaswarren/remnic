@@ -46,7 +46,7 @@ const ENTITY_MAPPING_RESCAN_MAX_PASSES = 3;
 const EntityCanonicalIdMigrationStateSchema = z.object({
   version: z.literal(ENTITY_CANONICAL_ID_MIGRATION_VERSION),
   complete: z.boolean(),
-  mappings: z.record(z.string().min(1)),
+  mappings: z.record(z.string(), z.string().min(1)),
   /**
    * Pairs the migration refused to resolve, PARKED rather than dropped.
    * Deleting the record would strand the collision: once an operator removes
@@ -54,7 +54,7 @@ const EntityCanonicalIdMigrationStateSchema = z.object({
    * still naming the legacy id would never be rewritten. Optional so a journal
    * written by an older build still parses.
    */
-  blocked: z.record(z.string().min(1)).optional(),
+  blocked: z.record(z.string(), z.string().min(1)).optional(),
 });
 
 type EntityCanonicalIdMigrationState = z.infer<typeof EntityCanonicalIdMigrationStateSchema>;
