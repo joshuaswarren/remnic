@@ -1105,7 +1105,8 @@ test("entity listing does not follow a symlink or fifo planted in entities", { s
 
     const loaded = await storage.readAllEntityFiles();
     assert.equal(loaded.some((entity) => entity.name === "Secret"), false);
-    await storage.mergeFragmentedEntities();
+    // Reads skip unsafe entries; mutations now enforce migration's fail-closed barrier.
+    await assert.rejects(() => storage.mergeFragmentedEntities(), /symlink/);
     assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
     assert.match(await readFile(outsideFile, "utf-8"), /outside target/);
     assert.equal((await lstat(fifoPath)).isFIFO(), true);

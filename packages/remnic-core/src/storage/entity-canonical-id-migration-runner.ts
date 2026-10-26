@@ -10,10 +10,11 @@ export class EntityCanonicalIdMigrationRunner {
     private readonly readFingerprint: () => Promise<string> = async () => "static",
   ) {}
 
-  public async markDirectoriesInitialized(): Promise<void> {
+  public async markDirectoriesInitialized(awaitMigration = true): Promise<void> {
     this.directoriesInitialized = true;
-    await this.ensure();
+    if (awaitMigration) await this.ensure();
   }
+
 
   public ensure(): Promise<void> {
     if (!this.canRun()) return Promise.resolve();
