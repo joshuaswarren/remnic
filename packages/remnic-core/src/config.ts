@@ -2801,6 +2801,15 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
+    // COS-447: rate-limit backoff + process-wide concurrency cap.
+    localLlmRateLimitRetryCount: resolveNonNegativeIntegerConfig(
+      cfg.localLlmRateLimitRetryCount, 3, "localLlmRateLimitRetryCount"),
+    localLlmRateLimitBackoffBaseMs: resolvePositiveIntegerConfig(
+      cfg.localLlmRateLimitBackoffBaseMs, 1_000, "localLlmRateLimitBackoffBaseMs"),
+    localLlmRateLimitBackoffMaxMs: resolvePositiveIntegerConfig(
+      cfg.localLlmRateLimitBackoffMaxMs, 60_000, "localLlmRateLimitBackoffMaxMs"),
+    localLlmMaxConcurrency: resolveNonNegativeIntegerConfig(
+      cfg.localLlmMaxConcurrency, 4, "localLlmMaxConcurrency"),
     // Ollama thinking suppression dialect (issue #1996): reasoning_effort value
     // for THINKING_SUPPRESSED_OPERATIONS on the ollama backend. Default "none"
     // (think off). "" disables injection. Invalid values fall back to "none"

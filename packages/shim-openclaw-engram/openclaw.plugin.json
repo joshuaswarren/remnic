@@ -3411,6 +3411,26 @@
         "default": 400,
         "description": "Base backoff delay between local LLM retries (ms)."
       },
+      "localLlmRateLimitRetryCount": {
+        "type": "number",
+        "default": 3,
+        "description": "Retries for local LLM rate-limit responses (429/503/408 or LiteLLM cooldown), with exponential full-jitter backoff that honors Retry-After."
+      },
+      "localLlmRateLimitBackoffBaseMs": {
+        "type": "number",
+        "default": 1000,
+        "description": "Base delay for local LLM rate-limit backoff (ms); doubles per consecutive rate-limit response, full jitter."
+      },
+      "localLlmRateLimitBackoffMaxMs": {
+        "type": "number",
+        "default": 60000,
+        "description": "Ceiling for local LLM rate-limit backoff (ms). A server Retry-After longer than this skips the retry instead of waiting."
+      },
+      "localLlmMaxConcurrency": {
+        "type": "number",
+        "default": 4,
+        "description": "Process-wide cap on concurrent local LLM HTTP requests across all clients (0 = unlimited)."
+      },
       "localLlmTimeoutMs": {
         "type": "number",
         "default": 180000,
