@@ -969,6 +969,7 @@ export class Orchestrator {
     this._orchestratorInitCoordinator?.retireStartupEpoch();
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
+    await this._orchestratorInitCoordinator?.drainEntityMigrations();
     if (this.wearablesAutoSyncHandle) {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;

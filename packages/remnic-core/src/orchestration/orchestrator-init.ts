@@ -114,6 +114,7 @@ export class OrchestratorInitCoordinator {
   private startupEpochAbort:
     | { epoch: number; controller: AbortController }
     | undefined;
+  private readonly startupStorageWrites = new Set<Promise<void>>();
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -125,6 +126,25 @@ export class OrchestratorInitCoordinator {
     this.startupEpochAbort = undefined;
     this.startupClosed = true;
     this.activeStartupEpoch = null;
+  }
+
+  private async initializeStorage(storage: StorageManager): Promise<void> {
+    const write = storage.ensureDirectories({ waitForEntityMigration: false });
+    this.startupStorageWrites.add(write);
+    try {
+      await write;
+    } finally {
+      this.startupStorageWrites.delete(write);
+    }
+  }
+
+  async drainEntityMigrations(): Promise<void> {
+    await Promise.allSettled([...this.startupStorageWrites]);
+    const drains = [this.deps.storage.drainEntityCanonicalIdMigration()];
+    this.deps.storageRouter.forEachCachedStorage((storage) => {
+      drains.push(storage.drainEntityCanonicalIdMigration());
+    });
+    await Promise.all(drains);
   }
 
   private beginStartupEpoch(): number {
@@ -305,7 +325,8 @@ export class OrchestratorInitCoordinator {
         logger: (message) => log.info(message),
       });
       await this.deps.storage.loadAliases();
-      await this.deps.storage.ensureDirectories();
+      if (exitIfStale()) return;
+      await this.initializeStorage(this.deps.storage);
       await Promise.all(
         this.deps.config.externalWikis.map((wiki) =>
           assertExternalWikiRootOutsideMemoryDirCanonical(
@@ -323,7 +344,8 @@ export class OrchestratorInitCoordinator {
         for (const ns of namespaces) {
           const sm = await this.deps.storageRouter.storageFor(ns);
           await sm.loadAliases().catch(() => undefined);
-          await sm.ensureDirectories();
+          if (exitIfStale()) return;
+          await this.initializeStorage(sm);
         }
         // Explicitly seed the catalog with all configured namespaces at startup
         // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the
@@ -564,7 +586,8 @@ export class OrchestratorInitCoordinator {
         .catch((err) => {
           log.error(`deferred initialization failed (non-fatal): ${err}`);
         })
-        .finally(() => {
+        .finally(async () => {
+          await this.drainEntityMigrations();
           settleOwnDeferredReady();
         });
     } catch (err) {

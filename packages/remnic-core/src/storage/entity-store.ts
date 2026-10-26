@@ -23,7 +23,7 @@ import {
 } from "../utils/macos-replication-junk.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
-import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
+import { SecureStoreDecryptError, SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import type {
   EntityActivityEntry,
   EntityFile,
@@ -67,6 +67,8 @@ export interface EntityStoreDeps {
   readonly entitiesDir: string;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
   currentHistoricalIds(): Readonly<Record<string, string>>;
+  /** True when the entity canonical-id journal says migration completed. */
+  entityCanonicalMigrationComplete(): boolean;
   findMatchingEntity(proposedName: string, type: string): Promise<string | null>;
   getEntityCacheSecureStoreKey(): string;
   getEntityMutationVersion(): number;
@@ -373,18 +375,56 @@ export class EntityStore {
     return normalized;
   }
 
+  private async readEntityFileResolvingRename(firstPath: string, entityId: string) {
+    try {
+      return { id: entityId, content: await this.deps.readStorageSecureFile(firstPath) };
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      // ENOENT: renamed away (retry below). ELOOP: planted symlink — skip.
+      if (isErrnoCode(err, "ELOOP")) return null;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    const historicalIds = this.deps.currentHistoricalIds();
+    const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+    const candidates = new Set([canonical]);
+    for (const legacy of Object.keys(historicalIds)) {
+      if (resolveHistoricalEntityCanonicalId(legacy, historicalIds) === canonical) candidates.add(legacy);
+    }
+    candidates.delete(entityId);
+    for (const candidate of candidates) {
+      try {
+        return { id: candidate, content: await this.deps.readStorageSecureFile(
+          path.join(this.deps.entitiesDir, `${candidate}.md`),
+        ) };
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT/ELOOP: gone or a planted symlink — try the next candidate.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
+        throw err;
+      }
+    }
+    return null;
+  }
+
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) {
       return "";
     }
-    try {
-      return await this.deps.readStorageSecureFile(filePath);
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return "";
+    // Batch reads retry renames unconditionally (a listed file that ENOENTs
+    // is definitionally a race), but a DIRECT lookup of a legacy id must stop
+    // resolving once the journal says migration completed and its file is gone.
+    if (this.deps.entityCanonicalMigrationComplete()) {
+      try {
+        return await this.deps.readStorageSecureFile(filePath);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT: gone. ELOOP: a planted symlink the open refused to follow.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) return "";
+        throw err;
+      }
     }
+    return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
   }
 
   /**
@@ -434,6 +474,16 @@ export class EntityStore {
    * Symlinks, FIFOs, and devices are skipped before any read. The entities
    * root is refused separately, before the directory is listed.
    */
+  private async isMissingEntry(file: string): Promise<boolean> {
+    try {
+      await lstat(path.join(this.deps.entitiesDir, file));
+      return false;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return true;
+      throw err;
+    }
+  }
+
   private async isContainedRegularEntityFile(file: string): Promise<boolean> {
     const filePath = path.join(this.deps.entitiesDir, file);
     let entryStat;
@@ -491,23 +541,54 @@ export class EntityStore {
       const names: string[] = [];
       const batchSize = 100;
       for (let i = 0; i < mdFiles.length; i += batchSize) {
+        // Journal table snapshot once per call (per-entry reads are quadratic).
+        const historicalIds = this.deps.currentHistoricalIds();
+        const snapshotIds = new Set(mdFiles.map((file) => file.slice(0, -3)));
+        const journalComplete = this.deps.entityCanonicalMigrationComplete();
+        const resolveCanonical = (entityId: string): string => {
+          const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+          if (canonical === entityId) return entityId;
+          // Completed journal: the on-disk filename is authoritative; a
+          // late legacy file stays under its own readable name.
+          if (journalComplete) return entityId;
+          // Both claimants coexisting (copy-before-unlink) keep both names.
+          if (snapshotIds.has(canonical)) return entityId;
+          return canonical;
+        };
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
+          const entityId = file.slice(0, -3);
           try {
-            if (!(await this.isIndexableEntityMarkdown(file))) return null;
+            // Report the canonical id for every indexable file so legacy
+            // names surface as their canonical identity from the start.
+            if (await this.isIndexableEntityMarkdown(file)) {
+              return resolveCanonical(entityId);
+            }
           } catch (err) {
-            if (err instanceof SecureStoreLockedError) throw err;
-            return null;
+            // Lock and decrypt errors abort the listing; anything else
+            // (EACCES) fails only this entry — one unhealthy file must not
+            // empty it.
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
           }
-          return file.slice(0, -3);
+          // Vanished listed entry: resolve through the journal (rename
+          // race); lstat failures stay within this entry.
+          try {
+            if (await this.isMissingEntry(file)) {
+              const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+              if (canonical !== entityId) return canonical;
+            }
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
+          }
+          return null;
         }));
-        for (const name of resolved) {
-          if (name) names.push(name);
-        }
+        names.push(...resolved.filter((name): name is string => name !== null));
       }
-      names.sort();
-      return names;
+      // The copy-before-unlink migration window can snapshot both the legacy
+      // and canonical names; the legacy fallback then resolves to the same
+      // canonical id. Deduplicate so the total stays correct.
+      return [...new Set(names)].sort();
     } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
+      if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
       return [];
     }
   }
@@ -636,9 +717,21 @@ export class EntityStore {
     if (cached) return cached;
 
     try {
-      const entries = await this.readEntityDirectoryNames();
+      // A symlinked/replaced entities root has no readable entries (merged
+      // #3207 semantics): resolve empty rather than following it. Within a
+      // trusted root, readdir directly so planted entries reach the secure
+      // read instead of being swallowed by the listing guards.
+      if (!(await this.isTrustedEntitiesRoot())) return [];
+      const listed = await readdir(this.deps.entitiesDir);
+      const { kept: entries, ignored } = withoutMacOsReplicationJunk(listed, (name) => name);
+      warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
+        log.warn(`entity load ${message}`);
+      });
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
       if (mdFiles.length === 0) return [];
+
+      const historicalIds = this.deps.currentHistoricalIds();
+      const seen = new Map<string, Set<string>>();
 
       // Read all entity files in parallel batches to avoid O(N) sequential I/O.
       // With 3000+ entity files, sequential reads can take 15-20s under load.
@@ -652,19 +745,39 @@ export class EntityStore {
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (entry) => {
+            const entityId = entry.slice(0, -".md".length);
+            const entryPath = path.join(this.deps.entitiesDir, entry);
             try {
-              if (!(await this.isContainedRegularEntityFile(entry))) return null;
-              return await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, entry));
+              if (!(await this.isContainedRegularEntityFile(entry))) {
+                // A listed entry that vanished races a background migration
+                // rename: resolve through historical ids like a direct read.
+                // Still-present symlinks/dirs stay skipped.
+                if (await this.isMissingEntry(entry)) {
+                  return await this.readEntityFileResolvingRename(entryPath, entityId);
+                }
+                return null;
+              }
+              return await this.readEntityFileResolvingRename(entryPath, entityId);
             } catch (err) {
-              if (err instanceof SecureStoreLockedError) throw err;
-              if (!isErrnoCode(err, "ENOENT")) throw err;
+              // Lock and decrypt failures abort the corpus read (the store
+              // is unusable or tampered); anything else isolates to this entry.
+              if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
+              log.warn(`entity read isolated failure for ${entry}: ${err instanceof Error ? err.message : String(err)}`);
               return null;
             }
           }),
         );
-        for (const content of results) {
-          if (content === null) continue;
-          const entity = parseEntityFile(content, this.deps.entitySchemas);
+        for (const result of results) {
+          if (result === null) continue;
+          const canonical = resolveHistoricalEntityCanonicalId(result.id, historicalIds);
+          let contents = seen.get(canonical);
+          if (contents?.has(result.content)) continue;
+          if (!contents) {
+            contents = new Set();
+            seen.set(canonical, contents);
+          }
+          contents.add(result.content);
+          const entity = parseEntityFile(result.content, this.deps.entitySchemas);
           if (!entity.name.trim() || !entity.type.trim()) continue;
           entities.push(entity);
         }

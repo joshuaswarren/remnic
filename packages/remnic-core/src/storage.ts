@@ -2323,10 +2323,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private _entityStore: EntityStore | undefined;
 
   private get entityStore(): EntityStore {
-    if (!this._entityStore) {
-      this._entityStore = new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this));
-    }
-    return this._entityStore;
+    return (this._entityStore ??= new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this)));
   }
 
   /** IdentityContinuityStore (storage.ts decomposition). Lazy; selfDeps live wiring. */
@@ -3537,6 +3534,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
+
+  /** Journal completion for EntityStore's legacy-id retry gate (live view). */
+  entityCanonicalMigrationComplete = entityRefs.memoizedJournalCompletion(this.historicalEntityCanonicalIds, () => this.stateDir);
+
+  normalizeEntityName(raw: string, type: string): string {
+    return entityRefs.resolveHistoricalEntityCanonicalId(
+      this.entityStore.normalizeEntityName(raw, type),
+      this.currentHistoricalIds()
+    );
+  }
   /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
   private _entityRefRepair: EntityRefRepair | undefined;
   private get entityRefRepair(): EntityRefRepair {
@@ -3561,12 +3568,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     () => this.runLegacyEntityCanonicalIdMigration(),
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion()))
   );
-  normalizeEntityName(raw: string, type: string): string {
-    return entityRefs.resolveHistoricalEntityCanonicalId(
-      this.entityStore.normalizeEntityName(raw, type),
-      this.currentHistoricalIds()
-    );
-  }
 
   /**
    * Read-only view of this store's user alias table, for call sites that
@@ -3623,7 +3624,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return completionFingerprint;
   }
 
-  async ensureDirectories(): Promise<void> {
+  async ensureDirectories(options: { waitForEntityMigration?: boolean } = {}): Promise<void> {
     await mkdir(this.baseDir, { recursive: true });
     await entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir);
     const today = new Date().toISOString().slice(0, 10);
@@ -3640,7 +3641,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
-    await this.entityCanonicalIdMigration.ensure();
+    await this.entityCanonicalIdMigration.begin(options.waitForEntityMigration !== false, this.entitiesDir);
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
@@ -3654,9 +3655,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    await this.entityCanonicalIdMigration.markDirectoriesInitialized();
+    return this.entityCanonicalIdMigration.finishBegin(options.waitForEntityMigration !== false);
   }
-
+  drainEntityCanonicalIdMigration = (): Promise<void> => this.entityCanonicalIdMigration.drain();
   /**
    * Resolve the on-disk write path for a memory of the given category, creating
    * the target directory. Category routing goes through the shared
@@ -4078,7 +4079,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }
-
 
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;

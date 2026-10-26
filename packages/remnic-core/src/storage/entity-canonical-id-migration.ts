@@ -370,7 +370,7 @@ async function assertEntityContentUnchanged(
   }
 }
 
-async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
+export async function readSafeEntityEntries(entitiesDir: string): Promise<string[]> {
   const rootStat = await lstat(entitiesDir);
   if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
     throw new Error("Refusing entity canonical-id migration through a symlinked or non-directory entities root.");
