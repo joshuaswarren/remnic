@@ -3412,29 +3412,33 @@
         "description": "Base backoff delay between local LLM retries (ms)."
       },
       "localLlmRateLimitRetryCount": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 0,
         "default": 3,
         "description": "Retries on 429/503/408 or proxy cooldown (jittered backoff, honors Retry-After)."
       },
       "localLlmRateLimitBackoffBaseMs": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1,
         "default": 1000,
         "description": "Base rate-limit backoff (ms)."
       },
       "localLlmRateLimitBackoffMaxMs": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 1,
         "default": 60000,
         "description": "Max rate-limit backoff (ms); a longer Retry-After skips the retry."
       },
       "localLlmMaxConcurrency": {
-        "type": "number",
+        "type": "integer",
+        "minimum": 0,
         "default": 4,
         "description": "Process-wide cap on concurrent local LLM requests (0 = unlimited)."
       },
       "localLlmTimeoutMs": {
         "type": "number",
         "default": 180000,
-        "description": "Hard timeout for local LLM requests (ms). Legacy alias for taskLlmTimeoutMs on the gateway/task chain when that key is absent."
+        "description": "Hard timeout for local LLM requests (ms). Legacy alias for taskLlmTimeoutMs when that key is absent."
       },
       "taskLlmTimeoutMs": {
         "type": "number",

@@ -5,9 +5,11 @@ import { parseConfig } from "./config.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import {
   LocalLlmConcurrencyLimiter,
+  LocalLlmRateLimitSession,
   computeFullJitterBackoffMs,
   computeRateLimitDelayMs,
   endpointBackoffRemainingMs,
+  extendEndpointBackoff,
   isRateLimitedResponse,
   parseRetryAfterMs,
   parseTryAgainHintMs,
@@ -341,6 +343,64 @@ test("process-wide concurrency cap bounds in-flight requests across clients", as
       );
       assert.equal(results.filter((r) => r?.content === "ok").length, 7);
       assert.equal(peak, 2);
+    }
+  );
+});
+
+test("rate-limit waits never exceed the caller's request timeout", async () => {
+  let calls = 0;
+  await withFetch(
+    async () => {
+      calls += 1;
+      return rateLimited(429, { "retry-after": "2" });
+    },
+    async () => {
+      const client = new LocalLlmClient(
+        createConfig({ localLlmUrl: "http://127.0.0.1:1008", localLlmRateLimitBackoffMaxMs: 5_000 })
+      );
+      const started = Date.now();
+      const options: LocalLlmChatCompletionOptions = { timeoutMs: 300, failureDiag: {} };
+      assert.equal(await client.chatCompletion([{ role: "user", content: "x" }], options), null);
+      assert.equal(await client.chatCompletion([{ role: "user", content: "y" }], { timeoutMs: 300 }), null);
+      assert.ok(Date.now() - started < 1_000, `took ${Date.now() - started}ms despite a 300ms budget`);
+      assert.equal(calls, 1, "a 2s hint beyond the 300ms budget is neither retried nor re-sent");
+      assert.equal(failureStatus(options.failureDiag), 429);
+    }
+  );
+});
+
+test("a queued attempt rechecks a cooldown recorded while it waited for a slot", async () => {
+  await withFetch(
+    async () => ok(),
+    async () => {
+      const endpoint = "http://127.0.0.1:1009/v1/chat/completions";
+      const settings = resolveRateLimitSettings(
+        createConfig({ localLlmMaxConcurrency: 1, localLlmRateLimitBackoffMaxMs: 1_000 })
+      );
+      const holder = await new LocalLlmRateLimitSession(endpoint, settings, false).beforeAttempt();
+      assert.equal(holder.kind, "go");
+      const queued = new LocalLlmRateLimitSession(endpoint, settings, false, 5_000).beforeAttempt();
+      extendEndpointBackoff(endpoint, 60_000);
+      if (holder.kind === "go") holder.release();
+      const gate = await queued;
+      assert.equal(gate.kind, "skip");
+      assert.equal(gate.kind === "skip" ? gate.reason : null, "backoff");
+    }
+  );
+});
+
+test("waiting for a concurrency slot is bounded by the wait budget", async () => {
+  await withFetch(
+    async () => ok(),
+    async () => {
+      const endpoint = "http://127.0.0.1:1010/v1/chat/completions";
+      const settings = resolveRateLimitSettings(createConfig({ localLlmMaxConcurrency: 1 }));
+      const holder = await new LocalLlmRateLimitSession(endpoint, settings, false).beforeAttempt();
+      const started = Date.now();
+      const gate = await new LocalLlmRateLimitSession(endpoint, settings, false, 50).beforeAttempt();
+      assert.equal(gate.kind === "skip" ? gate.reason : gate.kind, "queue");
+      assert.ok(Date.now() - started < 1_000);
+      if (holder.kind === "go") holder.release();
     }
   );
 });

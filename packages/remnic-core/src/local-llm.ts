@@ -968,8 +968,10 @@ export class LocalLlmClient {
       // COS-447: rate-limit responses (429/503/408, LiteLLM cooldown) get
       // their own retry budget with exponential full-jitter backoff, and a
       // process-wide semaphore caps concurrent HTTP attempts across clients.
+      // Waits are bounded by the request timeout so a short caller budget
+      // (e.g. rerankTimeoutMs) is never stretched by a long cooldown.
       const rateLimit = new LocalLlmRateLimitSession(chatUrl, resolveRateLimitSettings(this.config),
-        (queueMeta?.priority ?? options.priority) === "recall-critical");
+        (queueMeta?.priority ?? options.priority) === "recall-critical", effectiveTimeoutMs);
       let lastRateLimitDelayMs: number | null = null;
       let response: Response | null = null, responseBody = "";
       let lastAbortError: Error | null = null;
@@ -979,7 +981,9 @@ export class LocalLlmClient {
         // Wait out the shared endpoint backoff, then take a concurrency slot.
         const gate = await rateLimit.beforeAttempt(options.signal);
         if (gate.kind === "skip") {
-          log.warn(`local LLM rate-limit backoff active (${gate.remainingMs}ms remaining); skipping request (op=${operation})`);
+          log.warn(gate.reason === "queue"
+            ? `local LLM concurrency queue exceeded the ${effectiveTimeoutMs}ms request budget; skipping request (op=${operation})`
+            : `local LLM rate-limit backoff active (${gate.remainingMs}ms remaining); skipping request (op=${operation})`);
           if (options.failureDiag)
             options.failureDiag.lastError = Object.assign(new Error("local LLM rate limited"), { status: 429 });
           return null;

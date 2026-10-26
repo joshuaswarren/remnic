@@ -178,24 +178,31 @@ export class LocalLlmConcurrencyLimiter {
    * Wait for a slot. Resolves to a release function, or null when the
    * signal aborts first. `max <= 0` means unlimited.
    */
-  acquire(options: { highPriority?: boolean; signal?: AbortSignal } = {}): Promise<(() => void) | null> {
-    const { signal } = options;
+  acquire(
+    options: { highPriority?: boolean; signal?: AbortSignal; timeoutMs?: number } = {}
+  ): Promise<(() => void) | null> {
+    const { signal, timeoutMs } = options;
     if (signal?.aborted) return Promise.resolve(null);
     if (this.max <= 0 || (this.active < this.max && this.waiters.length === 0)) {
       this.active += 1;
       return Promise.resolve(this.releaser());
     }
+    if (timeoutMs !== undefined && timeoutMs <= 0) return Promise.resolve(null);
     return new Promise((resolve) => {
+      let timer: NodeJS.Timeout | undefined;
       const waiter: Waiter = {
         highPriority: options.highPriority === true,
         grant: () => {
           signal?.removeEventListener("abort", onAbort);
+          if (timer) clearTimeout(timer);
           resolve(this.releaser());
         },
       };
       const onAbort = (): void => {
         const index = this.waiters.indexOf(waiter);
         if (index >= 0) this.waiters.splice(index, 1);
+        signal?.removeEventListener("abort", onAbort);
+        if (timer) clearTimeout(timer);
         resolve(null);
       };
       if (waiter.highPriority) {
@@ -206,6 +213,7 @@ export class LocalLlmConcurrencyLimiter {
         this.waiters.push(waiter);
       }
       signal?.addEventListener("abort", onAbort, { once: true });
+      if (timeoutMs !== undefined) timer = setTimeout(onAbort, timeoutMs);
     });
   }
 
@@ -306,7 +314,7 @@ export function resetLocalLlmRateLimitStateForTests(): void {
 export type RateLimitAttemptGate =
   | { kind: "go"; release: () => void }
   | { kind: "aborted" }
-  | { kind: "skip"; remainingMs: number };
+  | { kind: "skip"; reason: "backoff" | "queue"; remainingMs: number };
 
 export type RateLimitDecision =
   | { kind: "not-rate-limited" }
@@ -324,10 +332,16 @@ export class LocalLlmRateLimitSession {
   private readonly limiter: LocalLlmConcurrencyLimiter;
   readonly settings: LocalLlmRateLimitSettings;
 
+  /**
+   * @param waitBudgetMs the caller's per-attempt time budget. Waiting for the
+   * endpoint backoff or a concurrency slot never exceeds it, and a backoff
+   * longer than it skips the request instead (fail open to the caller).
+   */
   constructor(
     private readonly endpoint: string,
     settings: LocalLlmRateLimitSettings,
-    private readonly highPriority: boolean
+    private readonly highPriority: boolean,
+    private readonly waitBudgetMs: number = settings.backoffMaxMs
   ) {
     this.settings = settings;
     this.limiter = getLocalLlmConcurrencyLimiter(settings.maxConcurrency);
@@ -338,11 +352,30 @@ export class LocalLlmRateLimitSession {
   }
 
   async beforeAttempt(signal?: AbortSignal): Promise<RateLimitAttemptGate> {
-    const remainingMs = endpointBackoffRemainingMs(this.endpoint);
-    if (remainingMs > this.settings.backoffMaxMs) return { kind: "skip", remainingMs };
-    if (remainingMs > 0 && !(await waitWithSignal(remainingMs, signal))) return { kind: "aborted" };
-    const release = await this.limiter.acquire({ highPriority: this.highPriority, signal });
-    return release ? { kind: "go", release } : { kind: "aborted" };
+    const deadlineMs = Date.now() + Math.max(0, this.waitBudgetMs);
+    // Recheck the shared deadline after every async wait: another attempt may
+    // have recorded or extended a cooldown while this one slept or queued.
+    for (;;) {
+      const remainingMs = endpointBackoffRemainingMs(this.endpoint);
+      if (remainingMs > 0) {
+        if (remainingMs > Math.min(this.settings.backoffMaxMs, deadlineMs - Date.now())) {
+          return { kind: "skip", reason: "backoff", remainingMs };
+        }
+        if (!(await waitWithSignal(remainingMs, signal))) return { kind: "aborted" };
+        continue;
+      }
+      const release = await this.limiter.acquire({
+        highPriority: this.highPriority,
+        signal,
+        timeoutMs: deadlineMs - Date.now(),
+      });
+      if (!release) return signal?.aborted ? { kind: "aborted" } : { kind: "skip", reason: "queue", remainingMs: 0 };
+      if (endpointBackoffRemainingMs(this.endpoint) > 0) {
+        release();
+        continue;
+      }
+      return { kind: "go", release };
+    }
   }
 
   onSuccess(): void {
@@ -358,7 +391,7 @@ export class LocalLlmRateLimitSession {
     const hintMs = serverRetryHintMs(retryAfterHeader, bodyText);
     const delayMs = computeRateLimitDelayMs(consecutive, this.settings, hintMs);
     extendEndpointBackoff(this.endpoint, delayMs);
-    if (this.retries >= this.settings.retryCount || delayMs > this.settings.backoffMaxMs) {
+    if (this.retries >= this.settings.retryCount || delayMs > Math.min(this.settings.backoffMaxMs, this.waitBudgetMs)) {
       return { kind: "give-up", delayMs, retries: this.retries };
     }
     this.retries += 1;
