@@ -1005,9 +1005,7 @@ export class LocalLlmClient {
         try {
           response = await this.chatTransport.post({
             url: chatUrl,
-            headers: this.buildRequestHeaders({
-              "Content-Type": "application/json",
-            }),
+            headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
             body: requestBodyJson,
             signal: attemptAbort.signal,
             budgetMs: this.config.localLlmTimeoutMs,
@@ -1022,6 +1020,7 @@ export class LocalLlmClient {
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
             log.debug("local LLM rejected native JSON schema; retrying without it");
+            response = null;
             response = await this.chatTransport.post({
               url: chatUrl,
               headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),

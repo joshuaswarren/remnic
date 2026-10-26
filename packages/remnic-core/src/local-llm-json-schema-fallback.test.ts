@@ -143,6 +143,41 @@ test("400 rejecting json_schema triggers exactly one retry without the format", 
   }
 });
 
+test("timeout before strip-retry headers uses the configured transport retry", async (t) => {
+  const bodies: RecordedRequest["body"][] = [];
+  t.mock.method(ChatTransport.prototype, "post", async (request: Parameters<ChatTransport["post"]>[0]) => {
+    bodies.push(JSON.parse(request.body));
+    if (bodies.length === 1) return new Response("json_schema is not supported", { status: 400 });
+    if (bodies.length === 2) throw new DOMException("Timed out before headers", "AbortError");
+    return new Response(JSON.stringify(okCompletion), { status: 200 });
+  });
+  const client = new LocalLlmClient(createConfig({ localLlmRetry5xxCount: 1, localLlm400TripThreshold: 1 }));
+  primeClient(client);
+  const result = await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat });
+  assert.equal(result?.content, "done");
+  assert.equal(bodies.length, 3);
+  assert.deepEqual(bodies[0].response_format, responseFormat);
+  assert.equal(bodies[1].response_format, undefined);
+  assert.equal(bodies[2].response_format, undefined);
+});
+
+test("a diagnostic echo of the format is not a schema capability rejection", async () => {
+  for (const message of [
+    "Context length exceeded; request included response_format json_schema",
+    "Unsupported parameter temperature; request included response_format json_schema",
+  ]) {
+    const server = await startRecordingServer(() => ({ status: 400, body: { error: { message } } }));
+    try {
+      const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+      primeClient(client);
+      assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+      assert.equal(server.requests.length, 1, "unrelated provider errors must not strip the format");
+    } finally {
+      await server.close();
+    }
+  }
+});
+
 test("format removal persists for later 5xx attempts", async () => {
   const server = await startRecordingServer((_req, count) =>
     count === 1

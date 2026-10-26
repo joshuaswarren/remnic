@@ -194,18 +194,15 @@ export function withCodexRuntimeShutdown<T extends { signal?: AbortSignal }>(
 
 export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  // Require an HTTP status plus explicit schema/format context. A bare
-  // "unsupported" (e.g. "'temperature' is unsupported with this model") must
-  // NOT trigger the schema-stripping retry, or we pay a duplicate request
-  // for unrelated provider errors.
+  // An echoed request format is not a capability rejection.
   if (!/\b(?:400|404|422)\b/.test(message)) {
     return false;
   }
-  if (/(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)/i.test(message)) {
-    return true;
-  }
-  // "unsupported" only counts when adjacent to schema/format terminology.
-  return /\bunsupported\b[\s\S]{0,40}\b(?:schema|format)\b/i.test(message);
+  return (
+    /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
+    /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
+    /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message)
+  );
 }
 
 export function extractResponsesOutputText(data: {
