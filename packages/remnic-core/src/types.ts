@@ -1654,7 +1654,7 @@ export interface PluginConfig
   localLlmRateLimitBackoffBaseMs?: number;
   /** COS-447: ceiling for rate-limit backoff; longer server hints skip the retry (ms). Default 60000. */
   localLlmRateLimitBackoffMaxMs?: number;
-  /** COS-447: process-wide cap on concurrent local LLM HTTP attempts (0 = unlimited). Default 4. */
+  /** Process-wide local LLM HTTP cap; above 1, reserves one permit for recall-critical work. 0 = unlimited. Default 4. */
   localLlmMaxConcurrency?: number;
   /** Ollama-backend thinking suppression: `reasoning_effort` value injected on
    *  `/v1/chat/completions` for THINKING_SUPPRESSED_OPERATIONS ("none" | "low" |

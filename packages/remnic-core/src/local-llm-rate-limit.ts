@@ -151,9 +151,10 @@ export function computeRateLimitDelayMs(
 
 type Waiter = { highPriority: boolean; grant: () => void };
 
-/** FIFO counting semaphore with a high-priority lane (recall-critical first). */
+/** FIFO semaphore; finite caps above one reserve a permit for recall-critical work. */
 export class LocalLlmConcurrencyLimiter {
   private active = 0;
+  private activeBackground = 0;
   private max: number;
   private readonly waiters: Waiter[] = [];
 
@@ -182,20 +183,25 @@ export class LocalLlmConcurrencyLimiter {
     options: { highPriority?: boolean; signal?: AbortSignal; timeoutMs?: number } = {}
   ): Promise<(() => void) | null> {
     const { signal, timeoutMs } = options;
+    const highPriority = options.highPriority === true;
     if (signal?.aborted) return Promise.resolve(null);
-    if (this.max <= 0 || (this.active < this.max && this.waiters.length === 0)) {
+    if (
+      this.canAcquire(highPriority) &&
+      (this.waiters.length === 0 || (highPriority && !this.waiters[0].highPriority))
+    ) {
       this.active += 1;
-      return Promise.resolve(this.releaser());
+      if (!highPriority) this.activeBackground += 1;
+      return Promise.resolve(this.releaser(highPriority));
     }
     if (timeoutMs !== undefined && timeoutMs <= 0) return Promise.resolve(null);
     return new Promise((resolve) => {
       let timer: NodeJS.Timeout | undefined;
       const waiter: Waiter = {
-        highPriority: options.highPriority === true,
+        highPriority,
         grant: () => {
           signal?.removeEventListener("abort", onAbort);
           if (timer) clearTimeout(timer);
-          resolve(this.releaser());
+          resolve(this.releaser(highPriority));
         },
       };
       const onAbort = (): void => {
@@ -217,21 +223,30 @@ export class LocalLlmConcurrencyLimiter {
     });
   }
 
-  private releaser(): () => void {
+  private canAcquire(highPriority: boolean): boolean {
+    return this.max <= 0 || (
+      this.active < this.max &&
+      (highPriority || this.max === 1 || this.activeBackground < this.max - 1)
+    );
+  }
+
+  private releaser(highPriority: boolean): () => void {
     let released = false;
     return () => {
       if (released) return;
       released = true;
       this.active -= 1;
+      if (!highPriority) this.activeBackground -= 1;
       this.pump();
     };
   }
 
   private pump(): void {
-    while (this.waiters.length > 0 && (this.max <= 0 || this.active < this.max)) {
+    while (this.waiters.length > 0 && this.canAcquire(this.waiters[0].highPriority)) {
       const next = this.waiters.shift();
       if (!next) break;
       this.active += 1;
+      if (!next.highPriority) this.activeBackground += 1;
       next.grant();
     }
   }
