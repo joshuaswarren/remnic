@@ -541,11 +541,17 @@ export class EntityStore {
       const names: string[] = [];
       const batchSize = 100;
       for (let i = 0; i < mdFiles.length; i += batchSize) {
-        // Snapshot the journal table once per listing call: resolving each
-        // entry through currentHistoricalIds() would re-read the journal
-        // file per entry (quadratic I/O on large corpora).
+        // Journal table snapshot once per call (per-entry reads are quadratic).
         const historicalIds = this.deps.currentHistoricalIds();
-        const resolveCanonical = (entityId: string): string => resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+        const snapshotIds = new Set(mdFiles.map((file) => file.slice(0, -3)));
+        const resolveCanonical = (entityId: string): string => {
+          const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+          // Keep both claimants when legacy and canonical coexist (the
+          // copy-before-unlink window); collapsing them would pre-decide the
+          // migration's collision check.
+          if (canonical !== entityId && snapshotIds.has(canonical)) return entityId;
+          return canonical;
+        };
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
           const entityId = file.slice(0, -3);
           try {
@@ -560,10 +566,8 @@ export class EntityStore {
             // empty it.
             if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
           }
-          // Indexable-check miss: a vanished listed entry raced a background
-          // migration rename — resolve its canonical id through the journal
-          // so the listing does not drop the entity. Lstat failures stay
-          // within this entry too.
+          // Vanished listed entry: resolve through the journal (rename
+          // race); lstat failures stay within this entry.
           try {
             if (await this.isMissingEntry(file)) {
               const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());

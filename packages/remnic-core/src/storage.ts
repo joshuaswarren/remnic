@@ -3536,7 +3536,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   /** Journal completion for EntityStore's legacy-id retry gate (live view). */
-  entityCanonicalMigrationComplete = (): boolean => this.historicalEntityCanonicalIds.getEntry(this.stateDir).complete;
+  entityCanonicalMigrationComplete = entityRefs.memoizedJournalCompletion(this.historicalEntityCanonicalIds, () => this.stateDir);
+
+  normalizeEntityName(raw: string, type: string): string {
+    return entityRefs.resolveHistoricalEntityCanonicalId(
+      this.entityStore.normalizeEntityName(raw, type),
+      this.currentHistoricalIds()
+    );
+  }
   /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
   private _entityRefRepair: EntityRefRepair | undefined;
   private get entityRefRepair(): EntityRefRepair {
@@ -3561,12 +3568,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     () => this.runLegacyEntityCanonicalIdMigration(),
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion()))
   );
-  normalizeEntityName(raw: string, type: string): string {
-    return entityRefs.resolveHistoricalEntityCanonicalId(
-      this.entityStore.normalizeEntityName(raw, type),
-      this.currentHistoricalIds()
-    );
-  }
 
   /**
    * Read-only view of this store's user alias table, for call sites that
@@ -4078,7 +4079,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }
-
 
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;

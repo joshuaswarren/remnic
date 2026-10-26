@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 /**
  * Write-boundary surface of the entity canonical-id migration (issue #2213).
  *
@@ -197,6 +198,33 @@ export type HistoricalEntityIdsEntry = {
   complete: boolean;
 };
 
+
+
+/**
+ * Memoized journal-completion view keyed on the journal file's stat identity.
+ * entityList consults completion once per listed entity; without this each
+ * consult re-opens and re-reads the journal (quadratic I/O on large corpora).
+ */
+export function memoizedJournalCompletion(
+  cache: HistoricalEntityCanonicalIdCache,
+  stateDir: () => string,
+): () => boolean {
+  let memo: { key: string; complete: boolean } | undefined;
+  return (): boolean => {
+    let key = "missing";
+    try {
+      const journalPath = path.join(stateDir(), ENTITY_CANONICAL_ID_MIGRATION_FILE);
+      const j = statSync(journalPath);
+      key = `${j.dev}:${j.ino}:${j.mtimeMs}:${j.ctimeMs}:${j.size}`;
+    } catch {
+      key = "missing";
+    }
+    if (memo && memo.key === key) return memo.complete;
+    const entry = cache.getEntry(stateDir());
+    memo = { key, complete: entry.complete };
+    return memo.complete;
+  };
+}
 
 export class HistoricalEntityCanonicalIdCache {
   private mappings: Readonly<Record<string, string>> = {};

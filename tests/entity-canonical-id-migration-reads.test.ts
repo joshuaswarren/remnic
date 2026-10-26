@@ -198,3 +198,46 @@ test("one unreadable entity does not fail the corpus read", async () => {
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+
+test("listing keeps both claimants when legacy and canonical files coexist", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-canonical-claimants-");
+  try {
+    // Copy-before-unlink window: BOTH files exist with DIFFERENT content.
+    await writeFile(path.join(entitiesDir, `${LEGACY_ID}.md`), entityFileBody(LEGACY_ID, "automation", "Legacy claimant."), "utf8");
+    await writeFile(path.join(entitiesDir, `${CANONICAL_ID}.md`), entityFileBody(CANONICAL_ID, "automation-cron-job", "Canonical claimant."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: false, mappings: { [LEGACY_ID]: CANONICAL_ID } });
+    const store = new StorageManager(baseDir);
+    const names = await store.listEntityNames();
+    assert.deepEqual(names, [CANONICAL_ID, LEGACY_ID].sort(), "both claimants stay listed until migration checks the collision");
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("direct reads stop re-reading the journal per entity", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-journal-read-budget-");
+  try {
+    await writeFile(path.join(entitiesDir, `${CANONICAL_ID}.md`), entityFileBody(CANONICAL_ID, "automation-cron-job", "Runs Mondays."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: false, mappings: { [LEGACY_ID]: CANONICAL_ID } });
+    const store = new StorageManager(baseDir);
+    // Count cache lookups that reach the journal reader: without memoized
+    // completion, every readEntity consults the journal file.
+    // SAFETY: private runtime field access for instrumentation; the entry
+    // type is the cache's own named contract.
+    const cache = store["historicalEntityCanonicalIds"] as {
+      getEntry(stateDir: string): { mappings: Record<string, string>; complete: boolean };
+    };
+    const inner = cache.getEntry.bind(cache);
+    let lookups = 0;
+    cache.getEntry = (dir: string) => {
+      lookups += 1;
+      return inner(dir);
+    };
+    for (let i = 0; i < 50; i += 1) {
+      await store.readEntity(CANONICAL_ID);
+    }
+    assert.ok(lookups <= 2, `50 direct reads should consult the journal at most twice; consulted ${lookups}`);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
