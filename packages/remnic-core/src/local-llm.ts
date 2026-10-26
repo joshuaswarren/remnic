@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { isUnsupportedJsonSchemaError } from "./fallback-llm-codex-subscription.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import type { PluginConfig } from "./types.js";
 import fs from "node:fs";
@@ -952,7 +953,7 @@ export class LocalLlmClient {
         ? `${baseUrl}/chat/completions`
         : `${baseUrl}/v1/chat/completions`;
 
-      const requestBodyJson = JSON.stringify(requestBody);
+      let requestBodyJson = JSON.stringify(requestBody);
       log.debug(
         `local LLM: sending request to ${chatUrl} with model ${this.config.localLlmModel}`,
       );
@@ -992,6 +993,24 @@ export class LocalLlmClient {
             budgetMs: this.config.localLlmTimeoutMs,
           });
           responseBody = await response.text();
+          if (
+            response.status === 400 &&
+            requestBody.response_format &&
+            isUnsupportedJsonSchemaError(`400 ${responseBody}`)
+          ) {
+            // Match gateway degradation without extending this attempt's deadline.
+            delete requestBody.response_format;
+            requestBodyJson = JSON.stringify(requestBody);
+            log.debug("local LLM rejected native JSON schema; retrying without it");
+            response = await this.chatTransport.post({
+              url: chatUrl,
+              headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
+              body: requestBodyJson,
+              signal: attemptAbort.signal,
+              budgetMs: this.config.localLlmTimeoutMs,
+            });
+            responseBody = await response.text();
+          }
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
           if (options.signal?.aborted) {
