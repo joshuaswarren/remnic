@@ -3321,7 +3321,7 @@
       },
       "localLlmApiKeyEnv": {
         "type": "string",
-        "description": "Optional environment variable name for a local LLM API key. A missing variable leaves local auth unset so read-only CLI commands can still load config."
+        "description": "Optional env var name for a local LLM API key; a missing variable leaves local auth unset."
       },
       "localLlmAuthHeader": {
         "type": "boolean",
@@ -3331,13 +3331,13 @@
       "localLlmDisableThinking": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), suppress thinking on supported local backends for extraction and other terse structured operations. `localLlmThinkingThresholdChars` re-enables thinking for short extractions. Consolidation and the fast tier are unaffected."
+        "description": "Suppress thinking on supported local backends for terse structured ops (default true). Consolidation and the fast tier are unaffected."
       },
       "localLlmThinkingThresholdChars": {
         "type": "integer",
         "minimum": 0,
         "default": 3000,
-        "description": "Enable thinking for local extraction when the transcript is shorter than this many characters. Set to 0 to keep thinking suppressed for every extraction. Consolidation is unaffected."
+        "description": "Enable thinking for local extraction when the transcript is shorter than this. 0 keeps it suppressed."
       },
       "localLlmEnabled": {
         "type": "boolean",
@@ -3347,12 +3347,12 @@
       "localLlmFallback": {
         "type": "boolean",
         "default": true,
-        "description": "Legacy alias for taskLlmFallback. Use the gateway/task LLM chain when the local LLM path fails or is unavailable."
+        "description": "Legacy alias for taskLlmFallback."
       },
       "localLlmFastEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable a separate smaller/faster local LLM for quick operations (rerank, entity_summary, tmt_summary, compression_guideline)."
+        "description": "Enable a smaller/faster local LLM for quick ops (rerank, entity_summary, tmt_summary, compression_guideline)."
       },
       "localLlmFastModel": {
         "type": "string",
@@ -3362,11 +3362,11 @@
       "localLlmFastTimeoutMs": {
         "type": "number",
         "default": 15000,
-        "description": "Timeout for fast-tier local LLM requests (ms). Lower than primary since fast ops should complete quickly."
+        "description": "Timeout for fast-tier local LLM requests (ms)."
       },
       "localLlmFastUrl": {
         "type": "string",
-        "description": "Endpoint for the fast-tier local LLM. Defaults to the same endpoint as localLlmUrl when not set."
+        "description": "Fast-tier local LLM endpoint. Defaults to localLlmUrl."
       },
       "localLlmHeaders": {
         "type": "object",
@@ -3377,11 +3377,11 @@
       },
       "localLlmHomeDir": {
         "type": "string",
-        "description": "Optional home directory override for local LLM helpers (LM Studio settings + CLI PATH resolution)."
+        "description": "Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH)."
       },
       "localLlmMaxContext": {
         "type": "number",
-        "description": "Override the detected context window for local LLM. Set to 32768 if your LLM server defaults to 32K context despite the model supporting 128K."
+        "description": "Override the detected local LLM context window (e.g. 32768 when the server defaults to 32K)."
       },
       "localLlmModel": {
         "type": "string",
@@ -3399,7 +3399,7 @@
           "max"
         ],
         "default": "none",
-        "description": "Ollama-backend thinking suppression: reasoning_effort injected for thinking-suppressed operations (Ollama ignores chat_template_kwargs). Empty string disables injection."
+        "description": "Ollama think-off: reasoning_effort sent for thinking-suppressed ops. Empty disables."
       },
       "localLlmRetry5xxCount": {
         "type": "number",
@@ -3414,22 +3414,22 @@
       "localLlmRateLimitRetryCount": {
         "type": "number",
         "default": 3,
-        "description": "Retries for local LLM rate-limit responses (429/503/408 or LiteLLM cooldown), with exponential full-jitter backoff that honors Retry-After."
+        "description": "Retries on 429/503/408 or proxy cooldown (jittered backoff, honors Retry-After)."
       },
       "localLlmRateLimitBackoffBaseMs": {
         "type": "number",
         "default": 1000,
-        "description": "Base delay for local LLM rate-limit backoff (ms); doubles per consecutive rate-limit response, full jitter."
+        "description": "Base rate-limit backoff (ms)."
       },
       "localLlmRateLimitBackoffMaxMs": {
         "type": "number",
         "default": 60000,
-        "description": "Ceiling for local LLM rate-limit backoff (ms). A server Retry-After longer than this skips the retry instead of waiting."
+        "description": "Max rate-limit backoff (ms); a longer Retry-After skips the retry."
       },
       "localLlmMaxConcurrency": {
         "type": "number",
         "default": 4,
-        "description": "Process-wide cap on concurrent local LLM HTTP requests across all clients (0 = unlimited)."
+        "description": "Process-wide cap on concurrent local LLM requests (0 = unlimited)."
       },
       "localLlmTimeoutMs": {
         "type": "number",
