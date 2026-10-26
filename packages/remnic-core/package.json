@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "10.0.25",
+  "version": "10.0.26",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -3354,7 +3354,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^10.0.25"
+    "@remnic/coding-graph": "^10.0.26"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {
