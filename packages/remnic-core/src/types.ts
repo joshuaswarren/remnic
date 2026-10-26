@@ -1648,6 +1648,14 @@ export interface PluginConfig
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
   localLlm400CooldownMs: number;
+  /** COS-447: retries for rate-limit responses (429/503/408, LiteLLM cooldown). Default 3. */
+  localLlmRateLimitRetryCount?: number;
+  /** COS-447: base delay for exponential full-jitter rate-limit backoff (ms). Default 1000. */
+  localLlmRateLimitBackoffBaseMs?: number;
+  /** COS-447: ceiling for rate-limit backoff; longer server hints skip the retry (ms). Default 60000. */
+  localLlmRateLimitBackoffMaxMs?: number;
+  /** COS-447: process-wide cap on concurrent local LLM HTTP attempts (0 = unlimited). Default 4. */
+  localLlmMaxConcurrency?: number;
   /** Ollama-backend thinking suppression: `reasoning_effort` value injected on
    *  `/v1/chat/completions` for THINKING_SUPPRESSED_OPERATIONS ("none" | "low" |
    *  "medium" | "high" | "max"; "" disables injection). Ollama ignores

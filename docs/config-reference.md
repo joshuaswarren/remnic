@@ -1018,6 +1018,10 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
 | `localLlm400CooldownMs` | `120000` | Cooldown window before retrying a tripped local endpoint |
+| `localLlmRateLimitRetryCount` | `3` | Retries for rate-limit responses (429/503/408 or LiteLLM `No deployments available`/cooldown). Each retry waits an exponential full-jitter backoff, never less than the server's `Retry-After` (delta-seconds or HTTP-date) or LiteLLM's `Try again in N seconds` hint. The wait is shared process-wide per endpoint, so one client's 429 slows every client. Separate from `localLlmRetry5xxCount`. |
+| `localLlmRateLimitBackoffBaseMs` | `1000` | Base delay for rate-limit backoff; the ceiling doubles per consecutive rate-limit response. |
+| `localLlmRateLimitBackoffMaxMs` | `60000` | Ceiling for rate-limit backoff. A server hint longer than this skips the retry instead of waiting. |
+| `localLlmMaxConcurrency` | `4` | Process-wide cap on concurrent local LLM HTTP attempts across all clients. Recall-critical requests are served before background ones. `0` disables the cap. |
 | `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, restores pre-change behavior exactly: the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | Per-fingerprint exponential backoff schedule (1m, 5m, 30m, 2h), indexed by attempt. After a failed extraction, that fingerprint is not re-attempted until its backoff elapses. |
 | `extractionRetryMaxBackoffMs` | `21600000` | Upper bound (6h) on any single backoff interval, and the long-park interval once `parse_empty` exhausts its attempt cap. |
@@ -2281,6 +2285,10 @@ value matches the shipped default.
 | `localLlmRetryBackoffMs` | `400` | `400` |
 | `localLlm400TripThreshold` | `5` | `5` |
 | `localLlm400CooldownMs` | `120000` | `120000` |
+| `localLlmRateLimitRetryCount` | `3` | `3` |
+| `localLlmRateLimitBackoffBaseMs` | `1000` | `1000` |
+| `localLlmRateLimitBackoffMaxMs` | `60000` | `60000` |
+| `localLlmMaxConcurrency` | `4` | `4` |
 | `extractionRetryEnabled` | `true` | `true` (set `false` to fully restore pre-change extraction behavior — the config-only rollback) |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | `[60000, 300000, 1800000, 7200000]` |
 | `extractionRetryMaxBackoffMs` | `21600000` | `21600000` |
