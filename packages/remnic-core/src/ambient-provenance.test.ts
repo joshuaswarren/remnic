@@ -11,6 +11,8 @@ import {
 import { parseConfig } from "./config.js";
 import { bufferTurnsEqual, copyBufferTurn } from "./buffer-turn-helpers.js";
 import { ExtractionEngine } from "./extraction.js";
+import { extractionProviderJsonSchema } from "./extraction-span-wire.js";
+import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import { SUMMARY_SYSTEM_PROMPT } from "./meetings/summary-extractor.js";
 import { emptySpeakerRegistry } from "./wearables/speakers.js";
 import { buildExtractionTurns } from "./wearables/memory-gen.js";
@@ -80,15 +82,15 @@ const MODEL_REGISTRY_FIXTURE = {
 async function runLocal(turns: BufferTurn[]): Promise<{
   prompt: string;
   result: ExtractionResult;
-  options: Record<string, unknown>;
+  options: LocalLlmChatCompletionOptions;
 }> {
   const engine = new ExtractionEngine(
     parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
   );
   let prompt = "";
-  let options: Record<string, unknown> = {};
+  let options: LocalLlmChatCompletionOptions = {};
   const localLlm = {
-    async chatCompletion(messages: ChatMessage[], seen: Record<string, unknown> = {}) {
+    async chatCompletion(messages: ChatMessage[], seen: LocalLlmChatCompletionOptions = {}) {
       prompt = messages[1]?.content ?? "";
       options = seen;
       return { content: JSON.stringify(HIGH_IMPACT_EXTRACTION) };
@@ -177,21 +179,12 @@ for (const [name, run] of PATHS) {
 
 test("local extraction supplies the provider JSON schema as responseFormat with an object root", async () => {
   const { options } = await runLocal([TYPED_TURN]);
-  const responseFormat = options.responseFormat as
-    | {
-        type: string;
-        json_schema: {
-          name: string;
-          strict: boolean;
-          schema: { type: string; properties: Record<string, unknown> };
-        };
-      }
-    | undefined;
-  assert.equal(responseFormat?.type, "json_schema");
-  assert.equal(responseFormat.json_schema.name, "extraction_result");
-  assert.equal(responseFormat.json_schema.strict, false);
-  assert.equal(responseFormat.json_schema.schema.type, "object");
-  assert.ok(responseFormat.json_schema.schema.properties.facts);
+  const schema = extractionProviderJsonSchema("off");
+  assert.deepEqual(options.responseFormat, {
+    type: "json_schema",
+    json_schema: { name: "extraction_result", strict: false, schema },
+  });
+  assert.equal(schema.type, "object");
 });
 
 test("an ambient turn marked context-only does not trigger the ambient prompt", async () => {

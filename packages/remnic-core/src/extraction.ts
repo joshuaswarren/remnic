@@ -54,7 +54,7 @@ import {
 } from "./extraction-prompt.js";
 import { containsExtractionPlaceholder, extractionAttributes, extractionCueAnchors, extractionText, isPlainRecord } from "./extraction-normalization.js";
 import { applyExtractionSpanMaterialization, bindLocalExtractionPrompt, buildSpanMaterializeTurns, stripUntrustedFactSpans, truncateLocalExtractionConversation, type SpanMaterializeTurn } from "./extraction-span-materialize.js";
-import { extractionProviderJsonSchema } from "./extraction-span-wire.js";
+import { extractionProviderJsonSchema, extractionProviderResponseFormat } from "./extraction-span-wire.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -1506,14 +1506,7 @@ ${truncatedConversation}`;
         temperature: 0.1,
         maxTokens: contextSizes.maxOutputTokens,
         operation: "extraction",
-        responseFormat: {
-          type: "json_schema",
-          json_schema: {
-            name: "extraction_result",
-            schema: extractionProviderJsonSchema(this.config.extraction?.spanMode ?? "off"),
-            strict: false,
-          },
-        },
+        responseFormat: extractionProviderResponseFormat(this.config.extraction?.spanMode ?? "off"),
         disableThinking: shouldEnableLocalExtractionThinking(this.config, conversation.length)
           ? false
           : undefined,
@@ -1521,7 +1514,6 @@ ${truncatedConversation}`;
         signal,
       },
     );
-
     if (!response?.content) {
       log.debug("extractWithLocalLlm: chatCompletion returned null or empty content");
       return null;

@@ -1,19 +1,22 @@
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 import { LocalLlmClient } from "./local-llm.js";
-import type { ChatTransport } from "./local-llm-transport.js";
+import { ChatTransport } from "./local-llm-transport.js";
+import { parseConfig } from "./config.js";
+import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import type { PluginConfig } from "./types.js";
 
 function createConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
-  return {
+  return parseConfig({
     localLlmEnabled: true,
     localLlmModel: "test-local-model",
     localLlmUrl: "http://127.0.0.1:1234",
     localLlmTimeoutMs: 5_000,
     localLlmRetry5xxCount: 0,
+    localLlmRateLimitRetryCount: 0,
     localLlmRetryBackoffMs: 1,
     localLlmHeaders: { "X-Test": "yes" },
     localLlmApiKey: undefined,
@@ -25,23 +28,16 @@ function createConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
     slowLogEnabled: false,
     slowLogThresholdMs: 60_000,
     ...overrides,
-  } as unknown as PluginConfig;
+  });
 }
 
 function primeClient(client: LocalLlmClient): void {
-  const internals = client as unknown as {
-    isAvailable: boolean;
-    lastHealthCheck: number;
-    detectedType: string | null;
-  };
-  internals.isAvailable = true;
-  internals.lastHealthCheck = Date.now();
-  internals.detectedType = "generic";
+  mock.method(client, "checkAvailability", async () => true);
 }
 
 interface RecordedRequest {
   headers: http.IncomingHttpHeaders;
-  body: Record<string, unknown>;
+  body: { model: string; response_format?: LocalLlmChatCompletionOptions["responseFormat"] };
 }
 
 async function startRecordingServer(
@@ -69,6 +65,7 @@ async function startRecordingServer(
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // SAFETY: listen(0, "127.0.0.1") above binds TCP, so its address is AddressInfo.
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}/v1`,
@@ -108,7 +105,7 @@ test("forwards json_schema response_format when the backend accepts it", async (
   }
 });
 
-test("400 rejecting json_schema triggers exactly one retry without the format", async () => {
+test("400 rejecting json_schema triggers exactly one retry without the format", async (t) => {
   const server = await startRecordingServer((_req, count) =>
     count === 1
       ? {
@@ -122,13 +119,12 @@ test("400 rejecting json_schema triggers exactly one retry without the format", 
   try {
     const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
     primeClient(client);
-    const transport = Reflect.get(client, "chatTransport") as ChatTransport;
-    const post = transport.post.bind(transport);
+    const post = ChatTransport.prototype.post;
     const attempts: Array<Parameters<ChatTransport["post"]>[0]> = [];
-    transport.post = async (request) => {
+    t.mock.method(ChatTransport.prototype, "post", async function (this: ChatTransport, request: Parameters<ChatTransport["post"]>[0]) {
       attempts.push(request);
-      return post(request);
-    };
+      return post.call(this, request);
+    });
     const result = await client.chatCompletion([{ role: "user", content: "hello" }], {
       responseFormat,
     });
