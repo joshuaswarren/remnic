@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { StorageManager, normalizeEntityName } from "../packages/remnic-core/src/storage.js";
 
 const STAMP = "2026-03-01T00:00:00.000Z";
@@ -188,13 +188,20 @@ test("one unreadable entity does not fail the corpus read", async () => {
     await writeFile(path.join(entitiesDir, "project-fine.md"), entityFileBody("project-fine", "project", "Fine."), "utf8");
     await writeFile(lockedPath, entityFileBody("project-locked", "project", "Locked."), "utf8");
     await writeJournal(stateDir, { version: 1, complete: true, mappings: {} });
-    await chmod(lockedPath, 0o000);
     const store = new StorageManager(baseDir);
+    // Inject the read failure directly: permission bits do not stop reads
+    // when the test process runs as root.
+    const read = store["readStorageSecureFile"].bind(store);
+    store["readStorageSecureFile"] = async (filePath: string) => {
+      if (filePath === lockedPath) {
+        throw new Error("EACCES: simulated unreadable entity");
+      }
+      return read(filePath);
+    };
     const entities = await store.readAllEntityFiles();
     assert.equal(entities.length, 1, "the healthy entity must still be read; the unreadable one is isolated");
     assert.match(entities[0]?.name ?? "", /Weekly Report/);
   } finally {
-    await chmod(path.join(entitiesDir, "project-locked.md"), 0o644).catch(() => undefined);
     await rm(baseDir, { recursive: true, force: true });
   }
 });
@@ -237,6 +244,43 @@ test("direct reads stop re-reading the journal per entity", async () => {
       await store.readEntity(CANONICAL_ID);
     }
     assert.ok(lookups <= 2, `50 direct reads should consult the journal at most twice; consulted ${lookups}`);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("a legacy file restored after completion stays listed under its own name", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-restored-legacy-");
+  try {
+    // Migration completed; a legacy-named file appears afterward (restored or
+    // edited in place) with no canonical sibling on disk.
+    await writeFile(path.join(entitiesDir, `${LEGACY_ID}.md`), entityFileBody(LEGACY_ID, "automation", "Restored."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: true, mappings: { [LEGACY_ID]: CANONICAL_ID } });
+    const store = new StorageManager(baseDir);
+    const names = await store.listEntityNames();
+    assert.deepEqual(names, [LEGACY_ID], "a post-completion legacy file lists under its own readable name");
+    assert.match(await store.readEntity(names[0] ?? ""), /Restored\./);
+  } finally {
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("one undecryptable entity fails the listing rather than emptying it", async () => {
+  const { baseDir, entitiesDir, stateDir } = await makeStoreDir("remnic-listing-decrypt-");
+  try {
+    await writeFile(path.join(entitiesDir, "project-ok.md"), entityFileBody("project-ok", "project", "Fine."), "utf8");
+    await writeJournal(stateDir, { version: 1, complete: true, mappings: {} });
+    const store = new StorageManager(baseDir);
+    // Simulate one entry whose indexable check throws a decrypt failure.
+    // Inject the read failure directly (privilege-independent).
+    const read = store["readStorageSecureFile"].bind(store);
+    const badPath = path.join(entitiesDir, "project-bad.md");
+    store["readStorageSecureFile"] = async (filePath: string) => {
+      if (filePath === badPath) throw new (await import("../packages/remnic-core/src/secure-store/secure-fs.js")).SecureStoreDecryptError("undecryptable");
+      return read(filePath);
+    };
+    await writeFile(badPath, entityFileBody("project-bad", "project", "Bad."), "utf8");
+    await assert.rejects(() => store.listEntityNames(), /undecryptable|Decrypt/i);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }

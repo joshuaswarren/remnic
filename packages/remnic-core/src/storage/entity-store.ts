@@ -544,12 +544,15 @@ export class EntityStore {
         // Journal table snapshot once per call (per-entry reads are quadratic).
         const historicalIds = this.deps.currentHistoricalIds();
         const snapshotIds = new Set(mdFiles.map((file) => file.slice(0, -3)));
+        const journalComplete = this.deps.entityCanonicalMigrationComplete();
         const resolveCanonical = (entityId: string): string => {
           const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
-          // Keep both claimants when legacy and canonical coexist (the
-          // copy-before-unlink window); collapsing them would pre-decide the
-          // migration's collision check.
-          if (canonical !== entityId && snapshotIds.has(canonical)) return entityId;
+          if (canonical === entityId) return entityId;
+          // Completed journal: the on-disk filename is authoritative; a
+          // late legacy file stays under its own readable name.
+          if (journalComplete) return entityId;
+          // Both claimants coexisting (copy-before-unlink) keep both names.
+          if (snapshotIds.has(canonical)) return entityId;
           return canonical;
         };
         const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
@@ -585,7 +588,7 @@ export class EntityStore {
       // canonical id. Deduplicate so the total stays correct.
       return [...new Set(names)].sort();
     } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
+      if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
       return [];
     }
   }
