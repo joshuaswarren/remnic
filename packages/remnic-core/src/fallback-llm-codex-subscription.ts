@@ -200,7 +200,7 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   }
   return (
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
-    /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
+    /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message)
   );
 }

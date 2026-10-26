@@ -178,6 +178,22 @@ test("a diagnostic echo of the format is not a schema capability rejection", asy
   }
 });
 
+test("an explicit unknown response_format field retries without the format", async () => {
+  const server = await startRecordingServer((_req, count) => count === 1
+    ? { status: 400, body: { error: { message: "Unknown field response_format" } } }
+    : { status: 200, body: okCompletion });
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal((await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content, "done");
+    assert.equal(server.requests.length, 2);
+    assert.deepEqual(server.requests[0].body.response_format, responseFormat);
+    assert.equal(server.requests[1].body.response_format, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
 test("format removal persists for later 5xx attempts", async () => {
   const server = await startRecordingServer((_req, count) =>
     count === 1
