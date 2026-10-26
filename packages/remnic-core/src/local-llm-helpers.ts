@@ -1,10 +1,11 @@
+import type { ResponseFormatJSONSchema } from "openai/resources/shared";
 import { log } from "./logger.js";
 import type { LocalLlmRequestPriority } from "./local-llm.js";
 
 export interface LocalLlmChatCompletionOptions {
   temperature?: number;
   maxTokens?: number;
-  responseFormat?: { type: string };
+  responseFormat?: { type: string } | ResponseFormatJSONSchema;
   timeoutMs?: number;
   operation?: string;
   forceDisableThinking?: boolean;
