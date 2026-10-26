@@ -339,7 +339,10 @@ test("process-wide concurrency cap bounds in-flight requests across clients", as
       const config = createConfig({ localLlmUrl: "http://127.0.0.1:1007", localLlmMaxConcurrency: 2 });
       const clients = [new LocalLlmClient(config), new LocalLlmClient(config), new LocalLlmClient(config)];
       const results = await Promise.all(
-        Array.from({ length: 7 }, (_, i) => clients[i % 3].chatCompletion([{ role: "user", content: `q${i}` }]))
+        Array.from({ length: 7 }, (_, i) => clients[i % 3].chatCompletion(
+          [{ role: "user", content: `q${i}` }],
+          { priority: i % 2 === 0 ? "recall-critical" : "background" }
+        ))
       );
       assert.equal(results.filter((r) => r?.content === "ok").length, 7);
       assert.equal(peak, 2);
@@ -403,4 +406,59 @@ test("waiting for a concurrency slot is bounded by the wait budget", async () =>
       if (holder.kind === "go") holder.release();
     }
   );
+});
+
+test("limiter reserves one finite permit for recall-critical work", async () => {
+  const limiter = new LocalLlmConcurrencyLimiter(2);
+  const background = await limiter.acquire();
+  const secondBackground = await limiter.acquire({ timeoutMs: 0 });
+  try {
+    assert.ok(background);
+    assert.equal(secondBackground, null, "background must not consume the recall permit");
+    const foreground = await limiter.acquire({ highPriority: true, timeoutMs: 0 });
+    assert.ok(foreground, "recall must start without waiting for background completion");
+    foreground();
+    foreground();
+    assert.equal(limiter.inFlight, 1, "release remains idempotent");
+  } finally {
+    secondBackground?.();
+    background?.();
+  }
+});
+
+test("reserved background queue survives aborts and responds to resizing", async () => {
+  const limiter = new LocalLlmConcurrencyLimiter(2);
+  const background = await limiter.acquire();
+  assert.ok(background);
+  const controller = new AbortController();
+  const aborted = limiter.acquire({ signal: controller.signal });
+  controller.abort();
+  const abortedRelease = await aborted;
+  abortedRelease?.();
+  assert.equal(abortedRelease, null);
+  const queued = limiter.acquire();
+  const foreground = await limiter.acquire({ highPriority: true, timeoutMs: 0 });
+  assert.ok(foreground);
+  assert.equal(limiter.queued, 1);
+  limiter.setMax(3);
+  const nextBackground = await queued;
+  assert.ok(nextBackground);
+  assert.equal(limiter.inFlight, 3);
+  nextBackground();
+  background();
+  foreground();
+  assert.equal(limiter.inFlight, 0);
+});
+
+test("one-permit and unlimited limits still admit background work", async () => {
+  for (const max of [1, 0]) {
+    const limiter = new LocalLlmConcurrencyLimiter(max);
+    const first = await limiter.acquire({ timeoutMs: 0 });
+    assert.ok(first);
+    const second = await limiter.acquire({ timeoutMs: 0 });
+    assert.equal(second === null, max === 1);
+    second?.();
+    first();
+    assert.equal(limiter.inFlight, 0);
+  }
 });

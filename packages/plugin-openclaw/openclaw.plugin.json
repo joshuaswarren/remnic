@@ -3433,7 +3433,7 @@
         "type": "integer",
         "minimum": 0,
         "default": 4,
-        "description": "Process-wide cap on concurrent local LLM requests (0 = unlimited)."
+        "description": "Process-wide cap on concurrent local LLM requests (0 = unlimited). Caps above 1 reserve one permit for recall-critical work."
       },
       "localLlmTimeoutMs": {
         "type": "number",
