@@ -1506,6 +1506,14 @@ ${truncatedConversation}`;
         temperature: 0.1,
         maxTokens: contextSizes.maxOutputTokens,
         operation: "extraction",
+        responseFormat: {
+          type: "json_schema",
+          json_schema: {
+            name: "extraction_result",
+            schema: extractionProviderJsonSchema(this.config.extraction?.spanMode ?? "off"),
+            strict: false,
+          },
+        },
         disableThinking: shouldEnableLocalExtractionThinking(this.config, conversation.length)
           ? false
           : undefined,

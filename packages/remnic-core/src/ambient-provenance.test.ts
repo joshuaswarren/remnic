@@ -77,20 +77,26 @@ const MODEL_REGISTRY_FIXTURE = {
 };
 
 /** Run the local-LLM path, returning the prompt the model saw + the result. */
-async function runLocal(turns: BufferTurn[]): Promise<{ prompt: string; result: ExtractionResult }> {
+async function runLocal(turns: BufferTurn[]): Promise<{
+  prompt: string;
+  result: ExtractionResult;
+  options: Record<string, unknown>;
+}> {
   const engine = new ExtractionEngine(
     parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
   );
   let prompt = "";
+  let options: Record<string, unknown> = {};
   const localLlm = {
-    async chatCompletion(messages: ChatMessage[], _options: { signal?: AbortSignal } = {}) {
+    async chatCompletion(messages: ChatMessage[], seen: Record<string, unknown> = {}) {
       prompt = messages[1]?.content ?? "";
+      options = seen;
       return { content: JSON.stringify(HIGH_IMPACT_EXTRACTION) };
     },
   };
   assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
   assert.equal(Reflect.set(engine, "modelRegistry", MODEL_REGISTRY_FIXTURE), true);
-  return { result: await engine.extract(turns), prompt };
+  return { result: await engine.extract(turns), prompt, options };
 }
 
 /** Run the gateway-fallback path. */
@@ -168,6 +174,25 @@ for (const [name, run] of PATHS) {
     assert.equal(result.facts[0]?.confidence, 0.91);
   });
 }
+
+test("local extraction supplies the provider JSON schema as responseFormat with an object root", async () => {
+  const { options } = await runLocal([TYPED_TURN]);
+  const responseFormat = options.responseFormat as
+    | {
+        type: string;
+        json_schema: {
+          name: string;
+          strict: boolean;
+          schema: { type: string; properties: Record<string, unknown> };
+        };
+      }
+    | undefined;
+  assert.equal(responseFormat?.type, "json_schema");
+  assert.equal(responseFormat.json_schema.name, "extraction_result");
+  assert.equal(responseFormat.json_schema.strict, false);
+  assert.equal(responseFormat.json_schema.schema.type, "object");
+  assert.ok(responseFormat.json_schema.schema.properties.facts);
+});
 
 test("an ambient turn marked context-only does not trigger the ambient prompt", async () => {
   const { prompt } = await runGateway([
