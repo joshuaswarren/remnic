@@ -24,7 +24,7 @@
  * `queueBufferedExtraction` builder delegates push+scheduling here.
  */
 
-import { isAbortError } from "../abort-error.js";
+import { isAbortError, preemptedExtractionError } from "../abort-error.js";
 import { log } from "../logger.js";
 
 /**
@@ -90,7 +90,7 @@ export class ExtractionQueueCoordinator {
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     const preempt = new AbortController();
-    if (preemptable) this.beginPreemptable(() => preempt.abort());
+    if (preemptable) this.beginPreemptable(() => preempt.abort(preemptedExtractionError()));
     const signal = parent ? AbortSignal.any([parent, preempt.signal]) : preempt.signal;
     return Promise.resolve(run(signal)).finally(() => {
       if (preemptable) this.endPreemptable();

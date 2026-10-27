@@ -17,7 +17,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { abortError } from "../abort-error.js";
+import { abortError, isPreemptedExtraction } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -1086,8 +1086,9 @@ export class TurnIngestionCoordinator {
         });
         settleTask(undefined, result);
       } catch (err) {
-        if (settleTask(err)) {
-          throw err;
+        const settledError = isPreemptedExtraction(abortSignal.reason) ? abortSignal.reason : err;
+        if (settleTask(settledError)) {
+          throw settledError;
         }
       }
       });

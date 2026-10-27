@@ -31,6 +31,16 @@ export function isAbortError(err: unknown): boolean {
   return err instanceof Error && err.name === "AbortError";
 }
 
+const PREEMPTED_EXTRACTION = "extraction preempted for force-flush";
+
+export function preemptedExtractionError(): Error {
+  return abortError(PREEMPTED_EXTRACTION);
+}
+
+export function isPreemptedExtraction(err: unknown): boolean {
+  return err instanceof Error && err.name === "AbortError" && err.message === PREEMPTED_EXTRACTION;
+}
+
 /**
  * Throw an AbortError when the given signal has fired.  No-op
  * when the signal is absent or not yet aborted.  The default

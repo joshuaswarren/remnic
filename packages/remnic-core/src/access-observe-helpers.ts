@@ -1,3 +1,5 @@
+import { isPreemptedExtraction } from "./abort-error.js";
+
 type PendingObservePreparation = {
   cancelled: boolean;
   scopeHint?: string;
@@ -131,7 +133,10 @@ export class PendingObserveExtractionTracker {
     const previous = this.entries.get(key);
     const promise = previous
       ? Promise.allSettled([previous.promise, extraction]).then((results) => {
-          const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+          const rejected = results.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected" && !isPreemptedExtraction(result.reason),
+          );
           if (rejected) throw rejected.reason;
         })
       : extraction;
@@ -144,8 +149,8 @@ export class PendingObserveExtractionTracker {
       .then(() => {
         if (this.entries.get(key) === entry) this.entries.delete(key);
       })
-      .catch(() => {
-        // Keep a failed barrier visible to the next lifecycle flush.
+      .catch((error) => {
+        if (isPreemptedExtraction(error) && this.entries.get(key) === entry) this.entries.delete(key);
       });
   }
 
@@ -209,6 +214,7 @@ export class PendingObserveExtractionTracker {
         } catch (error) {
           if (this.entries.get(key) !== entry) continue;
           this.entries.delete(key);
+          if (isPreemptedExtraction(error)) return;
           throw error;
         }
         if (this.entries.get(key) !== entry) continue;

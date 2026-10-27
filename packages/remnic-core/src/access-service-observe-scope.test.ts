@@ -34,6 +34,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+import { preemptedExtractionError } from "./abort-error.js";
 
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
@@ -248,6 +249,15 @@ test("#2128 pending observe preparation is a force-flush barrier", async () => {
   releaseExtraction();
   await waitPromise;
   assert.equal(waited, true);
+});
+
+test("a preempted observe extraction does not block the next force-flush", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const key = tracker.key("session-a", "alice", "default");
+  tracker.track(key, Promise.reject(preemptedExtractionError()), new AbortController());
+  await tracker.wait("session-a", "alice", "default");
+  tracker.track(key, Promise.reject(new Error("extraction failed")), new AbortController());
+  await assert.rejects(() => tracker.wait("session-a", "alice", "default"), /extraction failed/);
 });
 
 test("#2206 scoped wait ignores unresolved preparations with a different hint", async () => {
