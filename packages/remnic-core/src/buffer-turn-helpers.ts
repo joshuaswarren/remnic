@@ -64,6 +64,43 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.ambientCapture === "boolean") {
     copy.ambientCapture = turn.ambientCapture;
   }
+  if (typeof turn.sourceValidAt === "string") {
+    copy.sourceValidAt = turn.sourceValidAt;
+  }
+  if (turn.parts !== undefined) {
+    copy.parts = turn.parts;
+  }
+  if (turn.rawContent !== undefined) {
+    copy.rawContent = turn.rawContent;
+  }
+  if (typeof turn.sourceFormat === "string") {
+    copy.sourceFormat = turn.sourceFormat;
+  }
+  // #3251 scope pins: strings copy by value; the plan object is an immutable
+  // config-derived identity passed by reference.
+  if (typeof turn.writeNamespaceOverride === "string") {
+    copy.writeNamespaceOverride = turn.writeNamespaceOverride;
+  }
+  if (typeof turn.principalOverride === "string") {
+    copy.principalOverride = turn.principalOverride;
+  }
+  if (turn.scopeProfileWritePlan !== undefined) {
+    copy.scopeProfileWritePlan = turn.scopeProfileWritePlan;
+  }
+  if (turn.acceptedCapture === true) {
+    copy.acceptedCapture = true;
+  }
+  const ctx = turn.codingContext;
+  if (ctx) {
+    // All four fields are identity inputs (branchScope uses branch) — copy
+    // explicitly as-is; never a spread of external input.
+    copy.codingContext = {
+      projectId: ctx.projectId,
+      branch: ctx.branch,
+      rootPath: ctx.rootPath,
+      defaultBranch: ctx.defaultBranch,
+    };
+  }
   return copy;
 }
 
@@ -81,8 +118,69 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
     left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
     left.sourceConnector === right.sourceConnector &&
     left.originRole === right.originRole &&
-    left.ambientCapture === right.ambientCapture
+    left.ambientCapture === right.ambientCapture &&
+    left.sourceValidAt === right.sourceValidAt &&
+    left.acceptedCapture === right.acceptedCapture &&
+    left.codingContext?.projectId === right.codingContext?.projectId &&
+    left.codingContext?.rootPath === right.codingContext?.rootPath &&
+    left.codingContext?.branch === right.codingContext?.branch &&
+    left.codingContext?.defaultBranch === right.codingContext?.defaultBranch &&
+    // #3251 scope pins compare by identity triple, not deep plan equality: a
+    // restart-rehydrated plan must still match the pin it was accepted under.
+    left.writeNamespaceOverride === right.writeNamespaceOverride &&
+    left.principalOverride === right.principalOverride &&
+    scopeProfilePlanIdentity(left.scopeProfileWritePlan) ===
+      scopeProfilePlanIdentity(right.scopeProfileWritePlan)
   );
+}
+
+/** Stable identity string for a pinned scope-profile plan (#3251). */
+export function scopeProfilePlanIdentity(
+  plan: BufferTurn["scopeProfileWritePlan"],
+): string {
+  if (!plan) return "";
+  return `${plan.profileId}\u0000${plan.writeLayer}\u0000${plan.writeNamespace}`;
+}
+
+export interface ExtractionScopeGroup {
+  writeNamespaceOverride?: string;
+  principalOverride?: string;
+  scopeProfileWritePlan?: BufferTurn["scopeProfileWritePlan"];
+  codingContext?: BufferTurn["codingContext"];
+  turns: BufferTurn[];
+}
+
+/**
+ * Partition extraction turns by their durable scope pins (#3251). Turns
+ * captured under different namespaces / principals / scope profiles /
+ * project bindings must never be extracted together — each group runs its
+ * own extraction under its own scope. Native (unpinned) turns form their own
+ * group and keep today's single-store routing.
+ */
+export function groupTurnsByExtractionScope(turns: BufferTurn[]): ExtractionScopeGroup[] {
+  const groups = new Map<string, ExtractionScopeGroup>();
+  for (const turn of turns) {
+    const key = [
+      turn.writeNamespaceOverride ?? "",
+      turn.principalOverride ?? "",
+      scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
+      turn.codingContext?.projectId ?? "",
+      turn.codingContext?.rootPath ?? "",
+      turn.codingContext?.branch ?? "",
+      turn.codingContext?.defaultBranch ?? "",
+    ].join("\u0000");
+    const group = groups.get(key);
+    if (group) group.turns.push(turn);
+    else
+      groups.set(key, {
+        ...(turn.writeNamespaceOverride ? { writeNamespaceOverride: turn.writeNamespaceOverride } : {}),
+        ...(turn.principalOverride ? { principalOverride: turn.principalOverride } : {}),
+        ...(turn.scopeProfileWritePlan ? { scopeProfileWritePlan: turn.scopeProfileWritePlan } : {}),
+        ...(turn.codingContext ? { codingContext: turn.codingContext } : {}),
+        turns: [turn],
+      });
+  }
+  return [...groups.values()];
 }
 
 export function bufferTurnArraysEqual(

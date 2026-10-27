@@ -31,7 +31,7 @@ import type { SessionExperienceConfig } from "./experience/session-experience-co
 import type { ActionGateConfig } from "./coding/action-gate.js";
 import type { ActiveContextConfigFields } from "./active-context-config.js";
 import type { LocalLlmConfig } from "./local-llm-config.js";
-import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
+import type { SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
 export type SubjectGuardMode = "off" | "warn" | "enforce";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -2656,22 +2656,7 @@ export interface SourceConnectorProvenance {
   sourceConnector?: string;
   originRole?: "user" | "assistant" | "tool";
 }
-export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
-  sourceValidAt?: string;
-  sessionKey?: string;
-  logicalSessionKey?: string;
-  providerThreadId?: string | null;
-  turnFingerprint?: string;
-  persistProcessedFingerprint?: boolean;
-  extractionContextOnly?: boolean;
-  parts?: import("./message-parts/index.js").LcmMessagePartInput[];
-  rawContent?: unknown;
-  sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;
-  importProvenance?: import("./bulk-import/types.js").ImportTurnProvenance;
-}
+export type { BufferTurn } from "./buffer-turn.js";
 
 export interface BufferEntryState {
   turns: BufferTurn[];

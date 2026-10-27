@@ -121,31 +121,9 @@ export async function extractionForceFlush(
     }
     abortHandler = cancelScopedPendingObserveExtractions;
     request.abortSignal?.addEventListener("abort", abortHandler, { once: true });
-    await awaitSessionFlushPhase(
-      () =>
-        deps.orchestrator.flushSession(request.sessionKey, {
-          reason: "access_force_flush",
-          abortSignal: request.abortSignal,
-          failOnExtractionFailure: true,
-          extractionDeadlineMs: deadlineAt,
-          writeNamespaceOverride: scope.writeNamespace,
-          principalOverride:
-            typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
-          scopeProfileWritePlan: scope.scopeProfilePlan,
-          onCommitted: markCommitted,
-        }),
-      {
-        abortSignal: request.abortSignal,
-        extractionDeadlineMs: deadlineAt,
-        reason: "access_force_flush",
-        deadlineStage: "buffer_drain",
-        onDeadline: cancelScopedPendingObserveExtractions,
-      }
-    );
-    // A flush with no buffered turns still consumes the lifecycle write;
-    // durable drains already invoked this idempotent callback.
-    markCommitted();
-
+    // #3251: wait for in-flight observe extractions BEFORE draining —
+    // drain-first could queue the same accepted turns twice. Scoped key, so
+    // never waits on another scope.
     if (waitForPendingObserveExtraction) {
       let cancelPendingObserveExtraction: (() => void) | undefined;
       await awaitSessionFlushPhase(
@@ -172,6 +150,33 @@ export async function extractionForceFlush(
         }
       );
     }
+    await awaitSessionFlushPhase(
+      () =>
+        deps.orchestrator.flushSession(request.sessionKey, {
+          reason: "access_force_flush",
+          abortSignal: request.abortSignal,
+          failOnExtractionFailure: true,
+          extractionDeadlineMs: deadlineAt,
+          writeNamespaceOverride: scope.writeNamespace,
+          principalOverride:
+            typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
+          scopeProfileWritePlan: scope.scopeProfilePlan,
+          // #3251: the session's original coding binding — plan-pinned flushes
+          // drain only captures bound to the same project identity.
+          codingContext: deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
+          onCommitted: markCommitted,
+        }),
+      {
+        abortSignal: request.abortSignal,
+        extractionDeadlineMs: deadlineAt,
+        reason: "access_force_flush",
+        deadlineStage: "buffer_drain",
+        onDeadline: cancelScopedPendingObserveExtractions,
+      }
+    );
+    // A flush with no buffered turns still consumes the lifecycle write;
+    // durable drains already invoked this idempotent callback.
+    markCommitted();
 
     const buffer = deps.orchestrator.buffer;
     if (buffer && typeof buffer.clearRetainedTurnsForSession === "function") {
@@ -181,6 +186,13 @@ export async function extractionForceFlush(
             buffer.clearRetainedTurnsForSession(request.sessionKey, namespacesEnabled ? scope.principal : undefined, {
               abortSignal: request.abortSignal,
               deadlineMs: deadlineAt,
+              // #3251: only clear retained turns accepted under THIS scope —
+              // namespace, plan identity, and original project binding.
+              writeNamespaceOverride: namespacesEnabled ? scope.writeNamespace : undefined,
+              scopeProfileWritePlan: namespacesEnabled ? scope.scopeProfilePlan : undefined,
+              codingContext: namespacesEnabled
+                ? deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined
+                : undefined,
             }),
           {
             abortSignal: request.abortSignal,

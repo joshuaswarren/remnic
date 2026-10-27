@@ -30,6 +30,7 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { abortError } from "./abort-error.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -863,38 +864,55 @@ export class AccessObserveWriteSurface {
         // existing behavior.
         const principalOverride =
           typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
-        // Fire-and-forget: queue extraction in the background so the HTTP
-        // response returns immediately; extraction LLM calls can take minutes.
-        //
-        // Backpressure: the orchestrator's queue limits extraction concurrency
-        // (one per session); this just decouples the HTTP response from the drain.
-        if (!observePreparation.isCancelled()) {
-          try {
-            const observeAbortController = new AbortController();
-            const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
-              archiveLcm: false,
-              writeNamespaceOverride,
-              principalOverride,
-              scopeProfileWritePlan: scope.scopeProfilePlan,
-              abortSignal: observeAbortController.signal,
-              ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
-                ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
-                : {}),
-            });
-            extractionPromise.catch((err) => {
-              log.error(`access-observe background extraction failed: ${err}`);
-            });
-            this.pendingObserveExtractions.track(
-              this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
-              extractionPromise,
-              observeAbortController
-            );
-            extractionQueued = true;
-          } catch (err) {
-            // Synchronous enqueue failure (e.g. orchestrator disposed)
-            log.error(`access-observe extraction enqueue failed: ${err}`);
-          }
+        // #3251: the 202 acknowledges a DURABLE capture — awaited here even
+        // when the preparation was cancelled (cancellation kills extraction,
+        // never the capture); refusal/save-failure propagates as non-202.
+        // Extraction stays background and never waits on the LLM.
+        const observeAbortController = new AbortController();
+        const preparationCancelled = observePreparation.isCancelled();
+        if (preparationCancelled) {
+          // Cancelled before acceptance: the capture still lands durably,
+          // but its trigger-queued extraction settles immediately aborted.
+          observeAbortController.abort(abortError("observe preparation cancelled"));
         }
+        const trackedExtractionKey = this.pendingObserveExtractions.key(
+          request.sessionKey,
+          scope.principal,
+          writeNamespace
+        );
+        await this.deps.orchestrator.ingestReplayBatch(turns, {
+          archiveLcm: false,
+          extractionMode: "buffered",
+          writeNamespaceOverride,
+          principalOverride,
+          scopeProfileWritePlan: scope.scopeProfilePlan,
+          // #3251: the ORIGINAL coding binding resolved for this capture —
+          // pinned on the durable turns so drains re-authorize the same
+          // project identity.
+          codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
+          abortSignal: observeAbortController.signal,
+          ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
+            ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
+            : {}),
+          // A cancelled preparation must not park a failed barrier in the
+          // pending-observe tracker: without the hook the abort is logged by
+          // the capture path instead. Every queued promise is tracked
+          // IMMEDIATELY — last-write-wins would orphan earlier rejections.
+          ...(preparationCancelled
+            ? {}
+            : {
+                onExtractionQueued: (extraction: Promise<void>) => {
+                  extraction.catch((err) => {
+                    log.error(`access-observe background extraction failed: ${err}`);
+                  });
+                  this.pendingObserveExtractions.track(trackedExtractionKey, extraction, observeAbortController);
+                  extractionQueued = true;
+                },
+              }),
+        });
+        // Without a trigger-fired job the capture is durably pending in the
+        // buffer and native triggers, lifecycle flush, or an explicit
+        // force-flush drain it — the 202 is still truthful.
       }
 
       log.info(

@@ -81,13 +81,13 @@ function derivedScopeProfileSelfNamespace(principal: string | undefined, config:
   return "principal-" + createHash("sha256").update(principal).digest("hex").slice(0, 54);
 }
 
-function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
+export function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
   const existing = defaultNamespaceForPrincipal(principal, config);
   if (normalizeNamespaceIdentity(existing) !== normalizeNamespaceIdentity(config.defaultNamespace)) return existing;
   return derivedScopeProfileSelfNamespace(principal, config) ?? existing;
 }
 
-function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
+export function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
   const identity = normalizeNamespaceIdentity(namespace);
   return (config.namespacePolicies ?? []).some(
     (policy) => normalizeNamespaceIdentity(policy.name) === identity,

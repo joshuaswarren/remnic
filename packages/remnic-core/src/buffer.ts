@@ -10,8 +10,9 @@ import type {
   PluginConfig,
   SignalLevel,
 } from "./types.js";
-import { resolvePresentationCapabilities } from "./capabilities.js";
+import { resolvePresentationCapabilities, resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
+import { scopeProfilePlanIdentity } from "./buffer-turn-helpers.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
@@ -35,6 +36,19 @@ export interface AddTurnOutcome {
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
   deadlineMs?: number;
+  /**
+   * Pin cleanup to turns accepted under this namespace (#3251). When set,
+   * retained turns captured under a different namespace survive; when unset,
+   * cleanup covers unpinned turns and the session's default-namespace scope.
+   */
+  writeNamespaceOverride?: string;
+  /**
+   * #3251: when set, retained turns pinned to a scope profile survive unless
+   * their plan identity AND original project binding match this flush's — a
+   * scoped flush must not delete another binding's retained context.
+   */
+  scopeProfileWritePlan?: import("./namespaces/scope-profiles.js").ResolvedScopeProfilePlan | null;
+  codingContext?: import("./types.js").CodingContext;
 }
 
 /**
@@ -272,7 +286,13 @@ export class SmartBuffer {
       if (leftAt !== rightAt) return leftAt - rightAt;
       return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
     };
-    const candidates = keys.filter((key) => key !== "default" && !retainKeys.includes(key));
+    const candidates = keys.filter(
+      (key) =>
+        key !== "default" &&
+        !retainKeys.includes(key) &&
+        // #3251: accepted captures exit via refusal/backpressure, never eviction.
+        !this.entryHoldsAcceptedCapture(entries[key]),
+    );
     const emptyRemovable = candidates
       .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
       .sort(byOldestActivity);
@@ -524,11 +544,84 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
+  /**
+   * Capacity-bounded append for accepted observe captures (#3251): at the
+   * entry cap, EMPTY removable entries are pruned first, then the append is
+   * REFUSED (null) rather than evicting accepted captures. Check + append
+   * share one mutation so concurrent acceptances cannot cross the cap; an
+   * existing entry always admits.
+   */
+  async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
+    const mutation = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      if (this.peekEntry(bufferKey) === null) {
+        this.makeRoomForEntryUnlocked();
+        if (Object.keys(this.state.entries ?? {}).length >= MAX_BUFFER_ENTRY_COUNT) {
+          log.warn(
+            `buffer[${bufferKey}]: durable capture refused at MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}`,
+          );
+          return null;
+        }
+      }
+      return this.recordTurnUnlocked(bufferKey, turn);
+    });
+    if (mutation === null) return null;
+    return this.completeAddTurnOutcome(bufferKey, turn, mutation);
+  }
+
+  /**
+   * Evict EMPTY removable entries (never `default`, never accepted-capture
+   * holders — they hold no turns) oldest-activity-first until the map has
+   * room below the cap (#3251).
+   */
+  private makeRoomForEntryUnlocked(): void {
+    const entries = this.state.entries;
+    if (!entries) return;
+    const keys = Object.keys(entries);
+    if (keys.length < MAX_BUFFER_ENTRY_COUNT) return;
+    const insertionOrder = new Map(keys.map((key, index) => [key, index]));
+    const byOldestActivity = (left: string, right: string): number =>
+      this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
+      this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
+    const emptyRemovable = keys
+      .filter(
+        (key) =>
+          key !== "default" &&
+          (entries[key]?.turns.length ?? 0) === 0 &&
+          (entries[key]?.retainedTurns?.length ?? 0) === 0 &&
+          !this.entryHoldsAcceptedCapture(entries[key]),
+      )
+      .sort(byOldestActivity);
+    for (const key of emptyRemovable) {
+      if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
+      delete entries[key];
+    }
+  }
+
+  private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
+    const isAccepted = (turn: BufferTurn): boolean =>
+      turn.acceptedCapture === true || typeof turn.writeNamespaceOverride === "string";
+    return (entry?.turns ?? []).some(isAccepted) || (entry?.retainedTurns ?? []).some(isAccepted);
+  }
+
   async addTurnWithOutcome(
     bufferKey: string,
     turn: BufferTurn,
   ): Promise<AddTurnOutcome> {
     const mutation = await this.enqueueMutation(() => this.recordTurnUnlocked(bufferKey, turn));
+    return this.completeAddTurnOutcome(bufferKey, turn, mutation);
+  }
+
+  /**
+   * Shared post-mutation completion for BOTH native and capacity-bounded
+   * appends (#3251): surprise promotion, telemetry, and extraction-turn
+   * construction. Runs OUTSIDE the record mutation (deadlock-free).
+   */
+  private async completeAddTurnOutcome(
+    bufferKey: string,
+    turn: BufferTurn,
+    mutation: AddTurnMutationResult,
+  ): Promise<AddTurnOutcome> {
     let decision = mutation.decision;
     let extractionTurns: BufferTurn[] | undefined;
 
@@ -885,44 +978,11 @@ export class SmartBuffer {
         // `slice(-0)` equals `slice(0)` and would return ALL entries. We
         // already early-return above when max <= 0.
         const tail = turns.slice(-max);
-        // Copy explicit fields only — never spread an external object into a
-        // plain object because spread preserves any own `__proto__` /
-        // `constructor` keys that may have arrived via JSON deserialization
-        // of untrusted input (CodeQL js/prototype-polluting-assignment).
-        entry.retainedTurns = tail.map<BufferTurn>((t) => {
-          const copy: BufferTurn = {
-            role: t.role,
-            content: typeof t.content === "string" ? t.content : "",
-            timestamp:
-              typeof t.timestamp === "string"
-                ? t.timestamp
-                : new Date().toISOString(),
-          };
-          if (typeof t.sessionKey === "string") copy.sessionKey = t.sessionKey;
-          if (typeof t.sessionOwnerPrincipal === "string") {
-            copy.sessionOwnerPrincipal = t.sessionOwnerPrincipal;
-          }
-          if (typeof t.logicalSessionKey === "string") {
-            copy.logicalSessionKey = t.logicalSessionKey;
-          }
-          if (
-            t.providerThreadId === null ||
-            typeof t.providerThreadId === "string"
-          ) {
-            copy.providerThreadId = t.providerThreadId;
-          }
-          if (typeof t.turnFingerprint === "string") {
-            copy.turnFingerprint = t.turnFingerprint;
-          }
-          if (typeof t.persistProcessedFingerprint === "boolean") {
-            copy.persistProcessedFingerprint = t.persistProcessedFingerprint;
-          }
-          if (typeof t.sourceConnector === "string") copy.sourceConnector = t.sourceConnector;
-          if (t.originRole === "user" || t.originRole === "assistant" || t.originRole === "tool") {
-            copy.originRole = t.originRole;
-          }
-          return copy;
-        });
+        // copyBufferTurn copies explicit fields only — never a spread of an
+        // external object, which could preserve `__proto__`/`constructor`
+        // keys from JSON deserialization of untrusted input (CodeQL
+        // js/prototype-polluting-assignment).
+        entry.retainedTurns = tail.map(copyBufferTurn);
       }
       await this.saveUnlocked();
     });
@@ -953,6 +1013,11 @@ export class SmartBuffer {
       typeof ownerPrincipal === "string" && ownerPrincipal.trim().length > 0
         ? ownerPrincipal.trim()
         : undefined;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces === true;
+    const normalizedCleanupNamespace =
+      namespacesEnabled && typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+        ? options.writeNamespaceOverride
+        : undefined;
     const assertLifecycle = (): void => {
       throwIfAborted(options.abortSignal, "extraction force-flush aborted");
       if (typeof options.deadlineMs === "number" && Date.now() >= options.deadlineMs) {
@@ -978,8 +1043,40 @@ export class SmartBuffer {
         return;
       }
       let changed = false;
+      const matchesCleanupScope = (turn: BufferTurn): boolean => {
+        // #3251: only PINNED captures are namespace-compared; legacy
+        // unpinned retained turns keep prior cleanup semantics.
+        if (
+          typeof turn.writeNamespaceOverride === "string" &&
+          normalizedCleanupNamespace !== undefined &&
+          turn.writeNamespaceOverride !== normalizedCleanupNamespace
+        ) {
+          return false;
+        }
+        // Plan+binding: a cleanup pinned to a scope profile deletes retained
+        // turns only when their plan identity AND original project binding
+        // match; another binding's retained context survives.
+        if (options.scopeProfileWritePlan) {
+          if (scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan)) {
+            return false;
+          }
+          const ctx = options.codingContext;
+          if (ctx) {
+            if (
+              turn.codingContext?.projectId !== ctx.projectId ||
+              turn.codingContext?.rootPath !== ctx.rootPath ||
+              turn.codingContext?.branch !== ctx.branch ||
+              turn.codingContext?.defaultBranch !== ctx.defaultBranch
+            ) {
+              return false;
+            }
+          }
+        }
+        return true;
+      };
       const belongsToOwner = (turn: BufferTurn): boolean => {
         if (turn.sessionKey !== sessionKey) return false;
+        if (!matchesCleanupScope(turn)) return false;
         if (normalizedOwnerPrincipal === undefined) return true;
         if (turn.sessionOwnerPrincipal === normalizedOwnerPrincipal) return true;
         return (
