@@ -932,7 +932,14 @@ export class TurnIngestionCoordinator {
       scheduleQueueWaitTimeout();
     }
 
+    const failClosed = options.failOnExtractionFailure === true;
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
+      const preempt = new AbortController();
+      if (!failClosed) this.deps.extractionQueueCoordinator.beginPreemptable(() => preempt.abort());
+      const abortSignal = options.abortSignal
+        ? AbortSignal.any([options.abortSignal, preempt.signal])
+        : preempt.signal;
+      try {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -1081,7 +1088,7 @@ export class TurnIngestionCoordinator {
           deadlineMs: extractionDeadlineMs,
           bufferKey,
           onDurableCommit: options.onDurableCommit,
-          abortSignal: options.abortSignal,
+          abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
@@ -1094,7 +1101,10 @@ export class TurnIngestionCoordinator {
           throw err;
         }
       }
-    });
+      } finally {
+        if (!failClosed) this.deps.extractionQueueCoordinator.endPreemptable();
+      }
+    }, { front: failClosed });
     if (!accepted) {
       settleTask(new Error("extraction queue is stopped"));
       return;

@@ -40,6 +40,7 @@ export class ExtractionQueueCoordinator {
   /** Whether the serial drain loop is currently running. */
   private processing = false;
   private accepting = true;
+  private runningPreempt: (() => void) | undefined;
 
   /** Current queue depth (idle-wait + test seam). */
   get length(): number {
@@ -56,9 +57,15 @@ export class ExtractionQueueCoordinator {
    * the production entry point — the orchestrator's `queueBufferedExtraction`
    * builds each task closure and hands it here.
    */
-  enqueue(task: () => Promise<void>): boolean {
+  enqueue(task: () => Promise<void>, options?: { front?: boolean }): boolean {
     if (!this.accepting) return false;
-    this.queue.push(task);
+    if (options?.front) {
+      this.runningPreempt?.();
+      this.runningPreempt = undefined;
+      this.queue.unshift(task);
+    } else {
+      this.queue.push(task);
+    }
     if (!this.processing) {
       this.processing = true;
       this.processQueue().catch((err) => {
@@ -67,6 +74,15 @@ export class ExtractionQueueCoordinator {
       });
     }
     return true;
+  }
+
+  /** Automatic extraction registers this so a fail-closed flush can abort it. */
+  beginPreemptable(abort: () => void): void {
+    this.runningPreempt = abort;
+  }
+
+  endPreemptable(): void {
+    this.runningPreempt = undefined;
   }
 
   /** Stop new producers from entering the queue. */

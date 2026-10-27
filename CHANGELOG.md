@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- A fail-closed extraction flush aborts the running automatic extraction and runs next, instead of waiting behind that automatic work until its own deadline. The abort happens before accepted turns are cleared (#3259).
+
 ## [v10.0.32] — 2026-10-27
 
 ### Fixes
