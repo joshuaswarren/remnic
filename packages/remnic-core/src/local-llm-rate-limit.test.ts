@@ -450,6 +450,34 @@ test("reserved background queue survives aborts and responds to resizing", async
   assert.equal(limiter.inFlight, 0);
 });
 
+for (const max of [2, 4]) {
+  test(`queued background work progresses under critical backlog at cap ${max}`, async () => {
+    const limiter = new LocalLlmConcurrencyLimiter(max);
+    const held = await Promise.all(Array.from({ length: max }, () => limiter.acquire({ highPriority: true })));
+    assert.ok(held.every(Boolean));
+    const controller = new AbortController();
+    const backgroundRelease = limiter.acquire({ signal: controller.signal });
+    const criticalBacklog = limiter.acquire({ highPriority: true, signal: controller.signal });
+    try {
+      assert.equal(limiter.queued, 2);
+      held[0]?.();
+      const background = await Promise.race([backgroundRelease, Promise.resolve(null)]);
+      assert.ok(background, "background must get the released permit while critical work stays live");
+      assert.equal(limiter.inFlight, max);
+      assert.equal(limiter.queued, 1);
+      background();
+      const critical = await criticalBacklog;
+      assert.ok(critical, "critical backlog resumes when background no longer needs its permit");
+      critical();
+    } finally {
+      controller.abort();
+      for (const release of [...held, ...await Promise.all([backgroundRelease, criticalBacklog])]) release?.();
+    }
+    assert.equal(limiter.inFlight, 0);
+    assert.equal(limiter.queued, 0);
+  });
+}
+
 test("one-permit and unlimited limits still admit background work", async () => {
   for (const max of [1, 0]) {
     const limiter = new LocalLlmConcurrencyLimiter(max);

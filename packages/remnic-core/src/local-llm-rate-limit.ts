@@ -151,7 +151,7 @@ export function computeRateLimitDelayMs(
 
 type Waiter = { highPriority: boolean; grant: () => void };
 
-/** FIFO semaphore; finite caps above one reserve a permit for recall-critical work. */
+/** Priority semaphore; finite caps above one protect recall capacity and queued background progress. */
 export class LocalLlmConcurrencyLimiter {
   private active = 0;
   private activeBackground = 0;
@@ -224,9 +224,12 @@ export class LocalLlmConcurrencyLimiter {
   }
 
   private canAcquire(highPriority: boolean): boolean {
+    const backgroundWaiting = highPriority && this.max > 1 && this.activeBackground === 0 &&
+      this.waiters.some((waiter) => !waiter.highPriority);
     return this.max <= 0 || (
       this.active < this.max &&
-      (highPriority || this.max === 1 || this.activeBackground < this.max - 1)
+      (highPriority || this.max === 1 || this.activeBackground < this.max - 1) &&
+      (!highPriority || !backgroundWaiting || this.active < this.max - 1)
     );
   }
 
@@ -242,9 +245,13 @@ export class LocalLlmConcurrencyLimiter {
   }
 
   private pump(): void {
-    while (this.waiters.length > 0 && this.canAcquire(this.waiters[0].highPriority)) {
-      const next = this.waiters.shift();
-      if (!next) break;
+    while (this.waiters.length > 0) {
+      // An ineligible critical head must not strand the background permit.
+      const criticalAllowed = this.canAcquire(true);
+      const backgroundAllowed = this.canAcquire(false);
+      const index = this.waiters.findIndex((waiter) => waiter.highPriority ? criticalAllowed : backgroundAllowed);
+      if (index < 0) break;
+      const next = this.waiters.splice(index, 1)[0];
       this.active += 1;
       if (!next.highPriority) this.activeBackground += 1;
       next.grant();
