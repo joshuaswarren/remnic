@@ -135,7 +135,8 @@ export class PendingObserveExtractionTracker {
       ? Promise.allSettled([previous.promise, extraction]).then((results) => {
           const rejected = results.find(
             (result): result is PromiseRejectedResult =>
-              result.status === "rejected" && !isPreemptedExtraction(result.reason),
+              result.status === "rejected" &&
+              !(result.reason instanceof Error && isPreemptedExtraction(result.reason)),
           );
           if (rejected) throw rejected.reason;
         })
@@ -150,7 +151,7 @@ export class PendingObserveExtractionTracker {
         if (this.entries.get(key) === entry) this.entries.delete(key);
       })
       .catch((error) => {
-        if (isPreemptedExtraction(error) && this.entries.get(key) === entry) this.entries.delete(key);
+        if (error instanceof Error && isPreemptedExtraction(error) && this.entries.get(key) === entry) this.entries.delete(key);
       });
   }
 
@@ -214,7 +215,7 @@ export class PendingObserveExtractionTracker {
         } catch (error) {
           if (this.entries.get(key) !== entry) continue;
           this.entries.delete(key);
-          if (isPreemptedExtraction(error)) return;
+          if (error instanceof Error && isPreemptedExtraction(error)) return;
           throw error;
         }
         if (this.entries.get(key) !== entry) continue;

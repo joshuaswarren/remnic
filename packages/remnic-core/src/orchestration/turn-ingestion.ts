@@ -1086,7 +1086,8 @@ export class TurnIngestionCoordinator {
         });
         settleTask(undefined, result);
       } catch (err) {
-        const settledError = isPreemptedExtraction(abortSignal.reason) ? abortSignal.reason : err;
+        const reason = abortSignal.reason;
+        const settledError = reason instanceof Error && isPreemptedExtraction(reason) ? reason : err;
         if (settleTask(settledError)) {
           throw settledError;
         }

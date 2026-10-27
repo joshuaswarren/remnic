@@ -37,8 +37,8 @@ export function preemptedExtractionError(): Error {
   return abortError(PREEMPTED_EXTRACTION);
 }
 
-export function isPreemptedExtraction(err: unknown): boolean {
-  return err instanceof Error && err.name === "AbortError" && err.message === PREEMPTED_EXTRACTION;
+export function isPreemptedExtraction(err: Error): boolean {
+  return err.name === "AbortError" && err.message === PREEMPTED_EXTRACTION;
 }
 
 /**
