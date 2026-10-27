@@ -143,6 +143,7 @@ export class PendingObserveExtractionTracker {
       : extraction;
     const entry = {
       promise,
+      running: previous?.running ?? extraction,
       controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
     };
     this.entries.set(key, entry);
@@ -222,6 +223,14 @@ export class PendingObserveExtractionTracker {
       if (cancelled || abortSignal?.aborted) return;
       if (preemptAfterAdmission) {
         preemptAfterAdmission();
+        const running = this.entries.get(key)?.running;
+        if (!running) return;
+        try {
+          await running;
+        } catch (error) {
+          if (this.entries.get(key)?.running === running) this.entries.delete(key);
+          if (!(error instanceof Error && isPreemptedExtraction(error))) throw error;
+        }
         return;
       }
       while (true) {

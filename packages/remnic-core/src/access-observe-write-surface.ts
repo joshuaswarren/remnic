@@ -938,7 +938,7 @@ export class AccessObserveWriteSurface {
           abortSignal,
           registerCancellation,
           scopeHint,
-          () => this.deps.orchestrator.extractionQueueCoordinator.preemptRunning(),
+          () => this.deps.orchestrator.extractionQueueCoordinator?.preemptRunning(),
         )
     );
   }

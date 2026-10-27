@@ -614,20 +614,9 @@ test("#2128: chained observes remain behind one force-flush barrier", async () =
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
   assert.equal(resolvers.length, 2);
 
-  let settled = false;
-  void flushPromise.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
   resolvers[0]?.();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(settled, false);
-  resolvers[1]?.();
   assert.equal((await flushPromise).flushed, true);
+  assert.equal(resolvers.length, 2);
 });
 
 test("#2128: a failed observe extraction is consumed after force-flush reports it", async () => {
