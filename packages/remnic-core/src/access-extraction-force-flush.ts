@@ -1,4 +1,4 @@
-import { isAbortError, throwIfAborted } from "./abort-error.js";
+import { isAbortError, preemptedExtractionError, throwIfAborted } from "./abort-error.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import type { AccessObserveWriteSurfaceDeps } from "./access-observe-write-surface.js";
 import {
@@ -125,6 +125,13 @@ export async function extractionForceFlush(
     // drain-first could queue the same accepted turns twice. Scoped key, so
     // never waits on another scope.
     if (waitForPendingObserveExtraction) {
+      deps.cancelPendingObserveExtractions?.(
+        request.sessionKey,
+        scope.principal,
+        scope.writeNamespace,
+        reservationScopeHint,
+        preemptedExtractionError(),
+      );
       let cancelPendingObserveExtraction: (() => void) | undefined;
       await awaitSessionFlushPhase(
         () =>

@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixes
 
-- A fail-closed force-flush aborts only the running automatic extraction and runs next. Replay, import, and another flush are not preempted. The abort is disarmed before persistence, and a preempted observe does not block that session's next flush (#3259).
+- A fail-closed force-flush aborts the in-flight observe extraction before waiting, then runs next. Replay and import stay protected. Buffer clears disarm preemption first, so an abort cannot drop accepted turns the flush still needs (#3259).
 
 ## [v10.0.32] — 2026-10-27
 

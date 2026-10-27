@@ -548,8 +548,9 @@ export class ExtractionRunCoordinator {
         if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     };
-    const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
-      if (options?.ignoreAbort !== true) {
+    const clearBuffer = async (clearOptions?: { ignoreAbort?: boolean }) => {
+      options.onBeforePersist?.();
+      if (clearOptions?.ignoreAbort !== true) {
         throwIfDeadlineExceeded("before_clear_buffer");
         throwIfAborted("before_clear_buffer");
       }

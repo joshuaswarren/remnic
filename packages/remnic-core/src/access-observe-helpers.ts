@@ -173,6 +173,7 @@ export class PendingObserveExtractionTracker {
     principal?: string,
     namespace?: string,
     scopeHint?: string,
+    reason?: Error,
   ): void {
     for (const reservation of this.preparations.get(sessionKey) ?? []) {
       if (!preparationMatchesScope(reservation, principal, namespace, scopeHint)) continue;
@@ -187,7 +188,7 @@ export class PendingObserveExtractionTracker {
         (namespace !== undefined && entryNamespace !== (namespace ?? ""))
       )
         continue;
-      for (const controller of entry.controllers) controller.abort();
+      for (const controller of entry.controllers) controller.abort(reason);
     }
   }
 
