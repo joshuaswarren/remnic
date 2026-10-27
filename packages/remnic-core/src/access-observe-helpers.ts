@@ -210,14 +210,20 @@ export class PendingObserveExtractionTracker {
     preemptAfterAdmission?: () => void,
   ): Promise<void> {
     const key = this.key(sessionKey, principal, namespace);
+    let cancelled = abortSignal?.aborted === true;
     const abortTracked = (): void => {
+      cancelled = true;
       this.cancel(sessionKey, principal, namespace, scopeHint);
     };
     registerCancellation?.(abortTracked);
     abortSignal?.addEventListener("abort", abortTracked, { once: true });
     try {
       await this.waitForPreparations(sessionKey, principal, namespace, scopeHint);
-      if (preemptAfterAdmission) preemptAfterAdmission();
+      if (cancelled || abortSignal?.aborted) return;
+      if (preemptAfterAdmission) {
+        preemptAfterAdmission();
+        return;
+      }
       while (true) {
         const entry = this.entries.get(key);
         if (!entry) return;
