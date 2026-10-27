@@ -171,7 +171,7 @@ export async function extractionForceFlush(
           onCommitted: markCommitted,
         }),
       {
-        abortSignal: drainSignal,
+        abortSignal: request.abortSignal,
         extractionDeadlineMs: deadlineAt,
         reason: "access_force_flush",
         deadlineStage: "buffer_drain",
