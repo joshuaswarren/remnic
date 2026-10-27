@@ -30,6 +30,7 @@ import { join } from "node:path";
 import { Orchestrator } from "./orchestrator.js";
 import { SmartBuffer } from "./buffer.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
+import { runExtractionDeferRetention } from "./orchestration/extraction-run-helpers.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
@@ -1404,6 +1405,493 @@ test("#3251 namespaces-disabled flush with failOnExtractionFailure rejects and p
       orchestrator.buffer.getTurns(key),
     );
     assert.ok(pending.some((turn) => turn.content.includes("pinned capture before ns-off")));
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #3251 flat capture namespace pin: OFF→ON must never retarget the original
+// collapsed default store to a newly-active principal/project namespace.
+test("#3251 flat capture (namespaces OFF) survives namespaces-ON restart in original default store", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-flat-off-on");
+  // SAFETY: phase-specific configs — off-phase collapses to the default
+  // store, on-phase enables routing to verify the pin prevents retargeting.
+  const offConfig = makeLifecycleConfig(memoryDir, {
+    bufferMaxTurns: 1000,
+    bufferSaveDebounceMs: 0,
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+    defaultNamespace: "default",
+    namespacesEnabled: false,
+  });
+  const onConfig = makeLifecycleConfig(memoryDir, {
+    bufferMaxTurns: 1000,
+    bufferSaveDebounceMs: 0,
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+      { name: "default", readPrincipals: ["alice", "default"], writePrincipals: ["alice", "default"] },
+    ],
+  });
+
+  // Phase 1: namespaces OFF — capture, pin, save, destroy.
+  {
+    const orch = new Orchestrator(offConfig);
+    try {
+      await orch.ingestReplayBatch(
+        [makeReplayTurn("flat-sess", "flat capture original default")],
+        bufferedObserveOptions({ sessionOwnerPrincipal: "alice" }),
+      );
+      const flatTurns = (await orch.buffer.findBufferKeysForSession("flat-sess")).flatMap((key) =>
+        orch.buffer.getTurns(key),
+      );
+      const flatTurn = flatTurns.find((t) => t.acceptedCapture === true);
+      assert.ok(flatTurn, "accepted capture must exist");
+      assert.equal(
+        flatTurn?.writeNamespaceOverride, "default",
+        "flat capture must pin config.defaultNamespace when namespaces are off",
+      );
+    } finally {
+      await orch.destroy().catch(() => undefined);
+    }
+  }
+
+  // Phase 2: namespaces ON with alice routing — a scoped alice flush must
+  // NOT steal the original default capture; an explicit default flush drains.
+  {
+    const orch = new Orchestrator(onConfig);
+    const drainCalls = stubExtraction(orch, (turns) =>
+      singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+    );
+    try {
+      // Ingest a second flat capture so we have two items, both pinned "default".
+      await orch.ingestReplayBatch(
+        [makeReplayTurn("flat-sess", "second flat stays default")],
+        bufferedObserveOptions({ sessionOwnerPrincipal: "alice", writeNamespaceOverride: "default" }),
+      );
+
+      // Alice-scoped flush: must NOT drain the original default captures.
+      await orch.flushSession("flat-sess", {
+        reason: "access_force_flush",
+        failOnExtractionFailure: true,
+        writeNamespaceOverride: "alice",
+        principalOverride: "alice",
+      });
+      const drainedAlice = drainCalls.flat().map((t) => t.content);
+      assert.equal(
+        drainedAlice.filter((c) => c.includes("flat capture") || c.includes("second flat")).length,
+        0,
+        "alice-scoped flush must NOT drain the original default store captures",
+      );
+
+      // Explicit authorized original-default flush drains them.
+      await orch.flushSession("flat-sess", {
+        reason: "access_force_flush",
+        failOnExtractionFailure: true,
+        writeNamespaceOverride: "default",
+        principalOverride: "alice",
+      });
+      const drainedDefault = drainCalls.flat().map((t) => t.content);
+      assert.ok(
+        drainedDefault.some((c) => c.includes("flat capture original default")),
+        "original default capture extracts under explicit original-default flush",
+      );
+      assert.ok(
+        drainedDefault.some((c) => c.includes("second flat stays default")),
+        "second flat capture extracts under explicit original-default flush",
+      );
+    } finally {
+      await orch.destroy().catch(() => undefined);
+      await cleanupDir(memoryDir);
+    }
+  }
+});
+test("#3251 namespaced buffered admission without writeNamespaceOverride or plan rejects with zero side effects", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-ns-missing-target");
+  const config = makeLifecycleConfig(memoryDir, {
+    bufferMaxTurns: 1000,
+    bufferSaveDebounceMs: 0,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+  });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
+  const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
+  const lcmCalls: string[] = [];
+  const queued: BufferTurn[][] = [];
+  // SAFETY: admission-guard fixture exercises only the rejection path; the
+  // LCM engine records calls and the remaining deps are unreachable.
+  const deps = {
+    buffer,
+    config,
+    queueBufferedExtraction: async (turns: BufferTurn[]) => {
+      queued.push(turns);
+    },
+    heartbeatObserverChains: new Map(),
+    lcmEngine: {
+      enabled: true,
+      enqueueObserveMessages: (sessionKey: string) => { lcmCalls.push(sessionKey); },
+      observeMessages: async (sessionKey: string) => { lcmCalls.push(sessionKey); },
+    } as any,
+  } as any;
+  const coordinator = new TurnIngestionCoordinator(deps);
+  try {
+    // Namespaces ON, no writeNamespaceOverride, no scopeProfileWritePlan →
+    // must reject BEFORE LCM archive or buffer append.
+    await assert.rejects(
+      coordinator.ingestReplayBatch(
+        [makeReplayTurn("no-target-sess", "capture without target")],
+        bufferedObserveOptions({ sessionOwnerPrincipal: "alice" }),
+      ),
+      /requires an explicit storage target/,
+    );
+    assert.equal(lcmCalls.length, 0, "zero LCM archival on rejected admission");
+    assert.equal(queued.length, 0, "zero extraction queued on rejected admission");
+    const pending = (await buffer.findBufferKeysForSession("no-target-sess")).flatMap((key) =>
+      buffer.getTurns(key),
+    );
+    assert.equal(pending.length, 0, "zero buffer appends on rejected admission");
+  } finally {
+    await cleanupDir(memoryDir);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// #3251 review round fixes: (1) native re-auth uses correct base, (2) native
+// groups don't borrow observe scope, (3) retainDeferredTurns preserves
+// other-scope retained turns, (4) filtered flush enables identity clear.
+// ---------------------------------------------------------------------------
+
+test("#3251 retainDeferredTurns preserves other-scope retained turns on subsequent defer", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-retain-multi");
+  const config = parseConfig({ memoryDir, bufferSaveDebounceMs: 0 });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage needs.
+  const buffer = new SmartBuffer(config, { loadBuffer: async () => ({ turns: [], lastExtractionAt: null, extractionCount: 0 }), saveBuffer: async () => {} } as any);
+  const turnA: BufferTurn = { role: "user", content: "scope A deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
+  const turnB: BufferTurn = { role: "user", content: "scope B deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
+  // Legacy mode (no originalTurns): replace semantics unchanged.
+  await buffer.retainDeferredTurns("multi-sess", [turnA], 10);
+  await buffer.retainDeferredTurns("multi-sess", [turnB], 10);
+  assert.deepEqual(buffer.getRetainedDeferredTurns("multi-sess").map((t) => t.content), ["scope B deferred context"]);
+  // Clear legacy retained turns before testing scoped mode from a clean state.
+  await buffer.retainDeferredTurns("multi-sess", [], 10);
+  assert.equal(buffer.getRetainedDeferredTurns("multi-sess").length, 0);
+  // Scoped mode: A defers (originalTurns=[A]), B defers (originalTurns=[B]).
+  // B's defer must preserve A's retained context (different scope).
+  await buffer.retainDeferredTurns("multi-sess", [turnA], 10, [turnA]);
+  assert.equal(buffer.getRetainedDeferredTurns("multi-sess").length, 1);
+  await buffer.retainDeferredTurns("multi-sess", [turnB], 10, [turnB]);
+  const retained = buffer.getRetainedDeferredTurns("multi-sess").map((t) => t.content);
+  assert.ok(retained.some((c) => c.includes("scope A")), "A's retained context survives B's defer");
+  assert.ok(retained.some((c) => c.includes("scope B")), "B's retained context is present");
+  // Inverse: B defers first, then A.
+  await buffer.retainDeferredTurns("multi-sess", [turnB], 10, [turnB]);
+  await buffer.retainDeferredTurns("multi-sess", [turnA], 10, [turnA]);
+  const retained2 = buffer.getRetainedDeferredTurns("multi-sess").map((t) => t.content);
+  assert.ok(retained2.some((c) => c.includes("scope B")), "B survives A's defer (inverse)");
+  assert.ok(retained2.some((c) => c.includes("scope A")), "A is present (inverse)");
+});
+
+test("#3251 filtered flush with mixed scopes enables identity clear (no repeat LLM on second flush)", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-filter-clear");
+  const makeConfig = () =>
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1000,
+      bufferSaveDebounceMs: 0,
+      extractionMinChars: 1_000_000,
+      extractionMinUserTurns: 1000,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    });
+  const orchestrator = new Orchestrator(makeConfig());
+  const drainCalls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  try {
+    // Unpinned native turn + pinned accepted capture in the same entry.
+    await orchestrator.buffer.addTurn("filter-sess", {
+      role: "user", content: "native unpinned turn",
+      timestamp: new Date().toISOString(), sessionKey: "filter-sess",
+      sessionOwnerPrincipal: "alice",
+    });
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("filter-sess", "pinned accepted capture")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "ns-a", principalOverride: "alice", sessionOwnerPrincipal: "alice",
+      }),
+    );
+    // Pre-filter: 2 turns. Post-filter: 1 native (pinned excluded by unscoped? no —
+    // unscoped includes all). Use scoped flush: pinned matches, native unpinned also matches
+    // (prior-authorized). But with scopeGroups splitting, 2 groups → needsIdentityClear.
+    await orchestrator.flushSession("filter-sess", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "ns-a",
+      principalOverride: "alice",
+    });
+    const firstFlushCount = drainCalls.flat().length;
+    // Second flush: the buffer should be empty (all turns cleared) — no repeat LLM.
+    await orchestrator.flushSession("filter-sess", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "ns-a",
+      principalOverride: "alice",
+    });
+    assert.equal(
+      drainCalls.flat().length, firstFlushCount,
+      "second flush must not repeat LLM (identity clear removed all turns)",
+    );
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 mixed accepted+native groups: accepted-no-plan dispatches null, native dispatches undefined", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-mixed-dispatch");
+  const config = parseConfig({
+    memoryDir,
+    bufferMaxTurns: 1,
+    bufferSaveDebounceMs: 0,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+  });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
+  const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
+  interface QueuedDispatch {
+    turns: BufferTurn[];
+    opts: { scopeProfileWritePlan?: ResolvedScopeProfilePlan | null };
+  }
+  const queued: QueuedDispatch[] = [];
+  // SAFETY: mixed-dispatch fixture exercises only the scope-group routing.
+  const coordinator = new TurnIngestionCoordinator({
+    buffer,
+    config,
+    queueBufferedExtraction: async (turns: BufferTurn[], _reason: string, opts?: { scopeProfileWritePlan?: ResolvedScopeProfilePlan | null }) => {
+      queued.push({ turns, opts: opts ?? {} });
+    },
+  } as any);
+  try {
+    // Seed: accepted capture with explicit null plan + native unpinned turn.
+    await buffer.addTurn("mix-dispatch-sess", {
+      role: "user",
+      content: "accepted no plan capture",
+      timestamp: new Date().toISOString(),
+      sessionKey: "mix-dispatch-sess",
+      sessionOwnerPrincipal: "alice",
+      acceptedCapture: true,
+      writeNamespaceOverride: "ns-a",
+      scopeProfileWritePlan: null,
+    } satisfies BufferTurn);
+    await buffer.addTurn("mix-dispatch-sess", {
+      role: "user",
+      content: "native unpinned trigger turn",
+      timestamp: new Date().toISOString(),
+      sessionKey: "mix-dispatch-sess",
+      sessionOwnerPrincipal: "alice",
+    } satisfies BufferTurn);
+
+    // Trigger via processTurn (native trigger on the mixed batch).
+    await coordinator.processTurn("user", "trigger turn", "mix-dispatch-sess");
+
+    // Three scope groups: accepted-null-plan, native-unpinned, trigger-unpinned.
+    const acceptedCall = queued.find(
+      (q) => q.opts.scopeProfileWritePlan === null,
+    );
+    assert.ok(acceptedCall, "accepted group must dispatch scopeProfileWritePlan=null (explicit none)");
+    const nativeCall = queued.find(
+      (q) => q.opts.scopeProfileWritePlan === undefined && !q.turns.some((t) => t.acceptedCapture === true),
+    );
+    assert.ok(nativeCall, "native group must dispatch scopeProfileWritePlan=undefined (auto-derive)");
+    const allAccepted = queued.filter((q) => q.turns.some((t) => t.acceptedCapture === true));
+    assert.ok(
+      allAccepted.every((q) => q.opts.scopeProfileWritePlan !== undefined),
+      "no accepted group may dispatch undefined (which would re-resolve CURRENT profile)",
+    );
+  } finally {
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 native group clears via identity after accepted prefix remains in buffer", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-native-clear");
+  const config = parseConfig({
+    memoryDir,
+    bufferMaxTurns: 2,
+    bufferSaveDebounceMs: 0,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+  });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
+  const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
+  interface QueuedNativeCall {
+    turns: BufferTurn[];
+    opts: { clearMatchingTurns?: boolean };
+  }
+  const queued: QueuedNativeCall[] = [];
+  // SAFETY: native-clear fixture exercises only the scope-group routing.
+  const coordinator = new TurnIngestionCoordinator({
+    buffer,
+    config,
+    queueBufferedExtraction: async (turns: BufferTurn[], _reason: string, opts?: { clearMatchingTurns?: boolean }) => {
+      queued.push({ turns, opts: opts ?? {} });
+    },
+  } as any);
+  try {
+    // Seed buffer: accepted capture FIRST (prefix), then native unpinned (suffix).
+    await buffer.addTurn("clear-sess", {
+      role: "user",
+      content: "accepted prefix stays",
+      timestamp: new Date().toISOString(),
+      sessionKey: "clear-sess",
+      sessionOwnerPrincipal: "alice",
+      acceptedCapture: true,
+      writeNamespaceOverride: "ns-a",
+    } satisfies BufferTurn);
+    await buffer.addTurn("clear-sess", {
+      role: "user",
+      content: "native suffix must clear",
+      timestamp: new Date().toISOString(),
+      sessionKey: "clear-sess",
+      sessionOwnerPrincipal: "alice",
+    } satisfies BufferTurn);
+
+    // Trigger: both groups form (accepted prefix + native suffix).
+    await coordinator.processTurn("user", "trigger turn", "clear-sess");
+
+    // Native group extracted the suffix — it must ACTUALLY clear from the
+    // buffer via identity matching (not prefix matching which fails because
+    // the accepted prefix occupies the head).
+    const nativeCall = queued.find(
+      (q) => q.turns.some((t) => !t.acceptedCapture) && !q.turns.some((t) => t.acceptedCapture === true),
+    );
+    assert.ok(nativeCall, "native group queued");
+    assert.equal(nativeCall.opts.clearMatchingTurns, true, "native group uses identity clear");
+
+    // Simulate the extraction completing (which calls clearAfterExtraction
+    // with identity matching). The accepted prefix must survive.
+    const liveTurns = (await buffer.findBufferKeysForSession("clear-sess")).flatMap((key) =>
+      buffer.getTurns(key),
+    );
+    assert.ok(
+      liveTurns.some((t) => t.content.includes("accepted prefix stays")),
+      "accepted prefix survives the native group's extraction",
+    );
+  } finally {
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 scoped defer then successful retry preserves other retained turns across restart", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-retain-success");
+  const config = makeLifecycleConfig(memoryDir, { bufferSaveDebounceMs: 0 });
+  const orchestrator = new Orchestrator(config);
+  const buffer = orchestrator.buffer;
+  let restarted: Orchestrator | undefined;
+  const turnA: BufferTurn = {
+    role: "user", content: "  scope A deferred  ",
+    timestamp: new Date().toISOString(), sessionKey: "sr-sess",
+  };
+  const turnB: BufferTurn = { ...turnA, content: "  scope B deferred  " };
+  const normalizedA = { ...turnA, content: turnA.content.trim() };
+  const normalizedB = { ...turnB, content: turnB.content.trim() };
+  const retain = (
+    originalTurns: BufferTurn[],
+    normalizedTurns: BufferTurn[],
+    deferredCount: number,
+  ) => runExtractionDeferRetention(
+    async (_stage, operation) => { await operation(); },
+    {
+      clearBufferAfterExtraction: true,
+      extractionJudgeShadow: false,
+      getDeferredCount: () => deferredCount,
+      normalizedTurns,
+      bufferKey: "sr-sess",
+      retainDeferredTurns: (key, turns, max) =>
+        buffer.retainDeferredTurns(key, turns, max, originalTurns),
+    },
+  );
+  try {
+    await retain([turnA], [normalizedA], 1);
+    await retain([turnB], [normalizedB], 1);
+    assert.deepEqual(buffer.getRetainedDeferredTurns("sr-sess"), [normalizedA, normalizedB]);
+    // A changed normalization limit must not prevent retiring B's original snapshot.
+    await retain([normalizedB], [{ ...normalizedB, content: "scope B" }], 0);
+    assert.deepEqual(buffer.getRetainedDeferredTurns("sr-sess"), [normalizedA]);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    restarted = new Orchestrator(config);
+    await restarted.buffer.load();
+    assert.deepEqual(restarted.buffer.getRetainedDeferredTurns("sr-sess"), [normalizedA]);
+  } finally {
+    await restarted?.destroy();
+    await orchestrator.destroy();
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 scoped flush preserves >10 outside-scope retained turns (no global max10 truncation)", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-retain-overflow");
+  const makeConfig = () =>
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1000,
+      bufferSaveDebounceMs: 0,
+      extractionMinChars: 1_000_000,
+      extractionMinUserTurns: 1000,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    });
+  const orchestrator = new Orchestrator(makeConfig());
+  const drainCalls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  try {
+    // Capture A's pinned accepted capture (own scope).
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("overflow-sess", "own scope capture")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "ns-a",
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+      }),
+    );
+
+    // Seed >10 outside-scope retained turns in one call (scope = "other").
+    const outsideTurns: BufferTurn[] = Array.from({ length: 15 }, (_, i) => ({
+      role: "user" as const,
+      content: `outside scope retained ${i}`,
+      timestamp: new Date().toISOString(),
+      sessionKey: `other-sess-${i}`,
+      sessionOwnerPrincipal: "bob",
+      acceptedCapture: true,
+      writeNamespaceOverride: "other-ns",
+    }));
+    await orchestrator.buffer.retainDeferredTurns("overflow-sess", outsideTurns, outsideTurns.length);
+    assert.deepEqual(orchestrator.buffer.getRetainedDeferredTurns("overflow-sess"), outsideTurns);
+
+    // Flush A: the scoped retainDeferredTurns at extraction-run preserves
+    // other-scope retained turns — >10 must not be truncated.
+    await orchestrator.flushSession("overflow-sess", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "ns-a",
+      principalOverride: "alice",
+    });
+    assert.deepEqual(
+      orchestrator.buffer.getRetainedDeferredTurns("overflow-sess"),
+      outsideTurns,
+      "all 15 outside-scope retained turns must survive the scoped flush",
+    );
   } finally {
     await orchestrator.destroy().catch(() => undefined);
     await cleanupDir(memoryDir);

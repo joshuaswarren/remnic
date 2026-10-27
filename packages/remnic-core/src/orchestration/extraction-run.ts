@@ -1108,7 +1108,7 @@ export class ExtractionRunCoordinator {
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
-        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max),
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, turns),
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });

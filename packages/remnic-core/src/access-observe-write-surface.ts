@@ -842,19 +842,12 @@ export class AccessObserveWriteSurface {
         // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
         // target deterministic and identical to LCM/objective-state (rule 39).
         //
-        // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
-        // from the default store (#1505 round 3, codex "Pin default-store extraction
-        // writes too"). For an unqualified/no-overlay observe by a principal that
-        // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
-        // unpinned `runExtraction` would fall back to
-        // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
-        // from where LCM/objective-state/response wrote (`default`). Pinning the
-        // resolved writeNamespace forces all side effects onto the one scope-plan
-        // namespace. When namespaces are DISABLED the router collapses every
-        // namespace to one store, so leaving the override undefined preserves the
-        // existing single-store routing byte-for-byte.
-        const writeNamespaceOverride =
-          resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true ? writeNamespace : undefined;
+        // #3251: ALWAYS pin the already-resolved writeNamespace — including
+        // when namespaces are OFF (where the resolved value IS the collapsed
+        // default store). Accepted captures need an original actual storage
+        // target so a later namespaces-ON restart cannot retarget them to a
+        // newly-active principal/project namespace.
+        const writeNamespaceOverride = writeNamespace;
         // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
         // thread 1). The scope plan already applied auth precedence
         // (authenticatedPrincipal/principalOverride > resolvePrincipal(original

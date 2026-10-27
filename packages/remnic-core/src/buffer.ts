@@ -71,6 +71,8 @@ export interface BufferSurpriseProbe {
 }
 
 const MAX_BUFFER_ENTRY_COUNT = 200;
+const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
+  t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -579,9 +581,7 @@ export class SmartBuffer {
   }
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
-    const isAccepted = (turn: BufferTurn): boolean =>
-      turn.acceptedCapture === true || turn.writeNamespaceOverride !== undefined;
-    return (entry?.turns ?? []).some(isAccepted) || (entry?.retainedTurns ?? []).some(isAccepted);
+    return (entry?.turns ?? []).some(isAcceptedTurn) || (entry?.retainedTurns ?? []).some(isAcceptedTurn);
   }
 
   async addTurnWithOutcome(
@@ -943,24 +943,24 @@ export class SmartBuffer {
     bufferKey: string,
     turns: BufferTurn[],
     max = 10,
+    originalTurns?: readonly BufferTurn[],
   ): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
-      if (!Array.isArray(turns) || turns.length === 0 || max <= 0) {
+      if (originalTurns !== undefined) {
+        const isOwn = (t: BufferTurn): boolean => originalTurns.some((o) => bufferTurnsEqual(t, o));
+        const others = (entry.retainedTurns ?? []).filter((t) => !isOwn(t));
+        if (!Array.isArray(turns) || turns.length === 0 || max <= 0) { if (others.length > 0) entry.retainedTurns = others; else delete entry.retainedTurns; }
+        else entry.retainedTurns = [...others, ...turns.slice(-max).map(copyBufferTurn)];
+      } else if (!Array.isArray(turns) || turns.length === 0 || max <= 0) {
         delete entry.retainedTurns;
       } else {
-        // Guard `slice(-max)` against `max === 0` (CLAUDE.md gotcha 27):
-        // `slice(-0)` equals `slice(0)` and would return ALL entries. We
-        // already early-return above when max <= 0.
-        const tail = turns.slice(-max);
-        // Explicit copying excludes untrusted prototype keys.
-        entry.retainedTurns = tail.map(copyBufferTurn);
+        entry.retainedTurns = turns.slice(-max).map(copyBufferTurn);
       }
       await this.saveUnlocked();
     });
   }
-
 
   /**
    * Return the current retention window (issue #562, PR 2). Primarily for

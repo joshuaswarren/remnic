@@ -42,9 +42,9 @@ import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
 
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
-import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, scopeProfileSelfNamespace, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
+import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
-import { canWriteNamespace } from "../namespaces/principal.js";
+import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
 import { resolvePrincipal } from "../namespaces/principal.js";
 import {
   BulkImportBatchPartialFailureError,
@@ -407,11 +407,7 @@ export class TurnIngestionCoordinator {
     }
   }
 
-  /**
-   * #3251 buffered capture mode: durable scope-pinned admission into the
-   * extraction buffer; extraction runs only on the buffer's native trigger,
-   * and the await settles at durability — never at LLM completion.
-   */
+  /** #3251 buffered capture: durable scope-pinned admission; await settles at durability. */
   private async ingestReplayBatchBuffered(
     bySession: Map<string, BufferTurn[]>,
     options: {
@@ -425,6 +421,21 @@ export class TurnIngestionCoordinator {
       onExtractionQueued?: (extraction: Promise<void>) => void;
     },
   ): Promise<void> {
+    // #3251: resolve the original actual storage target ONCE at method entry,
+    // BEFORE any LCM archival or buffer admission. Explicit override is
+    // authoritative; otherwise namespaces OFF → the collapsed default store;
+    // namespaces ON → the plan's writeNamespace. Reject before any side
+    // effect if neither is available.
+    const resolvedWriteTarget =
+      options.writeNamespaceOverride ??
+      (resolveNamespaceCapabilities(this.deps.config).namespaces === true
+        ? options.scopeProfileWritePlan?.writeNamespace
+        : this.deps.config.defaultNamespace);
+    if (!resolvedWriteTarget) {
+      throw new ReplayAdmissionRefusedError(
+        "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
+      );
+    }
     for (const [bufferKey, sessionTurns] of bySession) {
       // No top-level abort check: cancellation applies to the background
       // extraction, never to the durable capture or save barrier (#3251).
@@ -441,9 +452,8 @@ export class TurnIngestionCoordinator {
         );
       }
       for (const turn of sessionTurns) {
-        const pinned: BufferTurn = { ...turn, acceptedCapture: true };
+        const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
         if (options.codingContext) pinned.codingContext = options.codingContext;
-        if (options.writeNamespaceOverride) pinned.writeNamespaceOverride = options.writeNamespaceOverride;
         if (options.principalOverride) pinned.principalOverride = options.principalOverride;
         if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
         const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
@@ -483,8 +493,17 @@ export class TurnIngestionCoordinator {
     },
   ): void {
     for (const group of groupTurnsByExtractionScope(extractionTurns)) {
-      // Settles when the EXTRACTION settles (not at enqueue time) — the
-      // observe tracker awaits this to know when in-flight work is done.
+      const groupIsAccepted = group.turns.some((turn) => turn.acceptedCapture === true);
+      if (!groupIsAccepted) {
+        // Native groups keep their own routing; skipped accepted prefixes require identity clearing.
+        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
+          bufferKey,
+          clearMatchingTurns: true,
+        }).catch((err) => log.error(`native trigger extraction failed: ${err}`));
+        continue;
+      }
+      // Accepted groups use ONLY their own pins — no fallback to the
+      // triggering observe's scope.
       const extraction = new Promise<void>((resolve, reject) => {
         void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
           bufferKey,
@@ -496,9 +515,11 @@ export class TurnIngestionCoordinator {
           forceExtractionAttempt: true,
           abortSignal: options.abortSignal,
           extractionDeadlineMs: options.deadlineMs,
-          writeNamespaceOverride: group.writeNamespaceOverride ?? options.writeNamespaceOverride,
-          principalOverride: group.principalOverride ?? options.principalOverride,
-          scopeProfileWritePlan: group.scopeProfileWritePlan ?? options.scopeProfileWritePlan,
+          writeNamespaceOverride: group.writeNamespaceOverride,
+          principalOverride: group.principalOverride,
+          // #3251: accepted groups with no plan pin dispatch null (explicit
+          // none) — not undefined which would re-resolve the CURRENT profile.
+          scopeProfileWritePlan: group.scopeProfileWritePlan ?? null,
           onTaskSettled: (err) => (err ? reject(err) : resolve()),
         }).catch(reject);
       });
@@ -995,7 +1016,7 @@ export class TurnIngestionCoordinator {
                   this.deps.config.defaultNamespace,
                 )
               : null;
-            const baseNamespace = scopeProfileSelfNamespace(principal, this.deps.config);
+            const baseNamespace = defaultNamespaceForPrincipal(principal, this.deps.config);
             const projectNamespace =
               overlay && this.deps.config.codingMode
                 ? combineNamespaces(baseNamespace, overlay.namespace)

@@ -81,7 +81,7 @@ function derivedScopeProfileSelfNamespace(principal: string | undefined, config:
   return "principal-" + createHash("sha256").update(principal).digest("hex").slice(0, 54);
 }
 
-export function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
+function scopeProfileSelfNamespace(principal: string | undefined, config: PluginConfig): string {
   const existing = defaultNamespaceForPrincipal(principal, config);
   if (normalizeNamespaceIdentity(existing) !== normalizeNamespaceIdentity(config.defaultNamespace)) return existing;
   return derivedScopeProfileSelfNamespace(principal, config) ?? existing;
