@@ -1914,11 +1914,9 @@ test("#3251 profile-scoped force flush keeps accepted no-plan captures explicitl
   const calls = stubExtraction(orchestrator, (turns) =>
     singleFactResult(turns.map((turn) => turn.content).join(" | ")),
   );
-  // SAFETY: observe the established private extraction delegate without replacing its behavior.
-  const seam = orchestrator as unknown as Pick<TurnIngestionDeps, "runExtraction">;
-  const runExtraction = seam.runExtraction.bind(orchestrator);
+  const runExtraction = orchestrator["runExtraction"].bind(orchestrator);
   const plans: Array<ResolvedScopeProfilePlan | null | undefined> = [];
-  seam.runExtraction = async (turns, options) => {
+  orchestrator["runExtraction"] = async (turns, options) => {
     plans.push(options?.scopeProfileWritePlan);
     return runExtraction(turns, options);
   };
