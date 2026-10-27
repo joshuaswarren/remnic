@@ -60,8 +60,7 @@ export class ExtractionQueueCoordinator {
   enqueue(task: () => Promise<void>, options?: { front?: boolean }): boolean {
     if (!this.accepting) return false;
     if (options?.front) {
-      this.runningPreempt?.();
-      this.runningPreempt = undefined;
+      this.preemptRunning();
       this.queue.unshift(task);
     } else {
       this.queue.push(task);
@@ -83,6 +82,12 @@ export class ExtractionQueueCoordinator {
 
   endPreemptable(): void {
     this.runningPreempt = undefined;
+  }
+
+  preemptRunning(): void {
+    const abort = this.runningPreempt;
+    this.runningPreempt = undefined;
+    abort?.();
   }
   runPreemptable<T>(
     preemptable: boolean,

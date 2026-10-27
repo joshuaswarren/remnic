@@ -281,7 +281,8 @@ test("flush preemption waits for admission and does not cancel the preparation",
   tracker.track(tracker.key("session-a", "alice", "default"), extraction, controller);
   let waited = false;
   const pending = tracker.wait(
-    "session-a", "alice", "default", undefined, undefined, undefined, preemptedExtractionError(),
+    "session-a", "alice", "default", undefined, undefined, undefined,
+    () => controller.abort(preemptedExtractionError()),
   ).then(() => { waited = true; });
   await Promise.resolve();
   assert.equal(waited, false);
