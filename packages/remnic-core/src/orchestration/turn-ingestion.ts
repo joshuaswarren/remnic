@@ -925,10 +925,7 @@ export class TurnIngestionCoordinator {
       scheduleQueueWaitTimeout();
     }
     if (settled) return;
-    // A force-flush must stay preemptable: its own enqueue already ran preemptRunning
-    // before this task starts, and a later flush has to abort this one if the deadline
-    // leaves it holding the serial queue.
-    const preemptable = options.preemptable === true || options.preemptRunning === true;
+    const preemptable = options.preemptable === true && options.preemptRunning !== true;
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
       await this.deps.extractionQueueCoordinator.runPreemptable(preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
