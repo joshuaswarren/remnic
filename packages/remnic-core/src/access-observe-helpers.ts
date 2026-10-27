@@ -180,14 +180,22 @@ export class PendingObserveExtractionTracker {
       reservation.cancelled = true;
     }
 
+    this.abortTracked(sessionKey, principal, namespace, reason);
+  }
+
+  private abortTracked(
+    sessionKey: string,
+    principal: string | undefined,
+    namespace: string | undefined,
+    reason?: Error,
+  ): void {
     for (const [key, entry] of this.entries) {
       const [entrySessionKey, entryPrincipal, entryNamespace] = key.split("\u0000");
       if (
         entrySessionKey !== sessionKey ||
         (principal !== undefined && entryPrincipal !== (principal ?? "")) ||
         (namespace !== undefined && entryNamespace !== (namespace ?? ""))
-      )
-        continue;
+      ) continue;
       for (const controller of entry.controllers) controller.abort(reason);
     }
   }
@@ -199,6 +207,7 @@ export class PendingObserveExtractionTracker {
     abortSignal?: AbortSignal,
     registerCancellation?: (cancel: () => void) => void,
     scopeHint?: string,
+    preemptReason?: Error,
   ): Promise<void> {
     const key = this.key(sessionKey, principal, namespace);
     const abortTracked = (): void => {
@@ -208,6 +217,7 @@ export class PendingObserveExtractionTracker {
     abortSignal?.addEventListener("abort", abortTracked, { once: true });
     try {
       await this.waitForPreparations(sessionKey, principal, namespace, scopeHint);
+      if (preemptReason) this.abortTracked(sessionKey, principal, namespace, preemptReason);
       while (true) {
         const entry = this.entries.get(key);
         if (!entry) return;

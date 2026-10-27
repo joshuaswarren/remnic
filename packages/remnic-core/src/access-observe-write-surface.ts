@@ -30,7 +30,7 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
-import { abortError } from "./abort-error.js";
+import { abortError, preemptedExtractionError } from "./abort-error.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -937,7 +937,8 @@ export class AccessObserveWriteSurface {
           namespace,
           abortSignal,
           registerCancellation,
-          scopeHint
+          scopeHint,
+          preemptedExtractionError(),
         )
     );
   }

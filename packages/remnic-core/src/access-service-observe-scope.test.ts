@@ -271,6 +271,27 @@ test("cancelling a tracked extraction with a preemption reason does not block th
   await tracker.wait("session-a", "alice", "default");
 });
 
+test("flush preemption waits for admission and does not cancel the preparation", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-a");
+  const controller = new AbortController();
+  const extraction = new Promise<void>((_resolve, reject) => {
+    controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+  });
+  tracker.track(tracker.key("session-a", "alice", "default"), extraction, controller);
+  let waited = false;
+  const pending = tracker.wait(
+    "session-a", "alice", "default", undefined, undefined, undefined, preemptedExtractionError(),
+  ).then(() => { waited = true; });
+  await Promise.resolve();
+  assert.equal(waited, false);
+  assert.equal(preparation.isCancelled(), false);
+  preparation.release();
+  await pending;
+  assert.equal(waited, true);
+  assert.equal(preparation.isCancelled(), false);
+});
+
 test("#2206 scoped wait ignores unresolved preparations with a different hint", async () => {
   const tracker = new PendingObserveExtractionTracker();
   const target = tracker.reserve("opaque-session", "projectTag:project-a");

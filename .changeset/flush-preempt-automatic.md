@@ -2,6 +2,6 @@
 "@remnic/core": patch
 ---
 
-A fail-closed force-flush aborts the in-flight observe extraction before waiting, then runs next. Replay and import stay protected. Buffer clears disarm preemption first, so an abort cannot drop accepted turns the flush still needs (#3259).
+A fail-closed force-flush waits for observe admission, then aborts only the in-flight extraction and drains the preserved turns. It does not cancel the preparation barrier. Replay and import stay protected, and buffer clears disarm preemption first (#3259).
 
 Stability: stable
