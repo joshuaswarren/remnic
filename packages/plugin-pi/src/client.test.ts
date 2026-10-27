@@ -211,6 +211,100 @@ test("RemnicClient reports invalid JSON clearly for successful daemon responses"
   );
 });
 
+// ---------------------------------------------------------------------------
+// Issue #3257: liveness probes /engram/v1/live, legacy /health only on 404
+// ---------------------------------------------------------------------------
+
+function headerValue(headers: HeadersInit | undefined, name: string): string | undefined {
+  if (!headers || Array.isArray(headers) || headers instanceof Headers) return undefined;
+  return headers[name];
+}
+
+test("RemnicClient.live targets /engram/v1/live with the bearer token", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ url: string; auth: string | undefined }> = [];
+  globalThis.fetch = async (input, init) => {
+    seen.push({ url: String(input), auth: headerValue(init?.headers, "Authorization") });
+    return new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient({ ...baseConfig(), authToken: "tok" });
+
+  assert.deepEqual(await client.live({ timeoutMs: 1000 }), { ok: true, ready: true });
+  assert.deepEqual(seen, [{ url: "http://127.0.0.1:4318/engram/v1/live", auth: "Bearer tok" }]);
+});
+
+test("RemnicClient.live falls back to legacy /health only on 404, within one budget", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    urls.push(String(input));
+    if (String(input).endsWith("/engram/v1/live")) return new Response("not found", { status: 404 });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+
+  assert.deepEqual(await client.live({ timeoutMs: 5000 }), { ok: true });
+  assert.deepEqual(urls, [
+    "http://127.0.0.1:4318/engram/v1/live",
+    "http://127.0.0.1:4318/engram/v1/health",
+  ]);
+});
+
+test("RemnicClient.live never re-probes 503 not_ready", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response(
+      JSON.stringify({ ok: false, ready: false, code: "not_ready" }),
+      { status: 503, statusText: "Service Unavailable" },
+    );
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+
+  await assert.rejects(
+    () => client.live({ timeoutMs: 1000 }),
+    (err) => {
+      assert.ok(err instanceof RemnicHttpError);
+      assert.equal(err.status, 503);
+      assert.equal(err.code, "not_ready");
+      return true;
+    },
+  );
+  assert.equal(calls, 1, "503 must be a final answer with no legacy retry");
+});
+
+test("RemnicClient.live surfaces 404 when the legacy path is also missing", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("not found", { status: 404 });
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+
+  await assert.rejects(
+    () => client.live({ timeoutMs: 1000 }),
+    (err) => {
+      assert.ok(err instanceof RemnicHttpError);
+      assert.equal(err.status, 404);
+      return true;
+    },
+  );
+});
+
 
 // ---------------------------------------------------------------------------
 // Issue #1600: 413 on large turns — observe chunking & truncation

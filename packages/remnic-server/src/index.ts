@@ -16,6 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
+import { probeAuthenticatedLiveness } from "./liveness-probe.js";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 import { envOverrides } from "./server-env.js";
 import {
@@ -1053,19 +1054,11 @@ export async function runServerHealthcheck(options?: {
   });
   const token = resolveHealthcheckToken(parsedServerConfig.authToken);
   if (!token) return false;
-
-  try {
-    const response = await fetch(
-      `http://127.0.0.1:${parsedServerConfig.port}/engram/v1/health`,
-      {
-        headers: { authorization: `Bearer ${token}` },
-        signal: AbortSignal.timeout(timeoutMs),
-      },
-    );
-    return response.status === 200;
-  } catch {
-    return false;
-  }
+  return probeAuthenticatedLiveness(
+    `http://127.0.0.1:${parsedServerConfig.port}`,
+    token,
+    timeoutMs,
+  );
 }
 
 // ── CLI entry point ──────────────────────────────────────────────────────────

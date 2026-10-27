@@ -16,6 +16,9 @@ export function checkDaemonHealth(
     if (!Number.isFinite(safePort) || safePort < 1 || safePort > 65535) return false;
 
     const bareHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+    // One 3 s aggregate budget: /engram/v1/live, and only a 404 (daemon older
+    // than the live route) retries the legacy diagnostic path with the
+    // remaining time. 401/503/other statuses are final answers, never re-probed.
     const script = [
       "const env = process['env'];",
       "const protocol = env.REMNIC_HEALTH_PROTOCOL;",
@@ -23,13 +26,23 @@ export function checkDaemonHealth(
       "const transport = require(protocol);",
       "const headers = {};",
       "if (env.REMNIC_HEALTH_TOKEN) headers['authorization'] = 'Bearer ' + env.REMNIC_HEALTH_TOKEN;",
-      "const req = transport.get({",
-      "  host: env.REMNIC_HEALTH_HOST,",
-      "  port: parseInt(env.REMNIC_HEALTH_PORT, 10),",
-      "  path: '/engram/v1/health', headers, timeout: 3000,",
-      "}, (res) => { process.exit(res.statusCode === 200 ? 0 : res.statusCode === 401 ? 2 : 1); });",
-      "req.on('error', () => process.exit(1));",
-      "req.on('timeout', () => { req.destroy(); process.exit(1); });",
+      "const exitFor = (status) => process.exit(status === 200 ? 0 : status === 401 ? 2 : 1);",
+      "const attempt = (path, timeoutMs, onStatus) => {",
+      "  const req = transport.get({",
+      "    host: env.REMNIC_HEALTH_HOST,",
+      "    port: parseInt(env.REMNIC_HEALTH_PORT, 10),",
+      "    path, headers, timeout: timeoutMs,",
+      "  }, (res) => { res.resume(); onStatus(res.statusCode); });",
+      "  req.on('error', () => process.exit(1));",
+      "  req.on('timeout', () => { req.destroy(); process.exit(1); });",
+      "};",
+      "const deadline = Date.now() + 3000;",
+      "attempt('/engram/v1/live', 3000, (status) => {",
+      "  if (status !== 404) exitFor(status);",
+      "  const remaining = deadline - Date.now();",
+      "  if (remaining <= 0) process.exit(1);",
+      "  attempt('/engram/v1/health', remaining, exitFor);",
+      "});",
     ].join("\n");
     const env: NodeJS.ProcessEnv = mergeEnv({
       REMNIC_HEALTH_HOST: bareHost,

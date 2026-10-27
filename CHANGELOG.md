@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Server, connector, remote CLI, hook-runner and Pi-plugin liveness checks use authenticated, readiness-gated `/engram/v1/live`, so slow diagnostic health work does not falsely mark a reachable daemon unavailable and skip recall or observe. Daemons predating the live route are still reachable: probes retry the legacy `/engram/v1/health` path only on 404, within the original single deadline, while authentication and 503 `not_ready` answers stay final. Existing authentication, timeouts and startup status gates remain intact; detailed health readers are unchanged (#3257).
+
 ## [v10.0.32] — 2026-10-27
 
 ### Fixes

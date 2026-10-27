@@ -173,7 +173,7 @@ test("probeDaemonHealth targets the remote https origin with the bearer token", 
 
     assert.deepEqual(probe, { ok: true, status: 200 });
     assert.equal(calls.length, 1);
-    assert.equal(calls[0]?.url, "https://example.test/engram/v1/health");
+    assert.equal(calls[0]?.url, "https://example.test/engram/v1/live");
     assert.equal(
       (calls[0]?.init?.headers as Record<string, string>).authorization,
       "Bearer tok",
@@ -188,6 +188,34 @@ test("probeDaemonHealth reports non-ok statuses without throwing", async () => {
   try {
     const probe = await probeDaemonHealth("https://example.test", undefined);
     assert.deepEqual(probe, { ok: false, status: 401 });
+  } finally {
+    restore();
+  }
+});
+
+test("probeDaemonHealth retries legacy /health only on 404 (#3257)", async () => {
+  const { calls, restore } = mockFetch((url) =>
+    url.pathname === "/engram/v1/live"
+      ? new Response("not found", { status: 404 })
+      : jsonResponse(200, { ok: true }));
+  try {
+    const probe = await probeDaemonHealth("https://example.test", "tok");
+    assert.deepEqual(probe, { ok: true, status: 200 });
+    assert.deepEqual(calls.map((c) => c.url), [
+      "https://example.test/engram/v1/live",
+      "https://example.test/engram/v1/health",
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+test("probeDaemonHealth treats 503 as final with no legacy retry (#3257)", async () => {
+  const { calls, restore } = mockFetch(() => jsonResponse(503, { ok: false, ready: false, code: "not_ready" }));
+  try {
+    const probe = await probeDaemonHealth("https://example.test", "tok");
+    assert.deepEqual(probe, { ok: false, status: 503 });
+    assert.deepEqual(calls.map((c) => c.url), ["https://example.test/engram/v1/live"]);
   } finally {
     restore();
   }

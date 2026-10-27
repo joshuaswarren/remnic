@@ -114,7 +114,7 @@ function cursorPath(home, sessionId) {
 test("session-start: healthy server returns recall context with codingContext cleared outside a repo", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res, body) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "remembered preferences", count: 3, mode: "auto" }),
@@ -144,7 +144,7 @@ test("session-start: falls back to minimal mode when full recall fails", async (
   const home = mkHome();
   let recallHits = 0;
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       recallHits += 1;
       if (recallHits === 1) return res.writeHead(500).end("boom");
@@ -168,7 +168,7 @@ test("session-start: falls back to minimal mode when full recall fails", async (
 test("session-start: no token → guidance message, no recall call", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     res.writeHead(200).end("{}");
   });
   try {
@@ -710,7 +710,7 @@ test("pre-compact: REMNIC_NAMESPACE attaches a namespace to the flush (#1571)", 
 test("session-start: REMNIC_DAEMON_URL routes recall to the remote base URL (#1571)", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "remote recall", count: 1, mode: "auto" }),
@@ -1066,7 +1066,7 @@ test("session-start: a path-prefixed REMNIC_DAEMON_URL routes under the prefix (
   // plugin-pi's daemon-URL + route concatenation).
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/remnic/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/remnic/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/remnic/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "prefixed recall", count: 1, mode: "auto" }),
@@ -1091,7 +1091,7 @@ test("session-start: a path-prefixed REMNIC_DAEMON_URL routes under the prefix (
       "recall honored the /remnic path prefix",
     );
     assert.ok(
-      calls.some((c) => c.url === "/remnic/engram/v1/health"),
+      calls.some((c) => c.url === "/remnic/engram/v1/live"),
       "health check honored the /remnic path prefix",
     );
   } finally {
@@ -1106,7 +1106,7 @@ test("session-start: REMNIC_NAMESPACE scopes the recall body (#1571 review, pari
   // install recalls from the default key while observing to the namespaced key.
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "namespaced recall", count: 1, mode: "auto" }),
@@ -1160,7 +1160,7 @@ test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 still takes a FREE lock (doe
 });
 
 // ── daemon auth: health probe + canonical env credentials ──────────────────
-// An auth-gated daemon 401s EVERY route, including /engram/v1/health. An
+// An auth-gated daemon 401s EVERY route, including /engram/v1/live. An
 // unauthenticated probe therefore makes the hook report "daemon not running"
 // and skip recall/observe entirely. The credential itself has to be findable:
 // the documented standalone-server setup authenticates the daemon with
@@ -1170,7 +1170,7 @@ test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 still takes a FREE lock (doe
 function authServer() {
   const seen = { health: "unset", recall: "unset" };
   return startServer((req, res) => {
-    if (req.url === "/engram/v1/health") {
+    if (req.url === "/engram/v1/live") {
       seen.health = req.headers.authorization || null;
       return res.writeHead(200).end("ok");
     }
