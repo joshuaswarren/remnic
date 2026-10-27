@@ -42,6 +42,10 @@ export async function extractionForceFlush(
   const deadlineAt = typeof request.deadlineMs === "number"
     ? (request.deadlineMs > 1e11 ? request.deadlineMs : Date.now() + request.deadlineMs)
     : undefined;
+  const drainAbort = new AbortController();
+  const drainSignal = request.abortSignal
+    ? AbortSignal.any([request.abortSignal, drainAbort.signal])
+    : drainAbort.signal;
 
   const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
   throwIfAborted(request.abortSignal, "extraction force-flush aborted");
@@ -154,7 +158,7 @@ export async function extractionForceFlush(
       () =>
         deps.orchestrator.flushSession(request.sessionKey, {
           reason: "access_force_flush",
-          abortSignal: request.abortSignal,
+          abortSignal: drainSignal,
           failOnExtractionFailure: true,
           extractionDeadlineMs: deadlineAt,
           writeNamespaceOverride: scope.writeNamespace,
@@ -171,7 +175,10 @@ export async function extractionForceFlush(
         extractionDeadlineMs: deadlineAt,
         reason: "access_force_flush",
         deadlineStage: "buffer_drain",
-        onDeadline: cancelScopedPendingObserveExtractions,
+        onDeadline: () => {
+          drainAbort.abort();
+          cancelScopedPendingObserveExtractions();
+        },
       }
     );
     // A flush with no buffered turns still consumes the lifecycle write;
