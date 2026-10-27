@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Local LLM concurrency limiter no longer lets new recall-critical work take the last permit while a background waiter is queued, and the dispatch loop admits eligible waiters behind a temporarily ineligible head without reordering within a class.
+
 ## [v10.0.31] — 2026-10-27
 
 ### Fixes
