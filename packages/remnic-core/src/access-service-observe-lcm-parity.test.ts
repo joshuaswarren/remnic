@@ -465,7 +465,9 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
     "the orchestrator deadline is the duration converted at force-flush entry",
   );
   assert.equal(call.options.failOnExtractionFailure, true);
-  assert.equal(call.options.abortSignal, abortController.signal);
+  assert.equal(call.options.abortSignal.aborted, false);
+  abortController.abort();
+  assert.equal(call.options.abortSignal.aborted, true);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(
     probe.orch.getCodingContextForSession("pi-geek:force-flush"),
