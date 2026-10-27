@@ -24,6 +24,7 @@ import {
   liveTurnsFromExtractionSnapshot,
   matchingQueuedExtractionPrefixLength,
   probeWithTimeout,
+  selectRetainedDeferredTurns,
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
@@ -948,16 +949,11 @@ export class SmartBuffer {
     await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
-      if (originalTurns !== undefined) {
-        const isOwn = (t: BufferTurn): boolean => originalTurns.some((o) => bufferTurnsEqual(t, o));
-        const others = (entry.retainedTurns ?? []).filter((t) => !isOwn(t));
-        if (!Array.isArray(turns) || turns.length === 0 || max <= 0) { if (others.length > 0) entry.retainedTurns = others; else delete entry.retainedTurns; }
-        else entry.retainedTurns = [...others, ...turns.slice(-max).map(copyBufferTurn)];
-      } else if (!Array.isArray(turns) || turns.length === 0 || max <= 0) {
-        delete entry.retainedTurns;
-      } else {
-        entry.retainedTurns = turns.slice(-max).map(copyBufferTurn);
-      }
+      const retained = selectRetainedDeferredTurns(
+        entry.retainedTurns ?? [], turns, max, originalTurns,
+      );
+      if (retained.length > 0) entry.retainedTurns = retained;
+      else delete entry.retainedTurns;
       await this.saveUnlocked();
     });
   }
@@ -1027,7 +1023,10 @@ export class SmartBuffer {
         }
         // Equal write namespaces can still belong to different project bindings.
         if (options.scopeProfileWritePlan) {
-          if (scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan)) {
+          if (
+            scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan) &&
+            !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)
+          ) {
             return false;
           }
           const ctx = options.codingContext;

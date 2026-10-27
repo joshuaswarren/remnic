@@ -502,13 +502,14 @@ export class SessionContextCoordinator {
       ) {
         return false;
       }
-      // #3251: a flush pinned to a scope profile drains only captures pinned
-      // to the SAME profile identity AND the SAME original coding binding —
-      // same session+owner under another project/profile never combines. A
-      // flush without a plan drains all.
+      // Existing profile pins require the same profile and project binding.
+      // Accepted no-plan captures stay unprofiled within the matching namespace.
       const flushPlanIdentity = scopeProfilePlanIdentity(options.scopeProfileWritePlan);
       if (flushPlanIdentity !== "") {
-        if (scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== flushPlanIdentity) {
+        if (
+          scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== flushPlanIdentity &&
+          !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)
+        ) {
           return false;
         }
         if (
@@ -604,7 +605,9 @@ export class SessionContextCoordinator {
           extractionDeadlineMs: options.extractionDeadlineMs,
           writeNamespaceOverride: group.writeNamespaceOverride ?? options.writeNamespaceOverride,
           principalOverride: group.principalOverride ?? options.principalOverride,
-          scopeProfileWritePlan: group.scopeProfileWritePlan ?? options.scopeProfileWritePlan,
+          scopeProfileWritePlan: group.turns.some((turn) => turn.acceptedCapture === true)
+            ? group.scopeProfileWritePlan ?? null
+            : group.scopeProfileWritePlan ?? options.scopeProfileWritePlan,
           clearMatchingTurns: options.clearMatchingTurns === true || scopedRequest || groupPinned || needsIdentityClear,
           onDurableCommit: options.onCommitted,
           onTaskSettled: (error) => (error ? reject(error) : resolve()),

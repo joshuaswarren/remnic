@@ -134,6 +134,20 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
   );
 }
 
+/** Replace only the processed snapshot; callers without one retain legacy whole-slot semantics. */
+export function selectRetainedDeferredTurns(
+  existing: readonly BufferTurn[],
+  turns: BufferTurn[],
+  max: number,
+  originalTurns?: readonly BufferTurn[],
+): BufferTurn[] {
+  const others = originalTurns === undefined ? [] : existing.filter(
+    (turn) => !originalTurns.some((original) => bufferTurnsEqual(turn, original)),
+  );
+  if (!Array.isArray(turns) || max <= 0) return others;
+  return [...others, ...turns.slice(-max).map(copyBufferTurn)];
+}
+
 /** Stable identity string for a pinned scope-profile plan (#3251). */
 export function scopeProfilePlanIdentity(
   plan: BufferTurn["scopeProfileWritePlan"],
