@@ -85,15 +85,15 @@ export class ExtractionQueueCoordinator {
     this.runningPreempt = undefined;
   }
   runPreemptable<T>(
-    failClosed: boolean,
+    preemptable: boolean,
     parent: AbortSignal | undefined,
     run: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     const preempt = new AbortController();
-    if (!failClosed) this.beginPreemptable(() => preempt.abort());
+    if (preemptable) this.beginPreemptable(() => preempt.abort());
     const signal = parent ? AbortSignal.any([parent, preempt.signal]) : preempt.signal;
     return Promise.resolve(run(signal)).finally(() => {
-      if (!failClosed) this.endPreemptable();
+      if (preemptable) this.endPreemptable();
     });
   }
 

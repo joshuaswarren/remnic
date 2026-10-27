@@ -3043,13 +3043,8 @@ export class Orchestrator {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to

@@ -251,3 +251,22 @@ test("a front enqueue aborts the running automatic task and runs before queued w
   assert.deepEqual(order, ["flush", "queued"]);
 });
 
+test("a front enqueue does not abort a task that did not register as preemptable", async () => {
+  const coordinator = createCoordinator();
+  const order: string[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  coordinator.enqueue(async () => {
+    started.resolve();
+    await release.promise;
+    order.push("protected");
+  });
+  await started.promise;
+  coordinator.enqueue(async () => {
+    order.push("flush");
+  }, { front: true });
+  release.resolve();
+  await coordinator.waitForIdle();
+  assert.deepEqual(order, ["protected", "flush"]);
+});
+

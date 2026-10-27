@@ -446,12 +446,10 @@ export class ExtractionRunCoordinator {
       bufferKey?: string;
       abortSignal?: AbortSignal;
       failOnExtractionFailure?: boolean;
-      /**
-       * Called immediately after durable extraction persistence returns, before
-       * any metadata, retention, or helper work. Lifecycle callers use this
-       * as the write-rate-limit commit boundary.
-       */
+      /** Write-rate commit boundary, after persistence returns. */
       onDurableCommit?: () => void;
+      /** Disarm preemption once persistence can no longer be aborted. */
+      onBeforePersist?: () => void;
       /**
        * Explicit namespace override for the write path (#460).  When set, this
        * is the namespace where extraction writes go instead of the one derived
@@ -1063,6 +1061,7 @@ export class ExtractionRunCoordinator {
       }
     }
     const originContext = deriveExtractionOriginContext(targetTurns, result.sourceConnector);
+    options.onBeforePersist?.();
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
