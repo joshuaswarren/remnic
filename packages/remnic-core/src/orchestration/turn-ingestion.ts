@@ -17,7 +17,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { abortError } from "../abort-error.js";
+import { abortError, isPreemptedExtraction } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -101,13 +101,8 @@ export interface TurnIngestionDeps {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -230,7 +225,7 @@ export class TurnIngestionCoordinator {
     await this.deps.queueBufferedExtraction(
       outcome.extractionTurns,
       "trigger_mode",
-      { bufferKey },
+      { bufferKey, preemptable: true },
     );
   }
 
@@ -496,6 +491,7 @@ export class TurnIngestionCoordinator {
         void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
           bufferKey,
           clearMatchingTurns: true,
+          preemptable: true,
         }).catch((err) => log.error(`native trigger extraction failed: ${err}`));
         continue;
       }
@@ -513,9 +509,8 @@ export class TurnIngestionCoordinator {
           extractionDeadlineMs: options.deadlineMs,
           writeNamespaceOverride: group.writeNamespaceOverride,
           principalOverride: group.principalOverride,
-          // #3251: accepted groups with no plan pin dispatch null (explicit
-          // none) — not undefined which would re-resolve the CURRENT profile.
           scopeProfileWritePlan: group.scopeProfileWritePlan ?? null,
+          preemptable: true,
           onTaskSettled: (err) => (err ? reject(err) : resolve()),
         }).catch(reject);
       });
@@ -807,6 +802,7 @@ export class TurnIngestionCoordinator {
         }
         await this.deps.queueBufferedExtraction(turns, "heartbeat_observer", {
           bufferKey,
+          preemptable: true,
         });
       });
 
@@ -839,13 +835,10 @@ export class TurnIngestionCoordinator {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      /** Automatic buffered work only. Replay and import must not set this. */
+      preemptable?: boolean;
+      /** Fail-closed force-flush only. Not implied by failOnExtractionFailure. */
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -931,8 +924,10 @@ export class TurnIngestionCoordinator {
       };
       scheduleQueueWaitTimeout();
     }
-
+    if (settled) return;
+    const preemptable = options.preemptable === true && options.preemptRunning !== true;
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
+      await this.deps.extractionQueueCoordinator.runPreemptable(preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -1081,7 +1076,8 @@ export class TurnIngestionCoordinator {
           deadlineMs: extractionDeadlineMs,
           bufferKey,
           onDurableCommit: options.onDurableCommit,
-          abortSignal: options.abortSignal,
+          onBeforePersist: () => this.deps.extractionQueueCoordinator.endPreemptable(),
+          abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
@@ -1090,11 +1086,14 @@ export class TurnIngestionCoordinator {
         });
         settleTask(undefined, result);
       } catch (err) {
-        if (settleTask(err)) {
-          throw err;
+        const reason = abortSignal.reason;
+        const settledError = reason instanceof Error && isPreemptedExtraction(reason) ? reason : err;
+        if (settleTask(settledError)) {
+          throw settledError;
         }
       }
-    });
+      });
+    }, { front: options.preemptRunning === true });
     if (!accepted) {
       settleTask(new Error("extraction queue is stopped"));
       return;

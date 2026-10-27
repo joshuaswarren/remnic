@@ -119,7 +119,8 @@ export interface AccessObserveWriteSurfaceDeps {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string
+    scopeHint?: string,
+    reason?: Error,
   ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
@@ -146,9 +147,10 @@ export class AccessObserveWriteSurface {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string
+    scopeHint?: string,
+    reason?: Error,
   ): void {
-    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint);
+    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint, reason);
   }
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
@@ -935,7 +937,8 @@ export class AccessObserveWriteSurface {
           namespace,
           abortSignal,
           registerCancellation,
-          scopeHint
+          scopeHint,
+          () => this.deps.orchestrator.extractionQueueCoordinator?.preemptRunning(),
         )
     );
   }

@@ -34,6 +34,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+import { preemptedExtractionError } from "./abort-error.js";
 
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { resolveAuthorizedNamespaceWritablePreflight } from "./access-namespace-preflight.js";
@@ -248,6 +249,79 @@ test("#2128 pending observe preparation is a force-flush barrier", async () => {
   releaseExtraction();
   await waitPromise;
   assert.equal(waited, true);
+});
+
+test("a preempted observe extraction does not block the next force-flush", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const key = tracker.key("session-a", "alice", "default");
+  tracker.track(key, Promise.reject(preemptedExtractionError()), new AbortController());
+  await tracker.wait("session-a", "alice", "default");
+  tracker.track(key, Promise.reject(new Error("extraction failed")), new AbortController());
+  await assert.rejects(() => tracker.wait("session-a", "alice", "default"), /extraction failed/);
+});
+
+test("cancelling a tracked extraction with a preemption reason does not block the next flush", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const controller = new AbortController();
+  const extraction = new Promise<void>((_resolve, reject) => {
+    controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+  });
+  tracker.track(tracker.key("session-a", "alice", "default"), extraction, controller);
+  tracker.cancel("session-a", "alice", "default", undefined, preemptedExtractionError());
+  await tracker.wait("session-a", "alice", "default");
+});
+
+test("flush preemption waits for admission and does not cancel the preparation", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-a");
+  const controller = new AbortController();
+  const extraction = new Promise<void>((_resolve, reject) => {
+    controller.signal.addEventListener("abort", () => reject(controller.signal.reason), { once: true });
+  });
+  tracker.track(tracker.key("session-a", "alice", "default"), extraction, controller);
+  let waited = false;
+  const pending = tracker.wait(
+    "session-a", "alice", "default", undefined, undefined, undefined,
+    () => controller.abort(preemptedExtractionError()),
+  ).then(() => { waited = true; });
+  await Promise.resolve();
+  assert.equal(waited, false);
+  assert.equal(preparation.isCancelled(), false);
+  preparation.release();
+  await pending;
+  assert.equal(waited, true);
+  assert.equal(preparation.isCancelled(), false);
+});
+
+test("a cancelled flush does not preempt after admission", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const preparation = tracker.reserve("session-a");
+  let preempted = false;
+  let cancel: (() => void) | undefined;
+  const pending = tracker.wait(
+    "session-a", "alice", "default", undefined, (fn) => { cancel = fn; }, undefined, () => { preempted = true; },
+  );
+  await Promise.resolve();
+  cancel?.();
+  preparation.release();
+  await pending;
+  assert.equal(preempted, false);
+  assert.equal(preparation.isCancelled(), true);
+});
+
+test("flush preemption does not wait for a second queued extraction", async () => {
+  const tracker = new PendingObserveExtractionTracker();
+  const first = new AbortController();
+  const firstPromise = new Promise<void>((_resolve, reject) => {
+    first.signal.addEventListener("abort", () => reject(first.signal.reason), { once: true });
+  });
+  const secondPromise = new Promise<void>(() => {});
+  const key = tracker.key("session-a", "alice", "default");
+  tracker.track(key, firstPromise, first);
+  tracker.track(key, secondPromise, new AbortController());
+  await tracker.wait("session-a", "alice", "default", undefined, undefined, undefined, () => {
+    first.abort(preemptedExtractionError());
+  });
 });
 
 test("#2206 scoped wait ignores unresolved preparations with a different hint", async () => {

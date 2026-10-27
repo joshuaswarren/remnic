@@ -112,6 +112,8 @@ test("flushSession queues extraction for the targeted buffered session", async (
   assert.equal(queuedCall.options?.clearBufferAfterExtraction, true);
   assert.equal(queuedCall.options?.skipDedupeCheck, true);
   assert.equal(queuedCall.options?.failOnExtractionFailure, true);
+  assert.equal(queuedCall.options?.preemptRunning, true);
+  assert.equal(queuedCall.options?.preemptable, undefined);
   assert.equal(queuedCall.options?.abortSignal, undefined);
   assert.equal(committed, 1);
 });

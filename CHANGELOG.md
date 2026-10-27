@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- A fail-closed force-flush waits for observe admission, then aborts only the in-flight extraction and drains the preserved turns. It does not cancel the preparation barrier. Replay and import stay protected, and buffer clears disarm preemption first (#3259).
+
 ## [v10.0.32] — 2026-10-27
 
 ### Fixes

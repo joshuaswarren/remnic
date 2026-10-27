@@ -4396,9 +4396,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string
+    scopeHint?: string,
+    reason?: Error,
   ): void {
-    this.accessObserveWriteSurface.cancelPendingObserveExtractions(sessionKey, principal, namespace, scopeHint);
+    this.accessObserveWriteSurface.cancelPendingObserveExtractions(sessionKey, principal, namespace, scopeHint, reason);
   }
   async lcmCompactionRecord(
     request: EngramAccessLcmCompactionRecordRequest
