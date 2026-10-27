@@ -135,7 +135,7 @@ import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-p
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-coordinator.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
-import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
+import { TurnIngestionCoordinator, type IngestReplayBatchOptions, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
@@ -2971,37 +2971,7 @@ export class Orchestrator {
 
   async ingestReplayBatch(
     turns: ReplayTurn[],
-    options: {
-      deadlineMs?: number;
-      archiveLcm?: boolean;
-      abortSignal?: AbortSignal;
-      /**
-       * Pin extraction writes to this namespace instead of deriving one from
-       * `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))` + the
-       * coding overlay (#1495). The access `observe` surface resolves a single
-       * effective scope plan and passes its `writeNamespace` here so the
-       * extracted memories land in the SAME namespace as LCM archival,
-       * objective-state snapshots, and project-scoped recall — without relying
-       * on re-deriving the namespace from a namespace-prefixed session key.
-       * Same hook bulk-import uses (#460).
-       */
-      writeNamespaceOverride?: string;
-      /**
-       * Pin the provenance PRINCIPAL instead of deriving it from
-       * `resolvePrincipal(turn.sessionKey)` (#1495 thread 1). The access
-       * `observe` surface authenticates the caller at the transport layer and
-       * passes its resolved principal here so extracted-memory provenance uses
-       * the SAME identity the surface authorized — independent of storage
-       * routing (`writeNamespaceOverride`) and of whatever `resolvePrincipal`
-       * would parse from the raw session key. Mirrors the recall path's
-       * `principalOverride` (issue #570 PR 4).
-       */
-      principalOverride?: string;
-      /** Forward the observe surface's resolved scope-profile write plan (#3051). */
-      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      /** Persist the authenticated session owner on buffered turns. */
-      sessionOwnerPrincipal?: string;
-    } = {},
+    options: IngestReplayBatchOptions = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.ingestReplayBatch(
       turns,

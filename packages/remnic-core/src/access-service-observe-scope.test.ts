@@ -649,8 +649,9 @@ test("#1495 namespacesEnabled:false ⇒ single-store behavior preserved", async 
   assert.equal(res.namespace, "default");
   // No namespace prefix on the LCM key when the effective ns is the default.
   assert.equal(probe.lcmCalls[0].sessionKey, "pi-geek:abc123");
-  // No override needed when there is only one store.
-  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, undefined);
+  // #3251: ALWAYS pin the resolved writeNamespace even when namespaces are
+  // disabled — the flat capture stores its original actual storage target.
+  assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "default");
   assert.deepEqual(
     new Set(probe.extractionCalls[0].sessionKeys),
     new Set(["pi-geek:abc123"]),

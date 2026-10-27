@@ -225,7 +225,12 @@ test("flushSession preserves retained context for other scoped sessions", async 
     _reason: string,
     options?: Record<string, unknown>,
   ) => {
-    retainedTurns = [makeTurn("session-z", "new session A context", "alice")];
+    // #3251: scoped retainDeferredTurns at the extraction boundary preserves
+    // other-scope retained turns — simulate that here.
+    retainedTurns = [
+      ...retainedTurns.filter((turn) => turn.sessionKey !== "session-z"),
+      makeTurn("session-z", "new session A context", "alice"),
+    ];
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
   };
 
@@ -262,7 +267,11 @@ test("flushSession keeps all other-session retained turns ahead of the scoped ca
     _reason: string,
     options?: Record<string, unknown>,
   ) => {
-    retainedTurns = [makeTurn("session-z", "new session A context", "alice")];
+    // #3251: scoped retainDeferredTurns preserves other-scope retained turns.
+    retainedTurns = [
+      ...retainedTurns.filter((turn) => turn.sessionKey !== "session-z"),
+      makeTurn("session-z", "new session A context", "alice"),
+    ];
     (options?.onTaskSettled as ((error?: unknown) => void) | undefined)?.();
   };
 
@@ -273,8 +282,12 @@ test("flushSession keeps all other-session retained turns ahead of the scoped ca
   });
 
   assert.deepEqual(
-    retainedTurns.map((turn) => turn.content),
+    retainedTurns.filter((turn) => turn.sessionKey === "session-y").map((turn) => turn.content),
     otherSessionTurns.map((turn) => turn.content),
+  );
+  assert.ok(
+    retainedTurns.some((turn) => turn.content === "new session A context"),
+    "own-scope new retained context added alongside preserved others",
   );
 });
 

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Observe captures are saved in the native buffer before acknowledgment, so extraction deadlines and restarts leave accepted work available for retry. Pending extraction preserves its original scope and rechecks current write permissions; explicit replay and extraction-skipping requests keep their existing behavior ([#3251](https://github.com/joshuaswarren/remnic/issues/3251)).
+
 ## [v10.0.8] merged changes — 2026-10-08 to 2026-10-22
 
 Retrospective of 24 PRs merged to `main` through
