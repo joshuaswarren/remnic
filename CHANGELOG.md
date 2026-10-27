@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixes
 
 - Local LLM concurrency limiter no longer lets new recall-critical work take the last permit while a background waiter is queued, and the dispatch loop admits eligible waiters behind a temporarily ineligible head without reordering within a class.
+- Standalone startup readiness warms the default namespace's real QMD collection through the same namespace routing a memory search uses — the legacy flat-root base collection for a flat default store, the suffixed namespaced collection once the default namespace migrates under `namespaces/`, and the backend default when namespaces are disabled — instead of passing the namespace name as a QMD collection and warming a nonexistent target while `/engram/v1/health` reported ready. Legitimately empty corpora still warm on the first attempt, and cancellation/degradation propagation into the degraded gate is unchanged (#3253).
 
 ## [v10.0.31] — 2026-10-27
 
