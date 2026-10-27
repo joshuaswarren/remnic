@@ -15,36 +15,45 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { EngramAccessService, type EngramAccessObserveRequest } from "./access-service.js";
+import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
-function makeBoundaryProbe(memoryDir: string): {
+interface BoundaryProbeIngestBehavior {
+  failNext: Error | null;
+  queued?: (onExtractionQueued: (extraction: Promise<void>) => void) => void;
+  calls: Array<{ sessionKeys: Array<string | undefined>; extractionMode?: string }>;
+}
+
+interface BoundaryProbe {
   orch: Orchestrator;
-  ingestBehavior: {
-    failNext: Error | null;
-    queued?: (onExtractionQueued: (extraction: Promise<void>) => void) => void;
-    calls: Array<{ sessionKeys: Array<string | undefined>; extractionMode?: string }>;
-  };
-} {
+  ingestBehavior: BoundaryProbeIngestBehavior;
+}
+
+function makeBoundaryProbe(memoryDir: string): BoundaryProbe {
   const contexts = new Map<string, CodingContext>();
-  const ingestBehavior = {
-    failNext: null as Error | null,
-    queued: undefined as ((onExtractionQueued: (extraction: Promise<void>) => void) => void) | undefined,
-    calls: [] as Array<{ sessionKeys: Array<string | undefined>; extractionMode?: string }>,
+  const ingestBehavior: BoundaryProbeIngestBehavior = {
+    failNext: null,
+    queued: undefined,
+    calls: [],
   };
-  const config = {
+  const config = parseConfig({
+    memoryDir,
+    transcriptEnabled: false,
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [{ name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] }],
     codingMode: { projectScope: true },
-    memoryDir,
     objectiveStateMemoryEnabled: false,
     objectiveStateSnapshotWritesEnabled: false,
     principalFromSessionKeyMode: "prefix",
     principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
     recallCrossNamespaceBudgetEnabled: false,
-  } as unknown as PluginConfig;
+  });
+  // SAFETY: the probe exercises observe + force-flush with these exact members
+  // (scope resolution, coding context, LCM off-switch, replay capture); the
+  // rest of Orchestrator is unused on this surface.
   const orch = {
     config,
     getCodingContextForSession: (sessionKey: string | undefined) =>
@@ -62,7 +71,10 @@ function makeBoundaryProbe(memoryDir: string): {
     },
     ingestReplayBatch: async (
       turns: Array<{ sessionKey: string }>,
-      options: { extractionMode?: string } = {},
+      options: {
+        extractionMode?: string;
+        onExtractionQueued?: (extraction: Promise<void>) => void;
+      } = {},
     ) => {
       if (ingestBehavior.failNext) {
         const err = ingestBehavior.failNext;
@@ -75,11 +87,15 @@ function makeBoundaryProbe(memoryDir: string): {
       });
       ingestBehavior.queued?.((extraction) => options.onExtractionQueued?.(extraction));
     },
-  } as unknown as Orchestrator;
-  return { orch, ingestBehavior };
+  };
+  // SAFETY: the probe exercises only the observe/force-flush surface used here.
+  const probeOrch = orch as any;
+  return { orch: probeOrch, ingestBehavior };
 }
 
 function observeRequest(overrides: Partial<EngramAccessObserveRequest>): EngramAccessObserveRequest {
+  // SAFETY: observeRequest builds a minimal valid request; the full schema
+  // is enforced by the service at runtime.
   return {
     sessionKey: "pi-geek:abc123",
     messages: [{ role: "user", content: "the release train slips to friday" }],
@@ -114,7 +130,7 @@ test("#3251 a failed durable capture rejects the observe and never commits idemp
 test("#3251 every trigger-queued extraction is tracked: a rejected one surfaces to force-flush, none crash", async () => {
   const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-multi-"));
   const unhandled: unknown[] = [];
-  const onUnhandled = (reason: unknown): void => {
+  const onUnhandled = (reason: Error): void => {
     unhandled.push(reason);
   };
   process.on("unhandledRejection", onUnhandled);
@@ -145,7 +161,7 @@ test("#3251 every trigger-queued extraction is tracked: a rejected one surfaces 
       /first queued extraction failed/,
     );
     assert.deepEqual(
-      unhandled.filter((reason) => reason instanceof Error && /first queued extraction failed/.test(String(reason))),
+      unhandled.filter((reason) => reason instanceof Error && /first queued extraction failed/.test(reason.message)),
       [],
       "tracked rejections must be handled, never crash the process",
     );

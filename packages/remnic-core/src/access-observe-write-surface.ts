@@ -880,7 +880,10 @@ export class AccessObserveWriteSurface {
           scope.principal,
           writeNamespace
         );
-        await this.deps.orchestrator.ingestReplayBatch(turns, {
+        const ingestOptions: Partial<Parameters<Orchestrator["ingestReplayBatch"]>[1]> & {
+          archiveLcm: boolean;
+          extractionMode: "buffered";
+        } = {
           archiveLcm: false,
           extractionMode: "buffered",
           writeNamespaceOverride,
@@ -891,25 +894,24 @@ export class AccessObserveWriteSurface {
           // project identity.
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
-          ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
-            ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
-            : {}),
-          // A cancelled preparation must not park a failed barrier in the
-          // pending-observe tracker: without the hook the abort is logged by
-          // the capture path instead. Every queued promise is tracked
-          // IMMEDIATELY — last-write-wins would orphan earlier rejections.
-          ...(preparationCancelled
-            ? {}
-            : {
-                onExtractionQueued: (extraction: Promise<void>) => {
-                  extraction.catch((err) => {
-                    log.error(`access-observe background extraction failed: ${err}`);
-                  });
-                  this.pendingObserveExtractions.track(trackedExtractionKey, extraction, observeAbortController);
-                  extractionQueued = true;
-                },
-              }),
-        });
+        };
+        if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
+          ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
+        }
+        // A cancelled preparation must not park a failed barrier in the
+        // pending-observe tracker: without the hook the abort is logged by
+        // the capture path instead. Every queued promise is tracked
+        // IMMEDIATELY — last-write-wins would orphan earlier rejections.
+        if (!preparationCancelled) {
+          ingestOptions.onExtractionQueued = (extraction: Promise<void>) => {
+            extraction.catch((err) => {
+              log.error(`access-observe background extraction failed: ${err}`);
+            });
+            this.pendingObserveExtractions.track(trackedExtractionKey, extraction, observeAbortController);
+            extractionQueued = true;
+          };
+        }
+        await this.deps.orchestrator.ingestReplayBatch(turns, ingestOptions);
         // Without a trigger-fired job the capture is durably pending in the
         // buffer and native triggers, lifecycle flush, or an explicit
         // force-flush drain it — the 202 is still truthful.

@@ -488,7 +488,7 @@ export class SessionContextCoordinator {
     // prior semantics (any flush of their session drains them), while a
     // pinned capture is never drained under a different namespace.
     const flushNamespace =
-      typeof options.writeNamespaceOverride === "string"
+      options.writeNamespaceOverride !== undefined
         ? options.writeNamespaceOverride
         : namespacesEnabled && this.deps.config
           ? defaultNamespaceForPrincipal(resolvePrincipal(sessionKey, this.deps.config), this.deps.config)
@@ -497,7 +497,7 @@ export class SessionContextCoordinator {
       if (turn.sessionKey !== sessionKey) return false;
       if (
         namespacesEnabled &&
-        typeof turn.writeNamespaceOverride === "string" &&
+        turn.writeNamespaceOverride !== undefined &&
         turn.writeNamespaceOverride !== flushNamespace
       ) {
         return false;
@@ -589,7 +589,7 @@ export class SessionContextCoordinator {
           if (
             groupPinned &&
             !namespacesOn &&
-            typeof group.writeNamespaceOverride === "string" &&
+            group.writeNamespaceOverride !== undefined &&
             group.writeNamespaceOverride !== this.deps.config?.defaultNamespace
           ) {
             log.warn(

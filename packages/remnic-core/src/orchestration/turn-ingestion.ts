@@ -220,6 +220,13 @@ export class TurnIngestionCoordinator {
 
     if (outcome.decision === "keep_buffering") return;
     if (!outcome.extractionTurns) return;
+    if (outcome.extractionTurns.some((turn) => turn.acceptedCapture === true)) {
+      // #3251: native triggers must not run mixed accepted scopes under one
+      // policy — each scope group drains through the shared execution
+      // boundary with its own pins.
+      this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, {});
+      return;
+    }
     await this.deps.queueBufferedExtraction(
       outcome.extractionTurns,
       "trigger_mode",
@@ -434,18 +441,12 @@ export class TurnIngestionCoordinator {
         );
       }
       for (const turn of sessionTurns) {
-        const pinned: BufferTurn = {
-          ...turn,
-          acceptedCapture: true,
-          ...(options.codingContext ? { codingContext: options.codingContext } : {}),
-          ...(options.writeNamespaceOverride ? { writeNamespaceOverride: options.writeNamespaceOverride } : {}),
-          ...(options.principalOverride ? { principalOverride: options.principalOverride } : {}),
-          ...(options.scopeProfileWritePlan ? { scopeProfileWritePlan: options.scopeProfileWritePlan } : {}),
-        };
-        const outcome =
-          typeof this.deps.buffer.addTurnBounded === "function"
-            ? await this.deps.buffer.addTurnBounded(bufferKey, pinned)
-            : await this.deps.buffer.addTurnWithOutcome(bufferKey, pinned);
+        const pinned: BufferTurn = { ...turn, acceptedCapture: true };
+        if (options.codingContext) pinned.codingContext = options.codingContext;
+        if (options.writeNamespaceOverride) pinned.writeNamespaceOverride = options.writeNamespaceOverride;
+        if (options.principalOverride) pinned.principalOverride = options.principalOverride;
+        if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
+        const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
         if (outcome === null) {
           throw new ReplayAdmissionRefusedError(
             `durable observe capture refused: extraction buffer at entry capacity for ${bufferKey}`,
@@ -457,9 +458,7 @@ export class TurnIngestionCoordinator {
       }
       // Acceptance durability barrier (#1909 seam): surfaces storage failures
       // BEFORE the caller can report acceptance. Not abort-gated.
-      if (typeof this.deps.buffer.flushPendingSave === "function") {
-        await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
-      }
+      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     }
   }
 
@@ -783,6 +782,12 @@ export class TurnIngestionCoordinator {
         log.debug(
           `heartbeat observer trigger: session=${sessionKey} deltaBytes=${decision.deltaBytes} deltaTokens=${decision.deltaTokens}`,
         );
+        if (turns.some((turn) => turn.acceptedCapture === true)) {
+          // #3251: heartbeat triggers must not run mixed accepted scopes
+          // under one policy — per-scope groups via the shared boundary.
+          this.queueBufferedCaptureScopeGroups(turns, bufferKey, {});
+          return;
+        }
         await this.deps.queueBufferedExtraction(turns, "heartbeat_observer", {
           bufferKey,
         });
@@ -951,7 +956,7 @@ export class TurnIngestionCoordinator {
           const pinnedNamespace = acceptedTurn?.writeNamespaceOverride;
           if (
             !namespacesOn &&
-            typeof pinnedNamespace === "string" &&
+            pinnedNamespace !== undefined &&
             pinnedNamespace !== this.deps.config.defaultNamespace
           ) {
             settleTask(undefined, {
@@ -969,10 +974,10 @@ export class TurnIngestionCoordinator {
           // default pins re-check directly — default may be revoked too.
           const firstSessionKey = effectiveTurns[0]?.sessionKey ?? "";
           const principal =
-            typeof options.principalOverride === "string" && options.principalOverride.length > 0
+            options.principalOverride !== undefined && options.principalOverride.length > 0
               ? options.principalOverride
               : resolvePrincipal(firstSessionKey, this.deps.config);
-          if (namespacesOn && typeof pinnedNamespace === "string" && !effectiveScopePlan) {
+          if (namespacesOn && pinnedNamespace !== undefined && !effectiveScopePlan) {
             const originalContext = acceptedTurn?.codingContext ?? null;
             const overlay = originalContext
               ? resolveCodingNamespaceOverlay(

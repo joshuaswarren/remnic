@@ -64,7 +64,7 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.ambientCapture === "boolean") {
     copy.ambientCapture = turn.ambientCapture;
   }
-  if (typeof turn.sourceValidAt === "string") {
+  if (turn.sourceValidAt !== undefined) {
     copy.sourceValidAt = turn.sourceValidAt;
   }
   if (turn.parts !== undefined) {
@@ -73,15 +73,15 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (turn.rawContent !== undefined) {
     copy.rawContent = turn.rawContent;
   }
-  if (typeof turn.sourceFormat === "string") {
+  if (turn.sourceFormat !== undefined) {
     copy.sourceFormat = turn.sourceFormat;
   }
   // #3251 scope pins: strings copy by value; the plan object is an immutable
   // config-derived identity passed by reference.
-  if (typeof turn.writeNamespaceOverride === "string") {
+  if (turn.writeNamespaceOverride !== undefined) {
     copy.writeNamespaceOverride = turn.writeNamespaceOverride;
   }
-  if (typeof turn.principalOverride === "string") {
+  if (turn.principalOverride !== undefined) {
     copy.principalOverride = turn.principalOverride;
   }
   if (turn.scopeProfileWritePlan !== undefined) {
@@ -170,15 +170,16 @@ export function groupTurnsByExtractionScope(turns: BufferTurn[]): ExtractionScop
       turn.codingContext?.defaultBranch ?? "",
     ].join("\u0000");
     const group = groups.get(key);
-    if (group) group.turns.push(turn);
-    else
-      groups.set(key, {
-        ...(turn.writeNamespaceOverride ? { writeNamespaceOverride: turn.writeNamespaceOverride } : {}),
-        ...(turn.principalOverride ? { principalOverride: turn.principalOverride } : {}),
-        ...(turn.scopeProfileWritePlan ? { scopeProfileWritePlan: turn.scopeProfileWritePlan } : {}),
-        ...(turn.codingContext ? { codingContext: turn.codingContext } : {}),
-        turns: [turn],
-      });
+    if (group) {
+      group.turns.push(turn);
+    } else {
+      const created: ExtractionScopeGroup = { turns: [turn] };
+      if (turn.writeNamespaceOverride !== undefined) created.writeNamespaceOverride = turn.writeNamespaceOverride;
+      if (turn.principalOverride !== undefined) created.principalOverride = turn.principalOverride;
+      if (turn.scopeProfileWritePlan !== undefined) created.scopeProfileWritePlan = turn.scopeProfileWritePlan;
+      if (turn.codingContext !== undefined) created.codingContext = turn.codingContext;
+      groups.set(key, created);
+    }
   }
   return [...groups.values()];
 }

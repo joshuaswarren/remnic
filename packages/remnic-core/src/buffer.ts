@@ -600,7 +600,7 @@ export class SmartBuffer {
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
     const isAccepted = (turn: BufferTurn): boolean =>
-      turn.acceptedCapture === true || typeof turn.writeNamespaceOverride === "string";
+      turn.acceptedCapture === true || turn.writeNamespaceOverride !== undefined;
     return (entry?.turns ?? []).some(isAccepted) || (entry?.retainedTurns ?? []).some(isAccepted);
   }
 
@@ -1015,7 +1015,7 @@ export class SmartBuffer {
         : undefined;
     const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces === true;
     const normalizedCleanupNamespace =
-      namespacesEnabled && typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+      namespacesEnabled && options.writeNamespaceOverride !== undefined && options.writeNamespaceOverride.length > 0
         ? options.writeNamespaceOverride
         : undefined;
     const assertLifecycle = (): void => {
@@ -1047,7 +1047,7 @@ export class SmartBuffer {
         // #3251: only PINNED captures are namespace-compared; legacy
         // unpinned retained turns keep prior cleanup semantics.
         if (
-          typeof turn.writeNamespaceOverride === "string" &&
+          turn.writeNamespaceOverride !== undefined &&
           normalizedCleanupNamespace !== undefined &&
           turn.writeNamespaceOverride !== normalizedCleanupNamespace
         ) {

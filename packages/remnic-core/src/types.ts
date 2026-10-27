@@ -2657,6 +2657,7 @@ export interface SourceConnectorProvenance {
   originRole?: "user" | "assistant" | "tool";
 }
 export type { BufferTurn } from "./buffer-turn.js";
+import type { BufferTurn } from "./buffer-turn.js";
 
 export interface BufferEntryState {
   turns: BufferTurn[];

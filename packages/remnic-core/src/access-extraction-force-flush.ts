@@ -159,7 +159,7 @@ export async function extractionForceFlush(
           extractionDeadlineMs: deadlineAt,
           writeNamespaceOverride: scope.writeNamespace,
           principalOverride:
-            typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined,
+            scope.principal !== undefined && scope.principal.length > 0 ? scope.principal : undefined,
           scopeProfileWritePlan: scope.scopeProfilePlan,
           // #3251: the session's original coding binding — plan-pinned flushes
           // drain only captures bound to the same project identity.
