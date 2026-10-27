@@ -51,6 +51,7 @@ export function pendingObserveScopeHint(options: {
 
 type PendingObserveExtraction = {
   promise: Promise<void>;
+  running: Promise<void>;
   controllers: Set<AbortController>;
 };
 
