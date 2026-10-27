@@ -1257,3 +1257,155 @@ test("#3251 heartbeat observer routes mixed accepted scopes as separate scope gr
     await cleanupDir(memoryDir);
   }
 });
+
+test("#3251 policy-revoked retained capture: forceflush rejects before clearing, grant restore allows retry", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-retained-revoked");
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1,
+      bufferSaveDebounceMs: 0,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    }),
+  );
+  activateProfile(orchestrator.config, "profile-global");
+  const drainCalls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  let release: (() => void) | undefined;
+  try {
+    release = await wedgeExtractionQueue(orchestrator);
+
+    // Accept a capture pinned to ns-a and place it in RETAINED turns (native
+    // defer retention path), so clearRetainedTurnsForSession is the deletion
+    // vector after a flush.
+    const retainedCapture: BufferTurn = {
+      role: "user",
+      content: "retained policy-revoked capture",
+      timestamp: new Date().toISOString(),
+      sessionKey: "retained-sess",
+      sessionOwnerPrincipal: "alice",
+      acceptedCapture: true,
+      writeNamespaceOverride: "ns-a",
+    };
+    await buffer_addRetained(orchestrator, retainedCapture);
+
+    // Queue the flush behind the wedge, then revoke alice's write grant.
+    const flushPromise = orchestrator
+      .flushSession("retained-sess", {
+        reason: "access_force_flush",
+        failOnExtractionFailure: true,
+        writeNamespaceOverride: "ns-a",
+        principalOverride: "alice",
+      })
+      .then(
+        () => "resolved" as const,
+        (err: Error) => `rejected:${err.message}` as const,
+      );
+    orchestrator.config.namespacePolicies = [
+      { name: "ns-a", readPrincipals: ["alice"], writePrincipals: [] },
+    ];
+
+    release();
+    await orchestrator.waitForExtractionIdle(10_000);
+    const flushOutcome = await flushPromise;
+
+    // The flush must REJECT (failOnExtractionFailure), not silently resolve.
+    assert.ok(
+      flushOutcome.startsWith("rejected"),
+      `forceflush must reject when a policy-revoked accepted capture is skipped: got ${flushOutcome}`,
+    );
+
+    // The retained capture must survive on disk despite the flush attempt.
+    const stillRetained = orchestrator.buffer.getRetainedDeferredTurns("ns-a");
+    const activePending = (await orchestrator.buffer.findBufferKeysForSession("retained-sess")).flatMap((key) =>
+      orchestrator.buffer.getTurns(key),
+    );
+    const allPending = [...stillRetained, ...activePending].map((turn) => turn.content);
+    assert.ok(
+      allPending.some((content) => content.includes("retained policy-revoked capture")),
+      "retained capture must survive the rejected flush",
+    );
+
+    // Restore the grant: retry flush drains the capture. Reinstall the drain
+    // recorder (the wedge's stub is no longer needed after release).
+    orchestrator.config.namespacePolicies = [
+      { name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ];
+    const retryDrainCalls = stubExtraction(orchestrator, (turns) =>
+      singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+    );
+    await orchestrator.flushSession("retained-sess", {
+      reason: "access_force_flush",
+      failOnExtractionFailure: true,
+      writeNamespaceOverride: "ns-a",
+      principalOverride: "alice",
+    });
+    assert.ok(
+      retryDrainCalls.some((batch) => batch.some((turn) => turn.content.includes("retained policy-revoked capture"))),
+      "capture drains after write access is restored",
+    );
+  } finally {
+    release?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+/** Place a turn in the buffer's retained slot for a namespace key (#562 defer retention). */
+async function buffer_addRetained(orchestrator: Orchestrator, turn: BufferTurn): Promise<void> {
+  const key = turn.writeNamespaceOverride ?? turn.sessionKey ?? "default";
+  await orchestrator.buffer.addTurn(key, turn);
+  await orchestrator.buffer.retainDeferredTurns(key, [turn], 10);
+}
+
+test("#3251 namespaces-disabled flush with failOnExtractionFailure rejects and preserves the capture", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-ns-off-fail");
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1,
+      bufferSaveDebounceMs: 0,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    }),
+  );
+  const drainCalls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  try {
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("ns-off-fail-sess", "pinned capture before ns-off")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "ns-a",
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+      }),
+    );
+    orchestrator.config.namespacesEnabled = false;
+
+    // failOnExtractionFailure=true must reject the flush, not silently skip.
+    await assert.rejects(
+      orchestrator.flushSession("ns-off-fail-sess", {
+        reason: "access_force_flush",
+        failOnExtractionFailure: true,
+        writeNamespaceOverride: "ns-a",
+        principalOverride: "alice",
+      }),
+      /pinned_namespace_unavailable/,
+    );
+    assert.equal(drainCalls.length, 0, "no LLM under unavailable pinned namespace with failOn");
+
+    // The capture survives.
+    const pending = (await orchestrator.buffer.findBufferKeysForSession("ns-off-fail-sess")).flatMap((key) =>
+      orchestrator.buffer.getTurns(key),
+    );
+    assert.ok(pending.some((turn) => turn.content.includes("pinned capture before ns-off")));
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});

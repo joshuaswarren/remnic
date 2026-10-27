@@ -585,13 +585,20 @@ export class SessionContextCoordinator {
           }
           // #3251: a non-default pinned namespace cannot be honored while
           // namespaces are disabled — preserve pending, never flatten it into
-          // the default store.
+          // the default store. When the caller demands failure (forceflush),
+          // reject so retained cleanup never deletes preserved captures;
+          // background/unqualified lifecycle soft-skips unchanged.
           if (
             groupPinned &&
             !namespacesOn &&
             group.writeNamespaceOverride !== undefined &&
             group.writeNamespaceOverride !== this.deps.config?.defaultNamespace
           ) {
+            if (options.failOnExtractionFailure === true) {
+              throw new Error(
+                `accepted capture preserved: pinned_namespace_unavailable (${group.writeNamespaceOverride})`,
+              );
+            }
             log.warn(
               `flushSession: pinned namespace ${group.writeNamespaceOverride} unavailable while namespaces are disabled; capture stays pending`,
             );

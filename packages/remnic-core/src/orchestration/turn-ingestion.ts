@@ -954,11 +954,20 @@ export class TurnIngestionCoordinator {
           const namespacesOn = resolveNamespaceCapabilities(this.deps.config).namespaces === true;
           const acceptedTurn = effectiveTurns.find((turn) => turn.acceptedCapture === true);
           const pinnedNamespace = acceptedTurn?.writeNamespaceOverride;
+          // #3251: policy-preserving skips reject when the caller demands
+          // failure (forceflush) so retained cleanup never deletes preserved
+          // captures; background triggers soft-skip and keep the data.
+          const policySkipError = (reason: string): Error | undefined =>
+            options.failOnExtractionFailure === true
+              ? new Error(`accepted capture preserved: ${reason} (${bufferKey})`)
+              : undefined;
           if (
             !namespacesOn &&
             pinnedNamespace !== undefined &&
             pinnedNamespace !== this.deps.config.defaultNamespace
           ) {
+            const err = policySkipError("pinned_namespace_unavailable");
+            if (err) { settleTask(err); return; }
             settleTask(undefined, {
               status: "skipped",
               reason: "pinned_namespace_unavailable",
@@ -998,6 +1007,8 @@ export class TurnIngestionCoordinator {
                   : canWriteNamespace(principal, baseNamespace, this.deps.config)
                 : canWriteNamespace(principal, pinnedNamespace, this.deps.config);
             if (!writeAuthorized) {
+              const err = policySkipError("namespace_write_revoked");
+              if (err) { settleTask(err); return; }
               settleTask(undefined, {
                 status: "skipped",
                 reason: "namespace_write_revoked",
@@ -1031,6 +1042,8 @@ export class TurnIngestionCoordinator {
               fresh.writeLayer === effectiveScopePlan.writeLayer &&
               fresh.writeNamespace === effectiveScopePlan.writeNamespace;
             if (!identityHolds) {
+              const err = policySkipError("scope_profile_revoked");
+              if (err) { settleTask(err); return; }
               settleTask(undefined, {
                 status: "skipped",
                 reason: "scope_profile_revoked",
