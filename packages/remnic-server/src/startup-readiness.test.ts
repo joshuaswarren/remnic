@@ -227,7 +227,7 @@ test("readiness warm-up searches the migrated default namespace's suffixed colle
     namespacesEnabled: true,
     migrateDefaultNamespace: true,
     expectedLabel: "namespaced default",
-    expectedCollection: (collection) => collection?.startsWith("engram--") === true,
+    expectedCollection: (collection) => collection === "engram--ns-6d61696e",
   });
 });
 
