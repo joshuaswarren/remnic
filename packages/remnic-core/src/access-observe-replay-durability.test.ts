@@ -37,7 +37,7 @@ import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import type { ReplayTurn } from "./replay/types.js";
-import type { BufferState, BufferTurn, PluginConfig, ScopeProfileConfig } from "./types.js";
+import type { BufferState, BufferTurn, ExtractionResult, PluginConfig, ScopeProfileConfig } from "./types.js";
 import { parseConfig } from "./config.js";
 import type { StorageManager } from "./storage.js";
 import {
@@ -67,6 +67,18 @@ function makeReplayTurn(sessionKey: string, content: string, sourceValidAt?: str
     content,
     timestamp: new Date().toISOString(),
     sourceValidAt,
+  };
+}
+
+/** Same shape the extraction-run retry suite uses to park a fingerprint (no invented classes). */
+function providerRetryableFailure(): ExtractionResult {
+  return {
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+    extractionFailure: "synthetic_provider_retryable",
+    extractionFailureClass: "provider_retryable",
   };
 }
 
@@ -1972,3 +1984,229 @@ for (const capture of ["accepted", "native"] as const) {
     }
   });
 }
+
+test("#3251 automatic accepted-capture drain respects the provider retry cooldown; explicit flush retries", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-retry-cooldown");
+  const makeConfig = () =>
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1,
+      bufferSaveDebounceMs: 0,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      // Existing retry seams (extraction-run retry suite config): one
+      // provider_retryable failure parks the fingerprint AND opens the breaker.
+      extractionRetryScheduleMs: [3_600_000],
+      extractionBreakerFailureThreshold: 1,
+      extractionBreakerCooldownMs: 3_600_000,
+    });
+  const orchestrator = new Orchestrator(makeConfig());
+  try {
+    const calls = stubExtraction(orchestrator, (_turns, call) =>
+      call === 1 ? providerRetryableFailure() : singleFactResult("recovered drain fact"),
+    );
+
+    // Accepted shared capture: the native buffer trigger drains it
+    // automatically, the extraction fails provider_retryable, and the
+    // capture stays durably pending.
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("retry-sess", "capture one payload")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "shared",
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+      }),
+    );
+    await orchestrator.waitForExtractionIdle(10_000);
+    assert.equal(calls.length, 1, "first automatic drain attempts extraction");
+    assert.equal(orchestrator.getExtractionResilienceStatus().breaker.state, "open");
+
+    // Second accepted capture, second automatic native trigger: the circuit
+    // cooldown suppresses it — no extra backend call, capture stays pending.
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("retry-sess", "capture two payload")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "shared",
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+      }),
+    );
+    await orchestrator.waitForExtractionIdle(10_000);
+    assert.equal(
+      calls.length,
+      1,
+      "automatic trigger must respect the circuit cooldown (no extra backend call)",
+    );
+    const pending = (await orchestrator.buffer.findBufferKeysForSession("retry-sess")).flatMap((key) =>
+      orchestrator.buffer.getTurns(key),
+    );
+    assert.ok(pending.some((turn) => turn.content.includes("capture one payload")), "failed capture retained");
+    assert.ok(pending.some((turn) => turn.content.includes("capture two payload")), "new capture retained");
+
+    // Same-namespace scope for the flush (serverShared → "shared"), matching
+    // the capture pins; the explicit flush is forced past the open circuit.
+    activateProfile(orchestrator.config, "shared-profile");
+    orchestrator.config.scopeProfiles!["shared-profile"].readOrder = ["serverShared"];
+    orchestrator.config.scopeProfiles!["shared-profile"].writeDefault = "serverShared";
+    const currentPlan = resolveScopeProfilePlan({ config: orchestrator.config, principal: "alice" });
+    assert.ok(currentPlan);
+    assert.equal(currentPlan.writeNamespace, "shared");
+    const response = await new EngramAccessService(orchestrator).extractionForceFlush({
+      sessionKey: "retry-sess",
+      authenticatedPrincipal: "alice",
+      deadlineMs: 10_000,
+    });
+    assert.equal(response.flushed, true);
+    assert.equal(calls.length, 2, "explicit flush retries despite the open circuit");
+    const afterFlush = (await orchestrator.buffer.findBufferKeysForSession("retry-sess")).flatMap((key) =>
+      orchestrator.buffer.getTurns(key),
+    );
+    assert.deepEqual(afterFlush, []);
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 accepted context-unbound shared capture drains under a later-attached project", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-unbound-context-flush");
+  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, {
+    bufferMaxTurns: 1000,
+    bufferSaveDebounceMs: 0,
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [{ name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+  }));
+  const calls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  const runExtraction = orchestrator["runExtraction"].bind(orchestrator);
+  const plans: Array<ResolvedScopeProfilePlan | null | undefined> = [];
+  orchestrator["runExtraction"] = async (turns, options) => {
+    plans.push(options?.scopeProfileWritePlan);
+    return runExtraction(turns, options);
+  };
+  try {
+    // Genuine accepted shared capture with NO profile plan and NO project context.
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("unbound-sess", "shared capture taken before the project existed")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: "shared",
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+      }),
+    );
+    const keys = await orchestrator.buffer.findBufferKeysForSession("unbound-sess");
+    assert.equal(keys.length, 1);
+    const captured = orchestrator.buffer.getTurns(keys[0]);
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].scopeProfileWritePlan, undefined);
+    assert.equal(captured[0].codingContext, undefined);
+
+    // Project attached AFTER capture; current profile is serverShared on the
+    // SAME write namespace, so only the binding comparison could skip it.
+    activateProfile(orchestrator.config, "shared-profile");
+    orchestrator.config.scopeProfiles!["shared-profile"].readOrder = ["serverShared"];
+    orchestrator.config.scopeProfiles!["shared-profile"].writeDefault = "serverShared";
+    const currentPlan = resolveScopeProfilePlan({ config: orchestrator.config, principal: "alice" });
+    assert.ok(currentPlan);
+    assert.equal(currentPlan.writeNamespace, "shared");
+    const lateContext = { projectId: "proj-late", branch: null, rootPath: "/repo-proj-late", defaultBranch: null };
+    orchestrator.setCodingContextForSession("unbound-sess", lateContext);
+
+    const response = await new EngramAccessService(orchestrator).extractionForceFlush({
+      sessionKey: "unbound-sess",
+      authenticatedPrincipal: "alice",
+      deadlineMs: 10_000,
+    });
+    assert.equal(response.flushed, true);
+    assert.equal(calls.length, 1, "context-unbound accepted capture must actually extract");
+    assert.equal(plans[0], null, "accepted no-plan capture dispatches its explicit null plan");
+    assert.deepEqual(orchestrator.buffer.getTurns(keys[0]), []);
+
+    // Retained cleanup: own-scope retained copies with no original binding
+    // clean under the same bound-flush args the force flush resolves.
+    await orchestrator.buffer.retainDeferredTurns(keys[0], captured, 10);
+    await orchestrator.buffer.clearRetainedTurnsForSession("unbound-sess", "alice", {
+      writeNamespaceOverride: "shared",
+      scopeProfileWritePlan: currentPlan,
+      codingContext: lateContext,
+    });
+    assert.deepEqual(orchestrator.buffer.getRetainedDeferredTurns(keys[0]), []);
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("#3251 profile-pinned context-unbound shared capture drains under unchanged profile after project attach", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-pinned-unbound-flush");
+  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, {
+    bufferMaxTurns: 1000,
+    bufferSaveDebounceMs: 0,
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [{ name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+  }));
+  const calls = stubExtraction(orchestrator, (turns) =>
+    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
+  );
+  const runExtraction = orchestrator["runExtraction"].bind(orchestrator);
+  const plans: Array<ResolvedScopeProfilePlan | null | undefined> = [];
+  orchestrator["runExtraction"] = async (turns, options) => {
+    plans.push(options?.scopeProfileWritePlan);
+    return runExtraction(turns, options);
+  };
+  try {
+    // PROFILE-PINNED but context-unbound serverShared capture.
+    activateProfile(orchestrator.config, "shared-profile");
+    orchestrator.config.scopeProfiles!["shared-profile"].readOrder = ["serverShared"];
+    orchestrator.config.scopeProfiles!["shared-profile"].writeDefault = "serverShared";
+    const originalPlan = resolveScopeProfilePlan({ config: orchestrator.config, principal: "alice" });
+    assert.ok(originalPlan);
+    assert.equal(originalPlan.writeNamespace, "shared");
+    await orchestrator.ingestReplayBatch(
+      [makeReplayTurn("pinned-unbound-sess", "profile-pinned capture without project context")],
+      bufferedObserveOptions({
+        writeNamespaceOverride: originalPlan.writeNamespace,
+        principalOverride: "alice",
+        sessionOwnerPrincipal: "alice",
+        scopeProfileWritePlan: originalPlan,
+      }),
+    );
+    const keys = await orchestrator.buffer.findBufferKeysForSession("pinned-unbound-sess");
+    assert.equal(keys.length, 1);
+    const captured = orchestrator.buffer.getTurns(keys[0]);
+    assert.equal(captured[0].scopeProfileWritePlan, originalPlan);
+    assert.equal(captured[0].codingContext, undefined);
+
+    // Project attached later; profile UNCHANGED. Both the per-turn guard and
+    // the per-group guard must not skip the original-unbound capture.
+    orchestrator.setCodingContextForSession("pinned-unbound-sess", {
+      projectId: "proj-late",
+      branch: null,
+      rootPath: "/repo-proj-late",
+      defaultBranch: null,
+    });
+
+    const response = await new EngramAccessService(orchestrator).extractionForceFlush({
+      sessionKey: "pinned-unbound-sess",
+      authenticatedPrincipal: "alice",
+      deadlineMs: 10_000,
+    });
+    assert.equal(response.flushed, true);
+    assert.equal(calls.length, 1, "pinned context-unbound group must drain (group binding gate)");
+    assert.deepEqual(plans[0], originalPlan, "drain keeps the original profile binding after current authorization");
+    assert.deepEqual(orchestrator.buffer.getTurns(keys[0]), []);
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});

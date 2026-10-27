@@ -473,11 +473,8 @@ export class TurnIngestionCoordinator {
   }
 
   /**
-   * Queue trigger-fired extraction per scope group, forced past the
-   * threshold re-check (the buffer already decided; a below-threshold
-   * re-verdict would success-clear accepted short captures). Policy and
-   * staleness are enforced at the shared execution boundary in
-   * queueBufferedExtraction, not here.
+   * Buffer-approved captures skip threshold/dedupe rechecks, not provider retry cooldowns.
+   * Scope and staleness are enforced at the shared queueBufferedExtraction boundary.
    */
   private queueBufferedCaptureScopeGroups(
     extractionTurns: BufferTurn[],
@@ -512,7 +509,6 @@ export class TurnIngestionCoordinator {
           skipDedupeCheck: true,
           skipCharThreshold: true,
           skipUserTurnThreshold: true,
-          forceExtractionAttempt: true,
           abortSignal: options.abortSignal,
           extractionDeadlineMs: options.deadlineMs,
           writeNamespaceOverride: group.writeNamespaceOverride,

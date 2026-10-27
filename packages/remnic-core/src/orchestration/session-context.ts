@@ -512,12 +512,15 @@ export class SessionContextCoordinator {
         ) {
           return false;
         }
+        // Compare bindings only when the ORIGINAL capture is context-bound —
+        // an unbound capture must not be orphaned by a project attached later.
         if (
           options.codingContext &&
-          (turn.codingContext?.projectId !== options.codingContext.projectId ||
-            turn.codingContext?.rootPath !== options.codingContext.rootPath ||
-            turn.codingContext?.branch !== options.codingContext.branch ||
-            turn.codingContext?.defaultBranch !== options.codingContext.defaultBranch)
+          turn.codingContext &&
+          (turn.codingContext.projectId !== options.codingContext.projectId ||
+            turn.codingContext.rootPath !== options.codingContext.rootPath ||
+            turn.codingContext.branch !== options.codingContext.branch ||
+            turn.codingContext.defaultBranch !== options.codingContext.defaultBranch)
         ) {
           return false;
         }
@@ -561,17 +564,19 @@ export class SessionContextCoordinator {
           group.writeNamespaceOverride !== undefined ||
           group.principalOverride !== undefined ||
           group.scopeProfileWritePlan !== undefined;
-        // Preserve groups captured under another profile or project binding.
+        // Preserve groups captured under another profile or project binding;
+        // the binding compares only when the ORIGINAL group is context-bound.
         if (
           group.scopeProfileWritePlan &&
           options.scopeProfileWritePlan &&
           (scopeProfilePlanIdentity(group.scopeProfileWritePlan) !==
             scopeProfilePlanIdentity(options.scopeProfileWritePlan) ||
             (options.codingContext &&
-              (group.codingContext?.projectId !== options.codingContext.projectId ||
-                group.codingContext?.rootPath !== options.codingContext.rootPath ||
-                group.codingContext?.branch !== options.codingContext.branch ||
-                group.codingContext?.defaultBranch !== options.codingContext.defaultBranch)))
+              group.codingContext &&
+              (group.codingContext.projectId !== options.codingContext.projectId ||
+                group.codingContext.rootPath !== options.codingContext.rootPath ||
+                group.codingContext.branch !== options.codingContext.branch ||
+                group.codingContext.defaultBranch !== options.codingContext.defaultBranch)))
         ) {
           continue;
         }

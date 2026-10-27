@@ -1032,11 +1032,11 @@ export class SmartBuffer {
           }
           const ctx = options.codingContext;
           if (
-            ctx &&
-            (turn.codingContext?.projectId !== ctx.projectId ||
-              turn.codingContext?.rootPath !== ctx.rootPath ||
-              turn.codingContext?.branch !== ctx.branch ||
-              turn.codingContext?.defaultBranch !== ctx.defaultBranch)
+            ctx && turn.codingContext &&
+            (turn.codingContext.projectId !== ctx.projectId ||
+              turn.codingContext.rootPath !== ctx.rootPath ||
+              turn.codingContext.branch !== ctx.branch ||
+              turn.codingContext.defaultBranch !== ctx.defaultBranch)
           ) {
             return false;
           }
