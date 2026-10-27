@@ -148,6 +148,12 @@ export function selectRetainedDeferredTurns(
   return [...others, ...turns.slice(-max).map(copyBufferTurn)];
 }
 
+export function hasPinnedCaptureScope(turn: BufferTurn): boolean {
+  return turn.acceptedCapture === true ||
+    turn.writeNamespaceOverride !== undefined ||
+    turn.scopeProfileWritePlan !== undefined;
+}
+
 /** Stable identity string for a pinned scope-profile plan (#3251). */
 export function scopeProfilePlanIdentity(
   plan: BufferTurn["scopeProfileWritePlan"],

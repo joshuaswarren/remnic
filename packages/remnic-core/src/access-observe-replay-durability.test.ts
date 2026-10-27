@@ -1899,66 +1899,76 @@ test("#3251 scoped flush preserves >10 outside-scope retained turns (no global m
   }
 });
 
-test("#3251 profile-scoped force flush keeps accepted no-plan captures explicitly unprofiled", async () => {
-  const memoryDir = await mkTempMemoryDir("observe-no-plan-flush");
-  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, {
-    bufferMaxTurns: 1000,
-    bufferSaveDebounceMs: 0,
-    extractionMinChars: 1_000_000,
-    extractionMinUserTurns: 1000,
-    namespacesEnabled: true,
-    defaultNamespace: "default",
-    sharedNamespace: "shared",
-    namespacePolicies: [{ name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
-  }));
-  const calls = stubExtraction(orchestrator, (turns) =>
-    singleFactResult(turns.map((turn) => turn.content).join(" | ")),
-  );
-  const runExtraction = orchestrator["runExtraction"].bind(orchestrator);
-  const plans: Array<ResolvedScopeProfilePlan | null | undefined> = [];
-  orchestrator["runExtraction"] = async (turns, options) => {
-    plans.push(options?.scopeProfileWritePlan);
-    return runExtraction(turns, options);
-  };
-  try {
-    await orchestrator.ingestReplayBatch(
-      [makeReplayTurn("no-plan-sess", "explicit shared capture without a profile")],
-      bufferedObserveOptions({
-        writeNamespaceOverride: "shared",
-        principalOverride: "alice",
-        sessionOwnerPrincipal: "alice",
-      }),
+for (const capture of ["accepted", "native"] as const) {
+  test(`#3251 profile-scoped force flush drains ${capture} no-plan turns without changing their contract`, async () => {
+    const memoryDir = await mkTempMemoryDir("observe-no-plan-flush");
+    const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1000,
+      bufferSaveDebounceMs: 0,
+      extractionMinChars: 1_000_000,
+      extractionMinUserTurns: 1000,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [{ name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+    }));
+    const calls = stubExtraction(orchestrator, (turns) =>
+      singleFactResult(turns.map((turn) => turn.content).join(" | ")),
     );
-    const keys = await orchestrator.buffer.findBufferKeysForSession("no-plan-sess");
-    assert.equal(keys.length, 1);
-    const captured = orchestrator.buffer.getTurns(keys[0]);
-    assert.equal(captured.length, 1);
-    assert.equal(captured[0].scopeProfileWritePlan, undefined);
-    activateProfile(orchestrator.config, "shared-profile");
-    orchestrator.config.scopeProfiles!["shared-profile"].readOrder = ["serverShared"];
-    orchestrator.config.scopeProfiles!["shared-profile"].writeDefault = "serverShared";
-    const currentPlan = resolveScopeProfilePlan({ config: orchestrator.config, principal: "alice" });
-    assert.ok(currentPlan);
-    assert.equal(currentPlan.writeNamespace, "shared");
+    const runExtraction = orchestrator["runExtraction"].bind(orchestrator);
+    const plans: Array<ResolvedScopeProfilePlan | null | undefined> = [];
+    orchestrator["runExtraction"] = async (turns, options) => {
+      plans.push(options?.scopeProfileWritePlan);
+      return runExtraction(turns, options);
+    };
+    try {
+      if (capture === "accepted") {
+        await orchestrator.ingestReplayBatch(
+          [makeReplayTurn("no-plan-sess", "explicit shared capture without a profile")],
+          bufferedObserveOptions({
+            writeNamespaceOverride: "shared",
+            principalOverride: "alice",
+            sessionOwnerPrincipal: "alice",
+          }),
+        );
+      } else {
+        await orchestrator.buffer.addTurn("no-plan-sess", {
+          role: "user", content: "ordinary native turn without capture pins",
+          timestamp: new Date().toISOString(), sessionKey: "no-plan-sess",
+          sessionOwnerPrincipal: "alice",
+        });
+      }
+      const keys = await orchestrator.buffer.findBufferKeysForSession("no-plan-sess");
+      assert.equal(keys.length, 1);
+      const captured = orchestrator.buffer.getTurns(keys[0]);
+      assert.equal(captured.length, 1);
+      assert.equal(captured[0].scopeProfileWritePlan, undefined);
+      activateProfile(orchestrator.config, "shared-profile");
+      orchestrator.config.scopeProfiles!["shared-profile"].readOrder = ["serverShared"];
+      orchestrator.config.scopeProfiles!["shared-profile"].writeDefault = "serverShared";
+      const currentPlan = resolveScopeProfilePlan({ config: orchestrator.config, principal: "alice" });
+      assert.ok(currentPlan);
+      assert.equal(currentPlan.writeNamespace, "shared");
 
-    const response = await new EngramAccessService(orchestrator).extractionForceFlush({
-      sessionKey: "no-plan-sess",
-      authenticatedPrincipal: "alice",
-      deadlineMs: 10_000,
-    });
-    assert.equal(response.flushed, true);
-    assert.equal(calls.length, 1, "the matching namespace capture must actually drain");
-    assert.deepEqual(plans, [null], "accepted no-plan must not adopt the caller's current profile");
-    assert.deepEqual(orchestrator.buffer.getTurns(keys[0]), []);
+      const response = await new EngramAccessService(orchestrator).extractionForceFlush({
+        sessionKey: "no-plan-sess",
+        authenticatedPrincipal: "alice",
+        deadlineMs: 10_000,
+      });
+      assert.equal(response.flushed, true);
+      assert.equal(calls.length, 1, "the matching session must actually drain");
+      assert.deepEqual(plans, [capture === "accepted" ? null : currentPlan]);
+      assert.deepEqual(orchestrator.buffer.getTurns(keys[0]), []);
 
-    await orchestrator.buffer.retainDeferredTurns(keys[0], captured, 10);
-    await orchestrator.buffer.clearRetainedTurnsForSession("no-plan-sess", "alice", {
-      writeNamespaceOverride: "shared",
-      scopeProfileWritePlan: currentPlan,
-    });
-    assert.deepEqual(orchestrator.buffer.getRetainedDeferredTurns(keys[0]), []);
-  } finally {
-    await orchestrator.destroy();
-    await cleanupDir(memoryDir);
-  }
-});
+      await orchestrator.buffer.retainDeferredTurns(keys[0], captured, 10);
+      await orchestrator.buffer.clearRetainedTurnsForSession("no-plan-sess", "alice", {
+        writeNamespaceOverride: "shared",
+        scopeProfileWritePlan: currentPlan,
+      });
+      assert.deepEqual(orchestrator.buffer.getRetainedDeferredTurns(keys[0]), []);
+    } finally {
+      await orchestrator.destroy();
+      await cleanupDir(memoryDir);
+    }
+  });
+}

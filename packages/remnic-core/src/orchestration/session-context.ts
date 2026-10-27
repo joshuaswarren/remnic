@@ -28,7 +28,7 @@ import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import { groupTurnsByExtractionScope, scopeProfilePlanIdentity } from "../buffer-turn-helpers.js";
+import { groupTurnsByExtractionScope, hasPinnedCaptureScope, scopeProfilePlanIdentity } from "../buffer-turn-helpers.js";
 import {
   Orchestrator,
 } from "../orchestrator.js";
@@ -505,7 +505,7 @@ export class SessionContextCoordinator {
       // Existing profile pins require the same profile and project binding.
       // Accepted no-plan captures stay unprofiled within the matching namespace.
       const flushPlanIdentity = scopeProfilePlanIdentity(options.scopeProfileWritePlan);
-      if (flushPlanIdentity !== "") {
+      if (flushPlanIdentity !== "" && hasPinnedCaptureScope(turn)) {
         if (
           scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== flushPlanIdentity &&
           !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)

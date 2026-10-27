@@ -21,6 +21,7 @@ import {
   bufferTurnsEqual,
   copyBufferTurn,
   describeError,
+  hasPinnedCaptureScope,
   liveTurnsFromExtractionSnapshot,
   matchingQueuedExtractionPrefixLength,
   probeWithTimeout,
@@ -1022,7 +1023,7 @@ export class SmartBuffer {
           return false;
         }
         // Equal write namespaces can still belong to different project bindings.
-        if (options.scopeProfileWritePlan) {
+        if (options.scopeProfileWritePlan && hasPinnedCaptureScope(turn)) {
           if (
             scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan) &&
             !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)
