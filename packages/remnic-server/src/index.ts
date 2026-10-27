@@ -892,22 +892,20 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   };
   const readinessTask = completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
-    warmup: (signal) =>
-      runStartupSearchWarmup({
-        signal,
-        isAvailable: () => orchestrator.qmd.isAvailable(),
-        search: (onDegradation) =>
-          orchestrator.qmd.search(
-            "remnic startup readiness",
-            config.defaultNamespace,
-            1,
-            undefined,
-            {
-              signal,
-              onDegradation: (degradation) => onDegradation(degradation.code),
-            },
-          ),
+    warmup: (signal) => runStartupSearchWarmup({
+      signal,
+      isAvailable: () => orchestrator.qmd.isAvailable(),
+      search: (onDegradation) => orchestrator.searchAcrossNamespaces({
+        query: "remnic startup readiness",
+        namespaces: [config.defaultNamespace],
+        maxResults: 1,
+        mode: "search",
+        execution: {
+          signal,
+          onDegradation: (degradation) => onDegradation(degradation.code),
+        },
       }),
+    }),
     prepareWarmup: ensureStartupSync,
     state: readiness,
     override: parsedServerConfig.readinessOverride,
