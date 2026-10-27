@@ -864,44 +864,28 @@ export class AccessObserveWriteSurface {
         // existing behavior.
         const principalOverride =
           typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
-        // #3251: the 202 acknowledges a DURABLE capture — awaited here even
-        // when the preparation was cancelled (cancellation kills extraction,
-        // never the capture); refusal/save-failure propagates as non-202.
-        // Extraction stays background and never waits on the LLM.
+        // Acceptance waits for durable capture; cancellation only stops extraction.
         const observeAbortController = new AbortController();
         const preparationCancelled = observePreparation.isCancelled();
         if (preparationCancelled) {
-          // Cancelled before acceptance: the capture still lands durably,
-          // but its trigger-queued extraction settles immediately aborted.
+          // Preserve capture even when its preparation was cancelled.
           observeAbortController.abort(abortError("observe preparation cancelled"));
         }
-        const trackedExtractionKey = this.pendingObserveExtractions.key(
-          request.sessionKey,
-          scope.principal,
-          writeNamespace
-        );
-        const ingestOptions: Partial<Parameters<Orchestrator["ingestReplayBatch"]>[1]> & {
-          archiveLcm: boolean;
-          extractionMode: "buffered";
-        } = {
+        const trackedExtractionKey = this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace);
+        const ingestOptions: NonNullable<Parameters<Orchestrator["ingestReplayBatch"]>[1]> = {
           archiveLcm: false,
           extractionMode: "buffered",
           writeNamespaceOverride,
           principalOverride,
           scopeProfileWritePlan: scope.scopeProfilePlan,
-          // #3251: the ORIGINAL coding binding resolved for this capture —
-          // pinned on the durable turns so drains re-authorize the same
-          // project identity.
+          // Re-authorize current policy against the original project binding.
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
         };
         if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
           ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
         }
-        // A cancelled preparation must not park a failed barrier in the
-        // pending-observe tracker: without the hook the abort is logged by
-        // the capture path instead. Every queued promise is tracked
-        // IMMEDIATELY — last-write-wins would orphan earlier rejections.
+        // Track every job immediately, but don't retain cancelled preparation barriers.
         if (!preparationCancelled) {
           ingestOptions.onExtractionQueued = (extraction: Promise<void>) => {
             extraction.catch((err) => {
@@ -912,9 +896,7 @@ export class AccessObserveWriteSurface {
           };
         }
         await this.deps.orchestrator.ingestReplayBatch(turns, ingestOptions);
-        // Without a trigger-fired job the capture is durably pending in the
-        // buffer and native triggers, lifecycle flush, or an explicit
-        // force-flush drain it — the 202 is still truthful.
+        // A native trigger may leave the durable capture pending rather than queued.
       }
 
       log.info(

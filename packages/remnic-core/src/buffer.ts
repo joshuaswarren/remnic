@@ -36,17 +36,9 @@ export interface AddTurnOutcome {
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
   deadlineMs?: number;
-  /**
-   * Pin cleanup to turns accepted under this namespace (#3251). When set,
-   * retained turns captured under a different namespace survive; when unset,
-   * cleanup covers unpinned turns and the session's default-namespace scope.
-   */
+  /** Keep cleanup within the accepted namespace. */
   writeNamespaceOverride?: string;
-  /**
-   * #3251: when set, retained turns pinned to a scope profile survive unless
-   * their plan identity AND original project binding match this flush's — a
-   * scoped flush must not delete another binding's retained context.
-   */
+  /** Match the original profile and project binding, not just its write namespace. */
   scopeProfileWritePlan?: import("./namespaces/scope-profiles.js").ResolvedScopeProfilePlan | null;
   codingContext?: import("./types.js").CodingContext;
 }
@@ -544,13 +536,7 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
-  /**
-   * Capacity-bounded append for accepted observe captures (#3251): at the
-   * entry cap, EMPTY removable entries are pruned first, then the append is
-   * REFUSED (null) rather than evicting accepted captures. Check + append
-   * share one mutation so concurrent acceptances cannot cross the cap; an
-   * existing entry always admits.
-   */
+  /** Admit atomically; refuse at capacity rather than evict accepted work. */
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
@@ -569,17 +555,12 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /**
-   * Evict EMPTY removable entries (never `default`, never accepted-capture
-   * holders — they hold no turns) oldest-activity-first until the map has
-   * room below the cap (#3251).
-   */
+  /** Prune empty entries only; accepted work must survive capacity pressure. */
   private makeRoomForEntryUnlocked(): void {
     const entries = this.state.entries;
     if (!entries) return;
     const keys = Object.keys(entries);
     if (keys.length < MAX_BUFFER_ENTRY_COUNT) return;
-    const insertionOrder = new Map(keys.map((key, index) => [key, index]));
     const byOldestActivity = (left: string, right: string): number =>
       this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
       this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
@@ -588,8 +569,7 @@ export class SmartBuffer {
         (key) =>
           key !== "default" &&
           (entries[key]?.turns.length ?? 0) === 0 &&
-          (entries[key]?.retainedTurns?.length ?? 0) === 0 &&
-          !this.entryHoldsAcceptedCapture(entries[key]),
+          (entries[key]?.retainedTurns?.length ?? 0) === 0,
       )
       .sort(byOldestActivity);
     for (const key of emptyRemovable) {
@@ -612,11 +592,7 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /**
-   * Shared post-mutation completion for BOTH native and capacity-bounded
-   * appends (#3251): surprise promotion, telemetry, and extraction-turn
-   * construction. Runs OUTSIDE the record mutation (deadlock-free).
-   */
+  /** Run probes outside the mutation lock to avoid reentrancy deadlocks. */
   private async completeAddTurnOutcome(
     bufferKey: string,
     turn: BufferTurn,
@@ -978,10 +954,7 @@ export class SmartBuffer {
         // `slice(-0)` equals `slice(0)` and would return ALL entries. We
         // already early-return above when max <= 0.
         const tail = turns.slice(-max);
-        // copyBufferTurn copies explicit fields only — never a spread of an
-        // external object, which could preserve `__proto__`/`constructor`
-        // keys from JSON deserialization of untrusted input (CodeQL
-        // js/prototype-polluting-assignment).
+        // Explicit copying excludes untrusted prototype keys.
         entry.retainedTurns = tail.map(copyBufferTurn);
       }
       await this.saveUnlocked();
@@ -1044,8 +1017,7 @@ export class SmartBuffer {
       }
       let changed = false;
       const matchesCleanupScope = (turn: BufferTurn): boolean => {
-        // #3251: only PINNED captures are namespace-compared; legacy
-        // unpinned retained turns keep prior cleanup semantics.
+        // Legacy unpinned turns keep their existing cleanup semantics.
         if (
           turn.writeNamespaceOverride !== undefined &&
           normalizedCleanupNamespace !== undefined &&
@@ -1053,23 +1025,20 @@ export class SmartBuffer {
         ) {
           return false;
         }
-        // Plan+binding: a cleanup pinned to a scope profile deletes retained
-        // turns only when their plan identity AND original project binding
-        // match; another binding's retained context survives.
+        // Equal write namespaces can still belong to different project bindings.
         if (options.scopeProfileWritePlan) {
           if (scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan)) {
             return false;
           }
           const ctx = options.codingContext;
-          if (ctx) {
-            if (
-              turn.codingContext?.projectId !== ctx.projectId ||
+          if (
+            ctx &&
+            (turn.codingContext?.projectId !== ctx.projectId ||
               turn.codingContext?.rootPath !== ctx.rootPath ||
               turn.codingContext?.branch !== ctx.branch ||
-              turn.codingContext?.defaultBranch !== ctx.defaultBranch
-            ) {
-              return false;
-            }
+              turn.codingContext?.defaultBranch !== ctx.defaultBranch)
+          ) {
+            return false;
           }
         }
         return true;
