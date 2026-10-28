@@ -72,7 +72,8 @@ export class ChatTransport {
    * because only the dispatcher's owner knows how to rebuild it.
    */
   dispatcherFor(budgetMs: number): Agent | undefined {
-    if (!isPlainPoolingAgent(getGlobalDispatcher())) {
+    // REMNIC_LOCAL_LLM_DIRECT=1: the operator declares the local endpoint is reached directly even though the process installed a global dispatcher for other traffic (an agent runtime's managed proxy). Without it the 300s header cap stands silently on such hosts and every completion slower than five minutes dies with `fetch failed`. Off by default so deployments that must use a proxy keep it.
+    if (!isPlainPoolingAgent(getGlobalDispatcher()) && process.env.REMNIC_LOCAL_LLM_DIRECT !== "1") {
       if (!this.warnedAboutCustomDispatcher) {
         this.warnedAboutCustomDispatcher = true;
         log.debug(

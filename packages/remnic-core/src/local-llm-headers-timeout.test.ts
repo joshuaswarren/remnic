@@ -466,6 +466,42 @@ test("a process-wide custom dispatcher is left in place", async () => {
   await restored.close();
 });
 
+test("an explicit opt-in widens the pool even when a custom global dispatcher is installed", async () => {
+  // Some hosts install a process-wide dispatcher (for example an agent runtime's
+  // managed proxy) that is unrelated to the LAN model server. There the 300s
+  // header cap stood silently and every slow completion died with `fetch failed`
+  // at 301s. REMNIC_LOCAL_LLM_DIRECT=1 declares that the local endpoint is
+  // reached directly, so the transport uses its own pool. Without the flag the
+  // previous behavior (leave the custom dispatcher alone) is unchanged.
+  const original = getGlobalDispatcher();
+  const proxy = new ProxyAgent("http://127.0.0.1:9");
+  const priorFlag = process.env.REMNIC_LOCAL_LLM_DIRECT;
+  try {
+    setGlobalDispatcher(proxy);
+    delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    assert.equal(new ChatTransport().dispatcherFor(900_000), undefined, "no flag: custom dispatcher stays");
+
+    process.env.REMNIC_LOCAL_LLM_DIRECT = "1";
+    const transport = new ChatTransport();
+    const agent = transport.dispatcherFor(900_000);
+    assert.ok(agent, "flag set: the widened pool must be used");
+    const opts = (agent as unknown as { [k: symbol]: unknown })[
+      Object.getOwnPropertySymbols(agent).find((s) => s.description === "options") as symbol
+    ] as { headersTimeout?: number; bodyTimeout?: number } | undefined;
+    assert.equal(opts?.headersTimeout, 900_000);
+    assert.equal(opts?.bodyTimeout, 900_000);
+    await agent.close();
+
+    process.env.REMNIC_LOCAL_LLM_DIRECT = "0";
+    assert.equal(new ChatTransport().dispatcherFor(900_000), undefined, "flag 0: custom dispatcher stays");
+  } finally {
+    if (priorFlag === undefined) delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    else process.env.REMNIC_LOCAL_LLM_DIRECT = priorFlag;
+    setGlobalDispatcher(original);
+    await proxy.close();
+  }
+});
+
 test("aborting during a retry backoff stops the local request lane", async () => {
   const original = globalThis.fetch;
   const abortController = new AbortController();
