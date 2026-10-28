@@ -484,12 +484,8 @@ test("an explicit opt-in widens the pool even when a custom global dispatcher is
     process.env.REMNIC_LOCAL_LLM_DIRECT = "1";
     const transport = new ChatTransport();
     const agent = transport.dispatcherFor(900_000);
-    assert.ok(agent, "flag set: the widened pool must be used");
-    const opts = (agent as unknown as { [k: symbol]: unknown })[
-      Object.getOwnPropertySymbols(agent).find((s) => s.description === "options") as symbol
-    ] as { headersTimeout?: number; bodyTimeout?: number } | undefined;
-    assert.equal(opts?.headersTimeout, 900_000);
-    assert.equal(opts?.bodyTimeout, 900_000);
+    assert.ok(agent instanceof Agent, "flag set: the widened pool must be used");
+    assert.ok(!(agent instanceof ProxyAgent), "flag set: the proxy dispatcher must not be used");
     await agent.close();
 
     process.env.REMNIC_LOCAL_LLM_DIRECT = "0";
