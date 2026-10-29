@@ -2731,6 +2731,16 @@ export function parseConfig(
       typeof cfg.extractionJudgeBatchSize === "number" && Number.isFinite(cfg.extractionJudgeBatchSize)
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
+    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29): 1500ms
+    // hardcoded aborted 94/94 calls on the deployed core model (p50 126s per
+    // batch), so every batch fail-open approved and the judge never judged.
+    // Non-positive / unusable values fall back to the default rather than a
+    // 1ms timeout that would silently disable judging again.
+    extractionJudgeTimeoutMs: ((): number => {
+      const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
+      if (coerced === undefined || coerced < 1) return 150_000;
+      return Math.min(3_600_000, Math.floor(coerced));
+    })(),
     extractionJudgeShadow: cfg.extractionJudgeShadow === true,
     // Defer cap (issue #562 PR 2): max re-deferrals for the same candidate
     // text before the verdict is forcibly converted to reject.

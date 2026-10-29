@@ -1646,6 +1646,7 @@ retain the guarantee.
 | `extractionJudgeEnabled` | `false` | Enable the LLM-as-judge post-extraction durability filter |
 | `extractionJudgeModel` | `""` | Model override for judge; empty = use configured local model |
 | `extractionJudgeBatchSize` | `20` | Max candidates per LLM batch call |
+| `extractionJudgeTimeoutMs` | `150000` | Per-call judge LLM timeout (ms); lower it when `extractionJudgeModel` points at a fast model |
 | `extractionJudgeShadow` | `false` | Shadow mode: log verdicts without filtering |
 
 ## Semantic Chunking (issue #368)
@@ -2527,6 +2528,7 @@ value matches the shipped default.
 | `extractionJudgeEnabled` | `false` | `false` |
 | `extractionJudgeModel` | `""` | `""` |
 | `extractionJudgeBatchSize` | `20` | `20` |
+| `extractionJudgeTimeoutMs` | `150000` | `150000` |
 | `extractionJudgeShadow` | `false` | `false` |
 | `semanticChunkingEnabled` | `false` | `false` |
 | `semanticChunkingConfig` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` |

@@ -10,7 +10,8 @@
  *   - Critical-importance facts are auto-approved.
  *   - Batches respect extractionJudgeBatchSize.
  *   - Content-hash caching avoids redundant LLM calls.
- *   - Performance budget: <= 1.5s per batch.
+ *   - LLM calls use extractionJudgeTimeoutMs (default 150s: the deployed local
+ *     model needs tens of seconds per batch — a 1.5s budget aborted every call).
  */
 
 import { createHash } from "node:crypto";
@@ -671,7 +672,7 @@ async function callJudgeLlm(
         temperature: 0.1,
         maxTokens: 2048,
         responseFormat: { type: "json_object" },
-        timeoutMs: 1500,
+        timeoutMs: config.extractionJudgeTimeoutMs,
         operation: "extraction-judge",
         ...(modelOverride ? { model: modelOverride } : {}),
       });
@@ -693,7 +694,7 @@ async function callJudgeLlm(
         {
           temperature: 0.1,
           maxTokens: 2048,
-          timeoutMs: 1500,
+          timeoutMs: config.extractionJudgeTimeoutMs,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...gatewayChain,
         },

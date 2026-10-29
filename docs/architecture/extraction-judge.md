@@ -85,7 +85,11 @@ The following categories are **auto-approved** without LLM evaluation:
 
 ## Performance budget
 
-Target: 1.5s or less per batch. The LLM call uses a 1.5s timeout. An
+The LLM call uses `extractionJudgeTimeoutMs` (default 150s). The original
+1.5s budget aborted every call on the deployed local model (Studio,
+2026-10-29: 94 straight aborts, 0 completions; same-model extraction calls
+measured p50 126s), so each batch fail-open approved and the judge never
+judged. Set it lower when `extractionJudgeModel` points at a fast model. An
 in-memory content-hash cache (keyed by SHA-256 of `text + category`) avoids
 redundant LLM calls for previously judged content within the same process
 lifetime.
