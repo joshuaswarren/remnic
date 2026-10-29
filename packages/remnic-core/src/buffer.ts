@@ -1,7 +1,6 @@
 import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
-import type { StorageManager } from "./storage.js";
 import type {
   BufferEntryState,
   BufferState,
@@ -29,6 +28,22 @@ import {
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
+
+/**
+ * The buffer persistence surface SmartBuffer depends on.
+ *
+ * `saveBufferSession` / `deleteBufferSession` are the per-session incremental
+ * writes (one file per session); when a storage backend does not provide
+ * them, the buffer falls back to the whole-state `saveBuffer`. Both are
+ * optional in the type so a storage double only has to implement what it
+ * actually supports.
+ */
+export interface BufferStorage {
+  loadBuffer(): Promise<BufferState>;
+  saveBuffer(state: BufferState): Promise<void>;
+  saveBufferSession?(key: string, entry: BufferEntryState): Promise<void>;
+  deleteBufferSession?(key: string): Promise<void>;
+}
 
 export interface AddTurnOutcome {
   decision: TriggerDecision;
@@ -175,9 +190,66 @@ export class SmartBuffer {
    * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
   private firstPendingAtMs: number | null = null;
 
+  /**
+   * Buffer keys whose persisted session file is stale since the last
+   * successful persist (per-session incremental saves). Maintained on every
+   * state mutation; only cleared after a durable write of that session.
+   */
+  private dirtySessions = new Set<string>();
+  /** Buffer keys removed from in-memory state whose session files still need
+   * deletion (eviction, resetToEmpty). */
+  private deletedSessions = new Set<string>();
+
+  private markSessionDirty(key: string): void {
+    this.dirtySessions.add(key);
+    this.deletedSessions.delete(key);
+  }
+
+  private markSessionDeleted(key: string): void {
+    this.deletedSessions.add(key);
+    this.dirtySessions.delete(key);
+  }
+
+  /**
+   * Persist buffer state under the mutation chain (exactly one writer).
+   * On session-capable storage this writes ONLY the sessions whose state
+   * changed since the last successful persist, and deletes files for
+   * evicted/reset sessions — the observe path never re-serializes other
+   * sessions' turns. On legacy storage it falls back to the whole-state
+   * saveBuffer, byte-compatible with the pre-incremental behavior. Files
+   * are deleted before dirty writes: a crash mid-persist can then only
+   * resurrect already-evicted data (same exposure as the legacy whole-file
+   * rewrite), never drop sessions the state says exist.
+   */
+  private async persistUnlocked(): Promise<void> {
+    const saveSession = this.storage.saveBufferSession?.bind(this.storage);
+    const deleteSession = this.storage.deleteBufferSession?.bind(this.storage);
+    if (saveSession && deleteSession) {
+      for (const key of [...this.deletedSessions]) {
+        await deleteSession(key);
+        this.deletedSessions.delete(key);
+      }
+      for (const key of [...this.dirtySessions]) {
+        const entry = this.peekEntry(key);
+        if (!entry) {
+          // Defensive: a dirty key without state must not be written from a
+          // fabricated empty entry — treat it as a deletion instead.
+          this.markSessionDeleted(key);
+          continue;
+        }
+        await saveSession(key, entry);
+        this.dirtySessions.delete(key);
+      }
+      return;
+    }
+    await this.storage.saveBuffer(this.state);
+    this.dirtySessions.clear();
+    this.deletedSessions.clear();
+  }
+
   constructor(
     private readonly config: PluginConfig,
-    private readonly storage: StorageManager,
+    private readonly storage: BufferStorage,
     surpriseProbe: BufferSurpriseProbe | null = null,
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
@@ -261,11 +333,13 @@ export class SmartBuffer {
     );
   }
 
-  private pruneEntries(retainKeys: string[]): void {
+  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT; returns the evicted
+   * keys so callers can delete their persisted session files. */
+  private pruneEntries(retainKeys: string[]): string[] {
     const entries = this.state.entries;
-    if (!entries) return;
+    if (!entries) return [];
     const keys = Object.keys(entries);
-    if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return;
+    if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return [];
 
     const insertionOrder = new Map(keys.map((key, index) => [key, index]));
     const byOldestActivity = (left: string, right: string): number => {
@@ -308,6 +382,7 @@ export class SmartBuffer {
     }
     for (const key of evicted) {
       delete entries[key];
+      this.dirtySessions.delete(key);
     }
     if (evicted.length > 0) {
       // Loud degradation (extraction hot-loop hardening, Step 7): during a
@@ -320,6 +395,7 @@ export class SmartBuffer {
           `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
       );
     }
+    return evicted;
   }
 
   private async loadUnlocked(): Promise<void> {
@@ -376,12 +452,15 @@ export class SmartBuffer {
    * so the buffer can still accept new turns for the rest of the session.
    */
   resetToEmpty(): void {
+    for (const key of Object.keys(this.state.entries ?? {})) {
+      this.markSessionDeleted(key);
+    }
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.loaded = true;
   }
 
   private async saveUnlocked(): Promise<void> {
-    await this.storage.saveBuffer(this.state);
+    await this.persistUnlocked();
   }
 
   async save(): Promise<void> {
@@ -495,13 +574,16 @@ export class SmartBuffer {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    if (!this.pendingSave) return;
+    // resetToEmpty-only deletions are pending work too, even with no
+    // pending-save flag set.
+    if (!this.pendingSave && this.dirtySessions.size === 0 && this.deletedSessions.size === 0) return;
     try {
       await this.enqueueMutation(async () => {
         // Re-check under the serializer: a concurrent flush may have already
         // persisted this pending save. Skip the redundant write (no phantom
-        // writes).
-        if (!this.pendingSave) return;
+        // writes). resetToEmpty-only deletions also land here without a
+        // pending-save flag.
+        if (!this.pendingSave && this.dirtySessions.size === 0 && this.deletedSessions.size === 0) return;
         await this.saveUnlocked();
         // Clear the pending flag INSIDE the same serialized mutation as the
         // write (issue #1909 review). Clearing it after the enqueue await
@@ -579,6 +661,7 @@ export class SmartBuffer {
     for (const key of emptyRemovable) {
       if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
       delete entries[key];
+      this.markSessionDeleted(key);
     }
   }
 
@@ -714,7 +797,10 @@ export class SmartBuffer {
     const decision = this.evaluate(entry, signal.level);
     const turnCountInWindow = entry.turns.length;
 
-    this.pruneEntries([bufferKey]);
+    this.markSessionDirty(bufferKey);
+    for (const evicted of this.pruneEntries([bufferKey])) {
+      this.markSessionDeleted(evicted);
+    }
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
       // trailing-edge timer (issue #1909) instead of rewriting per turn.
@@ -792,7 +878,7 @@ export class SmartBuffer {
   private async emitSurpriseEventSafe(
     params: SurpriseTelemetryQueueEntry,
   ): Promise<void> {
-    const storage = this.storage as StorageManager & {
+    const storage = this.storage as BufferStorage & {
       appendBufferSurpriseEvents?: (
         events: BufferSurpriseEvent[],
       ) => Promise<number>;
@@ -955,6 +1041,7 @@ export class SmartBuffer {
       );
       if (retained.length > 0) entry.retainedTurns = retained;
       else delete entry.retainedTurns;
+      this.markSessionDirty(bufferKey);
       await this.saveUnlocked();
     });
   }
@@ -1062,6 +1149,7 @@ export class SmartBuffer {
         if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
         else delete entry.retainedTurns;
         if (bufferKey === "default") this.state.turns = entry.turns;
+        this.markSessionDirty(bufferKey);
       }
       if (changed || hadPendingSave) {
         assertLifecycle();
@@ -1172,7 +1260,10 @@ export class SmartBuffer {
         this.state.lastExtractionAt = entry.lastExtractionAt;
         this.state.extractionCount = entry.extractionCount;
       }
-      this.pruneEntries([bufferKey]);
+      this.markSessionDirty(bufferKey);
+      for (const evicted of this.pruneEntries([bufferKey])) {
+        this.markSessionDeleted(evicted);
+      }
       await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
     });
   }
