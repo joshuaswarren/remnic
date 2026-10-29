@@ -146,17 +146,28 @@ test("judge uses a compact completion budget scaled to the batch size", async ()
   assert.equal(captured.length, 1, "judge should call the local LLM once");
   assert.equal(captured[0]?.maxTokens, judgeMaxTokens(8));
   assert.ok(
-    (captured[0]?.maxTokens ?? Number.POSITIVE_INFINITY) <= 256,
+    (captured[0]?.maxTokens ?? Number.POSITIVE_INFINITY) <= judgeMaxTokens(8),
     `completion budget must stay small, got ${captured[0]?.maxTokens}`,
   );
 });
 
-test("judgeMaxTokens scales with batch size under a small cap", () => {
+test("judgeMaxTokens leaves room for one verdict per candidate, up to a cap", () => {
   assert.equal(judgeMaxTokens(1), 64);
   assert.equal(judgeMaxTokens(8), 192);
-  assert.equal(judgeMaxTokens(20), 256);
-  assert.equal(judgeMaxTokens(500), 256, "small cap");
+  assert.ok(judgeMaxTokens(50) >= 50 * 16, "a 50-candidate batch needs a verdict array that fits");
+  assert.equal(judgeMaxTokens(500), 2048, "cap");
 });
+
+test("judge bounds the whole local call, retries included, with one deadline signal", async () => {
+  const config = parseConfig({ extractionJudgeTimeoutMs: 45_000 });
+  const captured: ChatOptions[] = [];
+
+  await judgeFactDurability([candidate], config, captureLocal(captured), null, new Map(), new Map());
+
+  assert.ok(captured[0]?.signal instanceof AbortSignal, "judge passes an AbortSignal so retries share one deadline");
+  assert.equal(captured[0]?.signal?.aborted, false);
+});
+
 
 test("system prompt requests the compact verdict shape only", () => {
   const lines = JUDGE_SYSTEM_PROMPT.split("\n");

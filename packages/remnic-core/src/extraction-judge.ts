@@ -11,7 +11,7 @@
  *   - Batches respect extractionJudgeBatchSize.
  *   - Content-hash caching avoids redundant LLM calls.
  *   - LLM calls use extractionJudgeTimeoutMs (default 20s: measured 2.1-2.5 s
- *     per compact verdict request with a ≤256-token completion budget on a
+ *     per compact verdict request with a batch-scaled completion budget on a
  *     small fast judge model; 13-22 s per compact call, 41 s verbose, on the
  *     big shared core model — raise it there; the old 150s default only
  *     papered over 59-305s verbose replies).
@@ -247,10 +247,12 @@ Example output:
  * Compact completion budget for one judge call. A verdict is
  * `{"index":12,"kind":"reject"}` (~14 tokens), so the old flat 2048 only gave
  * a slow model room to produce 59-305s replies that hid inside the timeout.
- * Scales with the batch size; capped at 256.
+ * Scales with the batch size (about 24 tokens per candidate verdict, measured
+ * 13 per verdict on a small judge model) so a large batch is never truncated;
+ * capped at 2048, the old flat budget.
  */
 export function judgeMaxTokens(batchSize: number): number {
-  return Math.min(256, Math.max(64, batchSize * 24));
+  return Math.min(2048, Math.max(64, batchSize * 24));
 }
 
 /** One indexed candidate entry in a judge request payload. */
@@ -684,6 +686,9 @@ async function callJudgeLlm(
         maxTokens,
         responseFormat: { type: "json_object" },
         timeoutMs: config.extractionJudgeTimeoutMs,
+        // The client applies timeoutMs per attempt and retries an abort once:
+        // one deadline signal bounds the whole call to the configured time.
+        signal: AbortSignal.timeout(config.extractionJudgeTimeoutMs),
         operation: "extraction-judge",
         ...(modelOverride ? { model: modelOverride } : {}),
       });
