@@ -143,6 +143,7 @@ import {
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
+import { type DroppedChunkArgs, saveDroppedChunk } from "./storage/dropped-extraction-chunks.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
@@ -5520,6 +5521,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
   async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
+
+  saveDroppedExtractionChunk(...args: DroppedChunkArgs): Promise<string> {
+    return saveDroppedChunk({ stateDir: this.stateDir, write: (p, c) => this.writeStorageSecureFile(p, c) }, ...args);
+  }
 
   async loadMeta(): Promise<MetaState> {
     const metaPath = path.join(this.stateDir, "meta.json");

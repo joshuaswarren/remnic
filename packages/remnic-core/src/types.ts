@@ -1685,6 +1685,13 @@ export interface PluginConfig
   extractionBreakerCooldownMs: number;
   /** Breaker open cooldown (ms) for auth/config failures (longer — provider is misconfigured). */
   extractionBreakerAuthCooldownMs: number;
+  /**
+   * Consecutive failed extraction attempts after which the failing
+   * trigger-drain chunk is dropped (with a side-file copy under
+   * `state/dropped/`) so a session whose window never extracts cannot stall
+   * the buffer forever. Default: `5`.
+   */
+  extractionChunkDropAfterFailures: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;

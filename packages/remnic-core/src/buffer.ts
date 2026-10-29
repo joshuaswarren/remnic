@@ -1148,6 +1148,27 @@ export class SmartBuffer {
     });
   }
 
+  /**
+   * Remove a chunk from the buffer without recording an extraction (trigger-drain drop path; the caller
+   * saved the recovery copy). Returns the live turns dropped, 0 when they no longer match the buffered prefix.
+   */
+  async dropExtractionChunk(bufferKey = "default", turns: readonly BufferTurn[]): Promise<number> {
+    return await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const entry = this.entryFor(bufferKey);
+      const matched = matchingQueuedExtractionPrefixLength(entry.turns, liveTurnsFromExtractionSnapshot(entry, turns));
+      if (matched === 0) return 0;
+      if (this.saveTimer) clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+      entry.turns = entry.turns.slice(matched);
+      if (bufferKey === "default") this.state.turns = entry.turns;
+      this.persistence.markDirty(bufferKey);
+      this.pruneEntries([bufferKey]);
+      await this.saveNowRetainingPendingOnFailure("dropExtractionChunk");
+      return matched;
+    });
+  }
+
   getExtractionCount(bufferKey = "default"): number {
     return this.peekEntry(bufferKey)?.extractionCount ?? 0;
   }

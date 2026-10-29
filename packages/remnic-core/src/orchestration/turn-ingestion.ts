@@ -28,6 +28,7 @@ import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
 import { StorageManager } from "../index.js";
 import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
+import { ExtractionChunkDrain } from "./extraction-chunk-drain.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 import {
   ExtractionDeadlineError,
@@ -117,6 +118,8 @@ export interface TurnIngestionDeps {
   runExtraction(
     ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult>;
+  /** Characters of conversation the extraction model accepts (absent: no budget; see ExtractionChunkDrain). */
+  extractionWindowBudgetChars?(): number;
   readonly sessionObserver: SessionObserverState;
   shouldQueueExtraction(
     turns: BufferTurn[],
@@ -156,9 +159,8 @@ function isFlushPlanRecoveryTurn(
 }
 
 export class TurnIngestionCoordinator {
-  constructor(
-    private readonly deps: TurnIngestionDeps,
-  ) {}
+  private readonly chunkDrain: ExtractionChunkDrain;
+  constructor(private readonly deps: TurnIngestionDeps) { this.chunkDrain = new ExtractionChunkDrain(deps); }
 
   async processTurn(
     role: "user" | "assistant",
@@ -1067,7 +1069,7 @@ export class TurnIngestionCoordinator {
             effectiveScopePlan = fresh;
           }
         }
-        const result = await this.deps.runExtraction(effectiveTurns, {
+        const result = await this.chunkDrain.run(effectiveTurns, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           clearMatchingTurns: options.clearMatchingTurns === true,
@@ -1083,7 +1085,7 @@ export class TurnIngestionCoordinator {
           principalOverride: options.principalOverride,
           scopeProfileWritePlan: effectiveScopePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
-        });
+        }, preemptable);
         settleTask(undefined, result);
       } catch (err) {
         const reason = abortSignal.reason;

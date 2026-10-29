@@ -238,6 +238,7 @@ import {
 } from "./maintenance/pattern-reinforcement.js";
 import { refreshConvergedNamespaces } from "./convergence-refresh.js";
 import { ModelRegistry } from "./model-registry.js";
+import { extractionWindowBudgetChars } from "./extraction-window-drain.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "./retrieval.js";
 import {
   mergeWithAgentResults,
@@ -3060,6 +3061,19 @@ export class Orchestrator {
       reason,
       options,
     );
+  }
+
+  private extractionWindowBudgetChars(): number {
+    // Object.create(Orchestrator.prototype) test doubles skip the constructor,
+    // so neither modelRegistry nor config exists there: report "no budget".
+    if (!this.modelRegistry) return Number.POSITIVE_INFINITY;
+    return extractionWindowBudgetChars({
+      registry: this.modelRegistry,
+      localExtractionActive:
+        this.config.modelSource !== "gateway" && resolveLocalLlmCapabilities(this.config).localLlm,
+      model: this.config.localLlmModel,
+      maxContext: this.config.localLlmMaxContext,
+    });
   }
 
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {

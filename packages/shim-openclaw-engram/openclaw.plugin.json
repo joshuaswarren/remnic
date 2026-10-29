@@ -7570,6 +7570,11 @@
         "default": 5,
         "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
       },
+      "extractionChunkDropAfterFailures": {
+        "type": "number",
+        "default": 5,
+        "description": "Consecutive failed extraction attempts after which a stuck buffer chunk is dropped (copy saved under state/dropped/ first)."
+      },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",
         "default": 3,
