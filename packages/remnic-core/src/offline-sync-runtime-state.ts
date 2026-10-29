@@ -34,11 +34,33 @@ function isRemoteAuthoritativeRuntimeShard(basename: string, parts: string[]): b
   return EMBEDDING_SHARD_FILE_PATTERN.test(basename) && parts[parts.length - 2] === "embeddings";
 }
 
+/**
+ * Per-session buffer state files (`state/buffer/<session>.json`) are
+ * remote-authoritative like the legacy single `state/buffer.json` they
+ * replaced: the incoming copy wins so two nodes do not each keep their own
+ * version of the same session's buffered turns.
+ */
+function isRemoteAuthoritativeBufferSessionFile(parts: string[]): boolean {
+  const basename = parts[parts.length - 1] ?? "";
+  // Matches both `state/buffer/<session>.json` and the namespace-scoped
+  // `namespaces/<ns>/state/buffer/<session>.json`.
+  return (
+    parts.length >= 3 &&
+    parts[parts.length - 2] === "buffer" &&
+    parts[parts.length - 3] === "state" &&
+    basename.endsWith(".json")
+  );
+}
+
 export function shouldPreferIncomingOfflineRuntimeFile(relPosix: string): boolean {
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
-  return isCanonicalRuntimeStatePath(parts) &&
-    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) || isRemoteAuthoritativeRuntimeShard(basename, parts));
+  return (
+    isCanonicalRuntimeStatePath(parts) &&
+    (REMOTE_AUTHORITATIVE_RUNTIME_STATE_FILES.has(basename) ||
+      isRemoteAuthoritativeRuntimeShard(basename, parts) ||
+      isRemoteAuthoritativeBufferSessionFile(parts))
+  );
 }
 
 export function shouldDeleteAbsentIncomingOfflineRuntimeFile(relPosix: string): boolean {
