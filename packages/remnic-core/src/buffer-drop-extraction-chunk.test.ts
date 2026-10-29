@@ -38,7 +38,7 @@ test("dropExtractionChunk removes the matched prefix and persists the shrink", a
   });
   const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
   // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as StorageManager);
+  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
   const turns = [
     makeTurn("s1", "turn one"),
     makeTurn("s1", "turn two"),
@@ -66,7 +66,7 @@ test("dropExtractionChunk returns zero without dropping when turns no longer mat
   });
   const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
   // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as StorageManager);
+  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
   await buffer.addTurn("s1", makeTurn("s1", "kept turn"));
 
   const savesBefore = storage.saveCount;
@@ -87,7 +87,7 @@ test("dropExtractionChunk drops the whole matched window and empties the buffer"
   });
   const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
   // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as StorageManager);
+  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
   const turns = [makeTurn("s1", "only turn")];
   await buffer.addTurn("s1", turns[0]!);
 

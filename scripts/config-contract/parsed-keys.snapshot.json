@@ -1413,6 +1413,7 @@
     "explicitCueRecallMaxChars.trim",
     "explicitCueRecallMaxReferences.trim",
     "externalWikis.map",
+    "extractionChunkDropAfterFailures.trim",
     "extractionFaithfulnessContextChars.trim",
     "extractionFaithfulnessGate.trim",
     "extractionFaithfulnessLocalParseFallback.trim",

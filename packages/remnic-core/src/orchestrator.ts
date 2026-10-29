@@ -3070,7 +3070,12 @@ export class Orchestrator {
    * drained in fitting chunks instead of failing whole.
    */
   private extractionWindowBudgetChars(): number {
-    return this.modelRegistry.calculateContextSizes(
+    // Object.create(Orchestrator.prototype) test doubles skip the
+    // constructor, so modelRegistry can be absent; report "no budget"
+    // so the drain takes the single-run path instead of crashing.
+    const registry = this.modelRegistry as ModelRegistry | undefined;
+    if (!registry) return Number.POSITIVE_INFINITY;
+    return registry.calculateContextSizes(
       this.config.localLlmModel,
       this.config.localLlmMaxContext,
     ).maxInputChars;
