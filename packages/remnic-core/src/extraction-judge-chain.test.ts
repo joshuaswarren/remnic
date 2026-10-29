@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
-import { judgeFactDurability, JUDGE_SYSTEM_PROMPT, judgeMaxTokens } from "./extraction-judge.js";
+import { judgeFactDurability, JUDGE_SYSTEM_PROMPT, judgeMaxTokens, MAX_JUDGE_BATCH, MAX_JUDGE_TOKENS } from "./extraction-judge.js";
 import { FallbackLlmClient } from "./fallback-llm.js";
 import type { FallbackLlmOptions, FallbackLlmResponse } from "./fallback-llm.js";
 import { LocalLlmClient } from "./local-llm.js";
@@ -330,4 +330,22 @@ test("judge defaults to a 20s timeout when none is configured", async () => {
   await judgeFactDurability([candidate], config, null, new RecordingFallbackLlm(captured), new Map(), new Map());
 
   assert.equal(captured[0]?.timeoutMs, 20_000);
+});
+
+test("a configured batch size above what the token cap can answer is split", async () => {
+  const config = parseConfig({ extractionJudgeBatchSize: 200 });
+  const captured: ChatOptions[] = [];
+  const candidates = Array.from({ length: 200 }, (_, i) => ({
+    text: `distinct candidate fact number ${i}`,
+    category: "preference",
+    confidence: 0.5,
+  }));
+
+  await judgeFactDurability(candidates, config, captureLocal(captured), null, new Map(), new Map());
+
+  assert.equal(captured.length, 3, "200 candidates at 85 per request");
+  for (const call of captured) {
+    assert.ok((call.maxTokens ?? 0) <= MAX_JUDGE_TOKENS, "never above the cap");
+  }
+  assert.equal(MAX_JUDGE_BATCH * 24 <= MAX_JUDGE_TOKENS, true, "a full batch fits its own budget");
 });

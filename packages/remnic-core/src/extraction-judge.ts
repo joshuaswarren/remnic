@@ -243,6 +243,13 @@ Example output:
 // Judge request assembly (PR 3264 follow-up)
 // ---------------------------------------------------------------------------
 
+/** Completion tokens reserved per candidate verdict (measured 13 on a small judge model). */
+const JUDGE_TOKENS_PER_CANDIDATE = 24;
+/** Ceiling on one judge reply: the old flat budget. */
+export const MAX_JUDGE_TOKENS = 2048;
+/** Largest batch whose verdict array fits MAX_JUDGE_TOKENS; a larger configured batch is split. */
+export const MAX_JUDGE_BATCH = Math.floor(MAX_JUDGE_TOKENS / JUDGE_TOKENS_PER_CANDIDATE);
+
 /**
  * Compact completion budget for one judge call. A verdict is
  * `{"index":12,"kind":"reject"}` (~14 tokens), so the old flat 2048 only gave
@@ -252,7 +259,7 @@ Example output:
  * capped at 2048, the old flat budget.
  */
 export function judgeMaxTokens(batchSize: number): number {
-  return Math.min(2048, Math.max(64, batchSize * 24));
+  return Math.min(MAX_JUDGE_TOKENS, Math.max(64, batchSize * JUDGE_TOKENS_PER_CANDIDATE));
 }
 
 /** One indexed candidate entry in a judge request payload. */
@@ -514,7 +521,7 @@ export async function judgeFactDurability(
   }
 
   // Batch the pending candidates up to batchSize
-  const batchSize = config.extractionJudgeBatchSize;
+  const batchSize = Math.min(config.extractionJudgeBatchSize, MAX_JUDGE_BATCH);
   for (let batchStart = 0; batchStart < pendingIndices.length; batchStart += batchSize) {
     const batchIndices = pendingIndices.slice(batchStart, batchStart + batchSize);
     const request = buildJudgeRequest(
