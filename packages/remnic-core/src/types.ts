@@ -1300,10 +1300,11 @@ export interface PluginConfig
   /** Maximum number of candidate facts per judge LLM batch call. */
   extractionJudgeBatchSize: number;
   /**
-   * Per-call timeout for the judge LLM (ms). Default 20000: the judge requests
-   * a compact verdict with a ≤256-token completion budget, so a call takes
-   * seconds. The earlier 150s default only papered over 59-305s verbose
-   * replies; sub-second budgets abort every call.
+   * Per-call timeout for the judge LLM (ms). Default 20000: measured 2.1-2.5 s
+   * per compact verdict call (≤256-token completion budget) on a small fast
+   * judge model; the big shared core model measured 13-22 s per compact call,
+   * 41 s verbose — raise it there. The earlier 150s default only papered over
+   * 59-305s verbose replies; sub-second budgets abort every call.
    */
   extractionJudgeTimeoutMs: number;
   /** Shadow mode: log judge verdicts but do not filter facts. Default false. */

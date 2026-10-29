@@ -2732,11 +2732,13 @@ export function parseConfig(
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
     // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
-    // PR 3264): the judge now requests a compact verdict with a ≤256-token
-    // completion budget, so a call takes seconds. The earlier 150s default
-    // papered over 59-305s verbose replies; 20s fails fast and fail-open.
-    // Non-positive / unusable values fall back to the default rather than a
-    // 1ms timeout that would silently disable judging again.
+    // PR 3264): the judge requests a compact verdict with a ≤256-token
+    // completion budget. Measured 2.1-2.5 s per call on a small fast judge
+    // model; the big shared core model measured 13-22 s per compact call,
+    // 41 s verbose. The 20s default assumes the fast model, stays fail-open
+    // on timeout, and needs a raise if extractionJudgeModel points at the
+    // slow core model. Non-positive / unusable values fall back to the
+    // default rather than a 1ms timeout that would silently disable judging.
     extractionJudgeTimeoutMs: ((): number => {
       const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
       if (coerced === undefined || coerced < 1) return 20_000;

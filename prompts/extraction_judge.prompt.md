@@ -44,16 +44,17 @@ The user message is a JSON array of candidate facts:
 
 ## Output Format
 
-Reply with a compact JSON array, exactly one object per input candidate:
+Reply with a JSON object with a single `verdicts` key, exactly one object per input candidate:
 
 ```json
-[{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]
+{"verdicts": [{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]}
 ```
 
 Rules:
-1. Copy each object's `index` from the input candidate. One object per candidate, exactly.
-2. No other fields — no `reason`, no `durable`, no commentary.
-3. Do NOT evaluate corrections or principles — they are auto-approved upstream.
-4. Output valid JSON only. No markdown fences.
+1. The top level must be one object `{"verdicts": [...]}` — JSON mode rejects a bare top-level array.
+2. Copy each object's `index` from the input candidate. One object per candidate, exactly.
+3. No other fields — no `reason`, no `durable`, no commentary.
+4. Do NOT evaluate corrections or principles — they are auto-approved upstream.
+5. Output valid JSON only. No markdown fences.
 
 The embedded prompt in `packages/remnic-core/src/extraction-judge.ts` (`JUDGE_SYSTEM_PROMPT`) is the wire format; this file mirrors it. Legacy verbose replies (`kind` + `durable` + `reason`) are still accepted by the response parser for older models, but the request no longer asks for them.

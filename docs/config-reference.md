@@ -1646,7 +1646,7 @@ retain the guarantee.
 | `extractionJudgeEnabled` | `false` | Enable the LLM-as-judge post-extraction durability filter |
 | `extractionJudgeModel` | `""` | Model override for judge; empty = use configured local model |
 | `extractionJudgeBatchSize` | `20` | Max candidates per LLM batch call |
-| `extractionJudgeTimeoutMs` | `20000` | Per-call judge LLM timeout (ms); the compact verdict request finishes in seconds |
+| `extractionJudgeTimeoutMs` | `20000` | Per-call judge LLM timeout (ms); compact verdict measures 2.1-2.5 s on a small fast judge model (13-22 s, 41 s verbose, on the big shared core model) |
 | `extractionJudgeShadow` | `false` | Shadow mode: log verdicts without filtering |
 
 ## Semantic Chunking (issue #368)

@@ -80,7 +80,8 @@ test("judge forwards the configured timeout to the local LLM call", async () => 
 // `[{"index":N,"kind":"accept|reject|defer"}]` reply with a batch-scaled
 // completion budget (≤256 tokens) instead of a flat 2048. The big budget let
 // a verbose 59-305s reply hide inside the old 150s timeout; the compact one
-// makes each call fast enough for the new 20s default.
+// measures 2.1-2.5 s per call on a small fast judge model (13-22 s, 41 s
+// verbose on the big shared core model), inside the 20s default.
 // ---------------------------------------------------------------------------
 
 function captureLocal(captured: Array<Record<string, unknown>>, content?: string): LocalLlmClient {
@@ -127,9 +128,14 @@ test("system prompt requests the compact verdict shape only", () => {
   const lines = JUDGE_SYSTEM_PROMPT.split("\n");
   const exampleIdx = lines.findIndex((l) => l.trim() === "Example output:");
   assert.ok(exampleIdx >= 0, "prompt must contain an 'Example output:' line");
-  const example = JSON.parse(lines[exampleIdx + 1].trim()) as Array<Record<string, unknown>>;
-  assert.ok(example.length > 0);
-  for (const item of example) {
+  const example = JSON.parse(lines[exampleIdx + 1].trim()) as {
+    verdicts?: Array<Record<string, unknown>>;
+  };
+  assert.ok(
+    Array.isArray(example.verdicts) && example.verdicts.length > 0,
+    'example must use the {"verdicts":[...]} wrapper — response_format json_object rejects a bare top-level array',
+  );
+  for (const item of example.verdicts) {
     assert.equal(typeof item.index, "number");
     assert.ok(
       item.kind === "accept" || item.kind === "reject" || item.kind === "defer",
@@ -171,6 +177,73 @@ test("judge still accepts the legacy verbose verdict shape", async () => {
     { ...result.verdicts.get(2) },
     { durable: false, reason: "Ambiguous pronoun", kind: "defer" },
   );
+});
+
+test("judge parses the {\"verdicts\":[...]} wrapper object the prompt requests", async () => {
+  const config = parseConfig({});
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = captureLocal(
+    captured,
+    JSON.stringify({
+      verdicts: [
+        { index: 0, kind: "accept" },
+        { index: 1, kind: "reject" },
+      ],
+    }),
+  );
+  const candidates = [
+    { text: "user prefers dark mode", category: "preference", confidence: 0.5 },
+    { text: "the build is running now", category: "task", confidence: 0.5 },
+  ];
+
+  const result = await judgeFactDurability(candidates, config, llm, null, new Map(), new Map());
+
+  assert.equal(result.judged, 2, "both verdicts must resolve from the wrapper");
+  assert.equal(result.verdicts.get(0)?.kind, "accept");
+  assert.equal(result.verdicts.get(1)?.kind, "reject");
+});
+
+test("judge still parses the compact bare-array shape", async () => {
+  const config = parseConfig({});
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = captureLocal(
+    captured,
+    JSON.stringify([
+      { index: 0, kind: "reject" },
+      { index: 1, kind: "accept" },
+    ]),
+  );
+  const candidates = [
+    { text: "the build is running now", category: "task", confidence: 0.5 },
+    { text: "user prefers dark mode", category: "preference", confidence: 0.5 },
+  ];
+
+  const result = await judgeFactDurability(candidates, config, llm, null, new Map(), new Map());
+
+  assert.equal(result.judged, 2, "both verdicts must resolve from the bare array");
+  assert.equal(result.verdicts.get(0)?.kind, "reject");
+  assert.equal(result.verdicts.get(1)?.kind, "accept");
+});
+
+test("judge treats a single verdict object as one verdict at its index, not the whole batch", async () => {
+  const config = parseConfig({});
+  const captured: Array<Record<string, unknown>> = [];
+  const llm = captureLocal(captured, JSON.stringify({ index: 1, kind: "reject" }));
+  const candidates = [
+    { text: "user prefers dark mode", category: "preference", confidence: 0.5 },
+    { text: "the build is running now", category: "task", confidence: 0.5 },
+    { text: "he said they'd follow up", category: "task", confidence: 0.5 },
+  ];
+
+  const result = await judgeFactDurability(candidates, config, llm, null, new Map(), new Map());
+
+  assert.equal(result.judged, 1, "only the indexed candidate comes from the LLM");
+  assert.equal(result.verdicts.get(1)?.kind, "reject");
+  assert.equal(result.verdicts.get(1)?.durable, false);
+  assert.equal(result.verdicts.get(0)?.kind, undefined, "index 0 must not inherit the reject");
+  assert.equal(result.verdicts.get(0)?.durable, true, "index 0 fail-open approves");
+  assert.equal(result.verdicts.get(2)?.kind, undefined, "index 2 must not inherit the reject");
+  assert.equal(result.verdicts.get(2)?.durable, true, "index 2 fail-open approves");
 });
 
 // ---------------------------------------------------------------------------

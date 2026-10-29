@@ -85,20 +85,26 @@ The following categories are **auto-approved** without LLM evaluation:
 
 ## Performance budget
 
-The judge asks for a **compact verdict**: one JSON array of
-`{"index": N, "kind": "accept"|"reject"|"defer"}` objects with no reason
-text, and a completion budget of `judgeMaxTokens(batchSize)` — scaled to the
-batch size, capped at 256 tokens. Verbose replies (reason + durable per
+The judge asks for a **compact verdict**: one JSON object with a single
+`verdicts` key holding `{"index": N, "kind": "accept"|"reject"|"defer"}`
+objects with no reason text, and a completion budget of
+`judgeMaxTokens(batchSize)` — scaled to the batch size, capped at 256 tokens.
+(The wrapper object is required: `response_format: json_object` only accepts
+a top-level object.) Verbose replies (reason + durable per
 verdict) took 59-305 s per call on the deployed core model, which the first
 fix papered over by raising the timeout to 150 s. The compact request
-finishes in seconds, so `extractionJudgeTimeoutMs` now defaults to **20 s**
-(fail-open on timeout). Set it lower when `extractionJudgeModel` points at a
-fast model. An in-memory content-hash cache (keyed by SHA-256 of
+measures 2.1-2.5 s per call on a small fast judge model (13-22 s per compact
+call, 41 s verbose, on the big shared core model), so
+`extractionJudgeTimeoutMs` defaults to **20 s** (fail-open on timeout). Raise
+it when `extractionJudgeModel` points at the slow core model. An in-memory
+content-hash cache (keyed by SHA-256 of
 `text + category`) avoids redundant LLM calls for previously judged content
 within the same process lifetime.
 
 The response parser still accepts the legacy verbose shape (`kind`/`durable`
-plus `reason`), so older models and persisted cache entries keep working.
+plus `reason`) and a bare top-level array, so older models and persisted
+cache entries keep working. A single verdict object with an `index` is
+treated as one verdict at that index, not as the whole batch.
 
 ## Architecture
 

@@ -1060,7 +1060,7 @@ test("parseConfig localLlmTimeoutMs clamps invalid values to a positive timeout"
   assert.equal(parseConfig({ localLlmTimeoutMs: Number.NaN }).localLlmTimeoutMs, 180_000);
 });
 
-test("parseConfig extractionJudgeTimeoutMs defaults to 20000 — the compact judge verdict needs seconds, not minutes", () => {
+test("parseConfig extractionJudgeTimeoutMs defaults to 20000 — compact verdict measures 2.1-2.5 s on a small fast judge model", () => {
   assert.equal(parseConfig({}).extractionJudgeTimeoutMs, 20_000);
 });
 

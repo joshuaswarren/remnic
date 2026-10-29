@@ -10,9 +10,11 @@
  *   - Critical-importance facts are auto-approved.
  *   - Batches respect extractionJudgeBatchSize.
  *   - Content-hash caching avoids redundant LLM calls.
- *   - LLM calls use extractionJudgeTimeoutMs (default 20s: the compact verdict
- *     request plus a ≤256-token completion budget finish in seconds; the old
- *     150s default only papered over 59-305s verbose replies).
+ *   - LLM calls use extractionJudgeTimeoutMs (default 20s: measured 2.1-2.5 s
+ *     per compact verdict request with a ≤256-token completion budget on a
+ *     small fast judge model; 13-22 s per compact call, 41 s verbose, on the
+ *     big shared core model — raise it there; the old 150s default only
+ *     papered over 59-305s verbose replies).
  */
 
 import { createHash } from "node:crypto";
@@ -224,17 +226,18 @@ Verdicts:
 - "reject" — not durable. Transient task details ("currently debugging line 42"); ephemeral state ("the build is running now"); routine operations ("ran npm install"); conversational filler; anything stale within hours; step-by-step instructions for a one-time task.
 - "defer" — MIGHT be durable but the candidate alone cannot say: ambiguous referents ("he said they'd follow up"), in-progress statements that may become durable once completed, future commitments with unclear subject or timeline. Defer is NOT a soft reject: use it only when another turn of context would genuinely change the verdict; when torn between accept and reject, lean accept — losing a useful fact is worse than keeping a marginal one.
 
-Reply with a JSON array, exactly one object per input candidate:
-[{"index": <candidate index>, "kind": "accept" | "reject" | "defer"}]
+Reply with a JSON object with a single "verdicts" key, exactly one object per input candidate:
+{"verdicts": [{"index": <candidate index>, "kind": "accept" | "reject" | "defer"}]}
 
 Rules:
-1. Copy each object's "index" from the input candidate. One object per candidate, exactly.
-2. No other fields — no "reason", no "durable", no commentary.
-3. Output valid JSON only. No markdown fences.
-4. ${OUTPUT_LANGUAGE_POLICY}
+1. The top level must be one object {"verdicts": [...]} — JSON mode rejects a bare top-level array.
+2. Copy each object's "index" from the input candidate. One object per candidate, exactly.
+3. No other fields — no "reason", no "durable", no commentary.
+4. Output valid JSON only. No markdown fences.
+5. ${OUTPUT_LANGUAGE_POLICY}
 
 Example output:
-[{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]`;
+{"verdicts": [{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]}`;
 
 // ---------------------------------------------------------------------------
 // Judge request assembly (PR 3264 follow-up)
@@ -744,13 +747,23 @@ function parseJudgeResponse(
     }
 
     if (!Array.isArray(parsed)) {
-      // Might be wrapped in an object with a key
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const values = Object.values(parsed as Record<string, unknown>);
-        for (const v of values) {
-          if (Array.isArray(v)) {
-            parsed = v;
-            break;
+      if (parsed && typeof parsed === "object") {
+        const obj = parsed as Record<string, unknown>;
+        if (Array.isArray(obj.verdicts)) {
+          // Requested shape: {"verdicts": [...]} — response_format json_object
+          // forces a top-level object, so a bare array cannot come back.
+          parsed = obj.verdicts;
+        } else if (typeof obj.index === "number") {
+          // Single verdict object: one verdict at its index, never the whole
+          // batch (observed from small fast judge models).
+          parsed = [obj];
+        } else {
+          // Legacy: wrapped in an object with some array-valued key.
+          for (const v of Object.values(obj)) {
+            if (Array.isArray(v)) {
+              parsed = v;
+              break;
+            }
           }
         }
       }
