@@ -1060,8 +1060,8 @@ test("parseConfig localLlmTimeoutMs clamps invalid values to a positive timeout"
   assert.equal(parseConfig({ localLlmTimeoutMs: Number.NaN }).localLlmTimeoutMs, 180_000);
 });
 
-test("parseConfig extractionJudgeTimeoutMs defaults to 150000 for slow local judge models", () => {
-  assert.equal(parseConfig({}).extractionJudgeTimeoutMs, 150_000);
+test("parseConfig extractionJudgeTimeoutMs defaults to 20000 — the compact judge verdict needs seconds, not minutes", () => {
+  assert.equal(parseConfig({}).extractionJudgeTimeoutMs, 20_000);
 });
 
 test("parseConfig extractionJudgeTimeoutMs accepts numbers and CLI-style numeric strings", () => {
@@ -1071,7 +1071,7 @@ test("parseConfig extractionJudgeTimeoutMs accepts numbers and CLI-style numeric
 
 test("parseConfig extractionJudgeTimeoutMs falls back to the default on unusable values and caps the top", () => {
   for (const value of [0, -1, Number.NaN, "abc"]) {
-    assert.equal(parseConfig({ extractionJudgeTimeoutMs: value }).extractionJudgeTimeoutMs, 150_000);
+    assert.equal(parseConfig({ extractionJudgeTimeoutMs: value }).extractionJudgeTimeoutMs, 20_000);
   }
   assert.equal(parseConfig({ extractionJudgeTimeoutMs: 10_000_000 }).extractionJudgeTimeoutMs, 3_600_000);
 });

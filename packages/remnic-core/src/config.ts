@@ -2731,14 +2731,15 @@ export function parseConfig(
       typeof cfg.extractionJudgeBatchSize === "number" && Number.isFinite(cfg.extractionJudgeBatchSize)
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
-    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29): 1500ms
-    // hardcoded aborted 94/94 calls on the deployed core model (p50 126s per
-    // batch), so every batch fail-open approved and the judge never judged.
+    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
+    // PR 3264): the judge now requests a compact verdict with a ≤256-token
+    // completion budget, so a call takes seconds. The earlier 150s default
+    // papered over 59-305s verbose replies; 20s fails fast and fail-open.
     // Non-positive / unusable values fall back to the default rather than a
     // 1ms timeout that would silently disable judging again.
     extractionJudgeTimeoutMs: ((): number => {
       const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
-      if (coerced === undefined || coerced < 1) return 150_000;
+      if (coerced === undefined || coerced < 1) return 20_000;
       return Math.min(3_600_000, Math.floor(coerced));
     })(),
     extractionJudgeShadow: cfg.extractionJudgeShadow === true,

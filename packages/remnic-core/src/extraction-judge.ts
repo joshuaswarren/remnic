@@ -10,8 +10,9 @@
  *   - Critical-importance facts are auto-approved.
  *   - Batches respect extractionJudgeBatchSize.
  *   - Content-hash caching avoids redundant LLM calls.
- *   - LLM calls use extractionJudgeTimeoutMs (default 150s: the deployed local
- *     model needs tens of seconds per batch — a 1.5s budget aborted every call).
+ *   - LLM calls use extractionJudgeTimeoutMs (default 20s: the compact verdict
+ *     request plus a ≤256-token completion budget finish in seconds; the old
+ *     150s default only papered over 59-305s verbose replies).
  */
 
 import { createHash } from "node:crypto";
@@ -216,48 +217,63 @@ export const JUDGE_SYSTEM_PROMPT = `You are a memory curator evaluating whether 
 
 A fact is **durable** if it will still be useful 30+ days from now and is relevant across multiple sessions, not just the current task.
 
-Return one of three verdicts per candidate:
+The user message is a JSON array of candidates: [{"index": 0, "text": "...", "category": "...", "confidence": 0.5}, ...].
 
-ACCEPT — the fact is durable, persist it:
-- Personal preferences, identities, or relationships
-- Decisions with rationale that affect future work
-- Corrections to previously held beliefs
-- Principles, rules, or constraints the user wants respected
-- Stable facts about projects, tools, or workflows
-- Commitments, deadlines, or obligations
+Verdicts:
+- "accept" — durable. Personal preferences, identities, relationships; decisions with rationale that affect future work; corrections to previously held beliefs; principles, rules, or constraints the user wants respected; stable facts about projects, tools, or workflows; commitments, deadlines, or obligations.
+- "reject" — not durable. Transient task details ("currently debugging line 42"); ephemeral state ("the build is running now"); routine operations ("ran npm install"); conversational filler; anything stale within hours; step-by-step instructions for a one-time task.
+- "defer" — MIGHT be durable but the candidate alone cannot say: ambiguous referents ("he said they'd follow up"), in-progress statements that may become durable once completed, future commitments with unclear subject or timeline. Defer is NOT a soft reject: use it only when another turn of context would genuinely change the verdict; when torn between accept and reject, lean accept — losing a useful fact is worse than keeping a marginal one.
 
-REJECT — the fact is not durable, drop it:
-- Transient task details ("currently debugging line 42")
-- Ephemeral state ("the build is running now")
-- Routine operations ("ran npm install")
-- Conversational filler or acknowledgements
-- Information that will be stale within hours
-- Step-by-step instructions for a one-time task
-
-DEFER — the fact MIGHT be durable but needs more context to decide. The candidate will be re-evaluated on a later extraction pass with fresh context; if it cannot be resolved within a small number of re-evaluations it will be rejected.
-- Ambiguous referents ("he said they'd follow up on it")
-- Partial or in-progress statements that might become durable once completed
-- Future-tense commitments whose subject or timeline is unclear
-- Facts whose durability hinges on context not present in the candidate text
-
-Do NOT use defer as a soft reject. Reject facts you are confident are transient. Only defer when another turn of context would genuinely change the verdict.
-
-Return a JSON array of objects with these fields:
-- index: number (the candidate index)
-- kind: string — one of "accept", "reject", "defer"
-- reason: string (brief explanation, under 80 characters)
-
-You may also include durable (boolean) for backwards compatibility: true for accept, false for reject or defer. If kind is omitted, durable determines the verdict.
+Reply with a JSON array, exactly one object per input candidate:
+[{"index": <candidate index>, "kind": "accept" | "reject" | "defer"}]
 
 Rules:
-1. Return exactly one verdict per input candidate, matched by index.
-2. When in doubt between accept and reject, lean toward accept — false negatives (losing a useful fact) are worse than false positives (keeping a marginal one).
-3. Use defer only when another turn of context would genuinely change the verdict.
-4. Output valid JSON only. No markdown fences, no commentary.
-5. ${OUTPUT_LANGUAGE_POLICY}
+1. Copy each object's "index" from the input candidate. One object per candidate, exactly.
+2. No other fields — no "reason", no "durable", no commentary.
+3. Output valid JSON only. No markdown fences.
+4. ${OUTPUT_LANGUAGE_POLICY}
 
 Example output:
-[{"index": 0, "kind": "accept", "durable": true, "reason": "Stable personal preference"}, {"index": 1, "kind": "reject", "durable": false, "reason": "Ephemeral build status"}, {"index": 2, "kind": "defer", "durable": false, "reason": "Ambiguous pronoun"}]`;
+[{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]`;
+
+// ---------------------------------------------------------------------------
+// Judge request assembly (PR 3264 follow-up)
+// ---------------------------------------------------------------------------
+
+/**
+ * Compact completion budget for one judge call. A verdict is
+ * `{"index":12,"kind":"reject"}` (~14 tokens), so the old flat 2048 only gave
+ * a slow model room to produce 59-305s replies that hid inside the timeout.
+ * Scales with the batch size; capped at 256.
+ */
+export function judgeMaxTokens(batchSize: number): number {
+  return Math.min(256, Math.max(64, batchSize * 24));
+}
+
+/** One indexed candidate entry in a judge request payload. */
+export interface JudgeRequestEntry {
+  index: number;
+  text: string;
+  category: string;
+  confidence: number;
+}
+
+/** Full judge LLM request: messages plus the completion budget. */
+export interface JudgeRequest {
+  messages: Array<{ role: "system" | "user"; content: string }>;
+  maxTokens: number;
+}
+
+/** Build a full judge request body: messages plus the completion budget. */
+export function buildJudgeRequest(entries: readonly JudgeRequestEntry[]): JudgeRequest {
+  return {
+    messages: [
+      { role: "system", content: JUDGE_SYSTEM_PROMPT },
+      { role: "user", content: JSON.stringify(entries) },
+    ],
+    maxTokens: judgeMaxTokens(entries.length),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Content-hash cache (in-memory, per-process fallback)
@@ -496,22 +512,17 @@ export async function judgeFactDurability(
   const batchSize = config.extractionJudgeBatchSize;
   for (let batchStart = 0; batchStart < pendingIndices.length; batchStart += batchSize) {
     const batchIndices = pendingIndices.slice(batchStart, batchStart + batchSize);
-    const batchPayload = batchIndices.map((idx) => ({
-      index: idx,
-      text: candidates[idx].text,
-      category: candidates[idx].category,
-      confidence: candidates[idx].confidence,
-    }));
-
-    const userPrompt = JSON.stringify(batchPayload);
+    const request = buildJudgeRequest(
+      batchIndices.map((idx) => ({
+        index: idx,
+        text: candidates[idx].text,
+        category: candidates[idx].category,
+        confidence: candidates[idx].confidence,
+      })),
+    );
 
     try {
-      const llmResponse = await callJudgeLlm(
-        userPrompt,
-        config,
-        localLlm,
-        fallbackLlm,
-      );
+      const llmResponse = await callJudgeLlm(request, config, localLlm, fallbackLlm);
 
       if (llmResponse) {
         const parsed = parseJudgeResponse(llmResponse, batchIndices);
@@ -642,15 +653,12 @@ export async function judgeFactDurability(
 // ---------------------------------------------------------------------------
 
 async function callJudgeLlm(
-  userPrompt: string,
+  request: JudgeRequest,
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
 ): Promise<string | null> {
-  const messages: Array<{ role: "system" | "user"; content: string }> = [
-    { role: "system", content: JUDGE_SYSTEM_PROMPT },
-    { role: "user", content: userPrompt },
-  ];
+  const { messages, maxTokens } = request;
 
   const modelOverride = config.extractionJudgeModel || undefined;
 
@@ -670,7 +678,7 @@ async function callJudgeLlm(
     try {
       const result = await (localLlm as any).chatCompletion(messages, {
         temperature: 0.1,
-        maxTokens: 2048,
+        maxTokens,
         responseFormat: { type: "json_object" },
         timeoutMs: config.extractionJudgeTimeoutMs,
         operation: "extraction-judge",
@@ -693,7 +701,7 @@ async function callJudgeLlm(
         messages as Array<{ role: "system" | "user" | "assistant"; content: string }>,
         {
           temperature: 0.1,
-          maxTokens: 2048,
+          maxTokens,
           timeoutMs: config.extractionJudgeTimeoutMs,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...gatewayChain,

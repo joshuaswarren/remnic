@@ -85,14 +85,20 @@ The following categories are **auto-approved** without LLM evaluation:
 
 ## Performance budget
 
-The LLM call uses `extractionJudgeTimeoutMs` (default 150s). The original
-1.5s budget aborted every call on the deployed local model (Studio,
-2026-10-29: 94 straight aborts, 0 completions; same-model extraction calls
-measured p50 126s), so each batch fail-open approved and the judge never
-judged. Set it lower when `extractionJudgeModel` points at a fast model. An
-in-memory content-hash cache (keyed by SHA-256 of `text + category`) avoids
-redundant LLM calls for previously judged content within the same process
-lifetime.
+The judge asks for a **compact verdict**: one JSON array of
+`{"index": N, "kind": "accept"|"reject"|"defer"}` objects with no reason
+text, and a completion budget of `judgeMaxTokens(batchSize)` — scaled to the
+batch size, capped at 256 tokens. Verbose replies (reason + durable per
+verdict) took 59-305 s per call on the deployed core model, which the first
+fix papered over by raising the timeout to 150 s. The compact request
+finishes in seconds, so `extractionJudgeTimeoutMs` now defaults to **20 s**
+(fail-open on timeout). Set it lower when `extractionJudgeModel` points at a
+fast model. An in-memory content-hash cache (keyed by SHA-256 of
+`text + category`) avoids redundant LLM calls for previously judged content
+within the same process lifetime.
+
+The response parser still accepts the legacy verbose shape (`kind`/`durable`
+plus `reason`), so older models and persisted cache entries keep working.
 
 ## Architecture
 

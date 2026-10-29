@@ -13,7 +13,6 @@ A fact is **durable** if it will still be useful **30+ days from now** and is re
 - Principles, rules, or constraints the user wants respected
 - Stable facts about projects, tools, or workflows
 - Commitments, deadlines, or obligations
-- Skills, capabilities, or expertise areas
 
 ### NOT DURABLE examples (reject)
 - Transient task details ("currently debugging line 42")
@@ -22,23 +21,19 @@ A fact is **durable** if it will still be useful **30+ days from now** and is re
 - Conversational filler or acknowledgements
 - Information that will be stale within hours
 - Step-by-step instructions for a one-time task
-- Status updates about in-progress work
 
 ### AMBIGUOUS examples (defer)
 
-When the fact **might** be durable but the current turn lacks enough context to decide, return a **defer** verdict. The candidate will be re-evaluated on a later extraction pass with fresh context; if it cannot be resolved within a small number of re-evaluations it will be rejected.
+When the fact **might** be durable but the candidate alone cannot say, return a **defer** verdict. Defer is NOT a "soft reject": use it only when another turn of context would genuinely change the verdict; otherwise reject. When torn between accept and reject, **lean toward accept** — losing a useful fact is worse than keeping a marginal one.
 
 Good signals to defer (not exhaustive):
 - Ambiguous referents — pronouns or demonstratives without a clear antecedent ("he said they'd follow up on it")
 - Partial or in-progress statements that might become durable once completed ("I'm planning to…", "we're about to…")
 - Future-tense commitments whose subject or timeline is unclear
-- Facts whose durability hinges on context that appears elsewhere in the session but is not present in the candidate text
-
-Do NOT use defer as a "soft reject." Reject facts you are confident are transient. Only defer when another turn of context would genuinely change the verdict.
 
 ## Input Format
 
-You will receive a JSON array of candidate facts:
+The user message is a JSON array of candidate facts:
 
 ```json
 [
@@ -49,27 +44,16 @@ You will receive a JSON array of candidate facts:
 
 ## Output Format
 
-Return a JSON array with one verdict per candidate. Each verdict has:
-
-- `index` — the candidate index (number)
-- `kind` — one of `"accept"`, `"reject"`, `"defer"` (string)
-- `reason` — a short phrase (under 80 characters)
-
-For backwards compatibility you may also include `durable` (boolean) — `true` for accept, `false` for reject or defer. If `kind` is omitted, `durable` determines the verdict (accept when true, reject when false).
+Reply with a compact JSON array, exactly one object per input candidate:
 
 ```json
-[
-  {"index": 0, "kind": "accept",  "durable": true,  "reason": "Stable project architecture decision"},
-  {"index": 1, "kind": "reject",  "durable": false, "reason": "Transient debugging context"},
-  {"index": 2, "kind": "defer",   "durable": false, "reason": "Ambiguous pronoun — who is 'they'?"}
-]
+[{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]
 ```
 
-## Rules
+Rules:
+1. Copy each object's `index` from the input candidate. One object per candidate, exactly.
+2. No other fields — no `reason`, no `durable`, no commentary.
+3. Do NOT evaluate corrections or principles — they are auto-approved upstream.
+4. Output valid JSON only. No markdown fences.
 
-1. Return exactly one verdict per input candidate, matched by `index`.
-2. The `reason` field must be a short phrase (under 80 characters).
-3. When in doubt between accept and reject, **lean toward accept** — false negatives (losing a useful fact) are worse than false positives (keeping a marginal one).
-4. Use **defer** only when another turn of context would genuinely change the verdict, not as a way to avoid a decision.
-5. Do NOT evaluate corrections or principles — they are auto-approved upstream.
-6. Output valid JSON only. No markdown fences, no commentary.
+The embedded prompt in `packages/remnic-core/src/extraction-judge.ts` (`JUDGE_SYSTEM_PROMPT`) is the wire format; this file mirrors it. Legacy verbose replies (`kind` + `durable` + `reason`) are still accepted by the response parser for older models, but the request no longer asks for them.
