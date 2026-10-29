@@ -15,12 +15,13 @@
  *     pass (the realpath/lstat storm) — they mkdir only what the write needs.
  */
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
+import { bufferSessionFileName } from "./storage/buffer-session-files.js";
 import type { BufferEntryState, BufferState } from "./types.js";
 
 async function tempRoot(prefix: string): Promise<string> {
@@ -165,9 +166,8 @@ test("crash mid-migration: existing per-session file wins over the legacy snapsh
 async function storage_writeSession(stateDir: string, key: string, entry: BufferEntryState): Promise<void> {
   // Written directly (pre-migration crash simulation) using the same file naming
   // the storage layer derives; the storage instance is created after setup.
-  const encoded = encodeURIComponent(key);
   await writeFile(
-    path.join(stateDir, "buffer", `${encoded}.json`),
+    path.join(stateDir, "buffer", bufferSessionFileName(key)),
     JSON.stringify({ key, ...entry }),
     "utf8",
   );
@@ -195,7 +195,7 @@ test("whole-state saveBuffer reconciles per-session files (writes, deletes stale
     // top-level state IS the default session), so expect exactly those two.
     assert.deepEqual(
       names.filter((n) => n.endsWith(".json")).sort(),
-      [`${encodeURIComponent("session-a")}.json`, "default.json"].sort(),
+      [bufferSessionFileName("session-a"), bufferSessionFileName("default")].sort(),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -209,7 +209,7 @@ test("a corrupt per-session file is skipped; the rest of the buffer loads", asyn
     await storage.saveBufferSession("session-a", makeEntry("alpha fact"));
     await storage.saveBufferSession("session-b", makeEntry("beta fact"));
     const dir = path.join(root, "state", "buffer");
-    const names = (await readdir(dir)).filter((n) => n.includes(encodeURIComponent("session-b")));
+    const names = (await readdir(dir)).filter((n) => n === bufferSessionFileName("session-b"));
     await writeFile(path.join(dir, names[0]), "{not json", "utf8");
 
     const state = await storage.loadBuffer();
@@ -226,7 +226,7 @@ test("a corrupt session file is replaced by the legacy snapshot during migration
     const stateDir = path.join(root, "state");
     await mkdir(path.join(stateDir, "buffer"), { recursive: true });
     await writeFile(
-      path.join(stateDir, "buffer", `${encodeURIComponent("session-a")}.json`),
+      path.join(stateDir, "buffer", bufferSessionFileName("session-a")),
       "{not json",
       "utf8",
     );
@@ -301,5 +301,49 @@ test("session file names round-trip awkward buffer keys", async () => {
     assert.equal(names.filter((n) => n.endsWith(".json")).length, keys.length, "two keys collided into one file");
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("session file names do not collide on case-insensitive filesystems", () => {
+  const keys = ["Session-A", "session-a", "SESSION-A", "h" + "0".repeat(64), "x".repeat(400), "x".repeat(401)];
+  const folded = new Set(keys.map((key) => bufferSessionFileName(key).toLowerCase()));
+  assert.equal(folded.size, keys.length, "two keys fold to the same file name");
+});
+
+test("a symlinked buffer directory is refused and nothing is written through it", async () => {
+  const root = await tempRoot("bufio-symlink-dir");
+  const outside = await tempRoot("bufio-outside");
+  try {
+    const storage = new StorageManager(root);
+    await mkdir(path.join(root, "state"), { recursive: true });
+    await symlink(outside, path.join(root, "state", "buffer"));
+
+    await assert.rejects(storage.saveBufferSession("session-a", makeEntry("secret")), /symlink/);
+    await assert.rejects(storage.deleteBufferSession("session-a"), /symlink/);
+    await assert.rejects(storage.loadBuffer(), /symlink/);
+    assert.deepEqual(await readdir(outside), [], "nothing may be written outside the memory root");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked session file is never followed when loading", async () => {
+  const root = await tempRoot("bufio-symlink-file");
+  const outside = await tempRoot("bufio-outside-file");
+  try {
+    const storage = new StorageManager(root);
+    await storage.saveBufferSession("session-a", makeEntry("alpha fact"));
+    const target = path.join(outside, "stolen.json");
+    await writeFile(target, JSON.stringify({ key: "session-evil", ...makeEntry("evil fact") }), "utf8");
+    await symlink(target, path.join(root, "state", "buffer", "s-planted.json"));
+
+    const state = await storage.loadBuffer();
+
+    assert.equal(state.entries?.["session-a"]?.turns[0]?.content, "alpha fact");
+    assert.equal(state.entries?.["session-evil"], undefined, "the symlink target must not be read");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

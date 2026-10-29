@@ -1,6 +1,8 @@
 import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
+import { BufferSessionPersistence, type BufferStorage } from "./buffer-persistence.js";
+import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import type {
   BufferEntryState,
   BufferState,
@@ -28,22 +30,6 @@ import {
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
-
-/**
- * The buffer persistence surface SmartBuffer depends on.
- *
- * `saveBufferSession` / `deleteBufferSession` are the per-session incremental
- * writes (one file per session); when a storage backend does not provide
- * them, the buffer falls back to the whole-state `saveBuffer`. Both are
- * optional in the type so a storage double only has to implement what it
- * actually supports.
- */
-export interface BufferStorage {
-  loadBuffer(): Promise<BufferState>;
-  saveBuffer(state: BufferState): Promise<void>;
-  saveBufferSession?(key: string, entry: BufferEntryState): Promise<void>;
-  deleteBufferSession?(key: string): Promise<void>;
-}
 
 export interface AddTurnOutcome {
   decision: TriggerDecision;
@@ -190,62 +176,8 @@ export class SmartBuffer {
    * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
   private firstPendingAtMs: number | null = null;
 
-  /**
-   * Buffer keys whose persisted session file is stale since the last
-   * successful persist (per-session incremental saves). Maintained on every
-   * state mutation; only cleared after a durable write of that session.
-   */
-  private dirtySessions = new Set<string>();
-  /** Buffer keys removed from in-memory state whose session files still need
-   * deletion (eviction, resetToEmpty). */
-  private deletedSessions = new Set<string>();
-
-  private markSessionDirty(key: string): void {
-    this.dirtySessions.add(key);
-    this.deletedSessions.delete(key);
-  }
-
-  private markSessionDeleted(key: string): void {
-    this.deletedSessions.add(key);
-    this.dirtySessions.delete(key);
-  }
-
-  /**
-   * Persist buffer state under the mutation chain (exactly one writer).
-   * On session-capable storage this writes ONLY the sessions whose state
-   * changed since the last successful persist, and deletes files for
-   * evicted/reset sessions — the observe path never re-serializes other
-   * sessions' turns. On legacy storage it falls back to the whole-state
-   * saveBuffer, byte-compatible with the pre-incremental behavior. Files
-   * are deleted before dirty writes: a crash mid-persist can then only
-   * resurrect already-evicted data (same exposure as the legacy whole-file
-   * rewrite), never drop sessions the state says exist.
-   */
-  private async persistUnlocked(): Promise<void> {
-    const saveSession = this.storage.saveBufferSession?.bind(this.storage);
-    const deleteSession = this.storage.deleteBufferSession?.bind(this.storage);
-    if (saveSession && deleteSession) {
-      for (const key of [...this.deletedSessions]) {
-        await deleteSession(key);
-        this.deletedSessions.delete(key);
-      }
-      for (const key of [...this.dirtySessions]) {
-        const entry = this.peekEntry(key);
-        if (!entry) {
-          // Defensive: a dirty key without state must not be written from a
-          // fabricated empty entry — treat it as a deletion instead.
-          this.markSessionDeleted(key);
-          continue;
-        }
-        await saveSession(key, entry);
-        this.dirtySessions.delete(key);
-      }
-      return;
-    }
-    await this.storage.saveBuffer(this.state);
-    this.dirtySessions.clear();
-    this.deletedSessions.clear();
-  }
+  /** Which sessions' persisted files are stale (per-session incremental saves). */
+  private readonly persistence = new BufferSessionPersistence();
 
   constructor(
     private readonly config: PluginConfig,
@@ -333,69 +265,25 @@ export class SmartBuffer {
     );
   }
 
-  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT; returns the evicted
-   * keys so callers can delete their persisted session files. */
-  private pruneEntries(retainKeys: string[]): string[] {
+  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT and queue their session files for deletion. */
+  private pruneEntries(retainKeys: string[]): void {
     const entries = this.state.entries;
-    if (!entries) return [];
-    const keys = Object.keys(entries);
-    if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return [];
-
-    const insertionOrder = new Map(keys.map((key, index) => [key, index]));
-    const byOldestActivity = (left: string, right: string): number => {
-      const leftAt = this.entryActivityAt(entries[left] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      const rightAt = this.entryActivityAt(entries[right] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      if (leftAt !== rightAt) return leftAt - rightAt;
-      return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
-    };
-    const candidates = keys.filter(
-      (key) =>
-        key !== "default" &&
-        !retainKeys.includes(key) &&
-        // #3251: accepted captures exit via refusal/backpressure, never eviction.
-        !this.entryHoldsAcceptedCapture(entries[key]),
-    );
-    const emptyRemovable = candidates
-      .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
-      .sort(byOldestActivity);
-
-    const removableCount = Math.max(0, keys.length - MAX_BUFFER_ENTRY_COUNT);
-    let evicted = emptyRemovable.slice(0, removableCount);
-    if (evicted.length < removableCount) {
-      // Retained failed extractions (#1908 retry retention) keep their turns in
-      // the buffer, so empty entries alone may not bring the map back under the
-      // cap during a provider outage. The cap is the documented bound — evict
-      // the oldest NON-empty sessions too rather than growing unboundedly
-      // (codex review).
-      const nonEmptyRemovable = candidates
-        .filter((key) => (entries[key]?.turns.length ?? 0) > 0)
-        .sort(byOldestActivity);
-      evicted = evicted.concat(nonEmptyRemovable.slice(0, removableCount - evicted.length));
-    }
-    for (const key of evicted) {
-      delete entries[key];
-      this.dirtySessions.delete(key);
-    }
+    if (!entries) return;
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, MAX_BUFFER_ENTRY_COUNT, {
+      activityAt: (entry) => this.entryActivityAt(entry),
+      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+    });
+    for (const key of evicted) delete entries[key];
+    this.persistence.markEvicted(evicted);
     if (evicted.length > 0) {
-      // Loud degradation (extraction hot-loop hardening, Step 7): during a
-      // prolonged provider outage the breaker holds extraction off and buffered
-      // sessions accumulate. Eviction of the oldest empty session entries past
-      // MAX_BUFFER_ENTRY_COUNT is bounded and expected, but must be observable —
-      // not silent — so operators can see buffer pressure.
+      // Loud degradation (extraction hot-loop hardening, Step 7): buffer
+      // pressure during a provider outage is bounded and expected, but must
+      // be observable, not silent.
       log.warn(
         `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
           `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
       );
     }
-    return evicted;
   }
 
   private async loadUnlocked(): Promise<void> {
@@ -453,14 +341,14 @@ export class SmartBuffer {
    */
   resetToEmpty(): void {
     for (const key of Object.keys(this.state.entries ?? {})) {
-      this.markSessionDeleted(key);
+      this.persistence.markDeleted(key);
     }
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.loaded = true;
   }
 
   private async saveUnlocked(): Promise<void> {
-    await this.persistUnlocked();
+    await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
   }
 
   async save(): Promise<void> {
@@ -576,14 +464,14 @@ export class SmartBuffer {
     }
     // resetToEmpty-only deletions are pending work too, even with no
     // pending-save flag set.
-    if (!this.pendingSave && this.dirtySessions.size === 0 && this.deletedSessions.size === 0) return;
+    if (!this.pendingSave && !this.persistence.hasPending()) return;
     try {
       await this.enqueueMutation(async () => {
         // Re-check under the serializer: a concurrent flush may have already
         // persisted this pending save. Skip the redundant write (no phantom
         // writes). resetToEmpty-only deletions also land here without a
         // pending-save flag.
-        if (!this.pendingSave && this.dirtySessions.size === 0 && this.deletedSessions.size === 0) return;
+        if (!this.pendingSave && !this.persistence.hasPending()) return;
         await this.saveUnlocked();
         // Clear the pending flag INSIDE the same serialized mutation as the
         // write (issue #1909 review). Clearing it after the enqueue await
@@ -661,7 +549,7 @@ export class SmartBuffer {
     for (const key of emptyRemovable) {
       if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
       delete entries[key];
-      this.markSessionDeleted(key);
+      this.persistence.markDeleted(key);
     }
   }
 
@@ -797,10 +685,8 @@ export class SmartBuffer {
     const decision = this.evaluate(entry, signal.level);
     const turnCountInWindow = entry.turns.length;
 
-    this.markSessionDirty(bufferKey);
-    for (const evicted of this.pruneEntries([bufferKey])) {
-      this.markSessionDeleted(evicted);
-    }
+    this.persistence.markDirty(bufferKey);
+    this.pruneEntries([bufferKey]);
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
       // trailing-edge timer (issue #1909) instead of rewriting per turn.
@@ -878,11 +764,7 @@ export class SmartBuffer {
   private async emitSurpriseEventSafe(
     params: SurpriseTelemetryQueueEntry,
   ): Promise<void> {
-    const storage = this.storage as BufferStorage & {
-      appendBufferSurpriseEvents?: (
-        events: BufferSurpriseEvent[],
-      ) => Promise<number>;
-    };
+    const storage = this.storage;
     if (typeof storage.appendBufferSurpriseEvents !== "function") {
       // Older StorageManager / test double without the telemetry sink.
       // Silently skip — core path is still covered by the log line above.
@@ -1041,7 +923,7 @@ export class SmartBuffer {
       );
       if (retained.length > 0) entry.retainedTurns = retained;
       else delete entry.retainedTurns;
-      this.markSessionDirty(bufferKey);
+      this.persistence.markDirty(bufferKey);
       await this.saveUnlocked();
     });
   }
@@ -1149,7 +1031,7 @@ export class SmartBuffer {
         if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
         else delete entry.retainedTurns;
         if (bufferKey === "default") this.state.turns = entry.turns;
-        this.markSessionDirty(bufferKey);
+        this.persistence.markDirty(bufferKey);
       }
       if (changed || hadPendingSave) {
         assertLifecycle();
@@ -1260,10 +1142,8 @@ export class SmartBuffer {
         this.state.lastExtractionAt = entry.lastExtractionAt;
         this.state.extractionCount = entry.extractionCount;
       }
-      this.markSessionDirty(bufferKey);
-      for (const evicted of this.pruneEntries([bufferKey])) {
-        this.markSessionDeleted(evicted);
-      }
+      this.persistence.markDirty(bufferKey);
+      this.pruneEntries([bufferKey]);
       await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
     });
   }

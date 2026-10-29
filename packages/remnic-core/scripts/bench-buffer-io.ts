@@ -35,16 +35,32 @@ interface Options {
   label: string;
 }
 
+/** SmartBuffer holds at most 200 entries including "default"; seeding more would
+ * make the first observe evict a seeded session and change the workload. */
+const MAX_BENCH_SESSIONS = 199;
+
+function positiveInt(name: string, value: string | undefined, max: number): number {
+  if (value === undefined || value === "") throw new Error(`--${name} needs a value`);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > max) {
+    throw new Error(`--${name} must be an integer from 1 to ${max}, got "${value}"`);
+  }
+  return parsed;
+}
+
 function parseOptions(argv: string[]): Options {
   const options: Options = { sessions: 12, turns: 20, observes: 12, bytes: 150 * 1024 * 1024, label: "run" };
   for (const arg of argv) {
-    const [key, value] = arg.replace(/^--/, "").split("=");
-    if (value === undefined) continue;
-    if (key === "sessions") options.sessions = Number(value);
-    else if (key === "turns") options.turns = Number(value);
-    else if (key === "observes") options.observes = Number(value);
-    else if (key === "bytes") options.bytes = Number(value);
-    else if (key === "label") options.label = value;
+    const [key, ...rest] = arg.replace(/^--/, "").split("=");
+    const value = rest.join("=");
+    if (key === "sessions") options.sessions = positiveInt(key, value, MAX_BENCH_SESSIONS);
+    else if (key === "turns") options.turns = positiveInt(key, value, 100_000);
+    else if (key === "observes") options.observes = positiveInt(key, value, 1_000_000);
+    else if (key === "bytes") options.bytes = positiveInt(key, value, 8 * 1024 * 1024 * 1024);
+    else if (key === "label") {
+      if (value === "") throw new Error("--label needs a value");
+      options.label = value;
+    } else throw new Error(`unknown option --${key}`);
   }
   return options;
 }
@@ -122,8 +138,8 @@ async function main(): Promise<void> {
 
     // Seed the store the way the running revision persists it.
     const seedStart = now();
-    const sessionWriter = (storage as Partial<StorageManager>).saveBufferSession;
-    if (typeof sessionWriter === "function") {
+    const perSessionFiles = "saveBufferSession" in storage;
+    if (perSessionFiles) {
       for (const [key, entry] of entries) {
         await storage.saveBufferSession(key, entry);
       }
@@ -167,7 +183,7 @@ async function main(): Promise<void> {
       observes: options.observes,
       bufferBytes: options.bytes,
       perSessionBytes: perTurnBytes * options.turns,
-      persistence: typeof sessionWriter === "function" ? "per-session-files" : "legacy-single-file",
+      persistence: perSessionFiles ? "per-session-files" : "legacy-single-file",
       seedMs: Math.round(seedMs),
       recallMs: Math.round(recallMs),
       storeMs: Math.round(storeMs),
