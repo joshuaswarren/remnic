@@ -3746,7 +3746,7 @@
         "type": "number",
         "default": 16777216,
         "minimum": 0,
-        "description": "Size in bytes at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl (last-record-wins, atomic rewrite). Default 16777216; 0 disables."
+        "description": "Size in bytes at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl (last-record-wins, every namespace row preserved, atomic rewrite). Default 16777216; 0 disables."
       },
       "namespacesCatalogReadTouchCoalesceMs": {
         "type": "number",
@@ -4061,7 +4061,7 @@
             "const": false
           }
         ],
-        "description": "Optional OpenAI API key for plugin mode (or OPENAI_API_KEY). Ignored in gateway mode; in plugin mode Remnic may send conversation and memory content to OpenAI or the configured endpoint."
+        "description": "Optional OpenAI API key for plugin mode (or OPENAI_API_KEY). Ignored by default in gateway mode (only the implicit env read is skipped); in plugin mode Remnic may send conversation and memory content to OpenAI or the configured endpoint."
       },
       "openaiBaseUrl": {
         "type": "string",
@@ -5183,7 +5183,7 @@
           "auto"
         ],
         "default": "manual",
-        "description": "Disclosure auto-escalation: when 'auto', recalls without a caller-supplied disclosure escalate from chunk to section below recallDisclosureEscalationThreshold confidence. Default 'manual'."
+        "description": "Disclosure auto-escalation: when 'auto', recalls without a caller-supplied disclosure escalate from chunk to section below recallDisclosureEscalationThreshold confidence; 'raw' is never auto-selected. Default 'manual'."
       },
       "recallDisclosureEscalationThreshold": {
         "type": "number",
@@ -6677,7 +6677,7 @@
                       "file"
                     ],
                     "default": "memoryDir",
-                    "description": "Where a day's journal body is read: 'memoryDir' (journal/<date>.md) or 'vault' (vault.readback.journalSection; needs vault.enabled and dailyNotePath). Legacy 'file' aliases 'memoryDir' and warns."
+                    "description": "Where a day's journal body is read: 'memoryDir' (journal/<date>.md) or 'vault' (vault.readback.journalSection; needs vault.enabled, dailyNotePath and a non-empty journalSection). Legacy 'file' aliases 'memoryDir' and warns."
                   },
                   "heading": {
                     "type": "string",
