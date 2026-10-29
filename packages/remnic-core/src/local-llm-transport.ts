@@ -41,6 +41,18 @@ function isPlainPoolingAgent(dispatcher: unknown): boolean {
 }
 
 /**
+ * REMNIC_LOCAL_LLM_DIRECT=1 declares that the local endpoint is reached
+ * directly. Availability probes use this shared plain pool in that mode so they
+ * take the same route as chat requests; `undefined` keeps the global dispatcher.
+ */
+let directProbeAgent: Agent | null = null;
+export function directProbeDispatcher(): Agent | undefined {
+  if (process.env.REMNIC_LOCAL_LLM_DIRECT !== "1") return undefined;
+  directProbeAgent ??= new Agent();
+  return directProbeAgent;
+}
+
+/**
  * Connection pool whose header/body inactivity budgets track the configured
  * request budget.
  *
