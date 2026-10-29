@@ -1,5 +1,7 @@
 import type { ResponseFormatJSONSchema } from "openai/resources/shared";
+import type { Agent } from "undici";
 import { log } from "./logger.js";
+import { directProbeDispatcher } from "./local-llm-transport.js";
 import type { LocalLlmRequestPriority } from "./local-llm.js";
 
 export interface LocalLlmChatCompletionOptions {
@@ -167,7 +169,10 @@ export async function probeFetch(
     : controller.signal;
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
-    const response = await fetch(url, { signal: requestSignal, headers: options.headers });
+    const init: RequestInit & { dispatcher?: Agent } = { signal: requestSignal, headers: options.headers };
+    const dispatcher = directProbeDispatcher();
+    if (dispatcher) init.dispatcher = dispatcher;
+    const response = await fetch(url, init);
     clearTimeout(timeout);
     if (!response.ok) {
       log.debug(`local LLM probe: ${url} returned HTTP ${response.status}`);
