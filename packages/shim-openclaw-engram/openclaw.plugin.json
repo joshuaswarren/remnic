@@ -2456,8 +2456,7 @@
       "extractionJudgeTimeoutMs": {
         "type": "number",
         "default": 20000,
-        "minimum": 1,
-        "description": "Per-call judge LLM timeout in milliseconds. Compact verdict measures 2.1-2.5 s on a small fast judge model (13-22 s, 41 s verbose, on the big shared core model); raise it only for a slow extractionJudgeModel."
+        "minimum": 1
       },
       "extractionMaxEntitiesPerRun": {
         "type": "number",

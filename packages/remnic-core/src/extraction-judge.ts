@@ -723,6 +723,38 @@ async function callJudgeLlm(
   return null;
 }
 
+interface JudgeVerdictItem {
+  index?: number;
+  kind?: string;
+  action?: string;
+  durable?: boolean;
+  reason?: string;
+}
+
+/** What a judge model may return: a bare array, or one object wrapping verdicts. */
+interface JudgeEnvelope {
+  verdicts?: JudgeVerdictItem[];
+  index?: number;
+}
+
+type ParsedJudgeJson = JudgeVerdictItem[] | JudgeEnvelope | null | undefined;
+
+/**
+ * Normalise the object shapes a judge model returns to a verdict array.
+ * Requested shape {"verdicts": [...]} (response_format json_object forces a
+ * top-level object); a single verdict object counts as one verdict at its
+ * index, never the whole batch; legacy: any array-valued key.
+ */
+function unwrapJudgeEnvelope(parsed: ParsedJudgeJson): JudgeVerdictItem[] | null {
+  if (!parsed || Array.isArray(parsed)) return null;
+  if (Array.isArray(parsed.verdicts)) return parsed.verdicts;
+  if (Number.isInteger(parsed.index)) return [parsed];
+  for (const v of Object.values(parsed)) {
+    if (Array.isArray(v)) return v;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Response parsing
 // ---------------------------------------------------------------------------
@@ -736,7 +768,7 @@ function parseJudgeResponse(
 
   try {
     // Try direct parse first, then fall back to JSON extraction
-    let parsed: unknown;
+    let parsed: ParsedJudgeJson;
     try {
       parsed = JSON.parse(raw);
     } catch {
@@ -747,30 +779,12 @@ function parseJudgeResponse(
     }
 
     if (!Array.isArray(parsed)) {
-      if (parsed && typeof parsed === "object") {
-        const obj = parsed as Record<string, unknown>;
-        if (Array.isArray(obj.verdicts)) {
-          // Requested shape: {"verdicts": [...]} — response_format json_object
-          // forces a top-level object, so a bare array cannot come back.
-          parsed = obj.verdicts;
-        } else if (typeof obj.index === "number") {
-          // Single verdict object: one verdict at its index, never the whole
-          // batch (observed from small fast judge models).
-          parsed = [obj];
-        } else {
-          // Legacy: wrapped in an object with some array-valued key.
-          for (const v of Object.values(obj)) {
-            if (Array.isArray(v)) {
-              parsed = v;
-              break;
-            }
-          }
-        }
-      }
-      if (!Array.isArray(parsed)) {
+      const unwrapped = unwrapJudgeEnvelope(parsed);
+      if (unwrapped === null) {
         log.debug("extraction-judge: response is not an array, cannot parse");
         return result;
       }
+      parsed = unwrapped;
     }
 
     for (const item of parsed) {

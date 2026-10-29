@@ -3,8 +3,10 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 import { judgeFactDurability, JUDGE_SYSTEM_PROMPT, judgeMaxTokens } from "./extraction-judge.js";
-import type { FallbackLlmClient } from "./fallback-llm.js";
-import type { LocalLlmClient } from "./local-llm.js";
+import { FallbackLlmClient } from "./fallback-llm.js";
+import type { FallbackLlmOptions, FallbackLlmResponse } from "./fallback-llm.js";
+import { LocalLlmClient } from "./local-llm.js";
+import type { LocalLlmChatCompletionOptions, LocalLlmChatCompletionResult } from "./local-llm-helpers.js";
 
 // Regression for cursor review on #1425: the extraction judge must route gateway
 // fallback calls through the SAME precedence as ExtractionEngine.withGatewayAgent
@@ -55,19 +57,60 @@ test("judge falls back to gatewayAgentId when no taskModelChain is set", async (
   assert.equal(captured[0]?.modelChain, undefined);
 });
 
+type ChatOptions = LocalLlmChatCompletionOptions;
+
+/** A real FallbackLlmClient whose gateway call is replaced: records the options the judge passes. */
+class RecordingFallbackLlm extends FallbackLlmClient {
+  constructor(private readonly sink: FallbackLlmOptions[]) {
+    super();
+  }
+
+  override isAvailable(): boolean {
+    return true;
+  }
+
+  override async chatCompletion(
+    _messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options: FallbackLlmOptions = {},
+  ): Promise<FallbackLlmResponse | null> {
+    this.sink.push(options);
+    return { content: JSON.stringify([{ index: 0, durable: true, reason: "ok" }]), modelUsed: "recording-fake" };
+  }
+}
+
+/** A real LocalLlmClient whose network call is replaced: records the options the judge passes. */
+class RecordingLocalLlm extends LocalLlmClient {
+  constructor(
+    private readonly sink: ChatOptions[],
+    private readonly reply: string,
+  ) {
+    super(parseConfig({}));
+  }
+
+  override async chatCompletion(
+    _messages: Array<{ role: string; content: string }>,
+    options: ChatOptions = {},
+  ): Promise<LocalLlmChatCompletionResult | null> {
+    this.sink.push(options);
+    return { content: this.reply };
+  }
+}
+
+interface ExampleVerdict {
+  index?: number;
+  kind?: string;
+  reason?: string;
+  durable?: boolean;
+}
+
 // Regression (Studio 2026-10-29): the judge hardcoded timeoutMs: 1500 while the
 // deployed local model needs tens of seconds — 94 straight aborts, 0 completions.
 // The timeout must come from config so operators can set one the model can meet.
 
 test("judge forwards the configured timeout to the local LLM call", async () => {
   const config = parseConfig({ extractionJudgeTimeoutMs: 45_000 });
-  const captured: Array<Record<string, unknown>> = [];
-  const localLlm = {
-    chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
-      captured.push(options);
-      return { content: JSON.stringify([{ index: 0, durable: true, reason: "ok" }]) };
-    },
-  } as unknown as LocalLlmClient;
+  const captured: ChatOptions[] = [];
+  const localLlm = new RecordingLocalLlm(captured, JSON.stringify([{ index: 0, durable: true, reason: "ok" }]));
 
   await judgeFactDurability([candidate], config, localLlm, null, new Map(), new Map());
 
@@ -84,17 +127,8 @@ test("judge forwards the configured timeout to the local LLM call", async () => 
 // verbose on the big shared core model), inside the 20s default.
 // ---------------------------------------------------------------------------
 
-function captureLocal(captured: Array<Record<string, unknown>>, content?: string): LocalLlmClient {
-  return {
-    chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
-      captured.push(options);
-      return {
-        content:
-          content ??
-          JSON.stringify([{ index: 0, kind: "reject" }]),
-      };
-    },
-  } as unknown as LocalLlmClient;
+function captureLocal(captured: ChatOptions[], content?: string): LocalLlmClient {
+  return new RecordingLocalLlm(captured, content ?? JSON.stringify([{ index: 0, kind: "reject" }]));
 }
 
 const EIGHT_CANDIDATES = Array.from({ length: 8 }, (_, i) => ({
@@ -105,14 +139,14 @@ const EIGHT_CANDIDATES = Array.from({ length: 8 }, (_, i) => ({
 
 test("judge uses a compact completion budget scaled to the batch size", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
 
   await judgeFactDurability(EIGHT_CANDIDATES, config, captureLocal(captured), null, new Map(), new Map());
 
   assert.equal(captured.length, 1, "judge should call the local LLM once");
   assert.equal(captured[0]?.maxTokens, judgeMaxTokens(8));
   assert.ok(
-    (captured[0]?.maxTokens as number) <= 256,
+    (captured[0]?.maxTokens ?? Number.POSITIVE_INFINITY) <= 256,
     `completion budget must stay small, got ${captured[0]?.maxTokens}`,
   );
 });
@@ -128,15 +162,14 @@ test("system prompt requests the compact verdict shape only", () => {
   const lines = JUDGE_SYSTEM_PROMPT.split("\n");
   const exampleIdx = lines.findIndex((l) => l.trim() === "Example output:");
   assert.ok(exampleIdx >= 0, "prompt must contain an 'Example output:' line");
-  const example = JSON.parse(lines[exampleIdx + 1].trim()) as {
-    verdicts?: Array<Record<string, unknown>>;
-  };
+  // SAFETY: the line is the example JSON checked into the prompt text this test pins.
+  const example = JSON.parse(lines[exampleIdx + 1].trim()) as { verdicts?: ExampleVerdict[] };
   assert.ok(
     Array.isArray(example.verdicts) && example.verdicts.length > 0,
     'example must use the {"verdicts":[...]} wrapper — response_format json_object rejects a bare top-level array',
   );
   for (const item of example.verdicts) {
-    assert.equal(typeof item.index, "number");
+    assert.ok(Number.isInteger(item.index), "example index must be an integer");
     assert.ok(
       item.kind === "accept" || item.kind === "reject" || item.kind === "defer",
       `example kind must be a parser-accepted verdict, got ${item.kind}`,
@@ -148,7 +181,7 @@ test("system prompt requests the compact verdict shape only", () => {
 
 test("judge still accepts the legacy verbose verdict shape", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
   const llm = captureLocal(
     captured,
     JSON.stringify([
@@ -181,7 +214,7 @@ test("judge still accepts the legacy verbose verdict shape", async () => {
 
 test("judge parses the {\"verdicts\":[...]} wrapper object the prompt requests", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
   const llm = captureLocal(
     captured,
     JSON.stringify({
@@ -205,7 +238,7 @@ test("judge parses the {\"verdicts\":[...]} wrapper object the prompt requests",
 
 test("judge still parses the compact bare-array shape", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
   const llm = captureLocal(
     captured,
     JSON.stringify([
@@ -227,7 +260,7 @@ test("judge still parses the compact bare-array shape", async () => {
 
 test("judge treats a single verdict object as one verdict at its index, not the whole batch", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
   const llm = captureLocal(captured, JSON.stringify({ index: 1, kind: "reject" }));
   const candidates = [
     { text: "user prefers dark mode", category: "preference", confidence: 0.5 },
@@ -254,7 +287,7 @@ test("judge treats a single verdict object as one verdict at its index, not the 
 
 test("judge forwards extractionJudgeModel to the local LLM options", async () => {
   const config = parseConfig({ extractionJudgeModel: "qwen3.8-27b-64k-nothink" });
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
 
   await judgeFactDurability([candidate], config, captureLocal(captured), null, new Map(), new Map());
 
@@ -263,7 +296,7 @@ test("judge forwards extractionJudgeModel to the local LLM options", async () =>
 
 test("judge omits model from local LLM options when extractionJudgeModel is unset", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: ChatOptions[] = [];
 
   await judgeFactDurability([candidate], config, captureLocal(captured), null, new Map(), new Map());
 
@@ -272,18 +305,18 @@ test("judge omits model from local LLM options when extractionJudgeModel is unse
 
 test("judge forwards extractionJudgeModel to the fallback LLM options in gateway mode", async () => {
   const config = parseConfig({ modelSource: "gateway", extractionJudgeModel: "fast-judge" });
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: FallbackLlmOptions[] = [];
 
-  await judgeFactDurability([candidate], config, null, captureLlm(captured), new Map(), new Map());
+  await judgeFactDurability([candidate], config, null, new RecordingFallbackLlm(captured), new Map(), new Map());
 
   assert.equal(captured[0]?.model, "fast-judge");
 });
 
 test("judge defaults to a 20s timeout when none is configured", async () => {
   const config = parseConfig({});
-  const captured: Array<Record<string, unknown>> = [];
+  const captured: FallbackLlmOptions[] = [];
 
-  await judgeFactDurability([candidate], config, null, captureLlm(captured), new Map(), new Map());
+  await judgeFactDurability([candidate], config, null, new RecordingFallbackLlm(captured), new Map(), new Map());
 
   assert.equal(captured[0]?.timeoutMs, 20_000);
 });
