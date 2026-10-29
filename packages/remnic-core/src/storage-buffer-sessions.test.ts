@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { SecureStoreDecryptError } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
 import { bufferSessionFileName } from "./storage/buffer-session-files.js";
 import type { BufferEntryState, BufferState } from "./types.js";
@@ -345,5 +346,24 @@ test("a symlinked session file is never followed when loading", async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
     await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("loading with the wrong secure-store key rejects instead of reading an empty buffer", async () => {
+  const root = await tempRoot("bufio-wrong-key");
+  try {
+    const writer = new StorageManager(root);
+    writer.setSecureStoreKey(Buffer.alloc(32, 1), true);
+    await writer.saveBufferSession("session-a", makeEntry("sealed turn"));
+
+    const reader = new StorageManager(root);
+    reader.setSecureStoreKey(Buffer.alloc(32, 2), true);
+
+    await assert.rejects(reader.loadBuffer(), SecureStoreDecryptError);
+    // The encrypted file must survive: a rejected load must not let later saves replace it.
+    const names = await readdir(path.join(root, "state", "buffer"));
+    assert.deepEqual(names, [bufferSessionFileName("session-a")]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

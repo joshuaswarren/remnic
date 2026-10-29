@@ -3,7 +3,7 @@ import type { Stats } from "node:fs";
 import { lstat, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { log } from "../logger.js";
-import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
+import { SecureStoreDecryptError, SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import type { BufferEntryState, BufferState, BufferTurn } from "../types.js";
 
 /** The secure-store file I/O the owning StorageManager already provides. */
@@ -157,7 +157,9 @@ export class BufferSessionFiles {
         }
         entries.set(parsed.key, parsed.entry);
       } catch (err) {
-        if (err instanceof SecureStoreLockedError) throw err;
+        // A locked store or a wrong key is not a corrupt file: reading it as empty would let
+        // later saves replace the real encrypted session.
+        if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
         log.warn(`buffer: skipping unreadable per-session buffer file ${name}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
