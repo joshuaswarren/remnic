@@ -145,7 +145,9 @@ import { supersessionKeysForFact } from "./temporal-supersession.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
+  BufferEntryState,
   BufferState,
+  BufferTurn,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
   ContinuityIncidentOpenInput,
@@ -5508,22 +5510,241 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return deleted;
   }
 
-  async loadBuffer(): Promise<BufferState> {
-    const bufferPath = path.join(this.stateDir, "buffer.json");
+  // ── Per-session buffer persistence ──────────────────────────────────────
+  // The legacy single state/buffer.json rewrote EVERY session's turns on
+  // every save; a daemon with a large buffer serialized 100+ MB per observe.
+  // Sessions now live one file each under <stateDir>/buffer/, so the hot
+  // path (saveBufferSession/deleteBufferSession) persists only the session
+  // that changed. Whole-state saveBuffer remains as a full reconcile for
+  // correctness boundaries and legacy callers. All writes happen under
+  // SmartBuffer's serialized mutation chain — one writer per process.
+
+  private bufferSessionsDir(): string {
+    return path.join(this.stateDir, "buffer");
+  }
+
+  /**
+   * Injective bufferKey → filename. encodeURIComponent is a bijection (it
+   * encodes `/`, `%`, control chars, …); the extra pass encodes `!'()*` which
+   * encodeURIComponent leaves raw and which are illegal or fragile in
+   * filenames on some filesystems. Keys whose encoding is too long for a
+   * filename collapse to a full sha256 hex name (the key itself is stored
+   * inside the file, so loading never needs to invert the hash).
+   */
+  private static bufferSessionFileName(key: string): string {
+    const encoded = encodeURIComponent(key).replace(
+      /[!'()*]/g,
+      (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+    if (encoded.length <= 150) return `${encoded}.json`;
+    return `h${createHash("sha256").update(key).digest("hex")}.json`;
+  }
+
+  private bufferSessionPath(key: string): string {
+    return path.join(this.bufferSessionsDir(), StorageManager.bufferSessionFileName(key));
+  }
+
+  /**
+   * Persist ONE session's buffer entry atomically (temp file + rename).
+   * Deliberately does NOT run ensureDirectories(): that pass lstats and
+   * realpaths every storage root and must stay off the per-observe path —
+   * writeMaybeEncryptedFile mkdirs the session file's parent, and the full
+   * directory bootstrap runs once at startup.
+   */
+  async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
+    // Compact JSON: these files are machine-read state, and pretty-printing a
+    // 100+ MB buffer costs both CPU (stringify) and bytes (write) on every
+    // observe. The legacy whole-file format was indented; the per-session
+    // format is new, so nothing depends on the old layout.
+    const payload = JSON.stringify({ key, ...entry });
+    await this.writeStorageSecureFile(this.bufferSessionPath(key), payload);
+  }
+
+  /** Remove one session's buffer file. Idempotent: an absent file is fine. */
+  async deleteBufferSession(key: string): Promise<void> {
     try {
-      const raw = await this.readStorageSecureFile(bufferPath);
-      return JSON.parse(raw) as BufferState;
+      await unlink(this.bufferSessionPath(key));
     } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;
-      return { turns: [], lastExtractionAt: null, extractionCount: 0 };
     }
   }
 
+  /** Parse one per-session buffer file body into its key + validated entry,
+   * or null when the shape is wrong. The single cast to a record is trusted
+   * only after each field is runtime-checked below. */
+  private static parseBufferSessionFile(
+    parsed: unknown,
+    fileName: string,
+  ): { key: string; entry: BufferEntryState } | null {
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const rec = parsed as Record<string, unknown>;
+    if (!Array.isArray(rec.turns)) return null;
+    // Written only by saveBufferSession from in-memory BufferTurns; element
+    // shapes are not re-validated per field (same trust level as the legacy
+    // `JSON.parse(raw) as BufferState` load).
+    const turns = rec.turns as BufferTurn[];
+    const entry: BufferEntryState = {
+      turns,
+      lastExtractionAt: typeof rec.lastExtractionAt === "string" ? rec.lastExtractionAt : null,
+      extractionCount: typeof rec.extractionCount === "number" ? rec.extractionCount : 0,
+    };
+    if (Array.isArray(rec.retainedTurns)) entry.retainedTurns = rec.retainedTurns as BufferTurn[];
+    const key =
+      typeof rec.key === "string" && rec.key.length > 0
+        ? rec.key
+        : decodeURIComponent(fileName.slice(0, -".json".length));
+    return { key, entry };
+  }
+
+  /** Read every per-session buffer file. Corrupt files are skipped (and
+   * logged) so one bad file cannot nuke the other sessions' buffered turns. */
+  private async readBufferSessionEntries(): Promise<{
+    entries: Map<string, BufferEntryState>;
+    fileCount: number;
+  }> {
+    const dir = this.bufferSessionsDir();
+    let names: string[] = [];
+    try {
+      names = await readdir(dir);
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    const entries = new Map<string, BufferEntryState>();
+    let fileCount = 0;
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      fileCount += 1;
+      try {
+        const parsed: unknown = JSON.parse(await this.readStorageSecureFile(path.join(dir, name)));
+        const parsedFile = StorageManager.parseBufferSessionFile(parsed, name);
+        if (!parsedFile) throw new Error("invalid buffer session file shape");
+        if (entries.has(parsedFile.key)) {
+          log.warn(`buffer: duplicate session file for key ${parsedFile.key} (${name}); keeping the first`);
+          continue;
+        }
+        entries.set(parsedFile.key, parsedFile.entry);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        log.warn(`buffer: skipping unreadable per-session buffer file ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { entries, fileCount };
+  }
+
+  /**
+   * Read the legacy single-file buffer.json for migration. Returns null when
+   * the file is absent — or, when per-session files already exist, also when
+   * it is unreadable (the per-session files are authoritative; a corrupt
+   * legacy leftover must not block startup, but is left in place untouched).
+   * With no session files, a corrupt legacy file THROWS: that preserves the
+   * old contract where a corrupt buffer is reported so callers can reset it.
+   */
+  private async readLegacyBufferForMigration(hasSessionFiles: boolean): Promise<BufferState | null> {
+    const legacyPath = path.join(this.stateDir, "buffer.json");
+    let raw: string;
+    try {
+      raw = await this.readStorageSecureFile(legacyPath);
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as BufferState;
+    } catch (err) {
+      if (!hasSessionFiles) throw err;
+      log.warn(
+        `buffer: legacy buffer.json is unreadable but per-session buffer files exist; ` +
+          `ignoring the legacy file (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return null;
+    }
+  }
+
+  /** Flatten a legacy BufferState into per-session entries (top-level fields
+   * are the legacy mirror of the "default" entry). */
+  private static legacyStateToEntries(state: BufferState): Map<string, BufferEntryState> {
+    const entries = new Map<string, BufferEntryState>();
+    for (const [key, value] of Object.entries(state.entries ?? {})) {
+      if (value && typeof value === "object" && Array.isArray(value.turns)) {
+        entries.set(key, value);
+      }
+    }
+    if (!entries.has("default")) {
+      entries.set("default", {
+        turns: Array.isArray(state.turns) ? state.turns : [],
+        lastExtractionAt: state.lastExtractionAt ?? null,
+        extractionCount: typeof state.extractionCount === "number" ? state.extractionCount : 0,
+      });
+    }
+    return entries;
+  }
+
+  async loadBuffer(): Promise<BufferState> {
+    const { entries, fileCount } = await this.readBufferSessionEntries();
+    const legacy = await this.readLegacyBufferForMigration(fileCount > 0);
+    if (legacy !== null) {
+      // Migration. Merge rule: a per-session file that parsed wins — it was
+      // written from newer in-memory state than the legacy snapshot (a crash
+      // mid-migration leaves exactly that pair behind). Every legacy entry
+      // without a usable file is written out (which also replaces a corrupt
+      // file with the legacy content), then the legacy file is retired; both
+      // steps are idempotent, so re-running after a crash completes the
+      // migration.
+      for (const [key, entry] of StorageManager.legacyStateToEntries(legacy)) {
+        if (!entries.has(key)) {
+          entries.set(key, entry);
+          await this.saveBufferSession(key, entry);
+        }
+      }
+      try {
+        await unlink(path.join(this.stateDir, "buffer.json"));
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
+    const out = Object.create(null) as NonNullable<BufferState["entries"]>;
+    for (const [key, entry] of entries) out[key] = entry;
+    const def = entries.get("default");
+    return {
+      turns: def?.turns ?? [],
+      lastExtractionAt: def?.lastExtractionAt ?? null,
+      extractionCount: def?.extractionCount ?? 0,
+      entries: out,
+    };
+  }
+
+  /**
+   * Reconcile the per-session files with a WHOLE buffer state: every entry in
+   * `state` is written, and session files for keys no longer in the state are
+   * deleted. Not on the observe hot path (per-observe saves go through
+   * saveBufferSession) — this is the correctness-boundary and legacy-caller
+   * surface.
+   */
   async saveBuffer(state: BufferState): Promise<void> {
-    await this.ensureDirectories();
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
+    const entries = StorageManager.legacyStateToEntries(state);
+    const dir = this.bufferSessionsDir();
+    let existing: string[] = [];
+    try {
+      existing = await readdir(dir);
+    } catch (err) {
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    // Writes first, deletes last: a crash mid-reconcile then leaves stale
+    // extra files (which the next reconcile removes) but never loses sessions
+    // that the caller's state says exist.
+    for (const [key, entry] of entries) {
+      await this.saveBufferSession(key, entry);
+    }
+    const liveNames = new Set([...entries.keys()].map((key) => StorageManager.bufferSessionFileName(key)));
+    for (const name of existing) {
+      if (!name.endsWith(".json") || liveNames.has(name)) continue;
+      try {
+        await unlink(path.join(dir, name));
+      } catch (err) {
+        if (!isErrnoCode(err, "ENOENT")) throw err;
+      }
+    }
   }
 
   async loadMeta(): Promise<MetaState> {
