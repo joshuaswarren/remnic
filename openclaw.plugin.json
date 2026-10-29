@@ -7578,7 +7578,7 @@
       "extractionChunkDropAfterFailures": {
         "type": "number",
         "default": 5,
-        "description": "Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under state/dropped/ first) so a session whose window never extracts cannot stall its buffer forever."
+        "description": "Consecutive failed extraction attempts after which a stuck buffer chunk is dropped (copy saved under state/dropped/ first)."
       },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",

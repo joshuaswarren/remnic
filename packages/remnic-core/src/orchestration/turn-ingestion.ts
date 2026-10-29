@@ -226,6 +226,18 @@ export class TurnIngestionCoordinator {
     if (chunks.length <= 1) {
       return await this.deps.runExtraction(turns, runOptions);
     }
+    // Eligibility (minimum user turns) belongs to the whole window: a window
+    // that never qualified keeps the single-run path and its threshold skip.
+    const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
+    if (
+      !runOptions.skipUserTurnThreshold &&
+      windowUserTurns < this.deps.config.extractionMinUserTurns
+    ) {
+      return await this.deps.runExtraction(turns, runOptions);
+    }
+    // The window qualified as a whole; its chunks must not be re-judged one by
+    // one (an assistant-only or short chunk would be cleared unextracted).
+    const chunkOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
 
     const bufferKey = runOptions.bufferKey;
     const dropAfter = this.deps.config.extractionChunkDropAfterFailures;
@@ -234,12 +246,29 @@ export class TurnIngestionCoordinator {
     for (const chunk of chunks) {
       let result: ExtractionRunResult;
       try {
-        result = await this.deps.runExtraction(chunk, runOptions);
+        result = await this.deps.runExtraction(chunk, chunkOptions);
       } catch (err) {
-        if (!isAbortError(err)) {
-          this.drainFailureCounts.set(bufferKey, failures + 1);
+        if (isAbortError(err)) throw err;
+        failures += 1;
+        if (failures < dropAfter) {
+          this.drainFailureCounts.set(bufferKey, failures);
+          throw err;
         }
-        throw err;
+        // A chunk that keeps throwing is dropped like one that keeps failing,
+        // so later chunks are not stuck behind it.
+        const dropped = await this.dropFailedDrainChunk(bufferKey, chunk, dropAfter, {
+          status: "skipped",
+          reason: `thrown: ${describeError(err)}`,
+          persistedCount: 0,
+          durableOutputCount: 0,
+        });
+        if (!dropped) {
+          this.drainFailureCounts.set(bufferKey, failures);
+          throw err;
+        }
+        failures = 0;
+        this.drainFailureCounts.set(bufferKey, 0);
+        continue;
       }
       const verdict = classifyDrainResult(result);
       if (verdict === "drained") {
@@ -254,7 +283,11 @@ export class TurnIngestionCoordinator {
       }
       failures += 1;
       if (failures >= dropAfter) {
-        await this.dropFailedDrainChunk(bufferKey, chunk, dropAfter, result);
+        if (!(await this.dropFailedDrainChunk(bufferKey, chunk, dropAfter, result))) {
+          // No recovery copy: keep the only buffered copy and retry later.
+          this.drainFailureCounts.set(bufferKey, failures);
+          return mergeDrainResults(aggregate, result);
+        }
         failures = 0;
         this.drainFailureCounts.set(bufferKey, 0);
         aggregate = mergeDrainResults(aggregate, result);
@@ -275,7 +308,7 @@ export class TurnIngestionCoordinator {
     chunk: readonly BufferTurn[],
     dropAfter: number,
     result: ExtractionRunResult,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const reason =
       `dropped after ${dropAfter} repeated extraction failures ` +
       `(last result: status=${result.status} reason=${result.reason ?? "n/a"})`;
@@ -283,12 +316,14 @@ export class TurnIngestionCoordinator {
       const storage = await this.deps.getStorage();
       const path = await storage.saveDroppedExtractionChunk(bufferKey, reason, chunk);
       log.warn(
-        `buffer[${bufferKey}]: dropped ${chunk.length} turns — ${reason}; copy saved to ${path}`,
+        `buffer[${bufferKey}]: dropping ${chunk.length} turns — ${reason}; copy saved to ${path}`,
       );
     } catch (err) {
+      // Never destroy the only buffered copy without a recovery file.
       log.warn(
-        `buffer[${bufferKey}]: failed to write dropped-chunk side file (dropping anyway): ${describeError(err)}`,
+        `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`,
       );
+      return false;
     }
     try {
       const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk);
@@ -300,6 +335,7 @@ export class TurnIngestionCoordinator {
         `buffer[${bufferKey}]: failed to remove dropped chunk from buffer (will retry next trigger): ${describeError(err)}`,
       );
     }
+    return true;
   }
 
   async processTurn(

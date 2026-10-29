@@ -38,6 +38,13 @@ export interface ExtractionRunResult {
   persistedCount: number;
   durableOutputCount: number;
   postPersistMetadataFailed?: boolean;
+  /**
+   * True when the run left the extracted window in the buffer for a retry
+   * (a recorded extraction failure). A run that reports
+   * `empty_extraction_result` without this flag extracted successfully and
+   * found nothing durable; its turns were cleared.
+   */
+  retainedBuffer?: boolean;
 }
 
 export class ExtractionDeadlineError extends Error {
@@ -1044,7 +1051,14 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
+      const emptyResult: ExtractionRunResult = {
+        status: "skipped",
+        reason: "empty_extraction_result",
+        persistedCount: 0,
+        durableOutputCount: 0,
+      };
+      if (recordedRetryFailure) emptyResult.retainedBuffer = true;
+      return emptyResult;
     }
 
     let threadIdForExtraction: string | null = null;

@@ -2,20 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
-import type { StorageManager } from "./storage.js";
+import os from "node:os";
+import path from "node:path";
+import { StorageManager } from "./storage.js";
 import type { BufferState, BufferTurn } from "./types.js";
 
-class FakeStorage {
+/** A real StorageManager (so SmartBuffer gets its exact type) whose buffer I/O is in memory. */
+class FakeStorage extends StorageManager {
   public saved: BufferState | null = null;
   public saveCount = 0;
 
-  constructor(private readonly initial: BufferState) {}
+  constructor(private readonly initial: BufferState) {
+    super(path.join(os.tmpdir(), "remnic-fake-storage-unused"));
+  }
 
-  async loadBuffer(): Promise<BufferState> {
+  override async loadBuffer(): Promise<BufferState> {
     return structuredClone(this.saved ?? this.initial);
   }
 
-  async saveBuffer(state: BufferState): Promise<void> {
+  override async saveBuffer(state: BufferState): Promise<void> {
     this.saveCount += 1;
     this.saved = structuredClone(state);
   }
@@ -36,9 +41,7 @@ test("dropExtractionChunk removes the matched prefix and persists the shrink", a
     lastExtractionAt: null,
     extractionCount: 0,
   });
-  const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
-  // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
+  const buffer = new SmartBuffer(parseConfig({}), storage);
   const turns = [
     makeTurn("s1", "turn one"),
     makeTurn("s1", "turn two"),
@@ -64,9 +67,7 @@ test("dropExtractionChunk returns zero without dropping when turns no longer mat
     lastExtractionAt: null,
     extractionCount: 0,
   });
-  const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
-  // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
+  const buffer = new SmartBuffer(parseConfig({}), storage);
   await buffer.addTurn("s1", makeTurn("s1", "kept turn"));
 
   const savesBefore = storage.saveCount;
@@ -85,9 +86,7 @@ test("dropExtractionChunk drops the whole matched window and empties the buffer"
     lastExtractionAt: null,
     extractionCount: 0,
   });
-  const buffer = // SAFETY: FakeStorage implements the loadBuffer/saveBuffer seam SmartBuffer
-  // touches; the wider StorageManager surface is unused here.
-  new SmartBuffer(parseConfig({}), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
+  const buffer = new SmartBuffer(parseConfig({}), storage);
   const turns = [makeTurn("s1", "only turn")];
   await buffer.addTurn("s1", turns[0]!);
 

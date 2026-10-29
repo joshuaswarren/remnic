@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   chunkExtractionWindow,
   classifyDrainResult,
+  extractionWindowBudgetChars,
   mergeDrainResults,
 } from "./extraction-window-drain.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
@@ -74,7 +75,16 @@ test("classifyDrainResult reports breaker/backoff skips as deferred", () => {
 });
 
 test("classifyDrainResult reports empty extraction results as failed", () => {
-  assert.equal(classifyDrainResult(skippedResult("empty_extraction_result")), "failed");
+  assert.equal(
+    classifyDrainResult({ ...skippedResult("empty_extraction_result"), retainedBuffer: true }),
+    "failed",
+    "an empty result that kept the window for retry is a chunk failure",
+  );
+  assert.equal(
+    classifyDrainResult(skippedResult("empty_extraction_result")),
+    "drained",
+    "an empty result that cleared its turns extracted fine and found nothing durable",
+  );
 });
 
 test("mergeDrainResults sums counts, completes when any chunk completes, keeps the last skip reason", () => {
@@ -93,4 +103,21 @@ test("mergeDrainResults sums counts, completes when any chunk completes, keeps t
   assert.equal(mergedFailed.status, "skipped");
   assert.equal(mergedFailed.reason, "empty_extraction_result");
   assert.equal(mergedFailed.persistedCount, 0);
+});
+
+test("extractionWindowBudgetChars applies the learned local window only when the local model extracts", () => {
+  const registry = { calculateContextSizes: () => ({ maxInputChars: 12_000 }) };
+  const base = { registry, model: "local-model", maxContext: undefined };
+
+  assert.equal(extractionWindowBudgetChars({ ...base, localExtractionActive: true }), 12_000);
+  assert.equal(
+    extractionWindowBudgetChars({ ...base, localExtractionActive: false }),
+    Number.POSITIVE_INFINITY,
+    "gateway or disabled local LLM: the local window does not describe the extractor",
+  );
+  assert.equal(
+    extractionWindowBudgetChars({ ...base, registry: undefined, localExtractionActive: true }),
+    Number.POSITIVE_INFINITY,
+    "no registry (legacy host or test double): no budget",
+  );
 });

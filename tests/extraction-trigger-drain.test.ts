@@ -25,6 +25,7 @@ interface DrainFixture {
 type FakeRunResult = {
   status: "completed" | "skipped";
   reason?: string;
+  retainedBuffer?: boolean;
   persistedCount?: number;
   durableOutputCount?: number;
 };
@@ -43,6 +44,8 @@ function drainFixture(options: {
   budget: number;
   dropAfterFailures: number;
   bufferTurns?: BufferTurn[];
+  sideFileFails?: boolean;
+  minUserTurns?: number;
 }): DrainFixture {
   const runs: DrainFixture["runs"] = [];
   const dropped: DrainFixture["dropped"] = [];
@@ -51,7 +54,10 @@ function drainFixture(options: {
   const bufferTurns = options.bufferTurns ?? [];
   const tasks: Promise<void>[] = [];
   const fake = {
-    config: { extractionChunkDropAfterFailures: options.dropAfterFailures },
+    config: {
+      extractionChunkDropAfterFailures: options.dropAfterFailures,
+      extractionMinUserTurns: options.minUserTurns ?? 1,
+    },
     extractionQueueCoordinator: {
       enqueue: (fn: () => Promise<void>) => {
         const task = fn().catch(() => {});
@@ -78,6 +84,7 @@ function drainFixture(options: {
         reason: string,
         turns: readonly BufferTurn[],
       ) => {
+        if (options.sideFileFails === true) throw new Error("dropped dir is read-only");
         sideFiles.push({ bufferKey, reason, turns: [...turns] });
         return `/state/dropped/${bufferKey}.json`;
       },
@@ -94,6 +101,7 @@ function drainFixture(options: {
         durableOutputCount: next.durableOutputCount ?? 0,
       };
       if (next.reason !== undefined) result.reason = next.reason;
+      if (next.retainedBuffer !== undefined) result.retainedBuffer = next.retainedBuffer;
       return result;
     },
   };
@@ -154,7 +162,7 @@ test("oversized trigger window is extracted chunk by chunk and every success dra
 test("a failing chunk stops the drain and retains the rest without dropping", async () => {
   const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
   const fixture = drainFixture({
-    runResults: [{ status: "skipped", reason: "empty_extraction_result" }],
+    runResults: [{ status: "skipped", reason: "empty_extraction_result", retainedBuffer: true }],
     budget: 100,
     dropAfterFailures: 3,
   });
@@ -173,8 +181,8 @@ test("a chunk is dropped after N consecutive failures, with a side-file copy, an
   ];
   const fixture = drainFixture({
     runResults: [
-      { status: "skipped", reason: "empty_extraction_result" },
-      { status: "skipped", reason: "empty_extraction_result" },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
       { status: "completed", persistedCount: 1, durableOutputCount: 1 },
     ],
     budget: 100,
@@ -212,7 +220,7 @@ test("breaker and backoff skips defer the drain without counting failures", asyn
     runResults: [
       { status: "skipped", reason: "provider_circuit_open" },
       { status: "skipped", reason: "extraction_backoff" },
-      { status: "skipped", reason: "empty_extraction_result" },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
     ],
     budget: 100,
     dropAfterFailures: 3,
@@ -292,8 +300,8 @@ test("a thrown extraction error counts as a chunk failure and propagates", async
   const fixture = drainFixture({
     runResults: [
       new Error("provider exploded"),
-      { status: "skipped", reason: "empty_extraction_result" },
-      { status: "skipped", reason: "empty_extraction_result" },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
     ],
     budget: 100,
     dropAfterFailures: 2,
@@ -308,4 +316,121 @@ test("a thrown extraction error counts as a chunk failure and propagates", async
   // threshold and unblocks the session.
   await drain(fixture, turns);
   assert.equal(fixture.dropped.length, 1);
+});
+
+function makeAssistantTurn(content: string, sessionKey = "sess-1"): BufferTurn {
+  return { ...makeTurn(content, sessionKey), role: "assistant" };
+}
+
+test("chunks of a qualifying window keep its eligibility (an assistant-only chunk is still extracted)", async () => {
+  const turns = [
+    makeTurn("u".repeat(60)),
+    makeAssistantTurn("a".repeat(60)),
+    makeAssistantTurn("b".repeat(60)),
+  ];
+  const fixture = drainFixture({
+    runResults: [
+      { status: "completed", persistedCount: 1, durableOutputCount: 1 },
+      { status: "completed", persistedCount: 1, durableOutputCount: 1 },
+      { status: "completed", persistedCount: 1, durableOutputCount: 1 },
+    ],
+    budget: 100,
+    dropAfterFailures: 3,
+  });
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.runs.length, 3);
+  for (const run of fixture.runs) {
+    assert.equal(run.options.skipUserTurnThreshold, true, "whole-window eligibility was already decided");
+    assert.equal(run.options.skipCharThreshold, true);
+  }
+});
+
+test("a window that never qualified (no user turns) is not chunked", async () => {
+  const turns = [makeAssistantTurn("a".repeat(60)), makeAssistantTurn("b".repeat(60))];
+  const fixture = drainFixture({
+    runResults: [{ status: "skipped", reason: "below_user_turn_threshold" }],
+    budget: 100,
+    dropAfterFailures: 3,
+  });
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.runs.length, 1, "single run keeps the original threshold behavior");
+  assert.equal(fixture.runs[0]!.turns.length, 2);
+});
+
+test("a chunk whose recovery copy cannot be saved is retained, not dropped", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const fixture = drainFixture({
+    runResults: [
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
+      { status: "completed", persistedCount: 1, durableOutputCount: 1 },
+    ],
+    budget: 100,
+    dropAfterFailures: 1,
+    sideFileFails: true,
+  });
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.dropped.length, 0, "no recovery copy, so the only buffered copy must stay");
+  assert.equal(fixture.runs.length, 1, "the drain stops so it can retry safely");
+});
+
+test("repeated thrown failures reach the drop threshold and unblock later chunks", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const fixture = drainFixture({
+    runResults: [
+      new Error("provider exploded"),
+      new Error("provider exploded again"),
+      { status: "completed", persistedCount: 1, durableOutputCount: 1 },
+    ],
+    budget: 100,
+    dropAfterFailures: 2,
+  });
+
+  await drain(fixture, turns);
+  assert.match(String(fixture.settled[0]?.error), /provider exploded/);
+  assert.equal(fixture.dropped.length, 0);
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.dropped.length, 1, "the second thrown failure drops the stuck head chunk");
+  assert.equal(fixture.sideFiles.length, 1);
+  assert.equal(fixture.runs.length, 3, "the next chunk is attempted after the drop");
+});
+
+test("an abort error propagates without counting or dropping", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const abort = new Error("aborted");
+  abort.name = "AbortError";
+  const fixture = drainFixture({
+    runResults: [abort, abort, abort],
+    budget: 100,
+    dropAfterFailures: 1,
+  });
+
+  await drain(fixture, turns);
+  await drain(fixture, turns);
+
+  assert.equal(fixture.dropped.length, 0);
+});
+
+test("a successful empty extraction drains and does not carry a failure count forward", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60)), makeTurn("c".repeat(60))];
+  const fixture = drainFixture({
+    runResults: [
+      { status: "skipped", reason: "empty_extraction_result" },
+      { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true },
+    ],
+    budget: 100,
+    dropAfterFailures: 2,
+  });
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.runs.length, 2, "an empty success drains; the next chunk is attempted");
+  assert.equal(fixture.dropped.length, 0, "one real failure after an empty success is not yet a drop");
 });

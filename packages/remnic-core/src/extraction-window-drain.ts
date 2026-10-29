@@ -56,7 +56,11 @@ const DRAIN_DEFERRAL_REASONS = {
 
 export function classifyDrainResult(result: ExtractionRunResult): DrainVerdict {
   if (result.status !== "skipped") return "drained";
-  if (result.reason === "empty_extraction_result") return "failed";
+  // An empty result is a failure only when the run kept the window for retry;
+  // otherwise it extracted fine, found nothing durable, and cleared its turns.
+  if (result.reason === "empty_extraction_result") {
+    return result.retainedBuffer === true ? "failed" : "drained";
+  }
   if (result.reason !== undefined && result.reason in DRAIN_DEFERRAL_REASONS) return "deferred";
   return "drained";
 }
@@ -82,4 +86,25 @@ export function mergeDrainResults(
     merged.postPersistMetadataFailed = true;
   }
   return merged;
+}
+
+/** The slice of ModelRegistry the drain budget needs. */
+export interface WindowBudgetRegistry {
+  calculateContextSizes(modelId: string, maxContextOverride?: number): { maxInputChars: number };
+}
+
+/**
+ * Character budget for one extraction request. The learned local-model window
+ * only describes the extractor when the local LLM does the extracting; with a
+ * gateway extractor, a disabled local LLM, or no registry (legacy hosts, test
+ * doubles) there is no budget and the window runs in one request as before.
+ */
+export function extractionWindowBudgetChars(input: {
+  registry: WindowBudgetRegistry | undefined;
+  localExtractionActive: boolean;
+  model: string;
+  maxContext: number | undefined;
+}): number {
+  if (!input.registry || !input.localExtractionActive) return Number.POSITIVE_INFINITY;
+  return input.registry.calculateContextSizes(input.model, input.maxContext).maxInputChars;
 }

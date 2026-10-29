@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
 import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
 import { isAbortError, raceAbort } from "./abort-error.js";
@@ -5543,7 +5543,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const droppedDir = path.join(this.stateDir, "dropped");
     await mkdir(droppedDir, { recursive: true });
     const safeKey = bufferKey.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 80) || "default";
-    const filePath = path.join(droppedDir, `${Date.now()}-${safeKey}.json`);
+    // The random suffix keeps copies written in the same millisecond (or for keys
+    // that truncate to the same name) from overwriting each other.
+    const filePath = path.join(droppedDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeKey}.json`);
     const payload = {
       bufferKey,
       reason,
