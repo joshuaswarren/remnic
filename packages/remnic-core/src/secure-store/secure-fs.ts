@@ -901,7 +901,9 @@ const ENCRYPTABLE_STATE_SIDECARS = new Set([
 ]);
 
 function isEncryptableStateSidecar(normalized: string): boolean {
-  return ENCRYPTABLE_STATE_SIDECARS.has(normalized);
+  // state/dropped/ holds copies of extraction-buffer turns dropped after
+  // repeated extraction failures — same content sensitivity as buffer.json.
+  return ENCRYPTABLE_STATE_SIDECARS.has(normalized) || normalized.startsWith("state/dropped/");
 }
 
 function isEncryptableSummarySidecar(normalized: string): boolean {

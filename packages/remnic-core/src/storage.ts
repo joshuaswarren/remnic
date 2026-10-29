@@ -146,6 +146,7 @@ import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./sto
 import type {
   AccessTrackingEntry,
   BufferState,
+  BufferTurn,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
   ContinuityIncidentOpenInput,
@@ -5524,6 +5525,33 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await this.ensureDirectories();
     const bufferPath = path.join(this.stateDir, "buffer.json");
     await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
+  }
+
+  /**
+   * Persist a copy of extraction-buffer turns that are being DROPPED after
+   * repeated extraction failures (trigger-drain drop path), so a destructive
+   * drop never loses content silently. Written under `<stateDir>/dropped/`
+   * through the secure-file writer so encrypted stores keep it encrypted
+   * (secure-fs encrypts the whole `state/dropped/` prefix). Returns the file
+   * path written.
+   */
+  async saveDroppedExtractionChunk(
+    bufferKey: string,
+    reason: string,
+    turns: readonly BufferTurn[],
+  ): Promise<string> {
+    const droppedDir = path.join(this.stateDir, "dropped");
+    await mkdir(droppedDir, { recursive: true });
+    const safeKey = bufferKey.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 80) || "default";
+    const filePath = path.join(droppedDir, `${Date.now()}-${safeKey}.json`);
+    const payload = {
+      bufferKey,
+      reason,
+      droppedAt: new Date().toISOString(),
+      turns,
+    };
+    await this.writeStorageSecureFile(filePath, JSON.stringify(payload, null, 2));
+    return filePath;
   }
 
   async loadMeta(): Promise<MetaState> {

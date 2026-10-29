@@ -1177,6 +1177,34 @@ export class SmartBuffer {
     });
   }
 
+  /**
+   * Remove an extraction-window chunk from the buffer WITHOUT recording an
+   * extraction (trigger-drain drop path). Used when a chunk fails extraction
+   * repeatedly and must be dropped so the session can drain; the caller is
+   * responsible for the side-file copy and logging. Returns the number of
+   * live turns dropped; 0 when the turns no longer match the buffered prefix.
+   */
+  async dropExtractionChunk(bufferKey = "default", turns: readonly BufferTurn[]): Promise<number> {
+    return await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const entry = this.entryFor(bufferKey);
+      const liveTurns = liveTurnsFromExtractionSnapshot(entry, turns);
+      const matchedCount = matchingQueuedExtractionPrefixLength(entry.turns, liveTurns);
+      if (matchedCount === 0) return 0;
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      entry.turns = entry.turns.slice(matchedCount);
+      if (bufferKey === "default") {
+        this.state.turns = entry.turns;
+      }
+      this.pruneEntries([bufferKey]);
+      await this.saveNowRetainingPendingOnFailure("dropExtractionChunk");
+      return matchedCount;
+    });
+  }
+
   getExtractionCount(bufferKey = "default"): number {
     return this.peekEntry(bufferKey)?.extractionCount ?? 0;
   }
