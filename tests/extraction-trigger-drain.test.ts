@@ -342,8 +342,8 @@ test("chunks of a qualifying window keep its eligibility (an assistant-only chun
 
   assert.equal(fixture.runs.length, 3);
   for (const run of fixture.runs) {
-    assert.equal(run.options.skipUserTurnThreshold, true, "whole-window eligibility was already decided");
-    assert.equal(run.options.skipCharThreshold, true);
+    assert.equal(run.options?.skipUserTurnThreshold, true, "whole-window eligibility was already decided");
+    assert.equal(run.options?.skipCharThreshold, true);
   }
 });
 
