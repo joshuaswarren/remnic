@@ -1301,10 +1301,14 @@ export interface PluginConfig
   extractionJudgeBatchSize: number;
   /**
    * Per-call timeout for the judge LLM (ms). Default 20000: measured 2.1-2.5 s
-   * per compact verdict call (≤256-token completion budget) on a small fast
-   * judge model; the big shared core model measured 13-22 s per compact call,
-   * 41 s verbose — raise it there. The earlier 150s default only papered over
-   * 59-305s verbose replies; sub-second budgets abort every call.
+   * per compact verdict call (completion budget 24 tokens per candidate, up
+   * to 2048) on a small fast judge model; the big shared core model measured
+   * 13-22 s per compact call, 41 s verbose — raise it there. The earlier 150s
+   * default only papered over 59-305s verbose replies; sub-second budgets
+   * abort every call. On the local LLM path each attempt lasts
+   * min(localLlmTimeoutMs, extractionJudgeTimeoutMs) (localLlmTimeoutMs
+   * defaults to 180000), so a value above localLlmTimeoutMs does not lengthen
+   * an attempt: raise both settings for a slower judge model.
    */
   extractionJudgeTimeoutMs: number;
   /** Shadow mode: log judge verdicts but do not filter facts. Default false. */

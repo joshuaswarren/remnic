@@ -121,7 +121,7 @@ test("judge forwards the configured timeout to the local LLM call", async () => 
 // ---------------------------------------------------------------------------
 // Compact verdict request (PR 3264 follow-up): the judge asks for a minimal
 // `[{"index":N,"kind":"accept|reject|defer"}]` reply with a batch-scaled
-// completion budget (≤256 tokens) instead of a flat 2048. The big budget let
+// completion budget (24 tokens per candidate, up to 2048) instead of a flat 2048. The big budget let
 // a verbose 59-305s reply hide inside the old 150s timeout; the compact one
 // measures 2.1-2.5 s per call on a small fast judge model (13-22 s, 41 s
 // verbose on the big shared core model), inside the 20s default.

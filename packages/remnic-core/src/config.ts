@@ -2732,8 +2732,9 @@ export function parseConfig(
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
     // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
-    // PR 3264): the judge requests a compact verdict with a ≤256-token
-    // completion budget. Measured 2.1-2.5 s per call on a small fast judge
+    // PR 3264): the judge requests a compact verdict with a batch-scaled
+    // completion budget (24 tokens per candidate, up to 2048). Measured
+    // 2.1-2.5 s per call on a small fast judge
     // model; the big shared core model measured 13-22 s per compact call,
     // 41 s verbose. The 20s default assumes the fast model, stays fail-open
     // on timeout, and needs a raise if extractionJudgeModel points at the

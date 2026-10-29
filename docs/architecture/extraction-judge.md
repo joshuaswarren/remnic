@@ -95,7 +95,7 @@ verdict) took 59-305 s per call on the deployed core model, which the first
 fix papered over by raising the timeout to 150 s. The compact request
 measures 2.1-2.5 s per call on a small fast judge model (13-22 s per compact
 call, 41 s verbose, on the big shared core model), so
-`extractionJudgeTimeoutMs` defaults to **20 s** (fail-open on timeout). Raise
+`extractionJudgeTimeoutMs` defaults to **20 s** (fail-open on timeout). On the local LLM path an attempt lasts `min(localLlmTimeoutMs, extractionJudgeTimeoutMs)` (`localLlmTimeoutMs` defaults to 180000), so a value above `localLlmTimeoutMs` does not lengthen an attempt: raise both for a slower judge model. Raise
 it when `extractionJudgeModel` points at the slow core model. An in-memory
 content-hash cache (keyed by SHA-256 of
 `text + category`) avoids redundant LLM calls for previously judged content
