@@ -2854,6 +2854,14 @@ export function parseConfig(
     extractionBreakerAuthCooldownMs:
       typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs >= 0
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
+    // Trigger-drain drop threshold: consecutive failed extraction attempts
+    // before the failing buffer chunk is dropped (side-file copied first).
+    extractionChunkDropAfterFailures: parseIntegerAtLeast(
+      cfg.extractionChunkDropAfterFailures,
+      5,
+      1,
+      "extractionChunkDropAfterFailures",
+    ),
     // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
     localLlmFastModel:

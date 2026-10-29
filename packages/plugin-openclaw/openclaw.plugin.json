@@ -7575,6 +7575,11 @@
         "default": 5,
         "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
       },
+      "extractionChunkDropAfterFailures": {
+        "type": "number",
+        "default": 5,
+        "description": "Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under state/dropped/ first) so a session whose window never extracts cannot stall its buffer forever."
+      },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",
         "default": 3,

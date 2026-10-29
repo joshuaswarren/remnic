@@ -453,6 +453,7 @@
     "extractionBreakerAuthCooldownMs",
     "extractionBreakerCooldownMs",
     "extractionBreakerFailureThreshold",
+    "extractionChunkDropAfterFailures",
     "extractionDedupeEnabled",
     "extractionDedupeWindowMs",
     "extractionFaithfulnessBaseUrl",

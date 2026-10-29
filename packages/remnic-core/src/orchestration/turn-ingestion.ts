@@ -17,7 +17,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { abortError, isPreemptedExtraction } from "../abort-error.js";
+import { abortError, isAbortError, isPreemptedExtraction } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -41,7 +41,12 @@ import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
 import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
 
-import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
+import { groupTurnsByExtractionScope, bufferTurnsEqual, describeError } from "../buffer-turn-helpers.js";
+import {
+  chunkExtractionWindow,
+  classifyDrainResult,
+  mergeDrainResults,
+} from "../extraction-window-drain.js";
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
@@ -114,6 +119,12 @@ export interface TurnIngestionDeps {
     },
   ): Promise<void>;
   resolveMemoryIdOrHandle(ref: string, sessionKey?: string): string;
+  /**
+   * Max conversation characters the extraction model accepts (learned context
+   * window, `localLlmMaxContext`-capped). Optional so test/legacy hosts
+   * without the accessor keep the single-run behavior.
+   */
+  extractionWindowBudgetChars?(): number;
   runExtraction(
     ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult>;
@@ -159,6 +170,137 @@ export class TurnIngestionCoordinator {
   constructor(
     private readonly deps: TurnIngestionDeps,
   ) {}
+
+  /**
+   * Consecutive failed trigger-drain extraction attempts per buffer key.
+   * In-memory on purpose: a restart re-counts from zero, and the drop is
+   * bounded by consecutive failures of the SAME head chunk, not lifetime.
+   */
+  private readonly drainFailureCounts = new Map<string, number>();
+
+  /**
+   * Run `runExtraction` over the trigger-drain window. When the window
+   * outgrows the extraction model's input budget (the stall that keeps a
+   * session's buffer growing forever: every observe re-fires the trigger on
+   * a window that can never extract), split it into budget-fitting chunks
+   * and drain them in order — each successful run clears its chunk, so the
+   * buffer shrinks across observes. A chunk that fails
+   * `extractionChunkDropAfterFailures` times in a row is dropped (side-file
+   * copy first) so the session cannot stall forever. Breaker/backoff
+   * retention results stop the drain without counting as chunk failures.
+   *
+   * Explicit drains (replay/import `clearBufferAfterExtraction: false`,
+   * force flush, fail-closed callers, accepted captures) and windows that
+   * fit the budget (or hosts without the budget accessor) take the exact
+   * single-run path as before.
+   */
+  private async runExtractionDrainChunked(
+    turns: BufferTurn[],
+    runOptions: {
+      clearBufferAfterExtraction: boolean;
+      clearMatchingTurns: boolean;
+      skipCharThreshold: boolean;
+      skipUserTurnThreshold: boolean;
+      deadlineMs?: number;
+      bufferKey: string;
+      onDurableCommit?: () => void;
+      onBeforePersist?: () => void;
+      abortSignal?: AbortSignal;
+      failOnExtractionFailure: boolean;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      forceExtractionAttempt: boolean;
+    },
+  ): Promise<ExtractionRunResult> {
+    const budgetChars =
+      this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
+    const chunkable =
+      runOptions.clearBufferAfterExtraction &&
+      !runOptions.forceExtractionAttempt &&
+      !runOptions.failOnExtractionFailure &&
+      !turns.some((turn) => turn.acceptedCapture === true) &&
+      Number.isFinite(budgetChars) &&
+      budgetChars > 0;
+    const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];
+    if (chunks.length <= 1) {
+      return await this.deps.runExtraction(turns, runOptions);
+    }
+
+    const bufferKey = runOptions.bufferKey;
+    const dropAfter = this.deps.config.extractionChunkDropAfterFailures;
+    let failures = this.drainFailureCounts.get(bufferKey) ?? 0;
+    let aggregate: ExtractionRunResult | null = null;
+    for (const chunk of chunks) {
+      let result: ExtractionRunResult;
+      try {
+        result = await this.deps.runExtraction(chunk, runOptions);
+      } catch (err) {
+        if (!isAbortError(err)) {
+          this.drainFailureCounts.set(bufferKey, failures + 1);
+        }
+        throw err;
+      }
+      const verdict = classifyDrainResult(result);
+      if (verdict === "drained") {
+        failures = 0;
+        this.drainFailureCounts.set(bufferKey, 0);
+        aggregate = mergeDrainResults(aggregate, result);
+        continue;
+      }
+      if (verdict === "deferred") {
+        // Provider breaker/backoff retention: keep everything for retry.
+        return mergeDrainResults(aggregate, result);
+      }
+      failures += 1;
+      if (failures >= dropAfter) {
+        await this.dropFailedDrainChunk(bufferKey, chunk, dropAfter, result);
+        failures = 0;
+        this.drainFailureCounts.set(bufferKey, 0);
+        aggregate = mergeDrainResults(aggregate, result);
+        continue;
+      }
+      this.drainFailureCounts.set(bufferKey, failures);
+      // Retain the remaining window for the next trigger (existing behavior).
+      return mergeDrainResults(aggregate, result);
+    }
+    return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
+  }
+
+  /** Side-file copy first (content survives a failed drop), then remove the
+   *  failing chunk from the buffer. Never throws: the drop must not fail the
+   *  extraction task that already settled its result. */
+  private async dropFailedDrainChunk(
+    bufferKey: string,
+    chunk: readonly BufferTurn[],
+    dropAfter: number,
+    result: ExtractionRunResult,
+  ): Promise<void> {
+    const reason =
+      `dropped after ${dropAfter} repeated extraction failures ` +
+      `(last result: status=${result.status} reason=${result.reason ?? "n/a"})`;
+    try {
+      const storage = await this.deps.getStorage();
+      const path = await storage.saveDroppedExtractionChunk(bufferKey, reason, chunk);
+      log.warn(
+        `buffer[${bufferKey}]: dropped ${chunk.length} turns — ${reason}; copy saved to ${path}`,
+      );
+    } catch (err) {
+      log.warn(
+        `buffer[${bufferKey}]: failed to write dropped-chunk side file (dropping anyway): ${describeError(err)}`,
+      );
+    }
+    try {
+      const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk);
+      if (dropped > 0) {
+        log.warn(`buffer[${bufferKey}]: removed ${dropped} buffered turns — ${reason}`);
+      }
+    } catch (err) {
+      log.warn(
+        `buffer[${bufferKey}]: failed to remove dropped chunk from buffer (will retry next trigger): ${describeError(err)}`,
+      );
+    }
+  }
 
   async processTurn(
     role: "user" | "assistant",
@@ -1067,7 +1209,7 @@ export class TurnIngestionCoordinator {
             effectiveScopePlan = fresh;
           }
         }
-        const result = await this.deps.runExtraction(effectiveTurns, {
+        const result = await this.runExtractionDrainChunked(effectiveTurns, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           clearMatchingTurns: options.clearMatchingTurns === true,

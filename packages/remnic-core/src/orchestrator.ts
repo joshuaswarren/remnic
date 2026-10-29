@@ -3062,6 +3062,20 @@ export class Orchestrator {
     );
   }
 
+  /**
+   * Max conversation characters the extraction model can take as input
+   * (context window the ModelRegistry learned, capped by
+   * `localLlmMaxContext` when set). Exposed for the trigger-drain chunking
+   * in the turn-ingestion coordinator so an oversized buffer window is
+   * drained in fitting chunks instead of failing whole.
+   */
+  private extractionWindowBudgetChars(): number {
+    return this.modelRegistry.calculateContextSizes(
+      this.config.localLlmModel,
+      this.config.localLlmMaxContext,
+    ).maxInputChars;
+  }
+
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
     return this.extractionRunCoordinator.normalizeExtractionFingerprintTurns(turns);
   }

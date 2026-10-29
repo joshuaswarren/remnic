@@ -1030,6 +1030,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `extractionBreakerFailureThreshold` | `5` | Consecutive provider failures before the process-level circuit breaker opens and short-circuits extraction for all fingerprints. |
 | `extractionBreakerCooldownMs` | `300000` | Breaker open cooldown (5m) for transient provider failures (429/5xx/network). A half-open probe after cooldown closes the breaker on one success. |
 | `extractionBreakerAuthCooldownMs` | `1800000` | Breaker open cooldown (30m) for auth/config failures (401/403 or "no models configured"), which open the breaker immediately instead of hot-looping. |
+| `extractionChunkDropAfterFailures` | `5` | Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall its buffer forever. |
 | `localLlmMaxContext` | `(unset)` | Override context window size |
 | `localLlmFastEnabled` | `false` | Enable a separate fast local tier for short planner/rerank/helper calls |
 | `localLlmFastModel` | `""` | Optional model id for the fast local tier |
@@ -2297,6 +2298,7 @@ value matches the shipped default.
 | `extractionBreakerFailureThreshold` | `5` | `5` |
 | `extractionBreakerCooldownMs` | `300000` | `300000` |
 | `extractionBreakerAuthCooldownMs` | `1800000` | `1800000` |
+| `extractionChunkDropAfterFailures` | `5` | `5` |
 | `localLlmMaxContext` | (unset) | (unset) |
 | `localLlmFastEnabled` | `false` | `false` unless you have a separate fast local tier |
 | `localLlmFastModel` | `""` | `""` |
