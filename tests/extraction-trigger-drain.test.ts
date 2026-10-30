@@ -640,13 +640,23 @@ test("a drop whose removal throws is not success either: the drain stops on the 
   assert.equal(fixture.runs[1]!.turns.length, 1);
 });
 
-test("every chunk run is told the whole drain window for deferred retention (Codex P2)", async () => {
+test("every chunk run is told the chunks processed so far for deferred retention (Codex P2, twice)", async () => {
   const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
   const fixture = drainFixture({ runResults: [ok, ok, ok], budget: 100, dropAfterFailures: 3 });
   const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60)), makeTurn("c".repeat(60))];
   await drain(fixture, turns);
   assert.equal(fixture.runs.length, 3);
-  for (const run of fixture.runs) {
-    assert.deepEqual(run.options?.retentionWindow, turns, "each chunk's retention replaces the window's slot, not just its own part");
-  }
+  // Chunk k names the chunks processed so far (0..k), not the unprocessed rest: retained turns of a later chunk must survive.
+  fixture.runs.forEach((run, k) => {
+    assert.deepEqual(run.options?.retentionWindow, turns.slice(0, k + 1), `chunk ${k} replaces the retention of the chunks up to itself`);
+  });
+});
+
+test("a preemptable chunk keeps its retention window as well as its own abort signal", async () => {
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [ok, ok], budget: 100, dropAfterFailures: 3 });
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  await drain(fixture, turns, { preemptable: true });
+  assert.ok(fixture.runs[1]!.options?.abortSignal, "the later chunk has its own signal");
+  assert.deepEqual(fixture.runs[1]!.options?.retentionWindow, turns, "and still names the chunks processed so far");
 });

@@ -139,8 +139,7 @@ export class ExtractionDrain {
     }
     // The window qualified as a whole; its chunks must not be re-judged one by
     // one (an assistant-only or short chunk would be cleared unextracted).
-    // retentionWindow: a chunk's deferred retention replaces the whole window's slot, so chunks do not pile retained turns up.
-    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true, retentionWindow: turns };
+    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
 
     const bufferKey = runOptions.bufferKey;
     // A native group clears its turns by identity (a pinned capture can sit in front); a drop must find them the same way.
@@ -149,14 +148,16 @@ export class ExtractionDrain {
     let aggregate: ExtractionRunResult | null = null;
     for (const [position, chunk] of chunks.entries()) {
       this.qualified.set(bufferKey, chunkFingerprint(chunk.slice(0, 1)));
-      let chunkOptions = baseOptions;
+      // retentionWindow: the chunks processed so far. A chunk's deferred retention replaces theirs (retained turns do not pile
+      // up across chunks) and leaves the retained turns of chunks not yet processed in the buffer.
+      let chunkOptions: DrainRunOptions = { ...baseOptions, retentionWindow: chunks.slice(0, position + 1).flat() };
       let preempt: AbortController | undefined;
       if (preemptable && position > 0) {
         const local = new AbortController();
         preempt = local;
         this.deps.extractionQueueCoordinator.beginPreemptable(() => local.abort(preemptedExtractionError()));
         chunkOptions = {
-          ...baseOptions,
+          ...chunkOptions,
           abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, local.signal]) : local.signal,
         };
       }

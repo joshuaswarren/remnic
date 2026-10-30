@@ -183,3 +183,14 @@ test("a chunk holding only some retained turns drops those and keeps the rest of
     assert.deepEqual(reloaded.getTurns("s1").map((turn) => turn.content), ["retained three", "live turn"]);
   });
 });
+
+test("retention for an early chunk leaves the retained turns of a later, unprocessed chunk alone (Codex P2)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const retained = [makeTurn("s1", "early retained"), makeTurn("s1", "late retained")];
+    await buffer.retainDeferredTurns("s1", retained);
+    // Chunk 0 holds the first retained turn; nothing was deferred in it, so it clears the slot for the turns it processed.
+    await buffer.retainDeferredTurns("s1", [], 0, retained.slice(0, 1));
+    assert.deepEqual(buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["late retained"]);
+    assert.deepEqual((await restart()).getRetainedDeferredTurns("s1").map((turn) => turn.content), ["late retained"]);
+  });
+});
