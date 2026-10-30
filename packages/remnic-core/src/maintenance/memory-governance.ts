@@ -6,6 +6,7 @@ import type { MemoryFile, MemoryStatus } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { requestEntityCanonicalIdReconcile } from "../storage/entity-canonical-id-references.js";
 import { excludeSupportPassportPrivateMemories } from "../support-passport/card-projection.js";
 
@@ -361,6 +362,7 @@ async function listMarkdownFiles(root: string, containmentRoot: string): Promise
       const entries = await readdir(dir, { withFileTypes: true });
       for (const entry of entries) {
         if (entry.isSymbolicLink()) continue; // never follow symlinked entries
+        if (isMacOsReplicationJunkBasename(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           await walk(fullPath);

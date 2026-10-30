@@ -17,10 +17,10 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { abortError } from "../abort-error.js";
+import { abortError, isPreemptedExtraction } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
-import { resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import type { CorrectionService } from "../correction/correction-service.js";
 import { type PassiveCaptureConfig, capturePassiveCorrections } from "../correction/passive-capture.js";
 import { detectPassiveCorrections } from "../correction/passive-correction-detector.js";
@@ -40,13 +40,32 @@ import { SessionObserverState } from "../session-observer-state.js";
 import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
 import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
-import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+
+import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
+import { ExtractionDrain } from "./extraction-drain.js";
+import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
+import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
+import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
+import { resolvePrincipal } from "../namespaces/principal.js";
 import {
   BulkImportBatchPartialFailureError,
   splitTurnsBySourceValidAt,
   targetSourceValidAtSortMs,
   type BulkImportBatchIngestResult,
 } from "../orchestrator.js";
+
+/**
+ * #3251: raised by the buffered observe capture path when bounded admission
+ * refuses a NEW session entry because the extraction buffer is at its entry
+ * cap. The request was never accepted — no durable capture exists and no
+ * previously accepted capture was evicted to make room.
+ */
+export class ReplayAdmissionRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReplayAdmissionRefusedError";
+  }
+}
 
 export interface TurnIngestionDeps {
   readonly buffer: SmartBuffer;
@@ -83,13 +102,8 @@ export interface TurnIngestionDeps {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -101,6 +115,8 @@ export interface TurnIngestionDeps {
     },
   ): Promise<void>;
   resolveMemoryIdOrHandle(ref: string, sessionKey?: string): string;
+  /** Max conversation chars the extraction model accepts; absent on legacy hosts (single-run behavior). */
+  extractionWindowBudgetChars?(): number;
   runExtraction(
     ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult>;
@@ -143,9 +159,10 @@ function isFlushPlanRecoveryTurn(
 }
 
 export class TurnIngestionCoordinator {
-  constructor(
-    private readonly deps: TurnIngestionDeps,
-  ) {}
+  private readonly drain: ExtractionDrain; // chunked trigger-drain (extraction-drain.ts)
+  constructor(private readonly deps: TurnIngestionDeps) {
+    this.drain = new ExtractionDrain(deps);
+  }
 
   async processTurn(
     role: "user" | "assistant",
@@ -202,10 +219,17 @@ export class TurnIngestionCoordinator {
 
     if (outcome.decision === "keep_buffering") return;
     if (!outcome.extractionTurns) return;
+    if (outcome.extractionTurns.some((turn) => turn.acceptedCapture === true)) {
+      // #3251: native triggers must not run mixed accepted scopes under one
+      // policy — each scope group drains through the shared execution
+      // boundary with its own pins.
+      this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, {});
+      return;
+    }
     await this.deps.queueBufferedExtraction(
       outcome.extractionTurns,
       "trigger_mode",
-      { bufferKey },
+      { bufferKey, preemptable: true },
     );
   }
 
@@ -249,14 +273,25 @@ export class TurnIngestionCoordinator {
        * and import callers leave it unset.
        */
       sessionOwnerPrincipal?: string;
+      /**
+       * #3251: "immediate" (default) keeps the pre-#3251 forced-queue
+       * semantics. "buffered" is the access `observe` capture mode — turns
+       * are capacity-admitted, scope-pinned, and made durable before this
+       * promise resolves; extraction only queues on the buffer's native
+       * trigger, and abort/deadline/restart leave the capture recoverable.
+       */
+      extractionMode?: "immediate" | "buffered";
+      /** #3251: invoked per trigger-queued extraction promise (buffered mode). */
+      onExtractionQueued?: (extraction: Promise<void>) => void;
+      /**
+       * #3251: the ALREADY-resolved native coding context for this capture
+       * (buffered mode). Pinned on the durable turns so drains re-resolve
+       * current policy for the SAME project binding.
+       */
+      codingContext?: import("../types.js").CodingContext;
     } = {},
   ): Promise<void> {
     if (!Array.isArray(turns) || turns.length === 0) return;
-    if (options.abortSignal?.aborted) {
-      throw options.abortSignal.reason instanceof Error
-        ? options.abortSignal.reason
-        : new Error("ingestReplayBatch aborted");
-    }
     if (shouldSkipImplicitExtraction(this.deps.config)) {
       log.debug(
         "ingestReplayBatch: skipping implicit extraction because captureMode=explicit",
@@ -283,6 +318,19 @@ export class TurnIngestionCoordinator {
         ...(turn.originRole ? { originRole: turn.originRole } : {}),
       });
       bySession.set(key, list);
+    }
+
+    // #3251: the buffered capture ignores pre-aborted signals — cancellation
+    // applies to extraction, never to durable admission. The abort pre-check
+    // below guards only the immediate (forced-queue) path.
+    if (options.extractionMode === "buffered") {
+      return this.ingestReplayBatchBuffered(bySession, options);
+    }
+
+    if (options.abortSignal?.aborted) {
+      throw options.abortSignal.reason instanceof Error
+        ? options.abortSignal.reason
+        : new Error("ingestReplayBatch aborted");
     }
 
     const replaySlices: Array<{
@@ -355,6 +403,123 @@ export class TurnIngestionCoordinator {
       if (firstRejected) {
         throw firstRejected.reason;
       }
+    }
+  }
+
+  /** #3251 buffered capture: durable scope-pinned admission; await settles at durability. */
+  private async ingestReplayBatchBuffered(
+    bySession: Map<string, BufferTurn[]>,
+    options: {
+      deadlineMs?: number;
+      archiveLcm?: boolean;
+      abortSignal?: AbortSignal;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      codingContext?: import("../types.js").CodingContext;
+      onExtractionQueued?: (extraction: Promise<void>) => void;
+    },
+  ): Promise<void> {
+    // #3251: resolve the original actual storage target ONCE at method entry,
+    // BEFORE any LCM archival or buffer admission. Explicit override is
+    // authoritative; otherwise namespaces OFF → the collapsed default store;
+    // namespaces ON → the plan's writeNamespace. Reject before any side
+    // effect if neither is available.
+    const resolvedWriteTarget =
+      options.writeNamespaceOverride ??
+      (resolveNamespaceCapabilities(this.deps.config).namespaces === true
+        ? options.scopeProfileWritePlan?.writeNamespace
+        : this.deps.config.defaultNamespace);
+    if (!resolvedWriteTarget) {
+      throw new ReplayAdmissionRefusedError(
+        "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
+      );
+    }
+    for (const [bufferKey, sessionTurns] of bySession) {
+      // No top-level abort check: cancellation applies to the background
+      // extraction, never to the durable capture or save barrier (#3251).
+      if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
+        await this.deps.lcmEngine.observeMessages(
+          bufferKey,
+          sessionTurns.map((turn) => ({
+            role: turn.role,
+            content: turn.content,
+            parts: turn.parts,
+            rawContent: turn.rawContent,
+            sourceFormat: turn.sourceFormat,
+          })),
+        );
+      }
+      for (const turn of sessionTurns) {
+        const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
+        if (options.codingContext) pinned.codingContext = options.codingContext;
+        if (options.principalOverride) pinned.principalOverride = options.principalOverride;
+        if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
+        const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
+        if (outcome === null) {
+          throw new ReplayAdmissionRefusedError(
+            `durable observe capture refused: extraction buffer at entry capacity for ${bufferKey}`,
+          );
+        }
+        if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
+          this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, options);
+        }
+      }
+      // Acceptance durability barrier (#1909 seam): surfaces storage failures
+      // BEFORE the caller can report acceptance. Not abort-gated.
+      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+    }
+  }
+
+  /**
+   * Buffer-approved captures skip threshold/dedupe rechecks, not provider retry cooldowns.
+   * Scope and staleness are enforced at the shared queueBufferedExtraction boundary.
+   */
+  private queueBufferedCaptureScopeGroups(
+    extractionTurns: BufferTurn[],
+    bufferKey: string,
+    options: {
+      deadlineMs?: number;
+      abortSignal?: AbortSignal;
+      writeNamespaceOverride?: string;
+      principalOverride?: string;
+      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      codingContext?: import("../types.js").CodingContext;
+      onExtractionQueued?: (extraction: Promise<void>) => void;
+    },
+  ): void {
+    for (const group of groupTurnsByExtractionScope(extractionTurns)) {
+      const groupIsAccepted = group.turns.some((turn) => turn.acceptedCapture === true);
+      if (!groupIsAccepted) {
+        // Native groups keep their own routing; skipped accepted prefixes require identity clearing.
+        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
+          bufferKey,
+          clearMatchingTurns: true,
+          preemptable: true,
+        }).catch((err) => log.error(`native trigger extraction failed: ${err}`));
+        continue;
+      }
+      // Accepted groups use ONLY their own pins — no fallback to the
+      // triggering observe's scope.
+      const extraction = new Promise<void>((resolve, reject) => {
+        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
+          bufferKey,
+          clearBufferAfterExtraction: true,
+          clearMatchingTurns: true,
+          skipDedupeCheck: true,
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          abortSignal: options.abortSignal,
+          extractionDeadlineMs: options.deadlineMs,
+          writeNamespaceOverride: group.writeNamespaceOverride,
+          principalOverride: group.principalOverride,
+          scopeProfileWritePlan: group.scopeProfileWritePlan ?? null,
+          preemptable: true,
+          onTaskSettled: (err) => (err ? reject(err) : resolve()),
+        }).catch(reject);
+      });
+      if (options.onExtractionQueued) options.onExtractionQueued(extraction);
+      else extraction.catch((err) => log.error(`buffered capture extraction failed: ${err}`));
     }
   }
 
@@ -633,8 +798,15 @@ export class TurnIngestionCoordinator {
         log.debug(
           `heartbeat observer trigger: session=${sessionKey} deltaBytes=${decision.deltaBytes} deltaTokens=${decision.deltaTokens}`,
         );
+        if (turns.some((turn) => turn.acceptedCapture === true)) {
+          // #3251: heartbeat triggers must not run mixed accepted scopes
+          // under one policy — per-scope groups via the shared boundary.
+          this.queueBufferedCaptureScopeGroups(turns, bufferKey, {});
+          return;
+        }
         await this.deps.queueBufferedExtraction(turns, "heartbeat_observer", {
           bufferKey,
+          preemptable: true,
         });
       });
 
@@ -667,13 +839,10 @@ export class TurnIngestionCoordinator {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      /** Automatic buffered work only. Replay and import must not set this. */
+      preemptable?: boolean;
+      /** Fail-closed force-flush only. Not implied by failOnExtractionFailure. */
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -759,8 +928,10 @@ export class TurnIngestionCoordinator {
       };
       scheduleQueueWaitTimeout();
     }
-
+    if (settled) return;
+    const preemptable = options.preemptable === true && options.preemptRunning !== true;
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
+      await this.deps.extractionQueueCoordinator.runPreemptable(preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -771,7 +942,136 @@ export class TurnIngestionCoordinator {
       }
       clearQueueWaitTimer();
       try {
-        const result = await this.deps.runExtraction(turnsToExtract, {
+        // #3251 shared execution boundary for accepted captures (trigger and
+        // flush drains both converge here): re-read the live buffer so a
+        // concurrent drain that already took these turns skips the LLM work,
+        // and re-resolve a pinned plan against CURRENT config — revoke skips
+        // WITHOUT clearing, and the plan is never retargeted.
+        let effectiveTurns = turnsToExtract;
+        let effectiveScopePlan = options.scopeProfileWritePlan;
+        if (effectiveTurns.some((turn) => turn.acceptedCapture === true)) {
+          const liveTurns = this.deps.buffer
+            .getTurns(bufferKey)
+            .filter((live) => effectiveTurns.some((snapshotted) => bufferTurnsEqual(live, snapshotted)));
+          if (liveTurns.length === 0) {
+            settleTask(undefined, {
+              status: "skipped",
+              reason: "already_drained",
+              persistedCount: 0,
+              durableOutputCount: 0,
+            });
+            return;
+          }
+          effectiveTurns = liveTurns;
+          // Pinned-namespace guard (#3251): if namespaces are now DISABLED, a
+          // non-default pinned namespace can no longer be honored as a
+          // separate store — skip + preserve rather than silently flattening
+          // the capture into the default store.
+          const namespacesOn = resolveNamespaceCapabilities(this.deps.config).namespaces === true;
+          const acceptedTurn = effectiveTurns.find((turn) => turn.acceptedCapture === true);
+          const pinnedNamespace = acceptedTurn?.writeNamespaceOverride;
+          // #3251: policy-preserving skips reject when the caller demands
+          // failure (forceflush) so retained cleanup never deletes preserved
+          // captures; background triggers soft-skip and keep the data.
+          const policySkipError = (reason: string): Error | undefined =>
+            options.failOnExtractionFailure === true
+              ? new Error(`accepted capture preserved: ${reason} (${bufferKey})`)
+              : undefined;
+          if (
+            !namespacesOn &&
+            pinnedNamespace !== undefined &&
+            pinnedNamespace !== this.deps.config.defaultNamespace
+          ) {
+            const err = policySkipError("pinned_namespace_unavailable");
+            if (err) { settleTask(err); return; }
+            settleTask(undefined, {
+              status: "skipped",
+              reason: "pinned_namespace_unavailable",
+              persistedCount: 0,
+              durableOutputCount: 0,
+            });
+            return;
+          }
+          // Current-policy write re-auth for pinned namespaces (#3251): the
+          // grant at capture time may have been revoked. Project-derived
+          // namespaces honor native base-inheritance (never blanket
+          // canWriteNamespace on the combined name); explicit-policy and
+          // default pins re-check directly — default may be revoked too.
+          const firstSessionKey = effectiveTurns[0]?.sessionKey ?? "";
+          const principal =
+            options.principalOverride !== undefined && options.principalOverride.length > 0
+              ? options.principalOverride
+              : resolvePrincipal(firstSessionKey, this.deps.config);
+          if (namespacesOn && pinnedNamespace !== undefined && !effectiveScopePlan) {
+            const originalContext = acceptedTurn?.codingContext ?? null;
+            const overlay = originalContext
+              ? resolveCodingNamespaceOverlay(
+                  originalContext,
+                  this.deps.config.codingMode,
+                  this.deps.config.defaultNamespace,
+                )
+              : null;
+            const baseNamespace = defaultNamespaceForPrincipal(principal, this.deps.config);
+            const projectNamespace =
+              overlay && this.deps.config.codingMode
+                ? combineNamespaces(baseNamespace, overlay.namespace)
+                : undefined;
+            const writeAuthorized =
+              projectNamespace === pinnedNamespace
+                ? hasExplicitNamespacePolicy(pinnedNamespace, this.deps.config)
+                  ? canWriteNamespace(principal, pinnedNamespace, this.deps.config)
+                  : canWriteNamespace(principal, baseNamespace, this.deps.config)
+                : canWriteNamespace(principal, pinnedNamespace, this.deps.config);
+            if (!writeAuthorized) {
+              const err = policySkipError("namespace_write_revoked");
+              if (err) { settleTask(err); return; }
+              settleTask(undefined, {
+                status: "skipped",
+                reason: "namespace_write_revoked",
+                persistedCount: 0,
+                durableOutputCount: 0,
+              });
+              return;
+            }
+          }
+          if (effectiveScopePlan) {
+            // #3251: re-resolve with the ORIGINAL coding binding (stored
+            // natively on the turn) so project-scoped captures re-authorize
+            // against CURRENT policy without losing their project identity.
+            const originalContext = acceptedTurn?.codingContext ?? null;
+            const codingOverlay = originalContext
+              ? resolveCodingNamespaceOverlay(
+                  originalContext,
+                  this.deps.config.codingMode,
+                  this.deps.config.defaultNamespace,
+                )
+              : null;
+            const fresh = resolveScopeProfilePlan({
+              config: this.deps.config,
+              principal,
+              codingContext: originalContext,
+              codingOverlay,
+            });
+            const identityHolds =
+              fresh !== null &&
+              fresh.profileId === effectiveScopePlan.profileId &&
+              fresh.writeLayer === effectiveScopePlan.writeLayer &&
+              fresh.writeNamespace === effectiveScopePlan.writeNamespace;
+            if (!identityHolds) {
+              const err = policySkipError("scope_profile_revoked");
+              if (err) { settleTask(err); return; }
+              settleTask(undefined, {
+                status: "skipped",
+                reason: "scope_profile_revoked",
+                persistedCount: 0,
+                durableOutputCount: 0,
+              });
+              return;
+            }
+            effectiveScopePlan = fresh;
+          }
+        }
+        const result = await this.drain.run(effectiveTurns, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           clearMatchingTurns: options.clearMatchingTurns === true,
@@ -780,20 +1080,24 @@ export class TurnIngestionCoordinator {
           deadlineMs: extractionDeadlineMs,
           bufferKey,
           onDurableCommit: options.onDurableCommit,
-          abortSignal: options.abortSignal,
+          onBeforePersist: () => this.deps.extractionQueueCoordinator.endPreemptable(),
+          abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
-          scopeProfileWritePlan: options.scopeProfileWritePlan,
+          scopeProfileWritePlan: effectiveScopePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
-        });
+        }, preemptable);
         settleTask(undefined, result);
       } catch (err) {
-        if (settleTask(err)) {
-          throw err;
+        const reason = abortSignal.reason;
+        const settledError = reason instanceof Error && isPreemptedExtraction(reason) ? reason : err;
+        if (settleTask(settledError)) {
+          throw settledError;
         }
       }
-    });
+      });
+    }, { front: options.preemptRunning === true });
     if (!accepted) {
       settleTask(new Error("extraction queue is stopped"));
       return;
@@ -889,3 +1193,6 @@ export class TurnIngestionCoordinator {
     }
   }
 }
+
+/** Named option contract for `TurnIngestionCoordinator.ingestReplayBatch` (#3251). */
+export type IngestReplayBatchOptions = Parameters<TurnIngestionCoordinator["ingestReplayBatch"]>[1];

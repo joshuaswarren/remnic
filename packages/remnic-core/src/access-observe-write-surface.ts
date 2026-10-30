@@ -30,6 +30,7 @@ import {
   NamespaceNotWritableError,
 } from "./access-service.js";
 import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { abortError } from "./abort-error.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -118,7 +119,8 @@ export interface AccessObserveWriteSurfaceDeps {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string
+    scopeHint?: string,
+    reason?: Error,
   ): void;
   resolveReadableNamespace(namespace: string | undefined, principal?: string): string;
   validateWriteCandidate(
@@ -145,9 +147,10 @@ export class AccessObserveWriteSurface {
     sessionKey: string,
     principal?: string,
     namespace?: string,
-    scopeHint?: string
+    scopeHint?: string,
+    reason?: Error,
   ): void {
-    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint);
+    this.pendingObserveExtractions.cancel(sessionKey, principal, namespace, scopeHint, reason);
   }
   constructor(private readonly deps: AccessObserveWriteSurfaceDeps) {}
 
@@ -841,19 +844,12 @@ export class AccessObserveWriteSurface {
         // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
         // target deterministic and identical to LCM/objective-state (rule 39).
         //
-        // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
-        // from the default store (#1505 round 3, codex "Pin default-store extraction
-        // writes too"). For an unqualified/no-overlay observe by a principal that
-        // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
-        // unpinned `runExtraction` would fall back to
-        // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
-        // from where LCM/objective-state/response wrote (`default`). Pinning the
-        // resolved writeNamespace forces all side effects onto the one scope-plan
-        // namespace. When namespaces are DISABLED the router collapses every
-        // namespace to one store, so leaving the override undefined preserves the
-        // existing single-store routing byte-for-byte.
-        const writeNamespaceOverride =
-          resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces === true ? writeNamespace : undefined;
+        // #3251: ALWAYS pin the already-resolved writeNamespace — including
+        // when namespaces are OFF (where the resolved value IS the collapsed
+        // default store). Accepted captures need an original actual storage
+        // target so a later namespaces-ON restart cannot retarget them to a
+        // newly-active principal/project namespace.
+        const writeNamespaceOverride = writeNamespace;
         // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
         // thread 1). The scope plan already applied auth precedence
         // (authenticatedPrincipal/principalOverride > resolvePrincipal(original
@@ -863,38 +859,39 @@ export class AccessObserveWriteSurface {
         // existing behavior.
         const principalOverride =
           typeof scope.principal === "string" && scope.principal.length > 0 ? scope.principal : undefined;
-        // Fire-and-forget: queue extraction in the background so the HTTP
-        // response returns immediately; extraction LLM calls can take minutes.
-        //
-        // Backpressure: the orchestrator's queue limits extraction concurrency
-        // (one per session); this just decouples the HTTP response from the drain.
-        if (!observePreparation.isCancelled()) {
-          try {
-            const observeAbortController = new AbortController();
-            const extractionPromise = this.deps.orchestrator.ingestReplayBatch(turns, {
-              archiveLcm: false,
-              writeNamespaceOverride,
-              principalOverride,
-              scopeProfileWritePlan: scope.scopeProfilePlan,
-              abortSignal: observeAbortController.signal,
-              ...(typeof request.authenticatedPrincipal === "string" && request.authenticatedPrincipal.trim().length > 0
-                ? { sessionOwnerPrincipal: request.authenticatedPrincipal.trim() }
-                : {}),
-            });
-            extractionPromise.catch((err) => {
+        // Acceptance waits for durable capture; cancellation only stops extraction.
+        const observeAbortController = new AbortController();
+        const preparationCancelled = observePreparation.isCancelled();
+        if (preparationCancelled) {
+          // Preserve capture even when its preparation was cancelled.
+          observeAbortController.abort(abortError("observe preparation cancelled"));
+        }
+        const trackedExtractionKey = this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace);
+        const ingestOptions: NonNullable<Parameters<Orchestrator["ingestReplayBatch"]>[1]> = {
+          archiveLcm: false,
+          extractionMode: "buffered",
+          writeNamespaceOverride,
+          principalOverride,
+          scopeProfileWritePlan: scope.scopeProfilePlan,
+          // Re-authorize current policy against the original project binding.
+          codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
+          abortSignal: observeAbortController.signal,
+        };
+        if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
+          ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
+        }
+        // Track every job immediately, but don't retain cancelled preparation barriers.
+        if (!preparationCancelled) {
+          ingestOptions.onExtractionQueued = (extraction: Promise<void>) => {
+            extraction.catch((err) => {
               log.error(`access-observe background extraction failed: ${err}`);
             });
-            this.pendingObserveExtractions.track(
-              this.pendingObserveExtractions.key(request.sessionKey, scope.principal, writeNamespace),
-              extractionPromise,
-              observeAbortController
-            );
+            this.pendingObserveExtractions.track(trackedExtractionKey, extraction, observeAbortController);
             extractionQueued = true;
-          } catch (err) {
-            // Synchronous enqueue failure (e.g. orchestrator disposed)
-            log.error(`access-observe extraction enqueue failed: ${err}`);
-          }
+          };
         }
+        await this.deps.orchestrator.ingestReplayBatch(turns, ingestOptions);
+        // A native trigger may leave the durable capture pending rather than queued.
       }
 
       log.info(
@@ -940,7 +937,8 @@ export class AccessObserveWriteSurface {
           namespace,
           abortSignal,
           registerCancellation,
-          scopeHint
+          scopeHint,
+          () => this.deps.orchestrator.extractionQueueCoordinator?.preemptRunning(),
         )
     );
   }

@@ -2731,6 +2731,20 @@ export function parseConfig(
       typeof cfg.extractionJudgeBatchSize === "number" && Number.isFinite(cfg.extractionJudgeBatchSize)
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
+    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
+    // PR 3264): the judge requests a compact verdict with a batch-scaled
+    // completion budget (24 tokens per candidate, up to 2048). Measured
+    // 2.1-2.5 s per call on a small fast judge
+    // model; the big shared core model measured 13-22 s per compact call,
+    // 41 s verbose. The 20s default assumes the fast model, stays fail-open
+    // on timeout, and needs a raise if extractionJudgeModel points at the
+    // slow core model. Non-positive / unusable values fall back to the
+    // default rather than a 1ms timeout that would silently disable judging.
+    extractionJudgeTimeoutMs: ((): number => {
+      const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
+      if (coerced === undefined || coerced < 1) return 20_000;
+      return Math.min(3_600_000, Math.floor(coerced));
+    })(),
     extractionJudgeShadow: cfg.extractionJudgeShadow === true,
     // Defer cap (issue #562 PR 2): max re-deferrals for the same candidate
     // text before the verdict is forcibly converted to reject.
@@ -2801,6 +2815,15 @@ export function parseConfig(
       typeof cfg.localLlm400TripThreshold === "number" ? cfg.localLlm400TripThreshold : 5,
     localLlm400CooldownMs:
       typeof cfg.localLlm400CooldownMs === "number" ? cfg.localLlm400CooldownMs : 120_000,
+    // COS-447: rate-limit backoff + process-wide concurrency cap.
+    localLlmRateLimitRetryCount: resolveNonNegativeIntegerConfig(
+      cfg.localLlmRateLimitRetryCount, 3, "localLlmRateLimitRetryCount"),
+    localLlmRateLimitBackoffBaseMs: resolvePositiveIntegerConfig(
+      cfg.localLlmRateLimitBackoffBaseMs, 1_000, "localLlmRateLimitBackoffBaseMs"),
+    localLlmRateLimitBackoffMaxMs: resolvePositiveIntegerConfig(
+      cfg.localLlmRateLimitBackoffMaxMs, 60_000, "localLlmRateLimitBackoffMaxMs"),
+    localLlmMaxConcurrency: resolveNonNegativeIntegerConfig(
+      cfg.localLlmMaxConcurrency, 4, "localLlmMaxConcurrency"),
     // Ollama thinking suppression dialect (issue #1996): reasoning_effort value
     // for THINKING_SUPPRESSED_OPERATIONS on the ollama backend. Default "none"
     // (think off). "" disables injection. Invalid values fall back to "none"
@@ -2845,6 +2868,14 @@ export function parseConfig(
     extractionBreakerAuthCooldownMs:
       typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs >= 0
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
+    // Trigger-drain drop threshold: consecutive failed extraction attempts
+    // before the failing buffer chunk is dropped (side-file copied first).
+    extractionChunkDropAfterFailures: parseIntegerAtLeast(
+      cfg.extractionChunkDropAfterFailures,
+      5,
+      1,
+      "extractionChunkDropAfterFailures",
+    ),
     // Local LLM fast tier (v9.1)
     localLlmFastEnabled: cfg.localLlmFastEnabled === true,
     localLlmFastModel:

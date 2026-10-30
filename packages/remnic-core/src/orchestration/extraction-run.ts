@@ -1,24 +1,10 @@
 /**
- * Extraction-run coordinator — extracted from the orchestrator
- * (issue #1526, seam 15).
- *
- * Owns the buffer→extract→persist pipeline orchestration:
- *   - `runExtraction` — the main extraction pipeline coordinator
- *     (normalize → threshold gate → namespace resolve → dedupe
- *     fingerprint → extract → validate → persist → post-write hooks)
- *   - dedupe support: `shouldQueueExtraction`,
- *     `buildExtractionFingerprint`, `normalizeExtractionFingerprintTurns`
- *   - `recordProcessedExtractionFingerprint` — meta recording
- *
- * The orchestrator constructs one instance and delegates the extraction
- * run to it. `persistExtraction`, `maybeCapturePassiveCorrections`, and
- * all post-write side-effect helpers arrive as injectable delegates so
- * the orchestrator keeps ownership of cross-subsystem routing and the
- * behavior-critical chokepoints it hosts.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods so existing call sites
- * and tests that exercise the public API continue to work.
+ * Buffer → extract → persist coordinator (issue #1526, seam 15).
+ * Owns runExtraction, shouldQueueExtraction, buildExtractionFingerprint,
+ * normalizeExtractionFingerprintTurns and recordProcessedExtractionFingerprint.
+ * The orchestrator delegates here and retains cross-subsystem routing,
+ * persistence and post-write side effects via injected dependencies.
+ * Extracted from orchestrator.ts without behavior changes.
  */
 
 import { createHash } from "node:crypto";
@@ -52,6 +38,7 @@ export interface ExtractionRunResult {
   persistedCount: number;
   durableOutputCount: number;
   postPersistMetadataFailed?: boolean;
+  retainedBuffer?: boolean; failureClass?: ExtractionFailureClass; // retained: the run left the window in the buffer for a retry (a recorded failure) of this class
 }
 
 export class ExtractionDeadlineError extends Error {
@@ -132,7 +119,7 @@ import {
   commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
-  deriveTopicsFromExtraction,
+  deriveTopicsFromExtraction, emptyExtractionResult,
   runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
@@ -453,19 +440,17 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
-      clearMatchingTurns?: boolean;
+      clearMatchingTurns?: boolean; retentionWindow?: readonly BufferTurn[];
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
       bufferKey?: string;
       abortSignal?: AbortSignal;
       failOnExtractionFailure?: boolean;
-      /**
-       * Called immediately after durable extraction persistence returns, before
-       * any metadata, retention, or helper work. Lifecycle callers use this
-       * as the write-rate-limit commit boundary.
-       */
+      /** Write-rate commit boundary, after persistence returns. */
       onDurableCommit?: () => void;
+      /** Disarm preemption once persistence can no longer be aborted. */
+      onBeforePersist?: () => void;
       /**
        * Explicit namespace override for the write path (#460).  When set, this
        * is the namespace where extraction writes go instead of the one derived
@@ -564,8 +549,9 @@ export class ExtractionRunCoordinator {
         if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     };
-    const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
-      if (options?.ignoreAbort !== true) {
+    const clearBuffer = async (clearOptions?: { ignoreAbort?: boolean }) => {
+      options.onBeforePersist?.();
+      if (clearOptions?.ignoreAbort !== true) {
         throwIfDeadlineExceeded("before_clear_buffer");
         throwIfAborted("before_clear_buffer");
       }
@@ -1059,7 +1045,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
+      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;
@@ -1077,6 +1063,7 @@ export class ExtractionRunCoordinator {
       }
     }
     const originContext = deriveExtractionOriginContext(targetTurns, result.sourceConnector);
+    options.onBeforePersist?.();
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
@@ -1122,7 +1109,7 @@ export class ExtractionRunCoordinator {
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
-        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max),
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, options.retentionWindow ?? turns),
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });

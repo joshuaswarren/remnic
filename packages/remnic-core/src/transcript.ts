@@ -6,6 +6,7 @@ import { analyzeSessionIntegrity, type SessionIntegrityReport } from "./session-
 import { isDailyFileDatedBefore, resolveSafeStoragePath } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 type DirectoryOwnershipCacheEntry = {
@@ -166,7 +167,7 @@ export class TranscriptManager {
         for (const idEnt of idEntries) {
           if (!idEnt.isDirectory()) continue;
           const chanDir = path.join(typeDir, idEnt.name);
-          const files = (await readdir(chanDir)).filter((f) => f.endsWith(".jsonl")).sort();
+          const files = (await readdir(chanDir)).filter((f) => f.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(f)).sort();
           const last = files[files.length - 1];
           if (!last) continue;
           try {
@@ -261,7 +262,7 @@ export class TranscriptManager {
 
     let names: string[];
     try {
-      names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl"));
+      names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file));
     } catch {
       return "occupied";
     }
@@ -345,7 +346,7 @@ export class TranscriptManager {
   ): Promise<void> {
     try {
       const channelDir = await resolveSafeStoragePath(root, dir);
-      const names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl"));
+      const names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file));
       const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
       if (!fileSizes) return;
       this.directoryOwnershipCache.set(
@@ -380,7 +381,7 @@ export class TranscriptManager {
 
       let names: string[];
       try {
-        names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl")).sort();
+        names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file)).sort();
       } catch {
         continue;
       }
@@ -641,14 +642,14 @@ export class TranscriptManager {
                 try {
                   const channelFiles = await readdir(channelDir);
                   for (const file of channelFiles) {
-                    if (file.endsWith(".jsonl")) {
+                    if (file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file)) {
                       files.push(path.join(entry.name, channelTypeEntry.name, file));
                     }
                   }
                 } catch {
                   // Skip unreadable directories
                 }
-              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl")) {
+              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
                 // Legacy: channel type dir contains .jsonl files directly
                 files.push(path.join(entry.name, channelTypeEntry.name));
               }
@@ -656,7 +657,7 @@ export class TranscriptManager {
           } catch {
             // Skip unreadable directories
           }
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        } else if (entry.isFile() && entry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(entry.name)) {
           // Legacy flat file - still include for backward compatibility
           files.push(entry.name);
         }
@@ -865,7 +866,7 @@ export class TranscriptManager {
                 try {
                   const channelFiles = await readdir(channelDir);
                   for (const file of channelFiles) {
-                    if (!file.endsWith(".jsonl")) continue;
+                    if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".jsonl")) continue;
 
                     const filePath = path.join(channelDir, file);
 
@@ -894,7 +895,7 @@ export class TranscriptManager {
                 } catch (err) {
                   log.debug(`failed to process channel directory ${entry.name}/${channelTypeEntry.name}:`, err);
                 }
-              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl")) {
+              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
                 // Legacy: channel type dir contains .jsonl files directly
                 const filePath = path.join(channelTypeDir, channelTypeEntry.name);
                 const cleaned = await this.cleanupTranscriptFile(filePath, cutoff);
@@ -906,7 +907,7 @@ export class TranscriptManager {
           } catch (err) {
             log.debug(`failed to process channel type directory ${entry.name}:`, err);
           }
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        } else if (entry.isFile() && entry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(entry.name)) {
           // Handle legacy flat files - delete if older than retentionDays
           if (this.isLegacyTranscriptFile(entry.name)) {
             const dateStr = entry.name.slice(0, 10);

@@ -465,7 +465,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
     "the orchestrator deadline is the duration converted at force-flush entry",
   );
   assert.equal(call.options.failOnExtractionFailure, true);
-  assert.equal(call.options.abortSignal, abortController.signal);
+  const signal = call.options.abortSignal;
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  abortController.abort();
+  assert.equal(signal.aborted, true);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(
     probe.orch.getCodingContextForSession("pi-geek:force-flush"),
@@ -512,7 +516,11 @@ test("#2128: force-flush waits for a pending observe extraction", async () => {
   const pendingExtraction = new Promise<void>((resolve) => {
     resolveExtraction = resolve;
   });
-  probe.orch.ingestReplayBatch = async () => pendingExtraction;
+  // #3252 contract: observe awaits only durable capture; the actual extraction
+  // promise is handed to onExtractionQueued and tracked for force-flush.
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    options.onExtractionQueued?.(pendingExtraction);
+  };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "pending-observe-extraction";
 
@@ -547,10 +555,11 @@ test("#2128: pending extraction barriers stay isolated by authenticated principa
     ],
   } as Partial<PluginConfig>);
   const pending = new Map<string, () => void>();
-  probe.orch.ingestReplayBatch = async (_turns, options = {}) =>
-    new Promise<void>((resolve) => {
-      pending.set(options.principalOverride ?? "", resolve);
-    });
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    pending.set(options.principalOverride ?? "", resolve);
+    options.onExtractionQueued?.(promise);
+  };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "shared-session";
 
@@ -595,10 +604,11 @@ test("#2128: pending extraction barriers stay isolated by authenticated principa
 test("#2128: chained observes remain behind one force-flush barrier", async () => {
   const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
   const resolvers: Array<() => void> = [];
-  probe.orch.ingestReplayBatch = async () =>
-    new Promise<void>((resolve) => {
-      resolvers.push(resolve);
-    });
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    resolvers.push(resolve);
+    options.onExtractionQueued?.(promise);
+  };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "chained-observes";
 
@@ -608,32 +618,21 @@ test("#2128: chained observes remain behind one force-flush barrier", async () =
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
   assert.equal(resolvers.length, 2);
 
-  let settled = false;
-  void flushPromise.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
   resolvers[0]?.();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(settled, false);
-  resolvers[1]?.();
   assert.equal((await flushPromise).flushed, true);
+  assert.equal(resolvers.length, 2);
 });
 
 test("#2128: a failed observe extraction is consumed after force-flush reports it", async () => {
   const probe = makeParityProbe({ namespacesEnabled: false } as Partial<PluginConfig>);
   let rejectExtraction!: (error: Error) => void;
   let extractionAttempt = 0;
-  probe.orch.ingestReplayBatch = async () => {
+  probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
     extractionAttempt += 1;
     if (extractionAttempt > 1) return;
-    return new Promise<void>((_resolve, reject) => {
-      rejectExtraction = reject;
-    });
+    const { promise, reject } = Promise.withResolvers<void>();
+    rejectExtraction = reject;
+    options.onExtractionQueued?.(promise);
   };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "failed-observe-extraction";
@@ -655,13 +654,13 @@ test("#2128: force-flush deadline cancels the pending observe extraction", async
   let extractionSignal: AbortSignal | undefined;
   probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
     extractionSignal = options.abortSignal;
-    return new Promise<void>((_resolve, reject) => {
-      options.abortSignal?.addEventListener(
-        "abort",
-        () => reject(new Error("extraction cancelled")),
-        { once: true },
-      );
-    });
+    const { promise, reject } = Promise.withResolvers<void>();
+    options.abortSignal?.addEventListener(
+      "abort",
+      () => reject(new Error("extraction cancelled")),
+      { once: true },
+    );
+    options.onExtractionQueued?.(promise);
   };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "deadline-cancelled-extraction";
@@ -689,13 +688,13 @@ test("#2128: force-flush abort signal cancels the pending observe extraction", a
   let extractionSignal: AbortSignal | undefined;
   probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
     extractionSignal = options.abortSignal;
-    return new Promise<void>((_resolve, reject) => {
-      options.abortSignal?.addEventListener(
-        "abort",
-        () => reject(new Error("extraction cancelled")),
-        { once: true },
-      );
-    });
+    const { promise, reject } = Promise.withResolvers<void>();
+    options.abortSignal?.addEventListener(
+      "abort",
+      () => reject(new Error("extraction cancelled")),
+      { once: true },
+    );
+    options.onExtractionQueued?.(promise);
   };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "abort-cancelled-extraction";
@@ -727,14 +726,14 @@ test("#2128: force-flush abort only cancels the resolved namespace barrier", asy
   probe.orch.ingestReplayBatch = async (_turns, options = {}) => {
     const namespace = options.writeNamespaceOverride ?? "";
     extractionSignals.set(namespace, options.abortSignal);
-    return new Promise<void>((resolve, reject) => {
-      extractionResolvers.set(namespace, resolve);
-      options.abortSignal?.addEventListener(
-        "abort",
-        () => reject(options.abortSignal?.reason ?? new Error("extraction cancelled")),
-        { once: true },
-      );
-    });
+    const { promise, resolve, reject } = Promise.withResolvers<void>();
+    extractionResolvers.set(namespace, resolve);
+    options.abortSignal?.addEventListener(
+      "abort",
+      () => reject(options.abortSignal?.reason ?? new Error("extraction cancelled")),
+      { once: true },
+    );
+    options.onExtractionQueued?.(promise);
   };
   const service = new EngramAccessService(probe.orch);
   const sessionKey = "opaque-shared-session";
@@ -960,7 +959,14 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
   assert.deepEqual(cleanupCalls[0], {
     sessionKey: "pi-geek:cleanup-abort",
     ownerPrincipal: "pi-geek",
-    options: { abortSignal: abortController.signal, deadlineMs: undefined },
+    options: {
+      abortSignal: abortController.signal,
+      deadlineMs: undefined,
+      // #3252: cleanup targets the pinned accepted-capture storage target.
+      writeNamespaceOverride: "default",
+      codingContext: undefined,
+      scopeProfileWritePlan: undefined,
+    },
   });
 
   const cleanupStartedPromise = new Promise<void>((resolve) => {
@@ -981,7 +987,14 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
   assert.deepEqual(cleanupCalls[1], {
     sessionKey: "pi-geek:cleanup-deadline",
     ownerPrincipal: "pi-geek",
-    options: { abortSignal: undefined, deadlineMs: 5 },
+    options: {
+      abortSignal: undefined,
+      deadlineMs: 5,
+      // #3252: cleanup targets the pinned accepted-capture storage target.
+      writeNamespaceOverride: "default",
+      codingContext: undefined,
+      scopeProfileWritePlan: undefined,
+    },
   });
   t.mock.timers.tick(5);
   await assert.rejects(
@@ -1086,8 +1099,10 @@ test("#2206: abort during scope resolution cancels pre-resolution observe prepar
   await assert.rejects(flush, /extraction force-flush aborted/);
   releaseObserveScope();
   const response = await observe;
+  // Cancelled preparation aborts only the extraction; the durable capture is
+  // preserved (#3252), so ingest is still called once with nothing queued.
   assert.equal(response.extractionQueued, false);
-  assert.equal(probe.extractionCalls.length, 0);
+  assert.equal(probe.extractionCalls.length, 1);
 });
 
 test("#2206: scope-resolution deadline cancels preparations by raw projectTag and cwd hints", async (t) => {
@@ -1164,8 +1179,10 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
       releaseObserveScope();
     }
     const response = await observe;
+    // Cancelled preparation aborts only the extraction; the durable capture
+    // is preserved (#3252), so ingest is still called once with nothing queued.
     assert.equal(response.extractionQueued, false);
-    assert.equal(probe.extractionCalls.length, 0);
+    assert.equal(probe.extractionCalls.length, 1);
   }
 });
 

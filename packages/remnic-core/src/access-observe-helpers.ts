@@ -1,3 +1,5 @@
+import { isPreemptedExtraction } from "./abort-error.js";
+
 type PendingObservePreparation = {
   cancelled: boolean;
   scopeHint?: string;
@@ -49,6 +51,7 @@ export function pendingObserveScopeHint(options: {
 
 type PendingObserveExtraction = {
   promise: Promise<void>;
+  running: Promise<void>;
   controllers: Set<AbortController>;
 };
 
@@ -131,12 +134,17 @@ export class PendingObserveExtractionTracker {
     const previous = this.entries.get(key);
     const promise = previous
       ? Promise.allSettled([previous.promise, extraction]).then((results) => {
-          const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+          const rejected = results.find(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected" &&
+              !(result.reason instanceof Error && isPreemptedExtraction(result.reason)),
+          );
           if (rejected) throw rejected.reason;
         })
       : extraction;
     const entry = {
       promise,
+      running: previous?.running ?? extraction,
       controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
     };
     this.entries.set(key, entry);
@@ -144,8 +152,8 @@ export class PendingObserveExtractionTracker {
       .then(() => {
         if (this.entries.get(key) === entry) this.entries.delete(key);
       })
-      .catch(() => {
-        // Keep a failed barrier visible to the next lifecycle flush.
+      .catch((error) => {
+        if (error instanceof Error && isPreemptedExtraction(error) && this.entries.get(key) === entry) this.entries.delete(key);
       });
   }
 
@@ -167,21 +175,30 @@ export class PendingObserveExtractionTracker {
     principal?: string,
     namespace?: string,
     scopeHint?: string,
+    reason?: Error,
   ): void {
     for (const reservation of this.preparations.get(sessionKey) ?? []) {
       if (!preparationMatchesScope(reservation, principal, namespace, scopeHint)) continue;
       reservation.cancelled = true;
     }
 
+    this.abortTracked(sessionKey, principal, namespace, reason);
+  }
+
+  private abortTracked(
+    sessionKey: string,
+    principal: string | undefined,
+    namespace: string | undefined,
+    reason?: Error,
+  ): void {
     for (const [key, entry] of this.entries) {
       const [entrySessionKey, entryPrincipal, entryNamespace] = key.split("\u0000");
       if (
         entrySessionKey !== sessionKey ||
         (principal !== undefined && entryPrincipal !== (principal ?? "")) ||
         (namespace !== undefined && entryNamespace !== (namespace ?? ""))
-      )
-        continue;
-      for (const controller of entry.controllers) controller.abort();
+      ) continue;
+      for (const controller of entry.controllers) controller.abort(reason);
     }
   }
 
@@ -192,15 +209,31 @@ export class PendingObserveExtractionTracker {
     abortSignal?: AbortSignal,
     registerCancellation?: (cancel: () => void) => void,
     scopeHint?: string,
+    preemptAfterAdmission?: () => void,
   ): Promise<void> {
     const key = this.key(sessionKey, principal, namespace);
+    let cancelled = abortSignal?.aborted === true;
     const abortTracked = (): void => {
+      cancelled = true;
       this.cancel(sessionKey, principal, namespace, scopeHint);
     };
     registerCancellation?.(abortTracked);
     abortSignal?.addEventListener("abort", abortTracked, { once: true });
     try {
       await this.waitForPreparations(sessionKey, principal, namespace, scopeHint);
+      if (cancelled || abortSignal?.aborted) return;
+      if (preemptAfterAdmission) {
+        preemptAfterAdmission();
+        const running = this.entries.get(key)?.running;
+        if (!running) return;
+        try {
+          await running;
+        } catch (error) {
+          if (this.entries.get(key)?.running === running) this.entries.delete(key);
+          if (!(error instanceof Error && isPreemptedExtraction(error))) throw error;
+        }
+        return;
+      }
       while (true) {
         const entry = this.entries.get(key);
         if (!entry) return;
@@ -209,6 +242,7 @@ export class PendingObserveExtractionTracker {
         } catch (error) {
           if (this.entries.get(key) !== entry) continue;
           this.entries.delete(key);
+          if (error instanceof Error && isPreemptedExtraction(error)) return;
           throw error;
         }
         if (this.entries.get(key) !== entry) continue;

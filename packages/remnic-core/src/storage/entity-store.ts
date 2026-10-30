@@ -10,15 +10,20 @@
  *   - fragmented-entity merge (consolidation)
  */
 
-import { readdir, unlink } from "node:fs/promises";
+import { lstat, readdir, realpath, unlink } from "node:fs/promises";
 import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
+import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
+import {
+  warnIgnoredMacOsReplicationJunk,
+  withoutMacOsReplicationJunk,
+} from "../utils/macos-replication-junk.js";
 import { getCachedEntities, setCachedEntities } from "../memory-cache.js";
 import type { VersionTrigger } from "../page-versioning.js";
-import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
+import { SecureStoreDecryptError, SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import type {
   EntityActivityEntry,
   EntityFile,
@@ -28,6 +33,7 @@ import type {
   ScoredEntity,
 } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { pathIsInside } from "../utils/path-containment.js";
 import {
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
@@ -61,6 +67,8 @@ export interface EntityStoreDeps {
   readonly entitiesDir: string;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
   currentHistoricalIds(): Readonly<Record<string, string>>;
+  /** True when the entity canonical-id journal says migration completed. */
+  entityCanonicalMigrationComplete(): boolean;
   findMatchingEntity(proposedName: string, type: string): Promise<string | null>;
   getEntityCacheSecureStoreKey(): string;
   getEntityMutationVersion(): number;
@@ -79,6 +87,9 @@ export interface EntityStoreDeps {
 }
 
 export class EntityStore {
+  /** Filename → file identity of the last indexable check. Unchanged files are not reread. */
+  private readonly entityIndexableCache = new Map<string, { identity: string; ok: boolean }>();
+
   constructor(
     private readonly deps: EntityStoreDeps,
   ) {}
@@ -364,29 +375,220 @@ export class EntityStore {
     return normalized;
   }
 
+  private async readEntityFileResolvingRename(firstPath: string, entityId: string) {
+    try {
+      return { id: entityId, content: await this.deps.readStorageSecureFile(firstPath) };
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      // ENOENT: renamed away (retry below). ELOOP: planted symlink — skip.
+      if (isErrnoCode(err, "ELOOP")) return null;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+    }
+    const historicalIds = this.deps.currentHistoricalIds();
+    const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+    const candidates = new Set([canonical]);
+    for (const legacy of Object.keys(historicalIds)) {
+      if (resolveHistoricalEntityCanonicalId(legacy, historicalIds) === canonical) candidates.add(legacy);
+    }
+    candidates.delete(entityId);
+    for (const candidate of candidates) {
+      try {
+        return { id: candidate, content: await this.deps.readStorageSecureFile(
+          path.join(this.deps.entitiesDir, `${candidate}.md`),
+        ) };
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT/ELOOP: gone or a planted symlink — try the next candidate.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
+        throw err;
+      }
+    }
+    return null;
+  }
+
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) {
       return "";
     }
+    // Batch reads retry renames unconditionally (a listed file that ENOENTs
+    // is definitionally a race), but a DIRECT lookup of a legacy id must stop
+    // resolving once the journal says migration completed and its file is gone.
+    if (this.deps.entityCanonicalMigrationComplete()) {
+      try {
+        return await this.deps.readStorageSecureFile(filePath);
+      } catch (err) {
+        if (err instanceof SecureStoreLockedError) throw err;
+        // ENOENT: gone. ELOOP: a planted symlink the open refused to follow.
+        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) return "";
+        throw err;
+      }
+    }
+    return (await this.readEntityFileResolvingRename(filePath, name))?.content ?? "";
+  }
+
+  /**
+   * True when `entities/` is a real directory inside this memory root.
+   * `realpath` on a symlinked root would treat the link target as trusted,
+   * so the check uses `lstat` first and refuses the scan when the root
+   * itself is a symlink.
+   */
+  private async isTrustedEntitiesRoot(): Promise<boolean> {
+    let rootStat;
     try {
-      return await this.deps.readStorageSecureFile(filePath);
+      rootStat = await lstat(this.deps.entitiesDir);
     } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return "";
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return false;
+    let memoryRoot: string;
+    let entitiesReal: string;
+    try {
+      memoryRoot = await realpath(this.deps.baseDir);
+      entitiesReal = await realpath(this.deps.entitiesDir);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    return pathIsInside(memoryRoot, entitiesReal);
+  }
+
+  /**
+   * Entity directory listing with macOS replication junk removed.
+   * One summary warning per directory and count, shared with migration.
+   * A symlinked entities root yields an empty list and is not read.
+   */
+  private async readEntityDirectoryNames(): Promise<string[]> {
+    if (!(await this.isTrustedEntitiesRoot())) return [];
+    const entries = await readdir(this.deps.entitiesDir);
+    const { kept, ignored } = withoutMacOsReplicationJunk(entries, (name) => name);
+    warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
+      log.warn(`entity load ${message}`);
+    });
+    return kept;
+  }
+
+  /**
+   * A directory entry is readable only when it is a regular file.
+   * Symlinks, FIFOs, and devices are skipped before any read. The entities
+   * root is refused separately, before the directory is listed.
+   */
+  private async isMissingEntry(file: string): Promise<boolean> {
+    try {
+      await lstat(path.join(this.deps.entitiesDir, file));
+      return false;
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return true;
+      throw err;
     }
   }
 
-  /** Return sorted list of entity filenames (without .md extension) */
+  private async isContainedRegularEntityFile(file: string): Promise<boolean> {
+    const filePath = path.join(this.deps.entitiesDir, file);
+    let entryStat;
+    try {
+      entryStat = await lstat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    return !entryStat.isSymbolicLink() && entryStat.isFile();
+  }
+
+  /**
+   * Malformed entity files stay on disk (startup must not relocate them)
+   * and stay out of merge, so a fragment merge cannot delete them.
+   * Unchanged files reuse the previous result so a name listing does not
+   * reread the whole directory on every extraction write.
+   */
+  private async isIndexableEntityMarkdown(file: string): Promise<boolean> {
+    const filePath = path.join(this.deps.entitiesDir, file);
+    let entryStat;
+    try {
+      entryStat = await lstat(filePath);
+    } catch (err) {
+      if (isErrnoCode(err, "ENOENT")) return false;
+      throw err;
+    }
+    if (entryStat.isSymbolicLink() || !entryStat.isFile()) return false;
+    const identity = `${entryStat.dev}:${entryStat.ino}:${entryStat.mtimeMs}:${entryStat.size}`;
+    const cached = this.entityIndexableCache.get(file);
+    if (cached?.identity === identity) return cached.ok;
+    try {
+      const content = await this.deps.readStorageSecureFile(filePath);
+      // Missing `**Type:**` still parses (type defaults to "other"). Only an
+      // empty name, including a tab heading, stays out of the name list.
+      const parsed = parseEntityFile(content, this.deps.entitySchemas);
+      const ok = parsed.name.trim().length > 0 && parsed.type.trim().length > 0;
+      this.entityIndexableCache.set(file, { identity, ok });
+      return ok;
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError) throw err;
+      if (!isErrnoCode(err, "ENOENT")) throw err;
+      return false;
+    }
+  }
+
+  /**
+   * Sorted entity filenames (without .md). Malformed records stay on disk
+   * and are omitted, so extraction, matching, and entity list cannot reuse them.
+   */
   async listEntityNames(): Promise<string[]> {
     try {
-      const entries = await readdir(this.deps.entitiesDir);
-      return entries
-        .filter((e) => e.endsWith(".md"))
-        .map((e) => e.replace(".md", ""))
-        .sort();
-    } catch {
+      const entries = await this.readEntityDirectoryNames();
+      const mdFiles = entries.filter((e) => e.endsWith(".md"));
+      const names: string[] = [];
+      const batchSize = 100;
+      for (let i = 0; i < mdFiles.length; i += batchSize) {
+        // Journal table snapshot once per call (per-entry reads are quadratic).
+        const historicalIds = this.deps.currentHistoricalIds();
+        const snapshotIds = new Set(mdFiles.map((file) => file.slice(0, -3)));
+        const journalComplete = this.deps.entityCanonicalMigrationComplete();
+        const resolveCanonical = (entityId: string): string => {
+          const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
+          if (canonical === entityId) return entityId;
+          // Completed journal: the on-disk filename is authoritative; a
+          // late legacy file stays under its own readable name.
+          if (journalComplete) return entityId;
+          // Both claimants coexisting (copy-before-unlink) keep both names.
+          if (snapshotIds.has(canonical)) return entityId;
+          return canonical;
+        };
+        const resolved = await Promise.all(mdFiles.slice(i, i + batchSize).map(async (file) => {
+          const entityId = file.slice(0, -3);
+          try {
+            // Report the canonical id for every indexable file so legacy
+            // names surface as their canonical identity from the start.
+            if (await this.isIndexableEntityMarkdown(file)) {
+              return resolveCanonical(entityId);
+            }
+          } catch (err) {
+            // Lock and decrypt errors abort the listing; anything else
+            // (EACCES) fails only this entry — one unhealthy file must not
+            // empty it.
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
+          }
+          // Vanished listed entry: resolve through the journal (rename
+          // race); lstat failures stay within this entry.
+          try {
+            if (await this.isMissingEntry(file)) {
+              const canonical = resolveHistoricalEntityCanonicalId(entityId, this.deps.currentHistoricalIds());
+              if (canonical !== entityId) return canonical;
+            }
+          } catch (err) {
+            if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
+          }
+          return null;
+        }));
+        names.push(...resolved.filter((name): name is string => name !== null));
+      }
+      // The copy-before-unlink migration window can snapshot both the legacy
+      // and canonical names; the legacy fallback then resolves to the same
+      // canonical id. Deduplicate so the total stays correct.
+      return [...new Set(names)].sort();
+    } catch (err) {
+      if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
       return [];
     }
   }
@@ -404,8 +606,10 @@ export class EntityStore {
       // completed migration's reference scan.
       const wrote = await withEntityCanonicalMutationLock(stateDir, async () => {
         const raw = await this.readEntity(entityName);
-        if (!raw) return false;
-        const serialized = serializeEntityFile(parseEntityFile(raw, this.deps.entitySchemas), this.deps.entitySchemas, this.deps.okfConformanceEnabled());
+        if (!raw || isMalformedEntityRecord(raw)) return false;
+        const parsed = parseEntityFile(raw, this.deps.entitySchemas);
+        if (!parsed.name.trim() || !parsed.type.trim()) return false;
+        const serialized = serializeEntityFile(parsed, this.deps.entitySchemas, this.deps.okfConformanceEnabled());
         if (raw.trimEnd() === serialized.trimEnd()) return false;
         const filePath = this.deps.resolveEntityFilePath(entityName);
         if (filePath === null) return false;
@@ -513,9 +717,21 @@ export class EntityStore {
     if (cached) return cached;
 
     try {
-      const entries = await readdir(this.deps.entitiesDir);
+      // A symlinked/replaced entities root has no readable entries (merged
+      // #3207 semantics): resolve empty rather than following it. Within a
+      // trusted root, readdir directly so planted entries reach the secure
+      // read instead of being swallowed by the listing guards.
+      if (!(await this.isTrustedEntitiesRoot())) return [];
+      const listed = await readdir(this.deps.entitiesDir);
+      const { kept: entries, ignored } = withoutMacOsReplicationJunk(listed, (name) => name);
+      warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
+        log.warn(`entity load ${message}`);
+      });
       const mdFiles = entries.filter((e) => e.endsWith(".md"));
       if (mdFiles.length === 0) return [];
+
+      const historicalIds = this.deps.currentHistoricalIds();
+      const seen = new Map<string, Set<string>>();
 
       // Read all entity files in parallel batches to avoid O(N) sequential I/O.
       // With 3000+ entity files, sequential reads can take 15-20s under load.
@@ -529,17 +745,41 @@ export class EntityStore {
         const batch = mdFiles.slice(i, i + BATCH_SIZE);
         const results = await Promise.all(
           batch.map(async (entry) => {
+            const entityId = entry.slice(0, -".md".length);
+            const entryPath = path.join(this.deps.entitiesDir, entry);
             try {
-              return await this.deps.readStorageSecureFile(path.join(this.deps.entitiesDir, entry));
+              if (!(await this.isContainedRegularEntityFile(entry))) {
+                // A listed entry that vanished races a background migration
+                // rename: resolve through historical ids like a direct read.
+                // Still-present symlinks/dirs stay skipped.
+                if (await this.isMissingEntry(entry)) {
+                  return await this.readEntityFileResolvingRename(entryPath, entityId);
+                }
+                return null;
+              }
+              return await this.readEntityFileResolvingRename(entryPath, entityId);
             } catch (err) {
-              if (err instanceof SecureStoreLockedError) throw err;
-              if (!isErrnoCode(err, "ENOENT")) throw err;
+              // Lock and decrypt failures abort the corpus read (the store
+              // is unusable or tampered); anything else isolates to this entry.
+              if (err instanceof SecureStoreLockedError || err instanceof SecureStoreDecryptError) throw err;
+              log.warn(`entity read isolated failure for ${entry}: ${err instanceof Error ? err.message : String(err)}`);
               return null;
             }
           }),
         );
-        for (const content of results) {
-          if (content !== null) entities.push(parseEntityFile(content, this.deps.entitySchemas));
+        for (const result of results) {
+          if (result === null) continue;
+          const canonical = resolveHistoricalEntityCanonicalId(result.id, historicalIds);
+          let contents = seen.get(canonical);
+          if (contents?.has(result.content)) continue;
+          if (!contents) {
+            contents = new Set();
+            seen.set(canonical, contents);
+          }
+          contents.add(result.content);
+          const entity = parseEntityFile(result.content, this.deps.entitySchemas);
+          if (!entity.name.trim() || !entity.type.trim()) continue;
+          entities.push(entity);
         }
       }
       // A signal that fired during the last batch's await would otherwise publish
@@ -642,8 +882,13 @@ export class EntityStore {
   private async mergeFragmentedEntitiesUnlocked(): Promise<number> {
     let merged = 0;
     try {
-      const entries = await readdir(this.deps.entitiesDir);
-      const mdFiles = entries.filter((e) => e.endsWith(".md"));
+      const entries = await this.readEntityDirectoryNames();
+      const mdFiles: string[] = [];
+      for (const file of entries) {
+        if (!file.endsWith(".md")) continue;
+        if (!(await this.isIndexableEntityMarkdown(file))) continue;
+        mdFiles.push(file);
+      }
 
       // Group files by their canonical name
       const groups = new Map<string, string[]>();
@@ -660,9 +905,31 @@ export class EntityStore {
         groups.get(canonical)!.push(file);
       }
 
+      // A malformed or otherwise non-indexable file is absent from `files`.
+      // Writing the canonical path anyway would replace that file, then
+      // delete the fragments that still hold the only readable copy.
+      const canonicalDestinationOccupied = async (
+        canonicalName: string,
+        members: readonly string[],
+      ): Promise<boolean> => {
+        if (members.includes(canonicalName)) return false;
+        try {
+          await lstat(path.join(this.deps.entitiesDir, canonicalName));
+          return true;
+        } catch (err) {
+          if (isErrnoCode(err, "ENOENT")) return false;
+          throw err;
+        }
+      };
+
       // Merge groups with more than one file
       for (const [canonical, files] of groups) {
         if (files.length <= 1) continue;
+        const canonicalName = `${canonical}.md`;
+        if (await canonicalDestinationOccupied(canonicalName, files)) {
+          log.warn(`skipped entity merge into occupied ${canonicalName}`);
+          continue;
+        }
 
         // Parse all files and merge into a single EntityFile
         const mergedEntity: EntityFile = {
@@ -901,7 +1168,11 @@ export class EntityStore {
         mergedEntity.created = mergedEntity.created || mergedEntity.updated || new Date().toISOString();
         mergedEntity.updated = mergedEntity.updated || new Date().toISOString();
 
-        const canonicalPath = path.join(this.deps.entitiesDir, `${canonical}.md`);
+        const canonicalPath = path.join(this.deps.entitiesDir, canonicalName);
+        if (await canonicalDestinationOccupied(canonicalName, files)) {
+          log.warn(`skipped entity merge into occupied ${canonicalName}`);
+          continue;
+        }
         await this.deps.writeStorageSecureFile(canonicalPath, serializeEntityFile(mergedEntity, this.deps.entitySchemas, this.deps.okfConformanceEnabled()));
         this.deps.bumpEntityMutationVersion();
 

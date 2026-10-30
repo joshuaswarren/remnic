@@ -64,6 +64,43 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.ambientCapture === "boolean") {
     copy.ambientCapture = turn.ambientCapture;
   }
+  if (turn.sourceValidAt !== undefined) {
+    copy.sourceValidAt = turn.sourceValidAt;
+  }
+  if (turn.parts !== undefined) {
+    copy.parts = turn.parts;
+  }
+  if (turn.rawContent !== undefined) {
+    copy.rawContent = turn.rawContent;
+  }
+  if (turn.sourceFormat !== undefined) {
+    copy.sourceFormat = turn.sourceFormat;
+  }
+  // #3251 scope pins: strings copy by value; the plan object is an immutable
+  // config-derived identity passed by reference.
+  if (turn.writeNamespaceOverride !== undefined) {
+    copy.writeNamespaceOverride = turn.writeNamespaceOverride;
+  }
+  if (turn.principalOverride !== undefined) {
+    copy.principalOverride = turn.principalOverride;
+  }
+  if (turn.scopeProfileWritePlan !== undefined) {
+    copy.scopeProfileWritePlan = turn.scopeProfileWritePlan;
+  }
+  if (turn.acceptedCapture === true) {
+    copy.acceptedCapture = true;
+  }
+  const ctx = turn.codingContext;
+  if (ctx) {
+    // All four fields are identity inputs (branchScope uses branch) — copy
+    // explicitly as-is; never a spread of external input.
+    copy.codingContext = {
+      projectId: ctx.projectId,
+      branch: ctx.branch,
+      rootPath: ctx.rootPath,
+      defaultBranch: ctx.defaultBranch,
+    };
+  }
   return copy;
 }
 
@@ -81,8 +118,90 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
     left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
     left.sourceConnector === right.sourceConnector &&
     left.originRole === right.originRole &&
-    left.ambientCapture === right.ambientCapture
+    left.ambientCapture === right.ambientCapture &&
+    left.sourceValidAt === right.sourceValidAt &&
+    left.acceptedCapture === right.acceptedCapture &&
+    left.codingContext?.projectId === right.codingContext?.projectId &&
+    left.codingContext?.rootPath === right.codingContext?.rootPath &&
+    left.codingContext?.branch === right.codingContext?.branch &&
+    left.codingContext?.defaultBranch === right.codingContext?.defaultBranch &&
+    // #3251 scope pins compare by identity triple, not deep plan equality: a
+    // restart-rehydrated plan must still match the pin it was accepted under.
+    left.writeNamespaceOverride === right.writeNamespaceOverride &&
+    left.principalOverride === right.principalOverride &&
+    scopeProfilePlanIdentity(left.scopeProfileWritePlan) ===
+      scopeProfilePlanIdentity(right.scopeProfileWritePlan)
   );
+}
+
+/** Replace only the processed snapshot; callers without one retain legacy whole-slot semantics. */
+export function selectRetainedDeferredTurns(
+  existing: readonly BufferTurn[],
+  turns: BufferTurn[],
+  max: number,
+  originalTurns?: readonly BufferTurn[],
+): BufferTurn[] {
+  const others = originalTurns === undefined ? [] : existing.filter(
+    (turn) => !originalTurns.some((original) => bufferTurnsEqual(turn, original)),
+  );
+  if (!Array.isArray(turns) || max <= 0) return others;
+  return [...others, ...turns.slice(-max).map(copyBufferTurn)];
+}
+
+export function hasPinnedCaptureScope(turn: BufferTurn): boolean {
+  return turn.acceptedCapture === true ||
+    turn.writeNamespaceOverride !== undefined ||
+    turn.scopeProfileWritePlan !== undefined;
+}
+
+/** Stable identity string for a pinned scope-profile plan (#3251). */
+export function scopeProfilePlanIdentity(
+  plan: BufferTurn["scopeProfileWritePlan"],
+): string {
+  if (!plan) return "";
+  return `${plan.profileId}\u0000${plan.writeLayer}\u0000${plan.writeNamespace}`;
+}
+
+export interface ExtractionScopeGroup {
+  writeNamespaceOverride?: string;
+  principalOverride?: string;
+  scopeProfileWritePlan?: BufferTurn["scopeProfileWritePlan"];
+  codingContext?: BufferTurn["codingContext"];
+  turns: BufferTurn[];
+}
+
+/**
+ * Partition extraction turns by their durable scope pins (#3251). Turns
+ * captured under different namespaces / principals / scope profiles /
+ * project bindings must never be extracted together — each group runs its
+ * own extraction under its own scope. Native (unpinned) turns form their own
+ * group and keep today's single-store routing.
+ */
+export function groupTurnsByExtractionScope(turns: BufferTurn[]): ExtractionScopeGroup[] {
+  const groups = new Map<string, ExtractionScopeGroup>();
+  for (const turn of turns) {
+    const key = [
+      turn.writeNamespaceOverride ?? "",
+      turn.principalOverride ?? "",
+      scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
+      turn.codingContext?.projectId ?? "",
+      turn.codingContext?.rootPath ?? "",
+      turn.codingContext?.branch ?? "",
+      turn.codingContext?.defaultBranch ?? "",
+    ].join("\u0000");
+    const group = groups.get(key);
+    if (group) {
+      group.turns.push(turn);
+    } else {
+      const created: ExtractionScopeGroup = { turns: [turn] };
+      if (turn.writeNamespaceOverride !== undefined) created.writeNamespaceOverride = turn.writeNamespaceOverride;
+      if (turn.principalOverride !== undefined) created.principalOverride = turn.principalOverride;
+      if (turn.scopeProfileWritePlan !== undefined) created.scopeProfileWritePlan = turn.scopeProfileWritePlan;
+      if (turn.codingContext !== undefined) created.codingContext = turn.codingContext;
+      groups.set(key, created);
+    }
+  }
+  return [...groups.values()];
 }
 
 export function bufferTurnArraysEqual(

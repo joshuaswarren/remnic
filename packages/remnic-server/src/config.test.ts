@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -301,6 +301,66 @@ test("standalone startServer applies the runtime port override and forwards a tr
     assert.equal(body.namespace, "tenant-a");
   } finally {
     await result?.stop();
+    await cleanup();
+  }
+});
+
+test("a failed listener start does not run weekly compounding", async () => {
+  const { filePath, cleanup } = await writeConfig("{}");
+  const memoryDir = path.join(path.dirname(filePath), "memory");
+  const holder = net.createServer();
+  const port = await new Promise<number>((resolve, reject) => {
+    holder.once("error", reject);
+    holder.listen(0, "127.0.0.1", () => {
+      const address = holder.address();
+      if (address && typeof address === "object") resolve(address.port);
+      else reject(new Error("no address"));
+    });
+  });
+  await writeFile(
+    filePath,
+    JSON.stringify({
+      remnic: {
+        memoryDir,
+        qmdEnabled: false,
+        qmdDaemonEnabled: false,
+        searchBackend: "noop",
+        compoundingEnabled: true,
+        compoundingWeeklyCronEnabled: true,
+      },
+      server: {
+        host: "127.0.0.1",
+        port,
+        authToken: "test-token",
+      },
+    }),
+    "utf8",
+  );
+
+  try {
+    await assert.rejects(
+      () => startServer({
+        configPath: filePath,
+        authToken: "test-token",
+        port,
+      }),
+      (error: unknown) => {
+        const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+        assert.equal(code, "EADDRINUSE");
+        return true;
+      },
+    );
+    const weeklyDir = path.join(memoryDir, "compounding", "weekly");
+    let names: string[] = [];
+    try {
+      names = await readdir(weeklyDir);
+    } catch (error) {
+      const code = typeof error === "object" && error !== null && "code" in error ? error.code : undefined;
+      if (code !== "ENOENT") throw error;
+    }
+    assert.deepEqual(names.filter((name) => name.endsWith(".md")), []);
+  } finally {
+    await new Promise<void>((resolve) => holder.close(() => resolve()));
     await cleanup();
   }
 });

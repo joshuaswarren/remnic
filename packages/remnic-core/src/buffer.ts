@@ -1,7 +1,8 @@
 import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
-import type { StorageManager } from "./storage.js";
+import { BufferSessionPersistence, type BufferStorage } from "./buffer-persistence.js";
+import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import type {
   BufferEntryState,
   BufferState,
@@ -10,8 +11,9 @@ import type {
   PluginConfig,
   SignalLevel,
 } from "./types.js";
-import { resolvePresentationCapabilities } from "./capabilities.js";
+import { resolvePresentationCapabilities, resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
+import { scopeProfilePlanIdentity } from "./buffer-turn-helpers.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
@@ -20,12 +22,17 @@ import {
   bufferTurnsEqual,
   copyBufferTurn,
   describeError,
+  hasPinnedCaptureScope,
   liveTurnsFromExtractionSnapshot,
   matchingQueuedExtractionPrefixLength,
   probeWithTimeout,
+  selectRetainedDeferredTurns,
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
+
+export type { BufferSurpriseProbe } from "./buffer-types.js";
+import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
 export interface AddTurnOutcome {
   decision: TriggerDecision;
@@ -35,36 +42,16 @@ export interface AddTurnOutcome {
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
   deadlineMs?: number;
-}
-
-/**
- * Optional surprise probe injected into `SmartBuffer`.
- *
- * Computes a D-MEM-style novelty score in `[0, 1]` for an incoming turn.
- * The buffer treats the probe as purely additive: if it is not provided, if
- * the feature flag is off, or if the probe throws/times out, the buffer
- * falls back to the existing signal/turn-count/time triggers unchanged.
- *
- * Callers are responsible for sampling recent memories and passing them
- * through the embedding pipeline — the buffer does not want to know about
- * storage, embeddings, or QMD.
- *
- * @param bufferKey Identifier for the active buffer (session/thread).
- * @param turn      The incoming turn whose novelty is being scored.
- * @param recentTurns Turns already buffered for this key (most recent first
- *                    is NOT guaranteed — treat as unordered corpus).
- * @returns A surprise score in `[0, 1]`, or `null` if no score could be
- *          produced (e.g. empty corpus, probe declined to embed).
- */
-export interface BufferSurpriseProbe {
-  scoreTurn(
-    bufferKey: string,
-    turn: BufferTurn,
-    recentTurns: readonly BufferTurn[],
-  ): Promise<number | null>;
+  /** Keep cleanup within the accepted namespace. */
+  writeNamespaceOverride?: string;
+  /** Match the original profile and project binding, not just its write namespace. */
+  scopeProfileWritePlan?: import("./namespaces/scope-profiles.js").ResolvedScopeProfilePlan | null;
+  codingContext?: import("./types.js").CodingContext;
 }
 
 const MAX_BUFFER_ENTRY_COUNT = 200;
+const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
+  t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -84,41 +71,6 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  * could still exceed it.
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
-
-/**
- * Minimal data carried on the serialized telemetry write chain
- * (issue #563 PR 3).
- *
- * We intentionally do NOT capture the full `BufferTurn` here: under
- * slow filesystem latency the chain can back up, and retaining
- * `turn.content` for every pending append causes memory pressure on
- * large conversations. Only the fields the ledger row actually needs
- * cross the chain boundary.
- */
-interface SurpriseTelemetryQueueEntry {
-  bufferKey: string;
-  turnRole: "user" | "assistant";
-  sessionKey: string | null;
-  surpriseScore: number;
-  triggered: boolean;
-  turnCountInWindow: number;
-  /**
-   * ISO timestamp captured at the moment the turn was scored, NOT when
-   * the ledger append eventually runs. Backpressure on the serialized
-   * write chain could otherwise shift event timestamps away from the
-   * real decision moment and distort the distribution report (p90
-   * inflated, current-threshold row misidentified).
-   */
-  timestamp: string;
-  /**
-   * Threshold value in force when `triggered` was computed. Must be
-   * snapshot here rather than read from `config` at emit time — a
-   * concurrent config change between queue and write would otherwise
-   * record `triggered=true` against a newer threshold the operator
-   * never set, distorting precision/recall interpretation.
-   */
-  threshold: number;
-}
 
 interface AddTurnMutationResult {
   decision: TriggerDecision;
@@ -165,9 +117,12 @@ export class SmartBuffer {
    * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
   private firstPendingAtMs: number | null = null;
 
+  /** Which sessions' persisted files are stale (per-session incremental saves). */
+  private readonly persistence = new BufferSessionPersistence();
+
   constructor(
     private readonly config: PluginConfig,
-    private readonly storage: StorageManager,
+    private readonly storage: BufferStorage,
     surpriseProbe: BufferSurpriseProbe | null = null,
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
@@ -251,54 +206,20 @@ export class SmartBuffer {
     );
   }
 
+  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[]): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const keys = Object.keys(entries);
-    if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return;
-
-    const insertionOrder = new Map(keys.map((key, index) => [key, index]));
-    const byOldestActivity = (left: string, right: string): number => {
-      const leftAt = this.entryActivityAt(entries[left] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      const rightAt = this.entryActivityAt(entries[right] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      if (leftAt !== rightAt) return leftAt - rightAt;
-      return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
-    };
-    const candidates = keys.filter((key) => key !== "default" && !retainKeys.includes(key));
-    const emptyRemovable = candidates
-      .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
-      .sort(byOldestActivity);
-
-    const removableCount = Math.max(0, keys.length - MAX_BUFFER_ENTRY_COUNT);
-    let evicted = emptyRemovable.slice(0, removableCount);
-    if (evicted.length < removableCount) {
-      // Retained failed extractions (#1908 retry retention) keep their turns in
-      // the buffer, so empty entries alone may not bring the map back under the
-      // cap during a provider outage. The cap is the documented bound — evict
-      // the oldest NON-empty sessions too rather than growing unboundedly
-      // (codex review).
-      const nonEmptyRemovable = candidates
-        .filter((key) => (entries[key]?.turns.length ?? 0) > 0)
-        .sort(byOldestActivity);
-      evicted = evicted.concat(nonEmptyRemovable.slice(0, removableCount - evicted.length));
-    }
-    for (const key of evicted) {
-      delete entries[key];
-    }
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, MAX_BUFFER_ENTRY_COUNT, {
+      activityAt: (entry) => this.entryActivityAt(entry),
+      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+    });
+    for (const key of evicted) delete entries[key];
+    this.persistence.markEvicted(evicted);
     if (evicted.length > 0) {
-      // Loud degradation (extraction hot-loop hardening, Step 7): during a
-      // prolonged provider outage the breaker holds extraction off and buffered
-      // sessions accumulate. Eviction of the oldest empty session entries past
-      // MAX_BUFFER_ENTRY_COUNT is bounded and expected, but must be observable —
-      // not silent — so operators can see buffer pressure.
+      // Loud degradation (extraction hot-loop hardening, Step 7): buffer
+      // pressure during a provider outage is bounded and expected, but must
+      // be observable, not silent.
       log.warn(
         `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
           `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
@@ -360,12 +281,15 @@ export class SmartBuffer {
    * so the buffer can still accept new turns for the rest of the session.
    */
   resetToEmpty(): void {
+    for (const key of Object.keys(this.state.entries ?? {})) {
+      this.persistence.markDeleted(key);
+    }
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.loaded = true;
   }
 
   private async saveUnlocked(): Promise<void> {
-    await this.storage.saveBuffer(this.state);
+    await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
   }
 
   async save(): Promise<void> {
@@ -479,13 +403,16 @@ export class SmartBuffer {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    if (!this.pendingSave) return;
+    // resetToEmpty-only deletions are pending work too, even with no
+    // pending-save flag set.
+    if (!this.pendingSave && !this.persistence.hasPending()) return;
     try {
       await this.enqueueMutation(async () => {
         // Re-check under the serializer: a concurrent flush may have already
         // persisted this pending save. Skip the redundant write (no phantom
-        // writes).
-        if (!this.pendingSave) return;
+        // writes). resetToEmpty-only deletions also land here without a
+        // pending-save flag.
+        if (!this.pendingSave && !this.persistence.hasPending()) return;
         await this.saveUnlocked();
         // Clear the pending flag INSIDE the same serialized mutation as the
         // write (issue #1909 review). Clearing it after the enqueue await
@@ -524,11 +451,67 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
+  /** Admit atomically; refuse at capacity rather than evict accepted work. */
+  async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
+    const mutation = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      if (this.peekEntry(bufferKey) === null) {
+        this.makeRoomForEntryUnlocked();
+        if (Object.keys(this.state.entries ?? {}).length >= MAX_BUFFER_ENTRY_COUNT) {
+          log.warn(
+            `buffer[${bufferKey}]: durable capture refused at MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}`,
+          );
+          return null;
+        }
+      }
+      return this.recordTurnUnlocked(bufferKey, turn);
+    });
+    if (mutation === null) return null;
+    return this.completeAddTurnOutcome(bufferKey, turn, mutation);
+  }
+
+  /** Prune empty entries only; accepted work must survive capacity pressure. */
+  private makeRoomForEntryUnlocked(): void {
+    const entries = this.state.entries;
+    if (!entries) return;
+    const keys = Object.keys(entries);
+    if (keys.length < MAX_BUFFER_ENTRY_COUNT) return;
+    const byOldestActivity = (left: string, right: string): number =>
+      this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
+      this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
+    const emptyRemovable = keys
+      .filter(
+        (key) =>
+          key !== "default" &&
+          (entries[key]?.turns.length ?? 0) === 0 &&
+          (entries[key]?.retainedTurns?.length ?? 0) === 0,
+      )
+      .sort(byOldestActivity);
+    for (const key of emptyRemovable) {
+      if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
+      delete entries[key];
+      this.persistence.markDeleted(key);
+    }
+  }
+
+  private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
+    return (entry?.turns ?? []).some(isAcceptedTurn) || (entry?.retainedTurns ?? []).some(isAcceptedTurn);
+  }
+
   async addTurnWithOutcome(
     bufferKey: string,
     turn: BufferTurn,
   ): Promise<AddTurnOutcome> {
     const mutation = await this.enqueueMutation(() => this.recordTurnUnlocked(bufferKey, turn));
+    return this.completeAddTurnOutcome(bufferKey, turn, mutation);
+  }
+
+  /** Run probes outside the mutation lock to avoid reentrancy deadlocks. */
+  private async completeAddTurnOutcome(
+    bufferKey: string,
+    turn: BufferTurn,
+    mutation: AddTurnMutationResult,
+  ): Promise<AddTurnOutcome> {
     let decision = mutation.decision;
     let extractionTurns: BufferTurn[] | undefined;
 
@@ -643,6 +626,7 @@ export class SmartBuffer {
     const decision = this.evaluate(entry, signal.level);
     const turnCountInWindow = entry.turns.length;
 
+    this.persistence.markDirty(bufferKey);
     this.pruneEntries([bufferKey]);
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
@@ -721,11 +705,7 @@ export class SmartBuffer {
   private async emitSurpriseEventSafe(
     params: SurpriseTelemetryQueueEntry,
   ): Promise<void> {
-    const storage = this.storage as StorageManager & {
-      appendBufferSurpriseEvents?: (
-        events: BufferSurpriseEvent[],
-      ) => Promise<number>;
-    };
+    const storage = this.storage;
     if (typeof storage.appendBufferSurpriseEvents !== "function") {
       // Older StorageManager / test double without the telemetry sink.
       // Silently skip — core path is still covered by the log line above.
@@ -874,60 +854,20 @@ export class SmartBuffer {
     bufferKey: string,
     turns: BufferTurn[],
     max = 10,
+    originalTurns?: readonly BufferTurn[],
   ): Promise<void> {
     await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
-      if (!Array.isArray(turns) || turns.length === 0 || max <= 0) {
-        delete entry.retainedTurns;
-      } else {
-        // Guard `slice(-max)` against `max === 0` (CLAUDE.md gotcha 27):
-        // `slice(-0)` equals `slice(0)` and would return ALL entries. We
-        // already early-return above when max <= 0.
-        const tail = turns.slice(-max);
-        // Copy explicit fields only — never spread an external object into a
-        // plain object because spread preserves any own `__proto__` /
-        // `constructor` keys that may have arrived via JSON deserialization
-        // of untrusted input (CodeQL js/prototype-polluting-assignment).
-        entry.retainedTurns = tail.map<BufferTurn>((t) => {
-          const copy: BufferTurn = {
-            role: t.role,
-            content: typeof t.content === "string" ? t.content : "",
-            timestamp:
-              typeof t.timestamp === "string"
-                ? t.timestamp
-                : new Date().toISOString(),
-          };
-          if (typeof t.sessionKey === "string") copy.sessionKey = t.sessionKey;
-          if (typeof t.sessionOwnerPrincipal === "string") {
-            copy.sessionOwnerPrincipal = t.sessionOwnerPrincipal;
-          }
-          if (typeof t.logicalSessionKey === "string") {
-            copy.logicalSessionKey = t.logicalSessionKey;
-          }
-          if (
-            t.providerThreadId === null ||
-            typeof t.providerThreadId === "string"
-          ) {
-            copy.providerThreadId = t.providerThreadId;
-          }
-          if (typeof t.turnFingerprint === "string") {
-            copy.turnFingerprint = t.turnFingerprint;
-          }
-          if (typeof t.persistProcessedFingerprint === "boolean") {
-            copy.persistProcessedFingerprint = t.persistProcessedFingerprint;
-          }
-          if (typeof t.sourceConnector === "string") copy.sourceConnector = t.sourceConnector;
-          if (t.originRole === "user" || t.originRole === "assistant" || t.originRole === "tool") {
-            copy.originRole = t.originRole;
-          }
-          return copy;
-        });
-      }
+      const retained = selectRetainedDeferredTurns(
+        entry.retainedTurns ?? [], turns, max, originalTurns,
+      );
+      if (retained.length > 0) entry.retainedTurns = retained;
+      else delete entry.retainedTurns;
+      this.persistence.markDirty(bufferKey);
       await this.saveUnlocked();
     });
   }
-
 
   /**
    * Return the current retention window (issue #562, PR 2). Primarily for
@@ -952,6 +892,11 @@ export class SmartBuffer {
     const normalizedOwnerPrincipal =
       typeof ownerPrincipal === "string" && ownerPrincipal.trim().length > 0
         ? ownerPrincipal.trim()
+        : undefined;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces === true;
+    const normalizedCleanupNamespace =
+      namespacesEnabled && options.writeNamespaceOverride !== undefined && options.writeNamespaceOverride.length > 0
+        ? options.writeNamespaceOverride
         : undefined;
     const assertLifecycle = (): void => {
       throwIfAborted(options.abortSignal, "extraction force-flush aborted");
@@ -978,8 +923,39 @@ export class SmartBuffer {
         return;
       }
       let changed = false;
+      const matchesCleanupScope = (turn: BufferTurn): boolean => {
+        // Legacy unpinned turns keep their existing cleanup semantics.
+        if (
+          turn.writeNamespaceOverride !== undefined &&
+          normalizedCleanupNamespace !== undefined &&
+          turn.writeNamespaceOverride !== normalizedCleanupNamespace
+        ) {
+          return false;
+        }
+        // Equal write namespaces can still belong to different project bindings.
+        if (options.scopeProfileWritePlan && hasPinnedCaptureScope(turn)) {
+          if (
+            scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== scopeProfilePlanIdentity(options.scopeProfileWritePlan) &&
+            !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)
+          ) {
+            return false;
+          }
+          const ctx = options.codingContext;
+          if (
+            ctx && turn.codingContext &&
+            (turn.codingContext.projectId !== ctx.projectId ||
+              turn.codingContext.rootPath !== ctx.rootPath ||
+              turn.codingContext.branch !== ctx.branch ||
+              turn.codingContext.defaultBranch !== ctx.defaultBranch)
+          ) {
+            return false;
+          }
+        }
+        return true;
+      };
       const belongsToOwner = (turn: BufferTurn): boolean => {
         if (turn.sessionKey !== sessionKey) return false;
+        if (!matchesCleanupScope(turn)) return false;
         if (normalizedOwnerPrincipal === undefined) return true;
         if (turn.sessionOwnerPrincipal === normalizedOwnerPrincipal) return true;
         return (
@@ -996,6 +972,7 @@ export class SmartBuffer {
         if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
         else delete entry.retainedTurns;
         if (bufferKey === "default") this.state.turns = entry.turns;
+        this.persistence.markDirty(bufferKey);
       }
       if (changed || hadPendingSave) {
         assertLifecycle();
@@ -1106,8 +1083,66 @@ export class SmartBuffer {
         this.state.lastExtractionAt = entry.lastExtractionAt;
         this.state.extractionCount = entry.extractionCount;
       }
+      this.persistence.markDirty(bufferKey);
       this.pruneEntries([bufferKey]);
       await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
+    });
+  }
+
+  /**
+   * Remove an extraction-window chunk from the buffer WITHOUT recording an
+   * extraction (trigger-drain drop path). Used when a chunk fails extraction
+   * repeatedly and must be dropped so the session can drain; the caller is
+   * responsible for the side-file copy and logging. Returns the number of
+   * live turns dropped; 0 when the turns no longer match. `allowNonPrefix`
+   * matches by identity, like `clearAfterExtraction`, for callers (native
+   * groups) whose chunk can sit behind a pinned capture.
+   */
+  async dropExtractionChunk(
+    bufferKey = "default",
+    turns: readonly BufferTurn[],
+    options?: { allowNonPrefix?: boolean },
+  ): Promise<number> {
+    return await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const entry = this.entryFor(bufferKey);
+      // A window's head can be deferred-retained turns (retainDeferredTurns): take those out of the chunk first.
+      const retained = [...(entry.retainedTurns ?? [])];
+      const liveTurns: BufferTurn[] = [];
+      for (const turn of turns) {
+        const at = retained.findIndex((kept) => bufferTurnsEqual(kept, turn));
+        if (at >= 0) retained.splice(at, 1);
+        else liveTurns.push(turn);
+      }
+      const retainedDropped = (entry.retainedTurns?.length ?? 0) - retained.length;
+      let remaining = entry.turns;
+      if (options?.allowNonPrefix === true) {
+        remaining = [...entry.turns];
+        for (const turn of liveTurns) {
+          const at = remaining.findIndex((live) => bufferTurnsEqual(live, turn));
+          if (at >= 0) remaining.splice(at, 1);
+        }
+      } else {
+        remaining = entry.turns.slice(matchingQueuedExtractionPrefixLength(entry.turns, liveTurns));
+      }
+      const matchedCount = entry.turns.length - remaining.length + retainedDropped;
+      if (matchedCount === 0) return 0;
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      entry.turns = remaining;
+      if (retainedDropped > 0) {
+        if (retained.length > 0) entry.retainedTurns = retained;
+        else delete entry.retainedTurns;
+      }
+      if (bufferKey === "default") {
+        this.state.turns = entry.turns;
+      }
+      this.persistence.markDirty(bufferKey);
+      this.pruneEntries([bufferKey]);
+      await this.saveNowRetainingPendingOnFailure("dropExtractionChunk");
+      return matchedCount;
     });
   }
 

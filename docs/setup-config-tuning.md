@@ -365,6 +365,8 @@ Behavior:
 
 Keep semantic cross-signals off until deterministic shared-context behavior is stable and load-tested.
 
+When `sharedContextDir` is omitted, `feedback/inbox.jsonl` is stored at `memoryDir/shared-context/feedback/inbox.jsonl` so it replicates with the memory store. Priorities and outputs still use `workspaceDir/shared-context`. Set `sharedContextDir` to keep the inbox in that directory.
+
 **Budget interaction:** Shared context is assembled at position 1 in the recall pipeline (before profile). With the default 8,000 char budget, 6,000 chars of shared context leaves very little room for profile and memories. If you use shared context, ensure `recallBudgetChars` is set high enough to accommodate all sections. A budget of 64,000+ is recommended when shared context is enabled alongside a full profile.
 
 ## 5) v5.0 Compounding
@@ -399,8 +401,11 @@ Use isolated `agentTurn` jobs and `delivery.mode: "none"`:
 - action: call tool `shared_context_curate_daily`
 
 4. Weekly compounding synthesis:
-- schedule: `35 21 * * 0`
-- action: call tool `compounding_weekly_synthesize`
+- Standalone daemon: set `compoundingEnabled` and `compoundingWeeklyCronEnabled`. The daemon writes the ISO week that just ended, skips a week only when `compounding/weekly/.scheduler/<YYYY-Www>.done` exists, and catches up that week after a restart. Calibration runs as part of `synthesizeWeekly` when `calibrationEnabled` is true.
+- OpenClaw delegate mode does not register `compounding_weekly_synthesize`, so a gateway cron cannot call it. Use the daemon flags above.
+- Embedded hosts that still expose the tool can keep an isolated agent turn instead of the daemon flag:
+  - schedule: `35 21 * * 0`
+  - action: call tool `compounding_weekly_synthesize`
 
 ## 7) Tuning Checklist
 
@@ -456,6 +461,9 @@ Reliability / load:
   - `extractionParseEmptyMaxAttempts: 3` — after 3 unparseable responses a fingerprint is long-parked (never marked processed).
   - `extractionBreakerFailureThreshold: 5` — consecutive provider failures before the process-level breaker opens and short-circuits extraction for all sessions. A 401/403/"no models configured" opens it immediately.
   - `extractionBreakerCooldownMs: 300000` / `extractionBreakerAuthCooldownMs: 1800000` — breaker open cooldown for transient (5m) vs auth/config (30m) failures. After cooldown a half-open probe closes the breaker on one success and clears retry state. Watch `openclaw remnic doctor` (the `extraction-resilience` check) for a breaker stuck `open` or `auth_config` errors.
+- Trigger-drain stall protection (oversized buffer windows):
+  - Windows that outgrow the extraction model's input budget (`localLlmMaxContext` when set, otherwise the learned context window) are drained chunk by chunk: each successful run clears its chunk, so a long session shrinks across observes instead of failing whole on every trigger.
+  - `extractionChunkDropAfterFailures: 5` — after this many consecutive failed attempts on the same head chunk, the chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall the buffer forever. Breaker-open and backoff retention never count toward the threshold.
 
 Latency:
 - Increase `conversationRecallTimeoutMs` only if your QMD host is consistently fast.

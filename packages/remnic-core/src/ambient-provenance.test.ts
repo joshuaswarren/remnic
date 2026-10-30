@@ -11,6 +11,8 @@ import {
 import { parseConfig } from "./config.js";
 import { bufferTurnsEqual, copyBufferTurn } from "./buffer-turn-helpers.js";
 import { ExtractionEngine } from "./extraction.js";
+import { extractionProviderJsonSchema } from "./extraction-span-wire.js";
+import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import { SUMMARY_SYSTEM_PROMPT } from "./meetings/summary-extractor.js";
 import { emptySpeakerRegistry } from "./wearables/speakers.js";
 import { buildExtractionTurns } from "./wearables/memory-gen.js";
@@ -77,20 +79,26 @@ const MODEL_REGISTRY_FIXTURE = {
 };
 
 /** Run the local-LLM path, returning the prompt the model saw + the result. */
-async function runLocal(turns: BufferTurn[]): Promise<{ prompt: string; result: ExtractionResult }> {
+async function runLocal(turns: BufferTurn[]): Promise<{
+  prompt: string;
+  result: ExtractionResult;
+  options: LocalLlmChatCompletionOptions;
+}> {
   const engine = new ExtractionEngine(
     parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }),
   );
   let prompt = "";
+  let options: LocalLlmChatCompletionOptions = {};
   const localLlm = {
-    async chatCompletion(messages: ChatMessage[], _options: { signal?: AbortSignal } = {}) {
+    async chatCompletion(messages: ChatMessage[], seen: LocalLlmChatCompletionOptions = {}) {
       prompt = messages[1]?.content ?? "";
+      options = seen;
       return { content: JSON.stringify(HIGH_IMPACT_EXTRACTION) };
     },
   };
   assert.equal(Reflect.set(engine, "localLlm", localLlm), true);
   assert.equal(Reflect.set(engine, "modelRegistry", MODEL_REGISTRY_FIXTURE), true);
-  return { result: await engine.extract(turns), prompt };
+  return { result: await engine.extract(turns), prompt, options };
 }
 
 /** Run the gateway-fallback path. */
@@ -168,6 +176,16 @@ for (const [name, run] of PATHS) {
     assert.equal(result.facts[0]?.confidence, 0.91);
   });
 }
+
+test("local extraction supplies the provider JSON schema as responseFormat with an object root", async () => {
+  const { options } = await runLocal([TYPED_TURN]);
+  const schema = extractionProviderJsonSchema("off");
+  assert.deepEqual(options.responseFormat, {
+    type: "json_schema",
+    json_schema: { name: "extraction_result", strict: false, schema },
+  });
+  assert.equal(schema.type, "object");
+});
 
 test("an ambient turn marked context-only does not trigger the ambient prompt", async () => {
   const { prompt } = await runGateway([
