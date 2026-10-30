@@ -153,3 +153,33 @@ test("a chunk that spans retained and live turns drops both", async () => {
     assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["live two"]);
   });
 });
+
+test("deferred retention across chunks of one window stays within one retention window (Codex P2)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const window = Array.from({ length: 30 }, (_, i) => makeTurn("s1", `turn ${i}`));
+    for (const turn of window) await buffer.addTurn("s1", turn);
+    // Three chunks of ten, each deferring all of its turns; every run names the whole window as the processed snapshot.
+    for (let chunk = 0; chunk < 3; chunk++) {
+      await buffer.retainDeferredTurns("s1", window.slice(chunk * 10, chunk * 10 + 10), 10, window);
+    }
+    assert.equal(buffer.getRetainedDeferredTurns("s1").length, 10, "the latest chunk's retention replaces the earlier ones");
+    assert.equal((await restart()).getRetainedDeferredTurns("s1").length, 10);
+  });
+});
+
+test("a chunk holding only some retained turns drops those and keeps the rest of the retention slot (Phosphene)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const retained = [makeTurn("s1", "retained one"), makeTurn("s1", "retained two"), makeTurn("s1", "retained three")];
+    await buffer.retainDeferredTurns("s1", retained);
+    await buffer.addTurn("s1", makeTurn("s1", "live turn"));
+    await buffer.flushPendingSave();
+
+    const dropped = await buffer.dropExtractionChunk("s1", retained.slice(0, 2));
+
+    assert.equal(dropped, 2);
+    assert.deepEqual(buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["retained three"]);
+    const reloaded = await restart();
+    assert.deepEqual(reloaded.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["retained three"]);
+    assert.deepEqual(reloaded.getTurns("s1").map((turn) => turn.content), ["retained three", "live turn"]);
+  });
+});

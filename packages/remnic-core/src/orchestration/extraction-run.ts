@@ -440,7 +440,7 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
-      clearMatchingTurns?: boolean;
+      clearMatchingTurns?: boolean; retentionWindow?: readonly BufferTurn[];
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
@@ -1109,7 +1109,7 @@ export class ExtractionRunCoordinator {
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
-        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, turns),
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, options.retentionWindow ?? turns),
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });

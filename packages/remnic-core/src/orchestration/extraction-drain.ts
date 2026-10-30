@@ -139,7 +139,8 @@ export class ExtractionDrain {
     }
     // The window qualified as a whole; its chunks must not be re-judged one by
     // one (an assistant-only or short chunk would be cleared unextracted).
-    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
+    // retentionWindow: a chunk's deferred retention replaces the whole window's slot, so chunks do not pile retained turns up.
+    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true, retentionWindow: turns };
 
     const bufferKey = runOptions.bufferKey;
     // A native group clears its turns by identity (a pinned capture can sit in front); a drop must find them the same way.
