@@ -8,6 +8,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
+import { isPreemptedExtraction } from "../packages/remnic-core/src/abort-error.js";
 import type { ExtractionRunCoordinator, ExtractionRunResult } from "../packages/remnic-core/src/orchestration/extraction-run.js";
 import type { BufferTurn } from "@remnic/core/types";
 
@@ -20,6 +21,7 @@ interface DrainFixture {
   sideFiles: { bufferKey: string; reason: string; turns: BufferTurn[] }[];
   settled: { error?: unknown; result?: unknown }[];
   tasks: Promise<void>[];
+  preemptRegistrations: Array<() => void>;
 }
 
 type FakeRunResult = {
@@ -53,12 +55,16 @@ function drainFixture(options: {
   const settled: DrainFixture["settled"] = [];
   const bufferTurns = options.bufferTurns ?? [];
   const tasks: Promise<void>[] = [];
+  const preemptRegistrations: Array<() => void> = [];
   const fake = {
     config: {
       extractionChunkDropAfterFailures: options.dropAfterFailures,
       extractionMinUserTurns: options.minUserTurns ?? 1,
     },
     extractionQueueCoordinator: {
+      beginPreemptable: (abort: () => void) => {
+        preemptRegistrations.push(abort);
+      },
       enqueue: (fn: () => Promise<void>) => {
         const task = fn().catch(() => {});
         tasks.push(task);
@@ -108,12 +114,13 @@ function drainFixture(options: {
   // SAFETY: the drain path exercises only these deps members; the rest of
   // TurnIngestionDeps is unused on this surface.
   const coordinator = new TurnIngestionCoordinator(fake as any);
-  return { coordinator, runs, dropped, sideFiles, settled, tasks };
+  return { coordinator, runs, dropped, sideFiles, settled, tasks, preemptRegistrations };
 }
 
-async function drain(fixture: DrainFixture, turns: BufferTurn[]): Promise<void> {
+async function drain(fixture: DrainFixture, turns: BufferTurn[], extra: { preemptable?: boolean } = {}): Promise<void> {
   const queued = fixture.coordinator.queueBufferedExtraction(turns, "trigger_mode", {
     bufferKey: "sess-1",
+    ...extra,
     onTaskSettled: (error, result) => fixture.settled.push({ error, result }),
   });
   await queued;
@@ -433,4 +440,55 @@ test("a successful empty extraction drains and does not carry a failure count fo
 
   assert.equal(fixture.runs.length, 2, "an empty success drains; the next chunk is attempted");
   assert.equal(fixture.dropped.length, 0, "one real failure after an empty success is not yet a drop");
+});
+
+test("a failure count belongs to its chunk: unrelated content never inherits it (codex P2)", async () => {
+  // The old per-key counter survived a force flush that cleared the failing chunk, so the NEXT window's first chunk was
+  // dropped on its first failed attempt. Counts are now bound to the chunk's content.
+  const first = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const second = [makeTurn("c".repeat(60)), makeTurn("d".repeat(60))];
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true };
+  const fixture = drainFixture({
+    runResults: [fail, fail, fail, { status: "completed", persistedCount: 1, durableOutputCount: 1 }],
+    budget: 100,
+    dropAfterFailures: 2,
+  });
+
+  await drain(fixture, first); // chunk "a" fails once
+  await drain(fixture, second); // different head chunk "c": its own count starts at zero
+  assert.equal(fixture.dropped.length, 0, "chunk c must not be dropped on its first failure");
+  assert.equal(fixture.sideFiles.length, 0);
+
+  await drain(fixture, second); // chunk "c" fails a second time in a row: now it is dropped
+  assert.equal(fixture.dropped.length, 1);
+  assert.equal(fixture.dropped[0]!.turns[0]!.content, "c".repeat(60));
+});
+
+test("later chunks register preemption again so a fail-closed flush can abort them (codex P2)", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60)), makeTurn("c".repeat(60))];
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [ok, ok, ok], budget: 100, dropAfterFailures: 3 });
+
+  await drain(fixture, turns, { preemptable: true });
+
+  assert.equal(fixture.runs.length, 3);
+  assert.equal(fixture.preemptRegistrations.length, 2, "one registration before each chunk after the first");
+  const firstSignal = fixture.runs[0]!.options.abortSignal;
+  const laterSignal = fixture.runs[1]!.options.abortSignal;
+  assert.ok(laterSignal && laterSignal !== firstSignal, "a later chunk gets its own preempt-aware signal");
+  assert.equal(laterSignal.aborted, false);
+  fixture.preemptRegistrations[0]!();
+  assert.equal(laterSignal.aborted, true, "the registered callback aborts that chunk's signal");
+  assert.ok(isPreemptedExtraction(laterSignal.reason), "with the preempted-extraction reason the queue already understands");
+});
+
+test("non-preemptable drains register no preemption between chunks", async () => {
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [ok, ok], budget: 100, dropAfterFailures: 3 });
+
+  await drain(fixture, turns);
+
+  assert.equal(fixture.runs.length, 2);
+  assert.equal(fixture.preemptRegistrations.length, 0);
 });

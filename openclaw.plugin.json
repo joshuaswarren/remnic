@@ -3746,7 +3746,7 @@
         "type": "number",
         "default": 16777216,
         "minimum": 0,
-        "description": "Size (bytes) at which a namespace-catalog touch auto-compacts <memoryDir>/state/namespaces.jsonl. The append-only log is folded (last-record-wins; every namespace row preserved) and atomically rewritten once it exceeds this size. Default 16777216 (16 MB); 0 disables auto-compaction."
+        "description": "Size (bytes) at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl: the log is folded (last record wins, every namespace row kept) and rewritten atomically. Default 16777216 (16 MB); 0 disables."
       },
       "namespacesCatalogReadTouchCoalesceMs": {
         "type": "number",
@@ -5073,7 +5073,7 @@
       "recallStandingBlock": {
         "type": "boolean",
         "default": false,
-        "description": "Prefix-cache-stable standing memory block (issue #2971): a byte-stable index over pinned/high-value memories placed before per-turn recall so the LLM prefix cache survives across turns. The builder refuses clock/date/counter content at build time. Default false keeps recall output byte-identical; recall-path injection lands in a later wiring slice."
+        "description": "Standing memory block (#2971): a byte-stable index of pinned memories placed before per-turn recall to keep the prefix cache valid. No clock/date/counter content. Default false keeps recall byte-identical; wiring lands later."
       },
       "standingBlockFreshDays": {
         "type": "number",
@@ -5095,7 +5095,7 @@
       "recallRecognitionTier": {
         "type": "boolean",
         "default": false,
-        "description": "Full-index recognition tier (issue #2975): small namespaces recall by recognizing against the whole compact index instead of vector search; absent or oversized indexes fall back to vector search deterministically. Default false keeps recall byte-identical; recall-path wiring lands in a later slice."
+        "description": "Recognition tier (#2975): small namespaces recall by matching the whole compact index instead of vector search; absent or oversized indexes fall back to vector search. Default false keeps recall byte-identical."
       },
       "recognitionIndexMaxEntries": {
         "type": "integer",
@@ -5188,7 +5188,7 @@
           "auto"
         ],
         "default": "manual",
-        "description": "Disclosure auto-escalation policy. When 'auto', recalls without an explicit caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' preserves pre-#677 behavior."
+        "description": "Disclosure auto-escalation. When 'auto', recalls without a caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' keeps pre-#677 behavior."
       },
       "recallDisclosureEscalationThreshold": {
         "type": "number",
@@ -5423,7 +5423,7 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain - any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "Model for LLM recall planning (recallPlannerLlmEnabled): a 'provider/model' string resolved through the gateway providers/chain; any configured provider works. Tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",
@@ -6288,7 +6288,7 @@
       "tombstonesEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the tombstone non-resurrection invariant. When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active - visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
+        "description": "Master gate for tombstone non-resurrection. When true, a fact matching an active tombstone at the storage chokepoint is stored as pending_review + blockedBy, never silently dropped. Off restores the pre-feature behavior."
       },
       "tombstonesSemanticMatch": {
         "type": "boolean",

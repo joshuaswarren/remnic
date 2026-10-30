@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
 import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
 import { isAbortError, raceAbort } from "./abort-error.js";
@@ -143,10 +143,10 @@ import {
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
+import { saveDroppedExtractionChunk as saveDroppedChunk } from "./storage/dropped-extraction-chunk.js";
 import type {
   AccessTrackingEntry,
   BufferState,
-  BufferTurn,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
   ContinuityIncidentOpenInput,
@@ -4798,7 +4798,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return results.filter((filePath): filePath is string => filePath !== null);
   }
 
-
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
     const factPaths: string[] = [];
@@ -5523,37 +5522,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async saveBuffer(state: BufferState): Promise<void> {
     await this.ensureDirectories();
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
+    await this.writeStorageSecureFile(path.join(this.stateDir, "buffer.json"), JSON.stringify(state, null, 2));
   }
 
-  /**
-   * Persist a copy of extraction-buffer turns that are being DROPPED after
-   * repeated extraction failures (trigger-drain drop path), so a destructive
-   * drop never loses content silently. Written under `<stateDir>/dropped/`
-   * through the secure-file writer so encrypted stores keep it encrypted
-   * (secure-fs encrypts the whole `state/dropped/` prefix). Returns the file
-   * path written.
-   */
-  async saveDroppedExtractionChunk(
-    bufferKey: string,
-    reason: string,
-    turns: readonly BufferTurn[],
-  ): Promise<string> {
-    const droppedDir = path.join(this.stateDir, "dropped");
-    await mkdir(droppedDir, { recursive: true });
-    const safeKey = bufferKey.replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 80) || "default";
-    // The random suffix keeps copies written in the same millisecond (or for keys
-    // that truncate to the same name) from overwriting each other.
-    const filePath = path.join(droppedDir, `${Date.now()}-${randomUUID().slice(0, 8)}-${safeKey}.json`);
-    const payload = {
-      bufferKey,
-      reason,
-      droppedAt: new Date().toISOString(),
-      turns,
-    };
-    await this.writeStorageSecureFile(filePath, JSON.stringify(payload, null, 2));
-    return filePath;
+  saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly import("./types.js").BufferTurn[]): Promise<string> { // storage/dropped-extraction-chunk.ts
+    return saveDroppedChunk(this.stateDir, (file, content) => this.writeStorageSecureFile(file, content), bufferKey, reason, turns);
   }
 
   async loadMeta(): Promise<MetaState> {
@@ -5599,8 +5572,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
-    const metaPath = path.join(this.stateDir, "meta.json");
-    await this.writeStorageSecureFile(metaPath, JSON.stringify(state, null, 2));
+    await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {
@@ -7243,10 +7215,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveTopics(topics: TopicScore[]): Promise<void> {
     const metaPath = path.join(this.stateDir, "topics.json");
     await mkdir(this.stateDir, { recursive: true });
-    await this.writeStorageSecureFile(
-      metaPath,
-      JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2)
-    );
+    await this.writeStorageSecureFile(metaPath, JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2));
     log.debug(`saved ${topics.length} topic scores`);
   }
 
