@@ -2453,6 +2453,11 @@
         "default": false,
         "description": "Emit structured telemetry rows to state/observation-ledger/extraction-judge-verdicts.jsonl on every judge verdict. Off by default; enable to collect defer-rate and latency metrics for operator dashboards."
       },
+      "extractionJudgeTimeoutMs": {
+        "type": "number",
+        "default": 20000,
+        "minimum": 1
+      },
       "extractionMaxEntitiesPerRun": {
         "type": "number",
         "default": 6,
