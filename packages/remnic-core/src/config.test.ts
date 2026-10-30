@@ -1060,6 +1060,22 @@ test("parseConfig localLlmTimeoutMs clamps invalid values to a positive timeout"
   assert.equal(parseConfig({ localLlmTimeoutMs: Number.NaN }).localLlmTimeoutMs, 180_000);
 });
 
+test("parseConfig extractionJudgeTimeoutMs defaults to 20000 — compact verdict measures 2.1-2.5 s on a small fast judge model", () => {
+  assert.equal(parseConfig({}).extractionJudgeTimeoutMs, 20_000);
+});
+
+test("parseConfig extractionJudgeTimeoutMs accepts numbers and CLI-style numeric strings", () => {
+  assert.equal(parseConfig({ extractionJudgeTimeoutMs: 45_000 }).extractionJudgeTimeoutMs, 45_000);
+  assert.equal(parseConfig({ extractionJudgeTimeoutMs: "90000" }).extractionJudgeTimeoutMs, 90_000);
+});
+
+test("parseConfig extractionJudgeTimeoutMs falls back to the default on unusable values and caps the top", () => {
+  for (const value of [0, -1, Number.NaN, "abc"]) {
+    assert.equal(parseConfig({ extractionJudgeTimeoutMs: value }).extractionJudgeTimeoutMs, 20_000);
+  }
+  assert.equal(parseConfig({ extractionJudgeTimeoutMs: 10_000_000 }).extractionJudgeTimeoutMs, 3_600_000);
+});
+
 test("parseConfig validates localLlmMaxContext as a usable context window", () => {
   assert.equal(parseConfig({ localLlmMaxContext: 4096 }).localLlmMaxContext, 4096);
   assert.equal(parseConfig({ localLlmMaxContext: "8192" }).localLlmMaxContext, 8192);
