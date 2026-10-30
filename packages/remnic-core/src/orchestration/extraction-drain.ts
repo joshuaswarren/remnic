@@ -191,6 +191,10 @@ export class ExtractionDrain {
       }
       // Provider breaker/backoff retention: keep everything for retry.
       if (verdict === "deferred") return mergeDrainResults(aggregate, result);
+      // An outage or a bad key is not the chunk's fault: keep the chunk and do not count toward dropping it.
+      if (result.failureClass === "provider_retryable" || result.failureClass === "auth_config") {
+        return mergeDrainResults(aggregate, result);
+      }
       failures += 1;
       if (failures >= dropAfter) {
         if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result))) {

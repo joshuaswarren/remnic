@@ -30,6 +30,7 @@ type FakeRunResult = {
   retainedBuffer?: boolean;
   persistedCount?: number;
   durableOutputCount?: number;
+  failureClass?: "provider_retryable" | "parse_empty" | "auth_config";
   /** Block until the run's abort signal fires, then throw a generic AbortError (no reason). */
   waitForAbort?: boolean;
 };
@@ -120,6 +121,7 @@ function drainFixture(options: {
       };
       if (next.reason !== undefined) result.reason = next.reason;
       if (next.retainedBuffer !== undefined) result.retainedBuffer = next.retainedBuffer;
+      if (next.failureClass !== undefined) result.failureClass = next.failureClass;
       return result;
     },
   };
@@ -578,4 +580,34 @@ test("a resumed tail that fits in one chunk still counts failures and is dropped
   assert.equal(fixture.runs.length, 3);
   assert.equal(fixture.sideFiles.length, 1, "the second failure reaches the threshold: recovery copy first");
   assert.equal(fixture.dropped.length, 1, "then the stuck tail is dropped instead of retrying forever");
+});
+
+test("a provider outage never counts toward dropping a chunk (Phosphene)", async () => {
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const outage: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "provider_retryable" };
+  // Six attempts against a drop threshold of five: the user chunk drains once, the assistant chunk meets the outage every time.
+  const fixture = drainFixture({ runResults: [ok, outage, outage, outage, outage, outage, outage], budget: 100, dropAfterFailures: 5 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+  for (let attempt = 0; attempt < 5; attempt++) await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.runs.length, 7, "every attempt ran");
+  assert.equal(fixture.dropped.length, 0, "nothing was dropped during the outage");
+  assert.equal(fixture.sideFiles.length, 0, "and no recovery copy was needed");
+});
+
+test("an auth or config failure is not the chunk's fault either", async () => {
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const bad: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "auth_config" };
+  const fixture = drainFixture({ runResults: [ok, bad, bad], budget: 100, dropAfterFailures: 2 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+  await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.dropped.length, 0);
+});
+
+test("a parse failure still counts toward dropping the chunk", async () => {
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const parse: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "parse_empty" };
+  const fixture = drainFixture({ runResults: [ok, parse, parse], budget: 100, dropAfterFailures: 2 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+  await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.dropped.length, 1);
 });

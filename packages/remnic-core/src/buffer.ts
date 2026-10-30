@@ -1111,6 +1111,7 @@ export class SmartBuffer {
       if (bufferKey === "default") {
         this.state.turns = entry.turns;
       }
+      this.persistence.markDirty(bufferKey);
       this.pruneEntries([bufferKey]);
       await this.saveNowRetainingPendingOnFailure("dropExtractionChunk");
       return matchedCount;

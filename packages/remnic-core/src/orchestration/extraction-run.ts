@@ -38,7 +38,7 @@ export interface ExtractionRunResult {
   persistedCount: number;
   durableOutputCount: number;
   postPersistMetadataFailed?: boolean;
-  retainedBuffer?: boolean; // the run left the window in the buffer for a retry (a recorded failure)
+  retainedBuffer?: boolean; failureClass?: ExtractionFailureClass; // retained: the run left the window in the buffer for a retry (a recorded failure) of this class
 }
 
 export class ExtractionDeadlineError extends Error {
@@ -1045,7 +1045,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return emptyExtractionResult(recordedRetryFailure);
+      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;

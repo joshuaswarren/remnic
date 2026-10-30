@@ -13,9 +13,9 @@ export function combineExtractionAbortSignals(
 
 
 /** Result of a run whose extraction found nothing durable; `retained` marks a recorded failure that left the window in the buffer. */
-export function emptyExtractionResult(retained: boolean): ExtractionRunResult {
+export function emptyExtractionResult(retained: boolean, failureClass?: ExtractionFailureClass): ExtractionRunResult {
   const result: ExtractionRunResult = { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
-  if (retained) result.retainedBuffer = true;
+  if (retained) Object.assign(result, { retainedBuffer: true, failureClass: failureClass ?? "provider_retryable" }); // same default as the retry bookkeeping
   return result;
 }
 
