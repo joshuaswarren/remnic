@@ -27,7 +27,7 @@ import { inferIntentFromText, intentCompatibilityScore } from "../intent.js";
 import { log } from "../logger.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { NegativeExampleStore } from "../negative.js";
-import { qmdCollectionPathParts } from "./qmd-result-resolver.js";
+import { normalizeFlatQmdResults, qmdCollectionPathParts } from "./qmd-result-resolver.js";
 import type { RecallRerankCoordinator, RecallResultPartitionSink } from "./recall-rerank-coordinator.js";
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./graph-recall-coordinator.js";
 import { RelevanceStore } from "../relevance.js";
@@ -394,7 +394,7 @@ export class RecallSearchPipelineCoordinator {
         break;
       }
 
-      const primaryResults = options.collection
+      let primaryResults = options.collection
         ? options.abortSignal
           ? await this.deps.qmd.search(
               prompt,
@@ -426,6 +426,7 @@ export class RecallSearchPipelineCoordinator {
               onDegradation: options.onDegradation,
             },
           });
+      primaryResults = normalizeFlatQmdResults(primaryResults, this.deps.config, options.collection);
       lastPrimaryResultCount = primaryResults.length;
       lastHybridResultCount = 0;
       lastHybridTopUpUsed = false;
@@ -452,7 +453,7 @@ export class RecallSearchPipelineCoordinator {
           // uniform across primary + top-up (gotcha #39). Issue #1335 (codex review #1422).
           lastHybridTopUpSkippedReason = "lex_strategy";
         } else {
-          const hybridResults = options.collection
+          let hybridResults = options.collection
             ? await this.deps.qmd.hybridSearch(
                 prompt,
                 options.collection,
@@ -474,6 +475,7 @@ export class RecallSearchPipelineCoordinator {
                   onDegradation: options.onDegradation,
                 },
               });
+          hybridResults = normalizeFlatQmdResults(hybridResults, this.deps.config, options.collection);
           lastHybridResultCount = hybridResults.length;
           lastHybridTopUpUsed = hybridResults.length > 0;
           if (hybridResults.length > 0) {
@@ -740,9 +742,7 @@ export class RecallSearchPipelineCoordinator {
         // limps home later cannot mutate a recorded recall's collector.
         coldQmdObserverActive = false;
         if (longTerm.length > 0) {
-          log.debug(
-            `cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`,
-          );
+          log.debug(`cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`);
         }
       }
     }
@@ -940,9 +940,7 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (caps.rerank && this.deps.config.rerankProvider === "cloud") {
-      log.debug(
-        "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
-      );
+      log.debug("rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank");
     }
 
     if (caps.recallTrustScore && results.length > 0) {
@@ -1149,6 +1147,9 @@ export class RecallSearchPipelineCoordinator {
       : null;
     const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
       ...r,
+      // Render loaded flat memories, not QMD's front-matter/chunk preview (#3194).
+      snippet: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? memory.content : r.snippet,
+      line: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? undefined : r.line,
       sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
       origin: memory ? memory.frontmatter.origin : undefined,
       // #1952: an active state view carries the chain fields the inject
@@ -1358,9 +1359,7 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (connectorPartitionFilteredCount > 0) {
-      log.debug(
-        `connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`,
-      );
+      log.debug(`connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`);
     }
     if (supportPassportFilteredCount > 0) {
       log.debug(

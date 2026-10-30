@@ -26,12 +26,13 @@
  * RecallRerankCoordinator / ConversationIndexCoordinator accessor pattern.
  */
 
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
 import { namespaceIdentityFromToken } from "../namespaces/identity.js";
-import { normalizeQmdResultPath } from "../namespaces/search.js";
+import { normalizeQmdResultPath, resolveNamespaceResultPath } from "../namespaces/search.js";
 import { SecureStoreLockedError } from "../secure-store/index.js";
 import { isPathInsideStorageRoot } from "../storage-paths.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
@@ -134,6 +135,30 @@ export function qmdResultPathCandidates(storageDir: string, resultPath: string):
   }
 
   return [...candidates];
+}
+
+/** Canonicalize flat hot-memory identities before merging with native hits (#3194).
+ * This is a path-only map: no candidates, collections or namespace scopes are removed.
+ * Cold/explicit foreign collections keep their existing owner-resolution path.
+ */
+export function normalizeFlatQmdResults(
+  results: QmdSearchResult[],
+  config: PluginConfig,
+  collection = config.qmdCollection,
+): QmdSearchResult[] {
+  if (!collection || resolveNamespaceCapabilities(config).namespaces || collection !== config.qmdCollection) return results;
+  return results.map((result) => ({
+    ...result,
+    path: withHotFactsPath(config.memoryDir, resolveNamespaceResultPath(config.memoryDir, collection, result.path)),
+  }));
+}
+
+/** A hot-facts collection registered at the facts/ subtree returns date-relative paths (#2111); meet the loaded memory's path. */
+function withHotFactsPath(memoryDir: string, resolved: string): string {
+  const relative = path.relative(path.resolve(memoryDir), resolved).split(path.sep).join("/");
+  if (!/^\d{4}-\d{2}-\d{2}\//.test(relative) || existsSync(resolved)) return resolved;
+  const hot = path.join(path.resolve(memoryDir), "facts", relative);
+  return existsSync(hot) ? hot : resolved;
 }
 
 /**

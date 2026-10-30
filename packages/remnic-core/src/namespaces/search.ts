@@ -700,7 +700,7 @@ export function normalizeQmdResultPath(resultPath: string, collection: string): 
   }
   return value;
 }
-function resolveNamespaceResultPath(
+export function resolveNamespaceResultPath(
   memoryDir: string,
   collection: string,
   resultPath: string,
