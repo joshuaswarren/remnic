@@ -41,11 +41,11 @@ test("a local endpoint that answers with a client error rejects the chunk: parse
   }
 });
 
-test("an outage is not the chunk's fault: unreachable, timeout, 5xx and 429 stay provider_retryable", async () => {
+test("not the chunk's fault: unreachable, timeout, 5xx, 429, auth and a wrong model or route (404) stay provider_retryable", async () => {
   const outage = await extractWith(async () => null);
   assert.equal(outage.extractionFailure, "local_llm_unavailable");
   assert.equal(outage.extractionFailureClass, "provider_retryable");
-  for (const status of [408, 429, 500, 503]) {
+  for (const status of [401, 403, 404, 405, 408, 410, 429, 500, 503]) {
     const result = await extractWith(async (_messages, options) => {
       if (options.failureDiag) options.failureDiag.lastError = withStatus(status);
       return null;

@@ -103,8 +103,8 @@ export interface LocalFailureDiag {
   lastError?: unknown;
 }
 
-/** The HTTP status when the local endpoint is up and refuses this input (4xx except auth, timeout and rate limit); else undefined. */
+/** The HTTP status when the local endpoint answered and refuses this input (400, 413, 422); else undefined. A wrong model name or route (404, 405, 410), auth, timeout and rate limiting are the setup's problem, not the chunk's. */
 export function localRejectionStatus(diag: LocalFailureDiag): number | undefined {
   const status = httpStatusFromError(diag.lastError);
-  return status !== undefined && status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status) ? status : undefined;
+  return status !== undefined && [400, 413, 422].includes(status) ? status : undefined;
 }
