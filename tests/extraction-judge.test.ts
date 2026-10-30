@@ -1085,6 +1085,7 @@ test("an accept clears the deferral snapshot, so a later copy in another batch s
   };
   // SAFETY: the mock implements the one client method the judge calls.
   await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  // SAFETY: same mock.
   await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
   assert.equal([...defers.values()][0], 2, "setup: the counter is at the cap");
 
