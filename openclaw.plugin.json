@@ -3751,13 +3751,13 @@
         "type": "number",
         "default": 16777216,
         "minimum": 0,
-        "description": "Size (bytes) at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl: the log is folded (last record wins, every namespace row kept) and rewritten atomically. Default 16777216 (16 MB); 0 disables."
+        "description": "Size in bytes at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl (last-record-wins, every namespace row preserved, atomic rewrite). Default 16777216; 0 disables."
       },
       "namespacesCatalogReadTouchCoalesceMs": {
         "type": "number",
         "default": 60000,
         "minimum": 0,
-        "description": "Coalescing window (ms) for repeated pure-timestamp read touches on an already-known namespace. Buffered per (namespace, kind) and flushed once per window; observable touches (first sight, provenance/field change) always flush immediately. Default 60000; 0 disables read coalescing."
+        "description": "Coalescing window (ms) for repeated timestamp-only read touches on a known namespace; observable touches always flush at once. Default 60000; 0 disables."
       },
       "namespacesCatalogTouchStateWrites": {
         "type": "boolean",
@@ -4066,7 +4066,7 @@
             "const": false
           }
         ],
-        "description": "Optional OpenAI API key for plugin mode (or set OPENAI_API_KEY env var). Ignored by default gateway-mode installs; in plugin mode, Remnic may send conversation and memory content to OpenAI or the configured OpenAI-compatible endpoint for extraction, consolidation, summarization, and embeddings."
+        "description": "Optional OpenAI API key for plugin mode (or OPENAI_API_KEY). Ignored by default in gateway mode (only the implicit env read is skipped); in plugin mode Remnic may send conversation and memory content to OpenAI or the configured endpoint."
       },
       "openaiBaseUrl": {
         "type": "string",
@@ -5078,7 +5078,7 @@
       "recallStandingBlock": {
         "type": "boolean",
         "default": false,
-        "description": "Standing memory block (#2971): a byte-stable index of pinned memories placed before per-turn recall to keep the prefix cache valid. No clock/date/counter content. Default false keeps recall byte-identical; wiring lands later."
+        "description": "Prefix-cache-stable standing memory block (#2971): a byte-stable index of pinned/high-value memories placed before per-turn recall. Default false keeps recall output byte-identical."
       },
       "standingBlockFreshDays": {
         "type": "number",
@@ -5100,7 +5100,7 @@
       "recallRecognitionTier": {
         "type": "boolean",
         "default": false,
-        "description": "Recognition tier (#2975): small namespaces recall by matching the whole compact index instead of vector search; absent or oversized indexes fall back to vector search. Default false keeps recall byte-identical."
+        "description": "Full-index recognition tier (#2975): small namespaces recall against the whole compact index instead of vector search; absent or oversized indexes fall back to vector search. Default false."
       },
       "recognitionIndexMaxEntries": {
         "type": "integer",
@@ -5193,7 +5193,7 @@
           "auto"
         ],
         "default": "manual",
-        "description": "Disclosure auto-escalation. When 'auto', recalls without a caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' keeps pre-#677 behavior."
+        "description": "Disclosure auto-escalation: when 'auto', recalls without a caller-supplied disclosure escalate from chunk to section below recallDisclosureEscalationThreshold confidence; 'raw' is never auto-selected. Default 'manual'."
       },
       "recallDisclosureEscalationThreshold": {
         "type": "number",
@@ -5428,7 +5428,7 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM recall planning (recallPlannerLlmEnabled): a 'provider/model' string resolved through the gateway providers/chain; any configured provider works. Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "'provider/model' for LLM recall planning (recallPlannerLlmEnabled), resolved through gateway providers; tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",
@@ -6012,7 +6012,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
+            "description": "Stamp `subject` (user|agent) on extracted memories from category defaults, with an optional extractor override. Default off."
           }
         }
       },
@@ -6293,7 +6293,7 @@
       "tombstonesEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for tombstone non-resurrection. When true, a fact matching an active tombstone at the storage chokepoint is stored as pending_review + blockedBy, never silently dropped. Off restores the pre-feature behavior."
+        "description": "Master gate for tombstone non-resurrection: a fact matching an active tombstone is persisted as pending_review + blockedBy, never silently dropped. Off restores pre-feature behavior."
       },
       "tombstonesSemanticMatch": {
         "type": "boolean",
@@ -6687,7 +6687,7 @@
                       "file"
                     ],
                     "default": "memoryDir",
-                    "description": "Where a day's journal body is read. 'memoryDir' uses journal/<date>.md under the memory dir. 'vault' reads vault.readback.journalSection in the vault daily note and requires vault.enabled, a resolvable dailyNotePath, and a non-empty journalSection. Legacy 'file' aliases 'memoryDir' and warns."
+                    "description": "Where a day's journal body is read: 'memoryDir' (journal/<date>.md) or 'vault' (vault.readback.journalSection; needs vault.enabled, dailyNotePath and a non-empty journalSection). Legacy 'file' aliases 'memoryDir' and warns."
                   },
                   "heading": {
                     "type": "string",
