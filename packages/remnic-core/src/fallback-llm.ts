@@ -46,12 +46,7 @@ export {
 export interface FallbackLlmOptions {
   temperature?: number;
   maxTokens?: number;
-  /**
-   * Extra completion tokens added to `max_output_tokens` on the Responses API only. Reasoning tokens count against that
-   * limit, so a compact `maxTokens` can be spent before a reasoning-enabled model writes its answer. Other transports and
-   * callers that leave this unset send exactly `maxTokens`.
-   */
-  reasoningHeadroomTokens?: number;
+  reasoningHeadroomTokens?: number; // Responses API only: extra max_output_tokens for reasoning (they count against it); unset adds none
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Set the Responses API storage policy. Other transports ignore this value. */
@@ -775,14 +770,9 @@ export class FallbackLlmClient {
       model.providerConfig.api === "openai-codex-responses" ||
       model.providerConfig.api === "azure-openai-responses"
     ) {
-      // Reasoning tokens count against max_output_tokens: add the caller's headroom to a given budget (Responses API only).
       const headroom = Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0)) || 0; // `|| 0`: NaN adds nothing
-      return await this.callOpenAIResponses(
-        effectiveConfig,
-        model.modelId,
-        messages,
-        options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom },
-      );
+      return await this.callOpenAIResponses(effectiveConfig, model.modelId, messages,
+        options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom });
     }
 
     // For OpenAI-compatible chat-completions APIs (openai-completions,
