@@ -145,7 +145,14 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   }
 
   return async function remnicPiExtension(pi: PiApi): Promise<void> {
+    // omp (>= 18.x) throws ExtensionRuntimeNotInitializedError from action
+    // methods such as appendEntry while the extension factory is still
+    // loading, which fails the whole extension load. Queue state entries
+    // written during load and flush them once the runtime is live (the first
+    // session_start). COS-487.
+    const loadPhase = createLoadPhaseEntryQueue(pi);
     pi.on("session_start", async (_event, ctx) => {
+      loadPhase.flush();
       const session = snapshotPiContext(ctx, { includeSessionHistory: true });
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
@@ -297,8 +304,64 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 
     registerCommands(pi, client, config, recallTimeoutBreaker);
     if (config.mcpToolsEnabled && config.authToken) {
-      await registerMcpTools(pi, client, config, recallTimeoutBreaker);
+      await registerMcpTools(pi, client, config, recallTimeoutBreaker, loadPhase.append);
     }
+    loadPhase.markLoaded();
+  };
+}
+
+/**
+ * Diagnostic state entry (level + code + message). Covers every diagnostic
+ * code the extension emits so the load-phase queue can carry any of them;
+ * the observed-hash checkpoint entry is written only after load and goes
+ * straight to pi.appendEntry.
+ */
+export interface StateEntryData {
+  level: "info" | "warning" | "error";
+  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED" | "NAMESPACE_NOT_WRITABLE" | "NAMESPACE_OK" | "RECALL_TIMEOUT_TRIP";
+  message: string;
+  error?: string;
+  observedToolNames?: string[];
+}
+type AppendEntryFn = (customType: string, data: StateEntryData) => void;
+
+/** Load-phase buffer for state entries; see createLoadPhaseEntryQueue. */
+export interface LoadPhaseEntryQueue {
+  append: AppendEntryFn;
+  markLoaded: () => void;
+  flush: () => void;
+}
+
+/**
+ * Buffers appendEntry calls made while the extension factory is loading.
+ * omp forbids action methods during load; entries are replayed on the first
+ * session_start, and calls made after load go straight through.
+ */
+export function createLoadPhaseEntryQueue(pi: PiApi): LoadPhaseEntryQueue {
+  let loading = true;
+  const pending: Array<[string, StateEntryData]> = [];
+  return {
+    append(customType, data) {
+      if (loading) {
+        pending.push([customType, data]);
+        return;
+      }
+      pi.appendEntry(customType, data);
+    },
+    markLoaded() {
+      loading = false;
+    },
+    flush() {
+      loading = false;
+      while (pending.length > 0) {
+        const [customType, data] = pending.shift()!;
+        try {
+          pi.appendEntry(customType, data);
+        } catch (err) {
+          console.warn(`[remnic] deferred state entry dropped: ${errorMessage(err)}`);
+        }
+      }
+    },
   };
 }
 
@@ -414,6 +477,7 @@ async function registerMcpTools(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  appendEntry: AppendEntryFn = (customType, data) => pi.appendEntry(customType, data),
 ): Promise<void> {
   let tools: McpTool[] = [];
   // A transient failure at session start used to silently register zero
@@ -444,7 +508,7 @@ async function registerMcpTools(
       `Remnic MCP tools/list failed (${reason}) — no Remnic tools registered for this session. ` +
       "Resolve the reported error, then restart the session (tool registration runs at extension load; /remnic-status checks health but does not re-register).";
     console.warn(`[remnic] ${message}`);
-    pi.appendEntry(STATE_CUSTOM_TYPE, {
+    appendEntry(STATE_CUSTOM_TYPE, {
       level: "warning",
       code: "MCP_TOOLS_LIST_FAILED",
       message,
@@ -516,7 +580,7 @@ async function registerMcpTools(
       ` ("remnic." or "remnic_" prefix); no Remnic MCP tools were registered. Observed: ${observed}` +
       `${observedNames.length > 10 ? ", …" : ""}. Check Remnic server/plugin version compatibility.`;
     console.warn(`[remnic] ${message}`);
-    pi.appendEntry(STATE_CUSTOM_TYPE, {
+    appendEntry(STATE_CUSTOM_TYPE, {
       level: "warning",
       code: "MCP_TOOLS_FILTERED",
       message,

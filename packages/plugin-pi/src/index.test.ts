@@ -6,6 +6,7 @@ import test from "node:test";
 
 import remnicPiExtension, {
   buildCompactionSummary,
+  createLoadPhaseEntryQueue,
   createRemnicPiExtension,
   isDaemonUnreachableError,
   matchRemnicMcpToolName,
@@ -469,7 +470,7 @@ test("MCP tools/list failure records a warning state entry instead of silently r
       startupRequestTimeoutMs: 2_000,
     },
   });
-  await extension({
+  await loadLikeOmp(extension, {
     on: () => undefined,
     registerCommand: () => undefined,
     registerTool: (tool: Record<string, unknown>) => {
@@ -527,7 +528,7 @@ test("MCP tools/list warning fires when the first attempt exhausts the budget", 
       startupRequestTimeoutMs: 2,
     },
   });
-  await extension({
+  await loadLikeOmp(extension, {
     on: () => undefined,
     registerCommand: () => undefined,
     registerTool: (tool: Record<string, unknown>) => {
@@ -580,7 +581,7 @@ test("a malformed tools/list catalog fails the listing and warns", async (t) => 
       startupRequestTimeoutMs: 2_000,
     },
   });
-  await extension({
+  await loadLikeOmp(extension, {
     on: () => undefined,
     registerCommand: () => undefined,
     registerTool: (tool: Record<string, unknown>) => {
@@ -1883,7 +1884,7 @@ async function registerToolsFromCatalog(catalogToolNames: string[]): Promise<{
         mcpToolsEnabled: true,
       },
     });
-    await extension({
+    await loadLikeOmp(extension, {
       on: () => undefined,
       registerCommand: () => undefined,
       registerTool: (tool: Record<string, unknown>) => registeredTools.push(tool as RegisteredTool),
@@ -2947,3 +2948,103 @@ for (const scenario of ["matching", "missing", "invalid", "unavailable"] as cons
     assert.deepEqual(warnings, []);
   });
 }
+
+/**
+ * Mirrors omp 18.x: action methods such as appendEntry throw
+ * ExtensionRuntimeNotInitializedError while the extension factory is loading,
+ * and the runtime goes live before the first session_start fires.
+ */
+async function loadLikeOmp(
+  extension: (pi: PiApi) => Promise<void>,
+  pi: Omit<PiApi, "on"> & { on?: PiApi["on"] },
+): Promise<void> {
+  let loading = true;
+  const sessionStart: TestPiEventHandler[] = [];
+  const wrapped: PiApi = {
+    ...pi,
+    on: (event, handler) => {
+      if (event === "session_start") sessionStart.push(handler);
+      pi.on?.(event, handler);
+    },
+    appendEntry: (type, data) => {
+      if (loading) {
+        throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
+      }
+      pi.appendEntry(type, data);
+    },
+  };
+  await extension(wrapped);
+  loading = false;
+  for (const handler of sessionStart) await handler({}, undefined);
+}
+
+test("load phase makes no action-method calls; load-time warnings flush on session_start (COS-487)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/mcp")) {
+      return new Response("<html><body><h1>503 Service Unavailable</h1></body></html>", { status: 503 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const entries: Array<[string, unknown]> = [];
+  let loadCalls = 0;
+  let loading = true;
+  const handlers: TestPiEventHandler[] = [];
+  const extension = createRemnicPiExtension({
+    config: { ...baseConfig(), authToken: "test-token", statusEnabled: false, startupRequestTimeoutMs: 1_000 },
+  });
+  await extension({
+    on: (event, handler) => {
+      if (event === "session_start") handlers.push(handler);
+    },
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    appendEntry: (type, data) => {
+      if (loading) loadCalls += 1;
+      entries.push([type, data]);
+    },
+  });
+  assert.equal(loadCalls, 0, "appendEntry must not be called while the extension is loading");
+  assert.equal(entries.length, 0);
+  loading = false;
+  for (const handler of handlers) await handler({}, undefined);
+  assert.ok(
+    JSON.stringify(entries).includes('"code":"MCP_TOOLS_LIST_FAILED"'),
+    "the deferred MCP_TOOLS_LIST_FAILED entry must be recorded once the runtime is live",
+  );
+});
+
+test("a throwing deferred appendEntry does not break session_start and later entries still record (COS-487)", async (t) => {
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  const recorded: string[] = [];
+  let failNext = true;
+  const queue = createLoadPhaseEntryQueue({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    appendEntry: (type: string) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("boom");
+      }
+      recorded.push(type);
+    },
+  });
+  queue.append("first", { level: "warning", code: "MCP_TOOLS_LIST_FAILED", message: "a" });
+  queue.append("second", { level: "warning", code: "MCP_TOOLS_FILTERED", message: "b" });
+  queue.markLoaded();
+  assert.deepEqual(recorded, [], "nothing is written before the flush");
+  assert.doesNotThrow(() => queue.flush());
+  assert.deepEqual(recorded, ["second"], "a failed entry must not block the rest of the queue");
+  assert.ok(warnings.some((line) => line.includes("deferred state entry dropped: boom")));
+  queue.append("third", { level: "info", code: "NAMESPACE_OK", message: "c" });
+  assert.deepEqual(recorded, ["second", "third"], "post-load entries go straight through");
+});
