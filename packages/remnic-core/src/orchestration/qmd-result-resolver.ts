@@ -26,6 +26,7 @@
  * RecallRerankCoordinator / ConversationIndexCoordinator accessor pattern.
  */
 
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../index.js";
@@ -148,8 +149,16 @@ export function normalizeFlatQmdResults(
   if (!collection || resolveNamespaceCapabilities(config).namespaces || collection !== config.qmdCollection) return results;
   return results.map((result) => ({
     ...result,
-    path: resolveNamespaceResultPath(config.memoryDir, collection, result.path),
+    path: withHotFactsPath(config.memoryDir, resolveNamespaceResultPath(config.memoryDir, collection, result.path)),
   }));
+}
+
+/** A hot-facts collection registered at the facts/ subtree returns date-relative paths (#2111); meet the loaded memory's path. */
+function withHotFactsPath(memoryDir: string, resolved: string): string {
+  const relative = path.relative(path.resolve(memoryDir), resolved).split(path.sep).join("/");
+  if (!/^\d{4}-\d{2}-\d{2}\//.test(relative) || existsSync(resolved)) return resolved;
+  const hot = path.join(path.resolve(memoryDir), "facts", relative);
+  return existsSync(hot) ? hot : resolved;
 }
 
 /**

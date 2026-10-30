@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "@remnic/core/config";
 import type { PluginConfig } from "@remnic/core/types";
 import { Orchestrator, type QueryAwarePrefilter } from "@remnic/core/orchestrator";
+import { normalizeFlatQmdResults } from "@remnic/core/orchestration/qmd-result-resolver";
 import type { QmdSearchResult } from "@remnic/core/types";
 import type { StorageManager } from "@remnic/core";
 import type { SearchBackend } from "@remnic/core/search/port";
@@ -242,6 +243,28 @@ test("namespaces on: an explicit flat collection keeps its hit paths and the QMD
     assert.equal(filtered.results.length, 1);
     assert.equal(filtered.results[0]?.snippet, "qmd snippet for the namespaced row");
     assert.equal(filtered.results[0]?.line, 7);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test("a hot-facts collection rooted at facts/ resolves date-relative hits to the loaded memory path (#3194, #2111)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-hotfacts-"));
+  try {
+    const cfg = parseConfig({ memoryDir, namespacesEnabled: false });
+    const onDisk = path.join(memoryDir, "facts", "2026-10-30", "fact-1.md");
+    await mkdir(path.dirname(onDisk), { recursive: true });
+    await writeFile(onDisk, "---\nid: fact-1\n---\nbody\n");
+    const hit = (p: string) => ({ docid: p, path: p, score: 1, snippet: "s" });
+    const out = normalizeFlatQmdResults(
+      [hit("2026-10-30/fact-1.md"), hit("facts/2026-10-30/fact-1.md"), hit("2026-10-30/not-on-disk.md")],
+      cfg,
+    );
+    assert.deepEqual(out.map((r) => r.path), [
+      onDisk,
+      onDisk,
+      path.join(memoryDir, "2026-10-30", "not-on-disk.md"),
+    ], "date-relative and facts/-relative spellings meet at one path; a hit with no file keeps its resolved path");
   } finally {
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
