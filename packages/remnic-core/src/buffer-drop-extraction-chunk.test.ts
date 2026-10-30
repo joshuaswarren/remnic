@@ -7,6 +7,8 @@ import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { StorageManager } from "./storage.js";
 import type { BufferTurn } from "./types.js";
+import { ExtractionDrain } from "./orchestration/extraction-drain.js";
+import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -72,5 +74,47 @@ test("dropExtractionChunk drops the whole matched window and a restart finds the
     assert.equal(dropped, 1);
     assert.equal(buffer.getTurns("s1").length, 0);
     assert.equal((await restart()).getTurns("s1").length, 0);
+  });
+});
+
+const FAILED: ExtractionRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "parse_empty", persistedCount: 0, durableOutputCount: 0 };
+const DONE: ExtractionRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+
+/** w7K's probe on #3266: a pinned capture sits before a native group drained with clearMatchingTurns. */
+async function drainBehindPinnedCapture(buffer: SmartBuffer, results: ExtractionRunResult[], dropAfter: number): Promise<ExtractionRunResult> {
+  const pinned: BufferTurn = { ...makeTurn("s1", "pinned capture"), acceptedCapture: true };
+  const native = [makeTurn("s1", "a".repeat(60)), makeTurn("s1", "b".repeat(60))];
+  for (const turn of [pinned, ...native]) await buffer.addTurn("s1", turn);
+  await buffer.flushPendingSave();
+  const drain = new ExtractionDrain({
+    config: { extractionMinUserTurns: 1, extractionMinChars: 0, extractionMaxTurnChars: 100_000, extractionChunkDropAfterFailures: dropAfter },
+    extractionWindowBudgetChars: () => 100,
+    runExtraction: async (turns, options) => {
+      const result = results.shift() ?? DONE;
+      // A successful run clears its chunk the way the coordinator does for a native group: by identity.
+      if (result.status === "completed") await buffer.clearAfterExtraction("s1", turns, options?.clearMatchingTurns === true ? { allowNonPrefix: true } : undefined);
+      return result;
+    },
+    getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" }),
+    buffer,
+    extractionQueueCoordinator: { beginPreemptable: () => {} },
+  });
+  return await drain.run(native, {
+    bufferKey: "s1",
+    clearBufferAfterExtraction: true,
+    clearMatchingTurns: true,
+    skipUserTurnThreshold: false,
+    failOnExtractionFailure: false,
+    forceExtractionAttempt: false,
+  });
+}
+
+test("a dropped chunk behind a pinned capture is removed by identity, like a successful clear (w7K)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const result = await drainBehindPinnedCapture(buffer, [FAILED, DONE], 1);
+
+    assert.equal(result.status, "completed");
+    assert.deepEqual(buffer.getTurns("s1").map((turn) => turn.content), ["pinned capture"], "the failed turn is gone, the pinned capture stays");
+    assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["pinned capture"], "and a restart agrees");
   });
 });

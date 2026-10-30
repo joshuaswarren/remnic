@@ -1094,20 +1094,36 @@ export class SmartBuffer {
    * extraction (trigger-drain drop path). Used when a chunk fails extraction
    * repeatedly and must be dropped so the session can drain; the caller is
    * responsible for the side-file copy and logging. Returns the number of
-   * live turns dropped; 0 when the turns no longer match the buffered prefix.
+   * live turns dropped; 0 when the turns no longer match. `allowNonPrefix`
+   * matches by identity, like `clearAfterExtraction`, for callers (native
+   * groups) whose chunk can sit behind a pinned capture.
    */
-  async dropExtractionChunk(bufferKey = "default", turns: readonly BufferTurn[]): Promise<number> {
+  async dropExtractionChunk(
+    bufferKey = "default",
+    turns: readonly BufferTurn[],
+    options?: { allowNonPrefix?: boolean },
+  ): Promise<number> {
     return await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
       const liveTurns = liveTurnsFromExtractionSnapshot(entry, turns);
-      const matchedCount = matchingQueuedExtractionPrefixLength(entry.turns, liveTurns);
+      let remaining = entry.turns;
+      if (options?.allowNonPrefix === true) {
+        remaining = [...entry.turns];
+        for (const turn of liveTurns) {
+          const at = remaining.findIndex((live) => bufferTurnsEqual(live, turn));
+          if (at >= 0) remaining.splice(at, 1);
+        }
+      } else {
+        remaining = entry.turns.slice(matchingQueuedExtractionPrefixLength(entry.turns, liveTurns));
+      }
+      const matchedCount = entry.turns.length - remaining.length;
       if (matchedCount === 0) return 0;
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
       }
-      entry.turns = entry.turns.slice(matchedCount);
+      entry.turns = remaining;
       if (bufferKey === "default") {
         this.state.turns = entry.turns;
       }

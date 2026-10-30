@@ -52,6 +52,8 @@ function drainFixture(options: {
   sideFileFails?: boolean;
   minUserTurns?: number;
   minChars?: number;
+  /** What the buffer's drop reports; default: every turn of the chunk. */
+  dropResult?: number;
 }): DrainFixture {
   const runs: DrainFixture["runs"] = [];
   const dropped: DrainFixture["dropped"] = [];
@@ -87,7 +89,7 @@ function drainFixture(options: {
       getTurns: () => bufferTurns,
       dropExtractionChunk: async (bufferKey: string, turns: readonly BufferTurn[]) => {
         dropped.push({ bufferKey, turns: [...turns] });
-        return turns.length;
+        return options.dropResult ?? turns.length;
       },
     },
     getStorage: async () => ({
@@ -610,4 +612,16 @@ test("a parse failure still counts toward dropping the chunk", async () => {
   await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
   await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
   assert.equal(fixture.dropped.length, 1);
+});
+
+test("a drop that removes nothing stops the drain and keeps the failure count (w7K, Phosphene)", async () => {
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "parse_empty" };
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [fail, fail, ok], budget: 100, dropAfterFailures: 2, dropResult: 0 });
+  const turns = [makeTurn("u".repeat(60)), makeTurn("v".repeat(60))];
+  await drain(fixture, turns);
+  assert.equal(fixture.runs.length, 1, "below the threshold: the failure stops the drain");
+  await drain(fixture, turns);
+  assert.equal(fixture.runs.length, 2, "the second failure reaches the threshold but the drop found nothing: the drain stops, no success is claimed");
+  assert.equal(fixture.runs[1]!.turns.length, 1, "the same chunk, not the next one");
 });

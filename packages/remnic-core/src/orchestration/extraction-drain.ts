@@ -39,7 +39,9 @@ export interface ExtractionDrainDeps {
   getStorage(): Promise<{
     saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly BufferTurn[]): Promise<string>;
   }>;
-  buffer: { dropExtractionChunk(bufferKey: string, turns: readonly BufferTurn[]): Promise<number> };
+  buffer: {
+    dropExtractionChunk(bufferKey: string, turns: readonly BufferTurn[], options?: { allowNonPrefix?: boolean }): Promise<number>;
+  };
   extractionQueueCoordinator: { beginPreemptable(abort: () => void): void };
 }
 
@@ -140,6 +142,8 @@ export class ExtractionDrain {
     const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
 
     const bufferKey = runOptions.bufferKey;
+    // A native group clears its turns by identity (a pinned capture can sit in front); a drop must find them the same way.
+    const byIdentity = runOptions.clearMatchingTurns === true;
     const dropAfter = this.deps.config.extractionChunkDropAfterFailures;
     let aggregate: ExtractionRunResult | null = null;
     for (const [position, chunk] of chunks.entries()) {
@@ -176,7 +180,7 @@ export class ExtractionDrain {
           persistedCount: 0,
           durableOutputCount: 0,
         };
-        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown))) {
+        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity))) {
           this.setFailureCount(bufferKey, chunk, failures);
           throw err;
         }
@@ -197,7 +201,7 @@ export class ExtractionDrain {
       }
       failures += 1;
       if (failures >= dropAfter) {
-        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result))) {
+        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result, byIdentity))) {
           // No recovery copy: keep the only buffered copy and retry later.
           this.setFailureCount(bufferKey, chunk, failures);
           return mergeDrainResults(aggregate, result);
@@ -221,6 +225,7 @@ export class ExtractionDrain {
     chunk: readonly BufferTurn[],
     dropAfter: number,
     result: ExtractionRunResult,
+    byIdentity: boolean,
   ): Promise<boolean> {
     const reason =
       `dropped after ${dropAfter} repeated extraction failures ` +
@@ -237,13 +242,18 @@ export class ExtractionDrain {
       return false;
     }
     try {
-      const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk);
-      if (dropped > 0) log.warn(`buffer[${bufferKey}]: removed ${dropped} buffered turns — ${reason}`);
+      const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk, { allowNonPrefix: byIdentity });
+      if (dropped > 0) {
+        log.warn(`buffer[${bufferKey}]: removed ${dropped} buffered turns — ${reason}`);
+        return true;
+      }
+      // Nothing removed (the live turns changed): the chunk is still buffered, so this is not a drop.
+      log.warn(`buffer[${bufferKey}]: dropped chunk no longer matches the buffer; keeping it and its failure count`);
     } catch (err) {
       log.warn(
         `buffer[${bufferKey}]: failed to remove dropped chunk from buffer (will retry next trigger): ${describeError(err)}`,
       );
     }
-    return true;
+    return false;
   }
 }
