@@ -3506,10 +3506,11 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       query?: string;
       limit?: number;
       offset?: number;
-    } = {}
+    } = {},
+    principal?: string
   ): Promise<EngramAccessEntityListResponse> {
-    const storage = await this.orchestrator.getStorage(options.namespace);
-    const resolvedNamespace = options.namespace?.trim() || this.orchestrator.config.defaultNamespace;
+    const resolvedNamespace = this.resolveReadableNamespace(options.namespace, principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const { limit, offset } = normalizePagination(options.limit, options.offset);
     const query = options.query?.trim().toLowerCase() ?? "";
 
@@ -3553,9 +3554,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     };
   }
 
-  async entityGet(name: string, namespace?: string): Promise<EngramAccessEntityResponse> {
-    const storage = await this.orchestrator.getStorage(namespace);
-    const resolvedNamespace = namespace?.trim() || this.orchestrator.config.defaultNamespace;
+  async entityGet(name: string, namespace?: string, principal?: string): Promise<EngramAccessEntityResponse> {
+    const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
+    const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const raw = await storage.readEntity(name);
     if (!raw) return { found: false, namespace: resolvedNamespace };
     return {

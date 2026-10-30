@@ -2168,7 +2168,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         query: parsed.searchParams.get("q") ?? undefined,
         limit,
         offset,
-      });
+      }, this.resolveRequestPrincipal(req));
       this.respondJson(res, 200, response);
       return;
     }
@@ -2178,7 +2178,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.enforceTokenOp("entity_get"); // boundary dispatch (issue #1525)
       const entityName = decodeURIComponent(entityMatch[1] ?? "");
       const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
-      const response = await this.service.entityGet(entityName, namespace);
+      const response = await this.service.entityGet(entityName, namespace, this.resolveRequestPrincipal(req));
       this.respondJson(res, response.found ? 200 : 404, response);
       return;
     }
