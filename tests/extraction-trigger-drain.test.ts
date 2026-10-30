@@ -109,8 +109,8 @@ function drainFixture(options: {
       if (next.waitForAbort === true) {
         await new Promise<void>((_, reject) => {
           const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
-          if (runOptions.abortSignal?.aborted) fail();
-          else runOptions.abortSignal?.addEventListener("abort", fail, { once: true });
+          if (runOptions?.abortSignal?.aborted) fail();
+          else runOptions?.abortSignal?.addEventListener("abort", fail, { once: true });
         });
       }
       const result: ExtractionRunResult = {
@@ -485,8 +485,8 @@ test("later chunks register preemption again so a fail-closed flush can abort th
 
   assert.equal(fixture.runs.length, 3);
   assert.equal(fixture.preemptRegistrations.length, 2, "one registration before each chunk after the first");
-  const firstSignal = fixture.runs[0]!.options.abortSignal;
-  const laterSignal = fixture.runs[1]!.options.abortSignal;
+  const firstSignal = fixture.runs[0]!.options?.abortSignal;
+  const laterSignal = fixture.runs[1]!.options?.abortSignal;
   assert.ok(laterSignal && laterSignal !== firstSignal, "a later chunk gets its own preempt-aware signal");
   assert.equal(laterSignal.aborted, false);
   fixture.preemptRegistrations[0]!();
@@ -516,13 +516,13 @@ test("the unextracted tail of a qualified window stays eligible on the next atte
   // Next attempt sees only the retained assistant turn: no user turn, one chunk. It is the tail of a window that qualified.
   await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
   assert.equal(fixture.runs.length, 3);
-  assert.equal(fixture.runs[2]!.options.skipUserTurnThreshold, true, "the tail keeps the window's eligibility");
-  assert.equal(fixture.runs[2]!.options.skipCharThreshold, true);
+  assert.equal(fixture.runs[2]!.options?.skipUserTurnThreshold, true, "the tail keeps the window's eligibility");
+  assert.equal(fixture.runs[2]!.options?.skipCharThreshold, true);
 
   // The window is done: the same shape of content arriving later is judged on its own.
   await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
   assert.equal(fixture.runs.length, 4);
-  assert.notEqual(fixture.runs[3]!.options.skipUserTurnThreshold, true, "eligibility does not outlive the window");
+  assert.notEqual(fixture.runs[3]!.options?.skipUserTurnThreshold, true, "eligibility does not outlive the window");
 });
 
 test("a tail's eligibility never applies to unrelated content", async () => {
@@ -533,7 +533,7 @@ test("a tail's eligibility never applies to unrelated content", async () => {
 
   await drain(fixture, [makeAssistantTurn("z".repeat(60))]);
   assert.equal(fixture.runs.length, 3);
-  assert.notEqual(fixture.runs[2]!.options.skipUserTurnThreshold, true);
+  assert.notEqual(fixture.runs[2]!.options?.skipUserTurnThreshold, true);
 });
 
 test("a flush that preempts a later chunk surfaces the preemption reason (codex P1)", async () => {
@@ -549,7 +549,8 @@ test("a flush that preempts a later chunk surfaces the preemption reason (codex 
   fixture.preemptRegistrations[0]!();
   await done;
   assert.equal(fixture.settled.length, 1);
-  assert.ok(isPreemptedExtraction(fixture.settled[0]!.error), "the host sees a preemption, not a generic abort");
+  const settledError = fixture.settled[0]!.error;
+  assert.ok(settledError instanceof Error && isPreemptedExtraction(settledError), "the host sees a preemption, not a generic abort");
 });
 
 test("a window below the character minimum is not split into chunks that each skip it (codex P2)", async () => {
@@ -563,5 +564,18 @@ test("a window below the character minimum is not split into chunks that each sk
   await drain(fixture, [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))]);
   assert.equal(fixture.runs.length, 1, "one run, as before the drain existed");
   assert.equal(fixture.runs[0]!.turns.length, 2, "over the whole window");
-  assert.notEqual(fixture.runs[0]!.options.skipCharThreshold, true, "so the coordinator applies its own minimum");
+  assert.notEqual(fixture.runs[0]!.options?.skipCharThreshold, true, "so the coordinator applies its own minimum");
+});
+
+test("a resumed tail that fits in one chunk still counts failures and is dropped at the threshold (codex P2)", async () => {
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true };
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [ok, fail, fail], budget: 100, dropAfterFailures: 2 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.dropped.length, 0, "one failure so far");
+
+  await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.runs.length, 3);
+  assert.equal(fixture.sideFiles.length, 1, "the second failure reaches the threshold: recovery copy first");
+  assert.equal(fixture.dropped.length, 1, "then the stuck tail is dropped instead of retrying forever");
 });

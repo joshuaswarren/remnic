@@ -122,20 +122,18 @@ export class ExtractionDrain {
     const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];
     const resumed =
       chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
-    const resumedOptions = resumed ? { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true } : runOptions;
-    if (chunks.length <= 1) {
-      const single = await this.deps.runExtraction(turns, resumedOptions);
-      if (resumed && classifyDrainResult(single) === "drained") this.qualified.delete(runOptions.bufferKey);
-      return single;
-    }
+    // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
+    // chunk, so its failures still count toward the drop threshold.
+    if (chunks.length <= 1 && !resumed) return await this.deps.runExtraction(turns, runOptions);
     // Eligibility (minimum user turns and characters) belongs to the whole
     // window: a window that never qualified keeps the single-run path, which
     // judges it exactly as before.
-    const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
-    const windowChars = this.windowChars(turns);
-    const belowChars = !resumedOptions.skipCharThreshold && windowChars < this.deps.config.extractionMinChars;
-    if ((!resumedOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars) {
-      return await this.deps.runExtraction(turns, runOptions);
+    if (!resumed) {
+      const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
+      const belowChars = !runOptions.skipCharThreshold && this.windowChars(turns) < this.deps.config.extractionMinChars;
+      if ((!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars) {
+        return await this.deps.runExtraction(turns, runOptions);
+      }
     }
     // The window qualified as a whole; its chunks must not be re-judged one by
     // one (an assistant-only or short chunk would be cleared unextracted).
