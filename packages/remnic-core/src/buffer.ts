@@ -1,7 +1,8 @@
 import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
-import type { StorageManager } from "./storage.js";
+import { BufferSessionPersistence, type BufferStorage } from "./buffer-persistence.js";
+import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import type {
   BufferEntryState,
   BufferState,
@@ -116,9 +117,12 @@ export class SmartBuffer {
    * activity (see BUFFER_SAVE_MAX_DEFER_MULTIPLIER). */
   private firstPendingAtMs: number | null = null;
 
+  /** Which sessions' persisted files are stale (per-session incremental saves). */
+  private readonly persistence = new BufferSessionPersistence();
+
   constructor(
     private readonly config: PluginConfig,
-    private readonly storage: StorageManager,
+    private readonly storage: BufferStorage,
     surpriseProbe: BufferSurpriseProbe | null = null,
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
@@ -202,60 +206,20 @@ export class SmartBuffer {
     );
   }
 
+  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[]): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const keys = Object.keys(entries);
-    if (keys.length <= MAX_BUFFER_ENTRY_COUNT) return;
-
-    const insertionOrder = new Map(keys.map((key, index) => [key, index]));
-    const byOldestActivity = (left: string, right: string): number => {
-      const leftAt = this.entryActivityAt(entries[left] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      const rightAt = this.entryActivityAt(entries[right] ?? {
-        turns: [],
-        lastExtractionAt: null,
-        extractionCount: 0,
-      });
-      if (leftAt !== rightAt) return leftAt - rightAt;
-      return (insertionOrder.get(left) ?? 0) - (insertionOrder.get(right) ?? 0);
-    };
-    const candidates = keys.filter(
-      (key) =>
-        key !== "default" &&
-        !retainKeys.includes(key) &&
-        // #3251: accepted captures exit via refusal/backpressure, never eviction.
-        !this.entryHoldsAcceptedCapture(entries[key]),
-    );
-    const emptyRemovable = candidates
-      .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
-      .sort(byOldestActivity);
-
-    const removableCount = Math.max(0, keys.length - MAX_BUFFER_ENTRY_COUNT);
-    let evicted = emptyRemovable.slice(0, removableCount);
-    if (evicted.length < removableCount) {
-      // Retained failed extractions (#1908 retry retention) keep their turns in
-      // the buffer, so empty entries alone may not bring the map back under the
-      // cap during a provider outage. The cap is the documented bound — evict
-      // the oldest NON-empty sessions too rather than growing unboundedly
-      // (codex review).
-      const nonEmptyRemovable = candidates
-        .filter((key) => (entries[key]?.turns.length ?? 0) > 0)
-        .sort(byOldestActivity);
-      evicted = evicted.concat(nonEmptyRemovable.slice(0, removableCount - evicted.length));
-    }
-    for (const key of evicted) {
-      delete entries[key];
-    }
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, MAX_BUFFER_ENTRY_COUNT, {
+      activityAt: (entry) => this.entryActivityAt(entry),
+      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+    });
+    for (const key of evicted) delete entries[key];
+    this.persistence.markEvicted(evicted);
     if (evicted.length > 0) {
-      // Loud degradation (extraction hot-loop hardening, Step 7): during a
-      // prolonged provider outage the breaker holds extraction off and buffered
-      // sessions accumulate. Eviction of the oldest empty session entries past
-      // MAX_BUFFER_ENTRY_COUNT is bounded and expected, but must be observable —
-      // not silent — so operators can see buffer pressure.
+      // Loud degradation (extraction hot-loop hardening, Step 7): buffer
+      // pressure during a provider outage is bounded and expected, but must
+      // be observable, not silent.
       log.warn(
         `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
           `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
@@ -317,12 +281,15 @@ export class SmartBuffer {
    * so the buffer can still accept new turns for the rest of the session.
    */
   resetToEmpty(): void {
+    for (const key of Object.keys(this.state.entries ?? {})) {
+      this.persistence.markDeleted(key);
+    }
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.loaded = true;
   }
 
   private async saveUnlocked(): Promise<void> {
-    await this.storage.saveBuffer(this.state);
+    await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
   }
 
   async save(): Promise<void> {
@@ -436,13 +403,16 @@ export class SmartBuffer {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
-    if (!this.pendingSave) return;
+    // resetToEmpty-only deletions are pending work too, even with no
+    // pending-save flag set.
+    if (!this.pendingSave && !this.persistence.hasPending()) return;
     try {
       await this.enqueueMutation(async () => {
         // Re-check under the serializer: a concurrent flush may have already
         // persisted this pending save. Skip the redundant write (no phantom
-        // writes).
-        if (!this.pendingSave) return;
+        // writes). resetToEmpty-only deletions also land here without a
+        // pending-save flag.
+        if (!this.pendingSave && !this.persistence.hasPending()) return;
         await this.saveUnlocked();
         // Clear the pending flag INSIDE the same serialized mutation as the
         // write (issue #1909 review). Clearing it after the enqueue await
@@ -520,6 +490,7 @@ export class SmartBuffer {
     for (const key of emptyRemovable) {
       if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
       delete entries[key];
+      this.persistence.markDeleted(key);
     }
   }
 
@@ -655,6 +626,7 @@ export class SmartBuffer {
     const decision = this.evaluate(entry, signal.level);
     const turnCountInWindow = entry.turns.length;
 
+    this.persistence.markDirty(bufferKey);
     this.pruneEntries([bufferKey]);
     if (decision === "keep_buffering" && this.config.bufferSaveDebounceMs > 0) {
       // Steady-state buffering: coalesce the whole-state serialize onto a
@@ -733,11 +705,7 @@ export class SmartBuffer {
   private async emitSurpriseEventSafe(
     params: SurpriseTelemetryQueueEntry,
   ): Promise<void> {
-    const storage = this.storage as StorageManager & {
-      appendBufferSurpriseEvents?: (
-        events: BufferSurpriseEvent[],
-      ) => Promise<number>;
-    };
+    const storage = this.storage;
     if (typeof storage.appendBufferSurpriseEvents !== "function") {
       // Older StorageManager / test double without the telemetry sink.
       // Silently skip — core path is still covered by the log line above.
@@ -896,6 +864,7 @@ export class SmartBuffer {
       );
       if (retained.length > 0) entry.retainedTurns = retained;
       else delete entry.retainedTurns;
+      this.persistence.markDirty(bufferKey);
       await this.saveUnlocked();
     });
   }
@@ -1003,6 +972,7 @@ export class SmartBuffer {
         if (remainingTurns.length > 0) entry.retainedTurns = remainingTurns;
         else delete entry.retainedTurns;
         if (bufferKey === "default") this.state.turns = entry.turns;
+        this.persistence.markDirty(bufferKey);
       }
       if (changed || hadPendingSave) {
         assertLifecycle();
@@ -1113,6 +1083,7 @@ export class SmartBuffer {
         this.state.lastExtractionAt = entry.lastExtractionAt;
         this.state.extractionCount = entry.extractionCount;
       }
+      this.persistence.markDirty(bufferKey);
       this.pruneEntries([bufferKey]);
       await this.saveNowRetainingPendingOnFailure("clearAfterExtraction");
     });

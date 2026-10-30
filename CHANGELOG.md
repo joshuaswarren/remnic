@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.36] — 2026-10-29
+
+### Fixes
+
+- Local LLM transport: `REMNIC_LOCAL_LLM_DIRECT=1` makes the widened undici pool apply even when the process installed its own global dispatcher (for example an agent runtime's managed proxy). Without it the installed dispatcher keeps its own `headersTimeout` (undici defaults to 300s; on the hosts where this was seen the proxy dispatcher enforced it), so a non-streaming completion slower than that limit dies with `fetch failed` at about 301s, whatever `localLlmTimeoutMs` says. Availability probes follow the same route. Off by default; behavior without the flag is unchanged.
+
 ## [v10.0.34] — 2026-10-27
 
 ### Fixes
