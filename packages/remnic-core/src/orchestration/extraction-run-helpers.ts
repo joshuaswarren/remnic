@@ -1,6 +1,7 @@
 import type { BufferTurn, ExtractionFailureClass, ExtractionResult, MetaState } from "../types.js";
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
+import type { ExtractionRunResult } from "./extraction-run.js";
 
 export function combineExtractionAbortSignals(
   primary: AbortSignal | undefined,
@@ -10,6 +11,13 @@ export function combineExtractionAbortSignals(
   return primary ? AbortSignal.any([primary, deadlineController.signal]) : deadlineController.signal;
 }
 
+
+/** Result of a run whose extraction found nothing durable; `retained` marks a recorded failure that left the window in the buffer. */
+export function emptyExtractionResult(retained: boolean): ExtractionRunResult {
+  const result: ExtractionRunResult = { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
+  if (retained) result.retainedBuffer = true;
+  return result;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;

@@ -119,7 +119,7 @@ import {
   commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
-  deriveTopicsFromExtraction,
+  deriveTopicsFromExtraction, emptyExtractionResult,
   runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
@@ -1045,7 +1045,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0, ...(recordedRetryFailure ? { retainedBuffer: true } : {}) };
+      return emptyExtractionResult(recordedRetryFailure);
     }
 
     let threadIdForExtraction: string | null = null;
