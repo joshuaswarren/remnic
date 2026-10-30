@@ -2357,6 +2357,7 @@ test("access service browses memories, lists entities, and applies review dispos
     const entities = await service.entityList({ query: "alex" });
     assert.equal(entities.total, 1);
     assert.equal(entities.entities[0]?.name, "Alex");
+    assert.equal(entities.entities[0]?.id, "person-alex");
 
     const structuredEntities = await service.entityList({ query: "whole systems" });
     assert.equal(structuredEntities.total, 1);

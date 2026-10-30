@@ -603,6 +603,7 @@ export interface EngramAccessTimelineResponse {
 }
 
 export interface EngramAccessEntitySummary {
+  id: string;
   name: string;
   type: string;
   updated: string;
@@ -3534,6 +3535,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         if (!haystack.includes(query)) continue;
       }
       entities.push({
+        id: name,
         name: entity.name,
         type: entity.type,
         updated: entity.updated,

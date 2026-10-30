@@ -232,7 +232,7 @@
       }
       .runtime-grid {
         display: grid;
-        grid-template-columns: 0.9fr 1.1fr;
+        grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
         gap: 16px;
         margin-top: 16px;
       }
@@ -244,11 +244,13 @@
       .compact-list {
         display: grid;
         gap: 8px;
-        max-height: 250px;
-        overflow: auto;
+        min-width: 0;
       }
       .compact-item {
         display: flex;
+        flex-wrap: wrap;
+        min-width: 0;
+        overflow-wrap: anywhere;
         align-items: center;
         justify-content: space-between;
         gap: 10px;
@@ -256,6 +258,9 @@
         border-radius: 8px;
         background: rgba(255, 255, 255, 0.74);
         padding: 10px 12px;
+      }
+      .compact-item > * {
+        min-width: 0;
       }
       .compact-item strong {
         display: block;
@@ -288,6 +293,13 @@
       .toggle-row input[type="checkbox"] {
         width: auto;
       }
+      .feature-info { position: relative; flex: none; }
+      .feature-info summary { cursor: pointer; list-style: none; border: 1px solid var(--line); border-radius: 50%; width: 24px; height: 24px; text-align: center; font-weight: bold; }
+      .feature-info p,
+      .feature-info:not([open]) summary:hover::after,
+      .feature-info:not([open]) summary:focus-visible::after { position: absolute; z-index: 5; top: 100%; right: 0; width: min(260px, 75vw); margin: 4px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-strong); box-shadow: var(--shadow); color: var(--ink); text-align: left; font-weight: normal; }
+      .feature-info:not([open]) summary:hover::after,
+      .feature-info:not([open]) summary:focus-visible::after { content: attr(data-description); }
       /* ── Memory Graph pane ─────────────────────────────────── */
       .graph-wrap {
         position: relative;
@@ -799,11 +811,11 @@
 
       <section class="card auth-bar">
         <label>
-          Umbrel App Password / Bearer Token
+          Bearer Token
           <input
             id="tokenInput"
             type="password"
-            placeholder="Paste the default app password shown by Umbrel"
+            placeholder="Enter your Remnic bearer token"
             autocomplete="off"
           />
         </label>
@@ -880,6 +892,8 @@
       <section class="card" style="margin-top: 16px;">
         <h2>Optional Features</h2>
         <div class="toggle-list" id="featureToggleList"></div>
+        <div class="toolbar" style="margin-top: 12px;"><button class="accent" id="saveFeaturesButton">Save Features</button></div>
+        <div class="status" id="featureSaveStatus" aria-live="polite">Changes require a restart to take effect.</div>
       </section>
 
       <div class="grid">
@@ -1260,6 +1274,6 @@
     </div>
     <script src="review-deck.js"></script>
     <script src="timeline-pane.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=entity-detail-3"></script>
   </body>
 </html>

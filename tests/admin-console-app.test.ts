@@ -15,7 +15,9 @@ class FakeElement {
   style: Record<string, string> = {};
   children: FakeElement[] = [];
 
-  addEventListener(): void {}
+  listeners: Record<string, () => void> = {};
+  addEventListener(name: string, callback: () => void): void { this.listeners[name] = callback; }
+  setAttribute(): void {}
   appendChild(child: FakeElement): void {
     this.children.push(child);
   }
@@ -154,6 +156,26 @@ async function loadAdminConsoleContext(pageSizeValue: string, extraElements: Rec
   };
 }
 
+test("entity explorer opens the stored identifier and reports lookup failures", async () => {
+  const list = new FakeElement();
+  const detail = new FakeElement();
+  const status = new FakeElement();
+  const { getContext } = await loadAdminConsoleContext("25", { entityList: list, entityDetail: detail, entityStatus: status });
+  const context = getContext();
+  vm.runInContext(`globalThis.requestedPath = ""; fetchJson = async (url) => {
+    requestedPath = url;
+    return { entity: { name: "Alex" } };
+  }; renderEntityList([{ id: "person-alex", name: "Alex", aliases: [] }]);`, context);
+  list.children[0]!.children.at(-1)!.listeners.click!();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(vm.runInContext("requestedPath", context), "/engram/v1/entities/person-alex");
+  assert.match(detail.textContent, /Alex/);
+  vm.runInContext(`fetchJson = async () => { throw new Error("Not found"); };`, context);
+  await vm.runInContext(`loadEntityDetail("missing")`, context);
+  assert.match(status.textContent, /Not found/);
+  assert.match(detail.textContent, /Could not load/);
+});
+
 test("admin console pagination step reads the current page size before advancing", async () => {
   const { browserState, stepMemoryPage } = await loadAdminConsoleContext("10");
   browserState.limit = 25;
@@ -238,8 +260,122 @@ test("admin console renders runtime dashboard controls", async () => {
 
   assert.equal(defaultModelSelect.value, "openai\tgpt-4.1-mini");
   assert.equal(featureToggleList.children.length, 1);
+  assert.match(featureToggleList.children[0].children[1].children[1].textContent, /QMD/);
   assert.match(runtimeStatus.textContent, /Runtime loaded/);
   assert.match(runtimeStatus.textContent, /Config writable/);
+});
+
+test("feature save sends only changed writable settings", async () => {
+  const list = new FakeElement();
+  const status = new FakeElement();
+  const runtimeInput = new FakeElement();
+  const { renderRuntimeDashboard, getContext } = await loadAdminConsoleContext("25", {
+    featureToggleList: list, featureSaveStatus: status, localLlmUrlInput: runtimeInput,
+  });
+  const payload = {
+    config: { writable: true, values: {} },
+    features: [
+      { key: "qmdEnabled", label: "QMD Search", enabled: true, writable: true },
+      { key: "rerankEnabled", label: "Rerank", enabled: false, writable: true },
+    ],
+  };
+  renderRuntimeDashboard(payload);
+  list.children[0].children[0].children[1].checked = false;
+  runtimeInput.value = "unsaved edit";
+  const context = getContext();
+  vm.runInContext(`globalThis.savedPatch = null; fetchJson = async (_url, options) => {
+    globalThis.savedPatch = JSON.parse(options.body); return ${JSON.stringify(payload)};
+  }`, context);
+  await vm.runInContext("saveFeatures()", context);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.savedPatch)), { qmdEnabled: false });
+  assert.match(status.textContent, /Saved/);
+  assert.equal(runtimeInput.value, "unsaved edit");
+});
+
+test("feature save refreshes the status lists and leaves the toggles usable (review of #3263)", async () => {
+  const list = new FakeElement();
+  const status = new FakeElement();
+  const button = new FakeElement();
+  const harnessList = new FakeElement();
+  const { renderRuntimeDashboard, getContext } = await loadAdminConsoleContext("25", {
+    featureToggleList: list, featureSaveStatus: status, saveFeaturesButton: button, harnessList, providerList: new FakeElement(), modelList: new FakeElement(),
+  });
+  const before = {
+    config: { writable: true, values: {} },
+    features: [{ key: "qmdEnabled", label: "QMD Search", enabled: true, writable: true }],
+    harnesses: [{ id: "codex", label: "Codex", status: "ok" }],
+  };
+  renderRuntimeDashboard(before);
+  const firstRows = harnessList.children.length;
+  const after = { ...before, features: [{ ...before.features[0], enabled: false }], harnesses: [...before.harnesses, { id: "claude", label: "Claude", status: "ok" }] };
+  list.children[0].children[0].children[1].checked = false;
+  const context = getContext();
+  vm.runInContext(`fetchJson = async () => (${JSON.stringify(after)});`, context);
+  await vm.runInContext("saveFeatures()", context);
+  assert.ok(harnessList.children.length > firstRows, "the harness list shows what the save response says");
+  assert.equal(list.children[0].children[0].children[1].disabled, false, "the re-rendered toggle can be edited again");
+  assert.equal(button.disabled, false);
+});
+
+test("a late failure for an older entity lookup does not replace the newer entity (review of #3263)", async () => {
+  const detail = new FakeElement();
+  const status = new FakeElement();
+  const { getContext } = await loadAdminConsoleContext("25", { entityDetail: detail, entityStatus: status, entityList: new FakeElement() });
+  const context = getContext();
+  vm.runInContext(`globalThis.rejectA = null; fetchJson = (url) => url.endsWith("/a")
+    ? new Promise((_resolve, reject) => { globalThis.rejectA = reject; })
+    : Promise.resolve({ entity: { name: "B" } });`, context);
+  const first = vm.runInContext('loadEntityDetail("a")', context);
+  await vm.runInContext('loadEntityDetail("b")', context);
+  assert.match(detail.textContent, /"B"/);
+  vm.runInContext('globalThis.rejectA(new Error("late failure"))', context);
+  await first;
+  assert.match(detail.textContent, /"B"/, "the newer entity stays on screen");
+  assert.doesNotMatch(status.textContent, /late failure/);
+});
+
+test("a late answer for an older entity lookup does not replace the newer entity (review of #3263)", async () => {
+  const detail = new FakeElement();
+  const status = new FakeElement();
+  const { getContext } = await loadAdminConsoleContext("25", { entityDetail: detail, entityStatus: status, entityList: new FakeElement() });
+  const context = getContext();
+  vm.runInContext(`globalThis.resolveA = null; fetchJson = (url) => url.endsWith("/a")
+    ? new Promise((resolve) => { globalThis.resolveA = resolve; })
+    : Promise.resolve({ entity: { name: "B" } });`, context);
+  const first = vm.runInContext('loadEntityDetail("a")', context);
+  await vm.runInContext('loadEntityDetail("b")', context);
+  assert.match(detail.textContent, /"B"/);
+  vm.runInContext('globalThis.resolveA({ entity: { name: "A" } })', context);
+  await first;
+  assert.match(detail.textContent, /"B"/, "the newer entity stays on screen");
+  assert.doesNotMatch(detail.textContent, /"A"/);
+});
+
+test("a failed feature save puts the toggles and the button back as they were (review of #3263)", async () => {
+  const list = new FakeElement();
+  const status = new FakeElement();
+  const button = new FakeElement();
+  const { renderRuntimeDashboard, getContext } = await loadAdminConsoleContext("25", {
+    featureToggleList: list, featureSaveStatus: status, saveFeaturesButton: button,
+  });
+  renderRuntimeDashboard({
+    config: { writable: true, values: {} },
+    features: [
+      { key: "qmdEnabled", label: "QMD Search", enabled: true, writable: true },
+      { key: "rerankEnabled", label: "Rerank", enabled: false, writable: false },
+    ],
+  });
+  const toggle = (row: number) => list.children[row].children[0].children[1];
+  toggle(0).checked = false;
+  assert.equal(toggle(0).disabled, false);
+  assert.equal(toggle(1).disabled, true, "setup: the read-only toggle starts disabled");
+  const context = getContext();
+  vm.runInContext(`fetchJson = async () => { throw new Error("server said no"); };`, context);
+  await vm.runInContext("saveFeatures()", context);
+  assert.equal(toggle(0).disabled, false, "the writable toggle is usable again");
+  assert.equal(toggle(1).disabled, true, "the read-only toggle stays read-only");
+  assert.equal(button.disabled, false);
+  assert.match(status.textContent, /server said no/);
 });
 
 test("admin console collects runtime config patch from model and feature controls", async () => {
