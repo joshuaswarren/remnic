@@ -180,6 +180,24 @@ function selectedDefaultModelOption(select) {
   return Array.from(options).find((option) => option.value === select.value) || null;
 }
 
+const featureDescriptions = {
+  localLlmEnabled: "Use the configured local language model for memory processing.",
+  localLlmFastEnabled: "Use a separate fast local model tier for supported tasks.",
+  qmdEnabled: "Use QMD to search the memory index.",
+  embeddingFallbackEnabled: "Use embeddings as a fallback for memory retrieval.",
+  hostEmbeddingProviderEnabled: "Use the host-provided embedding service.",
+  namespacesEnabled: "Separate memories into namespaces for scoped access and retrieval.",
+  recallPlannerEnabled: "Plan recall queries to improve retrieval of relevant memories.",
+  recallPlannerLlmEnabled: "Use a language model when planning recall queries.",
+  citationsEnabled: "Include source references with supported memory results.",
+  citationsAutoDetect: "Automatically detect citations in supported content.",
+  queryExpansionEnabled: "Expand search queries with related terms.",
+  rerankEnabled: "Reorder retrieved results by relevance.",
+  feedbackEnabled: "Enable feedback for memory retrieval results.",
+  memoryExtensionsEnabled: "Enable configured memory extensions.",
+  enrichmentEnabled: "Enrich memories with entity information."
+};
+
 function renderFeatureToggles(features) {
   const list = $("featureToggleList");
   clearChildren(list);
@@ -198,12 +216,30 @@ function renderFeatureToggles(features) {
     const input = document.createElement("input");
     input.type = "checkbox";
     input.checked = feature.enabled === true;
-    input.disabled = feature.writable === false;
+    input.disabled = feature.writable === false || runtimeState.dashboard?.config?.writable === false;
     input.dataset.configKey = feature.key;
     label.appendChild(input);
     row.appendChild(label);
+    const details = document.createElement("details");
+    details.className = "feature-info";
+    const summary = document.createElement("summary");
+    summary.textContent = "i";
+    summary.setAttribute("aria-label", `About ${feature.label || feature.key}`);
+    const description = document.createElement("p");
+    description.textContent = feature.description || featureDescriptions[feature.key] || "No description available.";
+    summary.dataset.description = description.textContent;
+    details.appendChild(summary);
+    details.appendChild(description);
+    row.appendChild(details);
     list.appendChild(row);
   });
+}
+
+/** The harness, provider and model lists only: no input the operator may be editing. */
+function renderStatusLists(payload) {
+  renderCompactStatusList($("harnessList"), payload?.harnesses, "No harnesses detected.");
+  renderCompactStatusList($("providerList"), payload?.providers, "No providers detected.");
+  renderCompactStatusList($("modelList"), payload?.models, "No models detected.");
 }
 
 function renderRuntimeDashboard(payload) {
@@ -216,9 +252,7 @@ function renderRuntimeDashboard(payload) {
   const sourceSelect = $("modelSourceSelect");
   if (sourceSelect && values.modelSource) sourceSelect.value = String(values.modelSource);
   renderDefaultModelSelect(payload?.models, values);
-  renderCompactStatusList($("harnessList"), payload?.harnesses, "No harnesses detected.");
-  renderCompactStatusList($("providerList"), payload?.providers, "No providers detected.");
-  renderCompactStatusList($("modelList"), payload?.models, "No models detected.");
+  renderStatusLists(payload);
   renderFeatureToggles(payload?.features);
   const state = payload?.config?.restartRequired ? "Saved changes require restart." : "Runtime loaded.";
   setStatus("runtimeStatus", `${state} ${payload?.config?.writable ? "Config writable." : "Config read-only."}`, payload?.config?.writable ? "ok" : "error");
@@ -266,6 +300,36 @@ function collectRuntimePatch() {
     patch[input.dataset.configKey] = input.checked === true;
   });
   return patch;
+}
+
+async function saveFeatures() {
+  const patch = {};
+  document.querySelectorAll("#featureToggleList input[data-config-key]").forEach((input) => {
+    const original = runtimeState.dashboard?.features?.find((feature) => feature.key === input.dataset.configKey);
+    if (!input.disabled && original && input.checked !== original.enabled) patch[input.dataset.configKey] = input.checked;
+  });
+  if (Object.keys(patch).length === 0) {
+    setStatus("featureSaveStatus", "No feature changes to save.", "default");
+    return;
+  }
+  const inputs = Array.from(document.querySelectorAll("#featureToggleList input[data-config-key]"));
+  const disabledStates = inputs.map((input) => input.disabled);
+  const button = $("saveFeaturesButton");
+  inputs.forEach((input) => { input.disabled = true; });
+  if (button) button.disabled = true;
+  setStatus("featureSaveStatus", "Saving features...", "default");
+  try {
+    const payload = await fetchJson("/engram/v1/admin/config", { method: "PATCH", body: JSON.stringify(patch) });
+    runtimeState.dashboard = payload;
+    renderStatusLists(payload);
+    renderFeatureToggles(payload?.features);
+    setStatus("featureSaveStatus", "Saved. Restart required for changes to take effect.", "ok");
+  } catch (error) {
+    inputs.forEach((input, index) => { input.disabled = disabledStates[index]; });
+    setStatus("featureSaveStatus", error.message || String(error), "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 async function saveRuntimeConfig() {
@@ -499,7 +563,7 @@ function renderEntityList(entities) {
     button.className = "entity-open-button";
     button.dataset.entityName = entity.name;
     button.textContent = "Open Entity";
-    button.addEventListener("click", () => void loadEntityDetail(entity.name));
+    button.addEventListener("click", () => void loadEntityDetail(entity.id || entity.name));
     article.appendChild(button);
 
     list.appendChild(article);
@@ -724,10 +788,22 @@ async function loadEntities() {
   setStatus("entityStatus", `Loaded ${response.count} of ${response.total} entities.`, "ok");
 }
 
+let entityDetailRequest = 0;
+
 async function loadEntityDetail(name) {
   if (!name) return;
-  const response = await fetchJson(`/engram/v1/entities/${encodeURIComponent(name)}`);
-  $("entityDetail").textContent = JSON.stringify(response.entity, null, 2);
+  const request = ++entityDetailRequest; // only the newest lookup may write the pane, answer or failure
+  setStatus("entityStatus", "Loading entity...");
+  try {
+    const response = await fetchJson(`/engram/v1/entities/${encodeURIComponent(name)}`);
+    if (request !== entityDetailRequest) return;
+    $("entityDetail").textContent = JSON.stringify(response.entity, null, 2);
+    setStatus("entityStatus", "Entity loaded.", "ok");
+  } catch (error) {
+    if (request !== entityDetailRequest) return;
+    $("entityDetail").textContent = "Could not load entity details.";
+    setStatus("entityStatus", `Could not load entity: ${error.message}`, "error");
+  }
 }
 
 async function loadQuality() {
@@ -2650,6 +2726,7 @@ function bootstrap() {
     if (e.key === "Enter") void runGraphSearch();
   });
   $("refreshRuntimeButton")?.addEventListener("click", () => void loadAdminDashboard());
+  $("saveFeaturesButton")?.addEventListener("click", () => void saveFeatures());
   $("saveRuntimeConfigButton")?.addEventListener("click", () => void saveRuntimeConfig());
   initReviewDeck();
   initTimelinePane();
