@@ -131,11 +131,12 @@ export class ExtractionDrain {
       let chunkOptions = baseOptions;
       let preempt: AbortController | undefined;
       if (preemptable && position > 0) {
-        preempt = new AbortController();
-        this.deps.extractionQueueCoordinator.beginPreemptable(() => preempt.abort(preemptedExtractionError()));
+        const local = new AbortController();
+        preempt = local;
+        this.deps.extractionQueueCoordinator.beginPreemptable(() => local.abort(preemptedExtractionError()));
         chunkOptions = {
           ...baseOptions,
-          abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, preempt.signal]) : preempt.signal,
+          abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, local.signal]) : local.signal,
         };
       }
       let failures = this.failureCount(bufferKey, chunk);
@@ -145,7 +146,7 @@ export class ExtractionDrain {
       } catch (err) {
         // The chunk-local abort leaves the outer signal untouched, so hand back the
         // preemption reason the host looks for (as it does for the first chunk).
-        if (isAbortError(err)) throw preempt?.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
+        if (isAbortError(err)) throw preempt && preempt.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
         failures += 1;
         if (failures < dropAfter) {
           this.setFailureCount(bufferKey, chunk, failures);
