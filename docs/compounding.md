@@ -70,15 +70,18 @@ When `compoundingInjectEnabled=true`, recall injection can include both recurrin
 
 ## Running weekly synthesis
 
-Manual:
+Manual, for the current ISO week:
 
 ```bash
-# via OpenClaw agent tool
+# via the compounding tool (embedded hosts and the daemon access surface)
 compounding_weekly_synthesize
 ```
 
-Recommended scheduling:
-- Use OpenClaw cron with an isolated agent turn that calls `compounding_weekly_synthesize`.
+The standalone daemon runs it when both `compoundingEnabled` and `compoundingWeeklyCronEnabled` are true. Both default to `false`. On startup, and again at each ISO week boundary (Monday 00:00 UTC), the daemon calls `synthesizeWeekly` for the ISO week that just ended. That call is the full synthesis path, including calibration when `calibrationEnabled` is true.
+
+The weekly markdown report (`compounding/weekly/<YYYY-Www>.md`) is renamed into place only after the week's JSON, rubrics, and mistakes artifacts. The scheduled run keeps its own completion marker (`compounding/weekly/.scheduler/<YYYY-Www>.done`) and skips a week only when that marker exists, so a restart does not write it twice and a manual `compounding_weekly_synthesize` call for the in-progress week cannot suppress the week's scheduled run. If the daemon was down at the boundary, the next start writes that missed week. It does not backfill older weeks. A failed attempt is retried on the next tick, before the week that has since ended. That retry memory lasts for the life of the process; a restart uses the completion marker and catches up the week that just ended. Scheduled and access-surface synthesis serialize per memory directory, so an overlapping request waits instead of interleaving its writes. When calibration reinforces rules, that same index write records every applied week id. A retry of a week already recorded there returns the existing rules and does not add the evidence again.
+
+OpenClaw delegate mode registers only `memory_search` and `memory_get`, so a gateway cron job can no longer call `compounding_weekly_synthesize`. The in-process run is armed only from the standalone daemon (`startServer`), after the HTTP listener is up. A failed bind does not start the weekly run. An embedded OpenClaw process does not arm it, so an existing Sunday `compounding_weekly_synthesize` cron keeps owning that host. Do not point that cron and the daemon at the same memory directory: both would synthesize the same week, and the serialization boundary is per process, not across hosts.
 
 ## Continuity audit generation
 

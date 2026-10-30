@@ -901,3 +901,38 @@ export function hasContradictoryPolarity(candidate: string, source: string): boo
   }
   return false;
 }
+
+export function normalizedEntityIdentifierTokens(name: string): string[] {
+  const identifier = normalizeForExactMatch(name).replace(/[-_]+/gu, " ");
+  const tokens = groundingLexemes(identifier)
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+    .map(({ token }) => stemToken(token, true));
+  return tokens.length > 1 && GROUNDING_ENTITY_TYPE_PREFIXES.has(tokens[0] ?? "")
+    ? tokens.slice(1)
+    : tokens;
+}
+
+/** Index of the entity name's tokens inside the sentence's token sequence, or -1. */
+export function entityNameStart(name: string, sentence: string): number {
+  const nameTokens = normalizedEntityIdentifierTokens(name);
+  if (nameTokens.length === 0) return -1;
+  const sentenceTokens = groundingLexemes(sentence)
+    .filter(({ token }) => GROUNDING_STOPWORDS[token] !== true)
+    .map(({ token, preserveTerminalS }) => stemToken(token, preserveTerminalS));
+  return sentenceTokens.findIndex((_, start) =>
+    nameTokens.every((token, offset) => sentenceTokens[start + offset] === token));
+}
+
+export function isGroundedEntityName(name: string, source: string): boolean {
+  return sourceSentences(source).some((sentence) => entityNameStart(name, sentence) >= 0);
+}
+
+/** True when the text reports a claim without asserting it ("suspects", "alleged", "said"). */
+export function hasNonAssertiveReporting(text: string): boolean {
+  return groundingLexemes(text).some(({ token }) => isNonAssertiveReportingVerb(token));
+}
+
+/** True when the text reports a denial ("denied", "refuses"). */
+export function hasDenialReporting(text: string): boolean {
+  return groundingLexemes(text).some(({ token }) => isDenialReportingVerb(token));
+}

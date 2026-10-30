@@ -10,7 +10,11 @@
  *   - Critical-importance facts are auto-approved.
  *   - Batches respect extractionJudgeBatchSize.
  *   - Content-hash caching avoids redundant LLM calls.
- *   - Performance budget: <= 1.5s per batch.
+ *   - LLM calls use extractionJudgeTimeoutMs (default 20s: measured 2.1-2.5 s
+ *     per compact verdict request with a batch-scaled completion budget on a
+ *     small fast judge model; 13-22 s per compact call, 41 s verbose, on the
+ *     big shared core model — raise it there; the old 150s default only
+ *     papered over 59-305s verbose replies).
  */
 
 import { createHash } from "node:crypto";
@@ -215,48 +219,79 @@ export const JUDGE_SYSTEM_PROMPT = `You are a memory curator evaluating whether 
 
 A fact is **durable** if it will still be useful 30+ days from now and is relevant across multiple sessions, not just the current task.
 
-Return one of three verdicts per candidate:
+The user message is a JSON array of candidates: [{"index": 0, "text": "...", "category": "...", "confidence": 0.5}, ...].
 
-ACCEPT — the fact is durable, persist it:
-- Personal preferences, identities, or relationships
-- Decisions with rationale that affect future work
-- Corrections to previously held beliefs
-- Principles, rules, or constraints the user wants respected
-- Stable facts about projects, tools, or workflows
-- Commitments, deadlines, or obligations
+Verdicts:
+- "accept" — durable. Personal preferences, identities, relationships; decisions with rationale that affect future work; corrections to previously held beliefs; principles, rules, or constraints the user wants respected; stable facts about projects, tools, or workflows; commitments, deadlines, or obligations.
+- "reject" — not durable. Transient task details ("currently debugging line 42"); ephemeral state ("the build is running now"); routine operations ("ran npm install"); conversational filler; anything stale within hours; step-by-step instructions for a one-time task.
+- "defer" — MIGHT be durable but the candidate alone cannot say: ambiguous referents ("he said they'd follow up"), in-progress statements that may become durable once completed, future commitments with unclear subject or timeline. Defer is NOT a soft reject: use it only when another turn of context would genuinely change the verdict; when torn between accept and reject, lean accept — losing a useful fact is worse than keeping a marginal one.
 
-REJECT — the fact is not durable, drop it:
-- Transient task details ("currently debugging line 42")
-- Ephemeral state ("the build is running now")
-- Routine operations ("ran npm install")
-- Conversational filler or acknowledgements
-- Information that will be stale within hours
-- Step-by-step instructions for a one-time task
-
-DEFER — the fact MIGHT be durable but needs more context to decide. The candidate will be re-evaluated on a later extraction pass with fresh context; if it cannot be resolved within a small number of re-evaluations it will be rejected.
-- Ambiguous referents ("he said they'd follow up on it")
-- Partial or in-progress statements that might become durable once completed
-- Future-tense commitments whose subject or timeline is unclear
-- Facts whose durability hinges on context not present in the candidate text
-
-Do NOT use defer as a soft reject. Reject facts you are confident are transient. Only defer when another turn of context would genuinely change the verdict.
-
-Return a JSON array of objects with these fields:
-- index: number (the candidate index)
-- kind: string — one of "accept", "reject", "defer"
-- reason: string (brief explanation, under 80 characters)
-
-You may also include durable (boolean) for backwards compatibility: true for accept, false for reject or defer. If kind is omitted, durable determines the verdict.
+Reply with a JSON object with a single "verdicts" key, exactly one object per input candidate:
+{"verdicts": [{"index": <candidate index>, "kind": "accept" | "reject" | "defer"}]}
 
 Rules:
-1. Return exactly one verdict per input candidate, matched by index.
-2. When in doubt between accept and reject, lean toward accept — false negatives (losing a useful fact) are worse than false positives (keeping a marginal one).
-3. Use defer only when another turn of context would genuinely change the verdict.
-4. Output valid JSON only. No markdown fences, no commentary.
+1. The top level must be one object {"verdicts": [...]} — JSON mode rejects a bare top-level array.
+2. Copy each object's "index" from the input candidate. One object per candidate, exactly.
+3. No other fields — no "reason", no "durable", no commentary.
+4. Output valid JSON only. No markdown fences.
 5. ${OUTPUT_LANGUAGE_POLICY}
 
 Example output:
-[{"index": 0, "kind": "accept", "durable": true, "reason": "Stable personal preference"}, {"index": 1, "kind": "reject", "durable": false, "reason": "Ephemeral build status"}, {"index": 2, "kind": "defer", "durable": false, "reason": "Ambiguous pronoun"}]`;
+{"verdicts": [{"index": 0, "kind": "accept"}, {"index": 1, "kind": "reject"}, {"index": 2, "kind": "defer"}]}`;
+
+// ---------------------------------------------------------------------------
+// Judge request assembly (PR 3264 follow-up)
+// ---------------------------------------------------------------------------
+
+/** Completion tokens reserved per candidate verdict (measured 13 on a small judge model). */
+const JUDGE_TOKENS_PER_CANDIDATE = 24;
+/** Ceiling on one judge reply: the old flat budget. */
+export const MAX_JUDGE_TOKENS = 2048;
+/**
+ * Extra completion tokens for a judge call routed through the Responses API. Reasoning tokens count against
+ * `max_output_tokens`, so the compact verdict budget alone can be spent before a reasoning-enabled model answers; the
+ * unparsed batch would then fail open as durable. A cap, not a target: a non-reasoning model still writes a short reply.
+ */
+export const JUDGE_REASONING_HEADROOM_TOKENS = 1024;
+/** Largest batch whose verdict array fits MAX_JUDGE_TOKENS; a larger configured batch is split. */
+export const MAX_JUDGE_BATCH = Math.floor(MAX_JUDGE_TOKENS / JUDGE_TOKENS_PER_CANDIDATE);
+
+/**
+ * Compact completion budget for one judge call. A verdict is
+ * `{"index":12,"kind":"reject"}` (~14 tokens), so the old flat 2048 only gave
+ * a slow model room to produce 59-305s replies that hid inside the timeout.
+ * Scales with the batch size (about 24 tokens per candidate verdict, measured
+ * 13 per verdict on a small judge model) so a large batch is never truncated;
+ * capped at 2048, the old flat budget.
+ */
+export function judgeMaxTokens(batchSize: number): number {
+  return Math.min(MAX_JUDGE_TOKENS, Math.max(64, batchSize * JUDGE_TOKENS_PER_CANDIDATE));
+}
+
+/** One indexed candidate entry in a judge request payload. */
+export interface JudgeRequestEntry {
+  index: number;
+  text: string;
+  category: string;
+  confidence: number;
+}
+
+/** Full judge LLM request: messages plus the completion budget. */
+export interface JudgeRequest {
+  messages: Array<{ role: "system" | "user"; content: string }>;
+  maxTokens: number;
+}
+
+/** Build a full judge request body: messages plus the completion budget. */
+export function buildJudgeRequest(entries: readonly JudgeRequestEntry[]): JudgeRequest {
+  return {
+    messages: [
+      { role: "system", content: JUDGE_SYSTEM_PROMPT },
+      { role: "user", content: JSON.stringify(entries) },
+    ],
+    maxTokens: judgeMaxTokens(entries.length),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Content-hash cache (in-memory, per-process fallback)
@@ -492,40 +527,39 @@ export async function judgeFactDurability(
   }
 
   // Batch the pending candidates up to batchSize
-  const batchSize = config.extractionJudgeBatchSize;
+  const batchSize = Math.min(config.extractionJudgeBatchSize, MAX_JUDGE_BATCH);
+  // Defer bookkeeping spans the WHOLE call, not one batch: identical candidates can land in different batches, and each key
+  // must advance the defer cap once and decide against the same prior count (the snapshot taken at its first sighting).
+  const deferredThisCall = new Set<string>();
+  const priorDefersSeen = new Map<string, number>();
   for (let batchStart = 0; batchStart < pendingIndices.length; batchStart += batchSize) {
     const batchIndices = pendingIndices.slice(batchStart, batchStart + batchSize);
-    const batchPayload = batchIndices.map((idx) => ({
-      index: idx,
-      text: candidates[idx].text,
-      category: candidates[idx].category,
-      confidence: candidates[idx].confidence,
-    }));
-
-    const userPrompt = JSON.stringify(batchPayload);
+    const request = buildJudgeRequest(
+      batchIndices.map((idx) => ({
+        index: idx,
+        text: candidates[idx].text,
+        category: candidates[idx].category,
+        confidence: candidates[idx].confidence,
+      })),
+    );
 
     try {
-      const llmResponse = await callJudgeLlm(
-        userPrompt,
-        config,
-        localLlm,
-        fallbackLlm,
-      );
+      const llmResponse = await callJudgeLlm(request, config, localLlm, fallbackLlm);
 
       if (llmResponse) {
         const parsed = parseJudgeResponse(llmResponse, batchIndices);
-        // Per-batch defer-increment dedupe (codex P2): a single extraction
+        // Per-call defer-increment dedupe (codex P2): a single extraction
         // pass must not advance the cap more than once for identical
-        // candidate content, even if the same text appears multiple times
-        // in the same LLM response. Duplicate hits share the first
-        // increment's `priorDeferrals` snapshot.
-        const deferredThisBatch = new Set<string>();
+        // candidate content, even if the same text appears several times in
+        // one LLM response or in different batches of one call. Duplicate
+        // hits share the first sighting's `priorDeferrals` snapshot.
         for (const [idx, rawVerdict] of parsed.entries()) {
           const c = candidates[idx];
           const key = cacheKey(c.text, c.category);
           let verdict = rawVerdict;
           let source: JudgeVerdictObservation["source"] = "llm";
-          const priorDefers = deferCountMap.get(key) ?? 0;
+          if (!priorDefersSeen.has(key)) priorDefersSeen.set(key, deferCountMap.get(key) ?? 0);
+          const priorDefers = priorDefersSeen.get(key) ?? 0;
 
           // Defer cap (issue #562, PR 2). A candidate that has already been
           // deferred `deferCap` times is forcibly rejected so a pathological
@@ -541,15 +575,15 @@ export async function judgeFactDurability(
               // Only clear + count the cap conversion once per batch for
               // this key — duplicates in the same response all resolve to
               // reject but should not inflate the cap-rejection counter.
-              if (!deferredThisBatch.has(key)) {
+              if (!deferredThisCall.has(key)) {
                 deferCountMap.delete(key);
                 deferredCappedToReject++;
-                deferredThisBatch.add(key);
+                deferredThisCall.add(key);
               }
-            } else if (!deferredThisBatch.has(key)) {
+            } else if (!deferredThisCall.has(key)) {
               deferCountMap.set(key, priorDefers + 1);
               deferred++;
-              deferredThisBatch.add(key);
+              deferredThisCall.add(key);
               // Bound the per-process defer-counter map.
               if (deferCountMap.size > DEFER_COUNT_MAX_SIZE) {
                 const drop = Math.floor(deferCountMap.size / 2);
@@ -561,12 +595,14 @@ export async function judgeFactDurability(
                 }
               }
             }
-            // else: duplicate defer for a key already counted this batch —
+            // else: duplicate defer for a key already counted this call —
             // no additional counter increment, verdict still marked defer.
           } else {
             // On accept/reject, clear any outstanding defer counter so a
             // future reappearance of the same text starts fresh.
             deferCountMap.delete(key);
+            priorDefersSeen.set(key, 0);
+            deferredThisCall.delete(key);
           }
 
           verdicts.set(idx, verdict);
@@ -607,6 +643,8 @@ export async function judgeFactDurability(
         // telemetry event reflects the true state rather than always 0.
         const priorDefers = deferCountMap.get(hash) ?? 0;
         deferCountMap.delete(hash);
+        priorDefersSeen.set(hash, 0);
+        deferredThisCall.delete(hash);
         const v: JudgeVerdict = {
           durable: true,
           reason: "Approved by default (judge unavailable or parse error)",
@@ -641,15 +679,12 @@ export async function judgeFactDurability(
 // ---------------------------------------------------------------------------
 
 async function callJudgeLlm(
-  userPrompt: string,
+  request: JudgeRequest,
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
 ): Promise<string | null> {
-  const messages: Array<{ role: "system" | "user"; content: string }> = [
-    { role: "system", content: JUDGE_SYSTEM_PROMPT },
-    { role: "user", content: userPrompt },
-  ];
+  const { messages, maxTokens } = request;
 
   const modelOverride = config.extractionJudgeModel || undefined;
 
@@ -669,9 +704,14 @@ async function callJudgeLlm(
     try {
       const result = await (localLlm as any).chatCompletion(messages, {
         temperature: 0.1,
-        maxTokens: 2048,
+        maxTokens,
+        // A verdict needs no reasoning: keep a thinking-capable model from spending the compact budget on it.
+        disableThinking: true,
         responseFormat: { type: "json_object" },
-        timeoutMs: 1500,
+        timeoutMs: config.extractionJudgeTimeoutMs,
+        // The client applies timeoutMs per attempt and retries an abort once:
+        // one deadline signal bounds the whole call to the configured time.
+        signal: AbortSignal.timeout(config.extractionJudgeTimeoutMs),
         operation: "extraction-judge",
         ...(modelOverride ? { model: modelOverride } : {}),
       });
@@ -692,8 +732,9 @@ async function callJudgeLlm(
         messages as Array<{ role: "system" | "user" | "assistant"; content: string }>,
         {
           temperature: 0.1,
-          maxTokens: 2048,
-          timeoutMs: 1500,
+          maxTokens,
+          reasoningHeadroomTokens: JUDGE_REASONING_HEADROOM_TOKENS,
+          timeoutMs: config.extractionJudgeTimeoutMs,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...gatewayChain,
         },
@@ -711,6 +752,38 @@ async function callJudgeLlm(
   return null;
 }
 
+interface JudgeVerdictItem {
+  index?: number;
+  kind?: string;
+  action?: string;
+  durable?: boolean;
+  reason?: string;
+}
+
+/** What a judge model may return: a bare array, or one object wrapping verdicts. */
+interface JudgeEnvelope {
+  verdicts?: JudgeVerdictItem[];
+  index?: number;
+}
+
+type ParsedJudgeJson = JudgeVerdictItem[] | JudgeEnvelope | null | undefined;
+
+/**
+ * Normalise the object shapes a judge model returns to a verdict array.
+ * Requested shape {"verdicts": [...]} (response_format json_object forces a
+ * top-level object); a single verdict object counts as one verdict at its
+ * index, never the whole batch; legacy: any array-valued key.
+ */
+function unwrapJudgeEnvelope(parsed: ParsedJudgeJson): JudgeVerdictItem[] | null {
+  if (!parsed || Array.isArray(parsed)) return null;
+  if (Array.isArray(parsed.verdicts)) return parsed.verdicts;
+  if (Number.isInteger(parsed.index)) return [parsed];
+  for (const v of Object.values(parsed)) {
+    if (Array.isArray(v)) return v;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Response parsing
 // ---------------------------------------------------------------------------
@@ -724,7 +797,7 @@ function parseJudgeResponse(
 
   try {
     // Try direct parse first, then fall back to JSON extraction
-    let parsed: unknown;
+    let parsed: ParsedJudgeJson;
     try {
       parsed = JSON.parse(raw);
     } catch {
@@ -735,20 +808,12 @@ function parseJudgeResponse(
     }
 
     if (!Array.isArray(parsed)) {
-      // Might be wrapped in an object with a key
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        const values = Object.values(parsed as Record<string, unknown>);
-        for (const v of values) {
-          if (Array.isArray(v)) {
-            parsed = v;
-            break;
-          }
-        }
-      }
-      if (!Array.isArray(parsed)) {
+      const unwrapped = unwrapJudgeEnvelope(parsed);
+      if (unwrapped === null) {
         log.debug("extraction-judge: response is not an array, cannot parse");
         return result;
       }
+      parsed = unwrapped;
     }
 
     for (const item of parsed) {

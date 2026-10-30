@@ -10,10 +10,8 @@ import {
   validateBenchFlags,
 } from "./bench-flags.js";
 import { expandTilde } from "./path-utils.js";
-import {
-  type BenchResearchArgs,
-  parseBenchResearchArgs,
-} from "./bench-args-research.js";
+import { type BenchResearchArgs, parseBenchResearchArgs } from "./bench-args-research.js";
+import { type LoCoMoReplayExtractionArgs, parseLoCoMoReplayExtractionArgs } from "./bench-args-replay-extraction.js";
 
 export type BenchAction =
   | "help"
@@ -46,7 +44,7 @@ export type BenchRunAction = "list" | "show" | "delete";
 export type AmaBenchJudgeProtocol = "default" | "recommended";
 export type BenchCodexReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
-export interface ParsedBenchArgs extends BenchResearchArgs {
+export interface ParsedBenchArgs extends BenchResearchArgs, LoCoMoReplayExtractionArgs {
   action: BenchAction;
   benchmarks: string[];
   quick: boolean;
@@ -1339,6 +1337,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     resume,
     retryFailed,
     ...research,
+    ...parseLoCoMoReplayExtractionArgs(args, { action, publishedName, benchmarks, runtimeProfile, matrixProfiles, adapter }),
     driftGenAction,
     driftGenDir,
   };

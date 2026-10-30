@@ -459,6 +459,11 @@ export interface MmrRecallResult {
   readonly path?: string;
   readonly snippet?: string;
   readonly score?: number;
+  /**
+   * Effective relevance carried forward by the rerank stage that last
+   * adjusted the result. Preferred over `score` for MMR's relevance term.
+   */
+  readonly effectiveScore?: number;
 }
 
 export interface ReorderRecallResultsOptions {
@@ -545,7 +550,7 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
   const candidates: MmrCandidate[] = results.map((r, index) => ({
     id: makeRecallKey(r, index),
     content: r.snippet ?? "",
-    score: typeof r.score === "number" ? r.score : 0,
+    score: effectiveRelevance(r),
     embedding: null,
   }));
   // Index lookup by id so we can map MMR-selected candidates back to their
@@ -599,6 +604,17 @@ export function reorderRecallResultsWithMmr<R extends MmrRecallResult>(
   );
 
   return { reordered, diversity, lambda };
+}
+
+/**
+ * Relevance for MMR's `sim(d, query)` term: the effective relevance an
+ * upstream rerank stage carried forward, else the raw retrieval score.
+ */
+function effectiveRelevance(r: MmrRecallResult): number {
+  if (typeof r.effectiveScore === "number" && Number.isFinite(r.effectiveScore)) {
+    return r.effectiveScore;
+  }
+  return typeof r.score === "number" ? r.score : 0;
 }
 
 function makeRecallKey(r: MmrRecallResult, index: number): string {

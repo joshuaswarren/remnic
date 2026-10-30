@@ -676,16 +676,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "dreams",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "dreams.phases",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "dreams.phases.deepSleep",
     "issue": "#1990"
   },
@@ -711,22 +701,12 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "dreams.phases.lightSleep",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "dreams.phases.lightSleep.archiveDecayThreshold",
     "issue": "#1990"
   },
   {
     "kind": "undocumented-key",
     "key": "dreams.phases.lightSleep.cadenceMs",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
-    "key": "dreams.phases.lightSleep.enabled",
     "issue": "#1990"
   },
   {

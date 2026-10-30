@@ -1090,6 +1090,7 @@ const CONSOLIDATION_FIELD_TO_FLAG: Record<keyof ConsolidationCapabilitySet, stri
   compoundingSemantic: "compoundingSemanticEnabled",
   abstractionAnchors: "abstractionAnchorsEnabled",
   compounding: "compoundingEnabled",
+  compoundingWeeklyCron: "compoundingWeeklyCronEnabled",
   calibration: "calibrationEnabled",
   semanticConsolidation: "semanticConsolidationEnabled",
   patternReinforcement: "patternReinforcementEnabled",

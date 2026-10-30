@@ -17,6 +17,8 @@ import { SecureStoreLockedError, readMaybeEncryptedFile } from "../secure-store/
 import { type BufferSurpriseEvent, type CompressionGuidelineOptimizerState, type MemoryFile, type PluginConfig, confidenceTier } from "../types.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { isPopulatedUnnamedEntityRecord } from "../utils/malformed-entity-record.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isAbortError } from "../abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
@@ -97,6 +99,18 @@ function isPropagatableReadError(err: unknown): boolean {
   return typeof code === "string" && code !== "ENOENT";
 }
 
+/**
+ * Markdown under this store's `entities/` directory. The first relative
+ * segment must be `entities`; a memory root whose absolute path contains
+ * that name is not an entity store.
+ */
+function isStoreEntityMarkdown(baseDir: string, filePath: string): boolean {
+  if (!filePath.endsWith(".md")) return false;
+  const relative = path.relative(baseDir, filePath);
+  if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return relative.split(path.sep)[0] === "entities";
+}
+
 export class MemoryReadStore {
   constructor(
     private readonly deps: MemoryReadStoreDeps,
@@ -117,7 +131,7 @@ export class MemoryReadStore {
       try {
         const entries = await readdir(this.deps.wearablesDir, { withFileTypes: true });
         sources = entries
-          .filter((entry) => entry.isDirectory())
+          .filter((entry) => entry.isDirectory() && !isMacOsReplicationJunkBasename(entry.name))
           .map((entry) => entry.name);
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
@@ -134,7 +148,7 @@ export class MemoryReadStore {
         throw err;
       }
       for (const entry of entries) {
-        if (!entry.endsWith(".md")) continue;
+        if (isMacOsReplicationJunkBasename(entry) || !entry.endsWith(".md")) continue;
         const date = entry.slice(0, -3);
         if (!isValidTranscriptDate(date)) continue;
         days.push({ source, date });
@@ -170,6 +184,7 @@ export class MemoryReadStore {
             // in-flight dedup, so every abandoned recall used to start another
             // full walk of it (issue #2307).
             checkCorpusReadAbort(options);
+            if (isMacOsReplicationJunkBasename(entry.name)) continue;
             const fullPath = path.join(dir, entry.name);
             if (entry.isDirectory()) {
               await readDir(fullPath);
@@ -287,6 +302,7 @@ export class MemoryReadStore {
         checkCorpusReadAbort(options);
         // Never follow symlinked entries out of the store.
         if (entry.isSymbolicLink()) continue;
+        if (isMacOsReplicationJunkBasename(entry.name)) continue;
         const fullPath = path.join(dir, entry.name);
         if (entry.isDirectory()) {
           subdirs.push(fullPath);
@@ -500,6 +516,7 @@ export class MemoryReadStore {
         const entries = await readdir(dir, { withFileTypes: true });
         const subdirs: string[] = [];
         for (const entry of entries) {
+          if (isMacOsReplicationJunkBasename(entry.name)) continue;
           const fullPath = path.join(dir, entry.name);
           if (entry.isDirectory()) {
             subdirs.push(fullPath);
@@ -536,6 +553,15 @@ export class MemoryReadStore {
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
     try {
       const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
+      // Entity bodies with text but no name heading stay out of recall,
+      // including contextual QMD hits. An empty body still resolves through
+      // frontmatter and the canonical filename. A missing type line is still
+      // an entity. QMD query behavior is unchanged. Classification is
+      // relative to this store root: an absolute path that merely contains
+      // an `entities` segment is still an ordinary fact.
+      if (isStoreEntityMarkdown(this.deps.baseDir, filePath) && isPopulatedUnnamedEntityRecord(raw)) {
+        return null;
+      }
       // Note: the outer catch intentionally swallows most errors (ENOENT etc.)
       // but SecureStoreLockedError must propagate — see re-throw below.
       const parsed = parseFrontmatter(raw);
@@ -555,8 +581,7 @@ export class MemoryReadStore {
       // YAML frontmatter. Build a synthetic MemoryFile so entity files returned by
       // the direct retrieval agent participate in boostSearchResults and last-recall
       // tracking rather than being silently dropped.
-      const normalizedPath = filePath.split(path.sep).join("/");
-      if (normalizedPath.includes("/entities/") && filePath.endsWith(".md")) {
+      if (isStoreEntityMarkdown(this.deps.baseDir, filePath)) {
         const entity = parseEntityFile(raw, this.deps.entitySchemas);
         if (!entity.name) return null;
         const nameWithoutExt = path.basename(filePath, ".md");
@@ -859,7 +884,7 @@ export class MemoryReadStore {
       const files = await readdir(this.deps.questionsDir);
       const questions = [];
       for (const file of files) {
-        if (!file.endsWith(".md")) continue;
+        if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".md")) continue;
         const filePath = path.join(this.deps.questionsDir, file);
         const raw = await readMaybeEncryptedFile(filePath, this.deps._secureStoreKey, this.deps.baseDir);
         const parsed = this.deps.parseQuestionFile(raw, filePath);

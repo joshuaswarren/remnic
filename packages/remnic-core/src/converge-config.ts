@@ -1,3 +1,9 @@
+import {
+  type CaptureWriteLockBackoffLimits,
+  normalizeCaptureWriteLockWaitMs,
+  resolveCaptureWriteLockBackoffLimits,
+} from "./capture-write-lock-backoff.js";
+import { readEnvVar } from "./runtime/env.js";
 import type { ConvergeConfig, ConvergeConflictPolicy } from "./types.js";
 
 export const CONVERGE_CONFLICT_POLICIES = [
@@ -38,6 +44,46 @@ function parsePeerRequestTimeoutMs(value: unknown, label: string): number {
   return normalizeConvergePeerRequestTimeoutMs(value, label);
 }
 
+function parseOptionalCaptureLockMs(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  return normalizeCaptureWriteLockWaitMs(value, label);
+}
+
+/**
+ * Config values win over env. An omitted knob stays omitted here so the
+ * caller can still fall through to the built-in default. Env is read with
+ * the REMNIC_ name and the legacy ENGRAM_ name.
+ */
+function envCaptureLockMs(name: string): number | undefined {
+  const raw = readEnvVar(name);
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length > 15) {
+    throw new Error(`${name} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+  }
+  for (let index = 0; index < trimmed.length; index += 1) {
+    const code = trimmed.charCodeAt(index);
+    if (code < 48 || code > 57) {
+      throw new Error(`${name} must be a positive integer number of milliseconds; got ${JSON.stringify(raw)}`);
+    }
+  }
+  return normalizeCaptureWriteLockWaitMs(Number(trimmed), name);
+}
+
+export function resolveConvergeCaptureWriteLockBackoff(
+  config: ConvergeConfig | undefined
+): CaptureWriteLockBackoffLimits {
+  return resolveCaptureWriteLockBackoffLimits({
+    captureWriteLockInitialDelayMs:
+      config?.captureWriteLockInitialDelayMs ?? envCaptureLockMs("REMNIC_CONVERGE_CAPTURE_LOCK_INITIAL_DELAY_MS"),
+    captureWriteLockMaxDelayMs:
+      config?.captureWriteLockMaxDelayMs ?? envCaptureLockMs("REMNIC_CONVERGE_CAPTURE_LOCK_MAX_DELAY_MS"),
+    captureWriteLockDeadlineMs:
+      config?.captureWriteLockDeadlineMs ?? envCaptureLockMs("REMNIC_CONVERGE_CAPTURE_LOCK_DEADLINE_MS"),
+  });
+}
+
 export function parseConvergeConfig(block: unknown): ConvergeConfig {
   if (block === undefined) {
     return { conflictPolicy: DEFAULT_CONVERGE_CONFLICT_POLICY };
@@ -49,7 +95,14 @@ export function parseConvergeConfig(block: unknown): ConvergeConfig {
   if (prototype !== Object.prototype && prototype !== null) {
     throw new Error("converge must be a plain object");
   }
-  const { conflictPolicy: rawConflictPolicy, peerRequestTimeoutMs, ...unknown } = block as Record<string, unknown>;
+  const {
+    conflictPolicy: rawConflictPolicy,
+    peerRequestTimeoutMs,
+    captureWriteLockInitialDelayMs,
+    captureWriteLockMaxDelayMs,
+    captureWriteLockDeadlineMs,
+    ...unknown
+  } = block as Record<string, unknown>;
   let conflictPolicy: unknown = rawConflictPolicy;
   const unknownKey = Object.keys(unknown)[0];
   if (unknownKey !== undefined) {
@@ -62,11 +115,37 @@ export function parseConvergeConfig(block: unknown): ConvergeConfig {
     typeof conflictPolicy === "string" &&
     CONVERGE_CONFLICT_POLICIES.includes(conflictPolicy as ConvergeConflictPolicy)
   ) {
+    const initialDelayMs = parseOptionalCaptureLockMs(
+      captureWriteLockInitialDelayMs,
+      "converge.captureWriteLockInitialDelayMs"
+    );
+    const maxDelayMs = parseOptionalCaptureLockMs(captureWriteLockMaxDelayMs, "converge.captureWriteLockMaxDelayMs");
+    const deadlineMs = parseOptionalCaptureLockMs(captureWriteLockDeadlineMs, "converge.captureWriteLockDeadlineMs");
+    // Reject an inverted schedule at parse time. Omitted knobs stay omitted
+    // and are filled from defaults only when the acquire runs.
+    if (initialDelayMs !== undefined && maxDelayMs !== undefined && initialDelayMs > maxDelayMs) {
+      throw new Error(
+        `converge.captureWriteLockInitialDelayMs (${initialDelayMs}) must be <= converge.captureWriteLockMaxDelayMs (${maxDelayMs})`
+      );
+    }
+    if (maxDelayMs !== undefined && deadlineMs !== undefined && maxDelayMs > deadlineMs) {
+      throw new Error(
+        `converge.captureWriteLockMaxDelayMs (${maxDelayMs}) must be <= converge.captureWriteLockDeadlineMs (${deadlineMs})`
+      );
+    }
+    if (initialDelayMs !== undefined && deadlineMs !== undefined && initialDelayMs > deadlineMs) {
+      throw new Error(
+        `converge.captureWriteLockInitialDelayMs (${initialDelayMs}) must be <= converge.captureWriteLockDeadlineMs (${deadlineMs})`
+      );
+    }
     return {
       conflictPolicy: conflictPolicy as ConvergeConflictPolicy,
       ...(peerRequestTimeoutMs !== undefined
         ? { peerRequestTimeoutMs: parsePeerRequestTimeoutMs(peerRequestTimeoutMs, "converge.peerRequestTimeoutMs") }
         : {}),
+      ...(initialDelayMs !== undefined ? { captureWriteLockInitialDelayMs: initialDelayMs } : {}),
+      ...(maxDelayMs !== undefined ? { captureWriteLockMaxDelayMs: maxDelayMs } : {}),
+      ...(deadlineMs !== undefined ? { captureWriteLockDeadlineMs: deadlineMs } : {}),
     };
   }
 

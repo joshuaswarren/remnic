@@ -58,3 +58,14 @@ export function extractionProviderJsonSchema(
     ? EXTRACTION_PROVIDER_JSON_SCHEMA_WITHOUT_SPAN
     : EXTRACTION_PROVIDER_JSON_SCHEMA_WITH_SPAN;
 }
+
+export function extractionProviderResponseFormat(spanMode: ExtractionSpanConfig["spanMode"] = "off") {
+  return {
+    type: "json_schema" as const,
+    json_schema: {
+      name: "extraction_result",
+      schema: extractionProviderJsonSchema(spanMode),
+      strict: false,
+    },
+  };
+}

@@ -1,0 +1,335 @@
+{
+  "benchmark": "FrontierMemory 1.0",
+  "date": "2026-10-22",
+  "status": "blocked_full_extraction_and_downstream_scoring",
+  "remnic_commit": "4cd7e54c70e94b1899ead3cd95285c183ca8638a",
+  "harness_commit": null,
+  "attempted_tasks": 0,
+  "total_tasks": 15,
+  "remnic_full_pass_rate": null,
+  "no_memory_full_pass_rate": null,
+  "benchmark_provider_spend_usd": 0,
+  "daemon_started": true,
+  "daemon_stopped": true,
+  "corpus": {
+    "source": "https://huggingface.co/datasets/letta-ai/frontier-memory-corpus",
+    "revision": "67250357405072066498c061f9af0eccfdac20c0",
+    "expected_trajectories": 674,
+    "expected_pass": 184,
+    "expected_fail": 490,
+    "expected_sha256sums_digest": "c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1",
+    "download_status": "downloaded_verified",
+    "hf_identity": "existing_authentication_download_only",
+    "trajectory_files_downloaded": 674,
+    "actual_pass": 184,
+    "actual_fail": 490,
+    "json_files": 558,
+    "jsonl_files": 116,
+    "input_bytes": 314063575,
+    "download_elapsed_seconds": 125.11,
+    "sha256sums_present": true,
+    "checksum_verified": true,
+    "sha256sums_digest": "c7d31214ed20af4f14f46c4b9a838ebc9aa35a9491dfbce0fa50f7aa456eedd1",
+    "terms_accepted_by_this_run": false
+  },
+  "dream_stage": {
+    "status": "all_inputs_attempted_with_provider_refusal",
+    "full_successful_coverage": false,
+    "started_at": "2026-10-22T15:46:31.546Z",
+    "ended_at": "2026-10-22T20:34:00.914Z",
+    "trajectories_attempted": 674,
+    "trajectories_ingested_without_refused_parts": 673,
+    "trajectories_with_refused_parts": 1,
+    "source_parts_attempted": 1183,
+    "source_parts_completed_without_provider_failure": 1182,
+    "source_parts_refused": 1,
+    "extraction_calls": 1184,
+    "provider_request_failures": 2,
+    "administrative_restart_cancellations": 5,
+    "recorded_ingestion_errors": 7,
+    "coverage_check_passed": true,
+    "grounding_enabled": true,
+    "max_concurrent_subscription_calls": 6,
+    "observed_peak_concurrent_calls": 6,
+    "initial_admission_workers": 2,
+    "normal_extraction_queue": "serial_per_isolated_store",
+    "memory_layout": "original_plus_six_isolated_worker_memory_folders",
+    "fast_mode_after_reset": false,
+    "metered_api_allowed": false,
+    "source_part_chars": 400000,
+    "extraction_max_turn_chars": 450000,
+    "task_llm_timeout_ms": 300000,
+    "elapsed_seconds": 17249.368,
+    "elapsed_includes_pauses_and_restarts": true,
+    "input_tokens": 131040618,
+    "output_tokens": 1631388,
+    "total_tokens": 132672006,
+    "cache_read_tokens": 175616,
+    "failed_request_token_usage": null,
+    "reported_token_scope": "successful_provider_completions_only",
+    "setup_tokens_included": false,
+    "provider_cost_usd": 0,
+    "cost_scope": "metered_api_only_subscription_unpriced",
+    "generated_fact_files": 9,
+    "generated_correction_files": 5,
+    "generated_entity_files": 33,
+    "memory_export_created": true,
+    "memory_export": {
+      "format": "native_markdown_trees_by_isolated_store",
+      "stores": 7,
+      "files": 60,
+      "bytes": 33869,
+      "byte_copy_match": true,
+      "contains_corpus_input_files": false,
+      "contains_runtime_databases": false,
+      "contents_published": false
+    },
+    "provider_refusal": {
+      "parts": 1,
+      "unsuccessful_requests_for_that_part": 2,
+      "first_error_classification": "unrecorded",
+      "second_error_id": 53248,
+      "second_error_flags": [
+        "account-policy",
+        "content-blocked"
+      ],
+      "http_status": null,
+      "rewritten_after_classification": false,
+      "retried_after_classification": false
+    },
+    "output_anomaly": {
+      "anomalously_thin": true,
+      "scores_null_pending_letta_harness": true,
+      "diagnosed_cause": "source_grounding_rejects_paraphrased_content_despite_verbatim_quotes",
+      "confidence": "high_for_mechanism_not_proven_per_part",
+      "stored_counts_verified_on_disk": {
+        "facts": 9,
+        "corrections": 5,
+        "entities": 33
+      },
+      "persisted_log_lines": 51,
+      "persist_stage_dedup": 1,
+      "persist_stage_gated": 0,
+      "parts_with_any_stored_memory": 35,
+      "extraction_failures": {
+        "network": 7,
+        "schema_rejection": 3,
+        "empty": 1
+      },
+      "raw_responses_retained": false,
+      "replay": {
+        "model_calls": 3,
+        "trajectories": [
+          300,
+          376,
+          118
+        ],
+        "part": 1,
+        "extractor_returned": {
+          "facts": 13,
+          "entities": 4,
+          "profile_updates": 2,
+          "relationships": 3
+        },
+        "fact_quotes_verbatim": 13,
+        "grounding_kept": {
+          "facts": 1,
+          "entities": 0,
+          "profile_updates": 2,
+          "relationships": 0
+        },
+        "matches_original_run_storage": true,
+        "quote_as_content_kept": {
+          "json_escaped_source": 6,
+          "decoded_source": 8,
+          "of": 13
+        }
+      },
+      "recommended_fix": [
+        "remnic_code_pr_quote_anchored_grounding",
+        "runner_retain_raw_responses_privately"
+      ],
+      "not_recommended": "disable_grounding",
+      "corrected_run_estimate": {
+        "pilot_parts": 20,
+        "pilot_tokens_approx": 2200000,
+        "extraction_calls_approx": 1183,
+        "total_tokens_approx": 133000000,
+        "wall_time_approx": "4h47m at 6 concurrent",
+        "metered_spend_usd": 0
+      }
+    }
+  },
+  "isolated_startup_smoke": {
+    "health_ok": true,
+    "search_backend": "orama",
+    "qmd_mode": "not-selected",
+    "pending_turns": 0,
+    "last_extraction_at": null,
+    "fact_files": 0,
+    "correction_files": 0,
+    "entity_files": 0,
+    "local_model_lists": [
+      [],
+      []
+    ],
+    "local_completion_probe_count": 2,
+    "local_completion_probe_timeout_seconds": 10,
+    "local_completion_probe_tokens": null
+  },
+  "subscription_extractor": {
+    "provider": "openai-codex",
+    "model": "gpt-6.1-sol",
+    "omp_version": "18.12.6",
+    "transport": "private_eval_runner_using_omp",
+    "requested_service_tier": "default",
+    "earlier_requested_service_tier": "priority",
+    "effective_service_tier": null,
+    "api_fallback_used": false,
+    "codex_cli_builtin_smoke": {
+      "status": "failed_auth_refresh",
+      "reason": "invalid_refresh_token",
+      "elapsed_ms": 16521,
+      "usage": null
+    },
+    "normal_pipeline_smokes": [
+      {
+        "input_tokens": 3014,
+        "output_tokens": 947,
+        "total_tokens": 3961,
+        "provider_elapsed_ms": 28254,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion"
+      },
+      {
+        "input_tokens": 3015,
+        "output_tokens": 995,
+        "total_tokens": 4010,
+        "provider_elapsed_ms": 30274,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion"
+      },
+      {
+        "input_tokens": 3018,
+        "output_tokens": 964,
+        "total_tokens": 3982,
+        "provider_elapsed_ms": 24613,
+        "persisted_facts": 0,
+        "status": "failed_persistence_assertion",
+        "raw_facts": 2,
+        "raw_entities": 1,
+        "post_grounding_facts": 0,
+        "post_grounding_entities": 0
+      }
+    ],
+    "smoke_corpus_inputs_used": 0,
+    "normal_pipeline_smoke_total_tokens": 11953,
+    "normal_pipeline_smoke_input_tokens": 9047,
+    "normal_pipeline_smoke_output_tokens": 2906,
+    "smoke_tokens_are_dream_tokens": false,
+    "persistence_verification_passed": false
+  },
+  "blockers": [
+    "One unchanged source part remains refused by the mandated provider route under account-policy/content-block flags.",
+    "No downstream FrontierMemory task environments or verifiers obtained."
+  ],
+  "missing_environment_keys": [],
+  "published_reference": {
+    "source": "https://www.frontiermemory.com/blog/v1/",
+    "minimum_full_pass_rate_percent": 13.3,
+    "maximum_full_pass_rate_percent": 73.3,
+    "locally_reproduced": false
+  },
+  "tasks": [
+    {
+      "id": "awilix-release-tier-explicit",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "awilix-release-tier-implicit",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "cattrs-compositional-changelog",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-marketing-content-gap-analysis",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "customer-delivery-contextual-preferences",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "enterpriseops-csm-26d1b04a",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "cookie-store-compositional-changelog",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-brightpath-market-share",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "dapt-intrusion-detection-workflow-learning",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-sales-partnership-contract",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-eurogrid-curtailment",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "apex-brightpath-seat-surplus",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "automationbench-sales-chatgpt-proposal-customization",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "enterpriseops-teams-2725d17f",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    },
+    {
+      "id": "build-word2vec-pipeline",
+      "status": "not_run",
+      "remnic_score": null,
+      "no_memory_score": null
+    }
+  ]
+}

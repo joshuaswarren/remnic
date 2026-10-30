@@ -206,14 +206,14 @@ test("embedded-quote grounding fallback is off-mode zero-diff", () => {
     facts: [
       {
         category: "fact" as const,
-        content: "Maya's relocation: moved to Seattle last spring",
+        content: "Maya's relocation timeline: moved to Seattle last spring",
         confidence: 0.9,
         tags: [],
         quote: "moved to Seattle last spring",
       },
       {
         category: "fact" as const,
-        content: "Maya moved to Seattle last spring",
+        content: "Maya relocated to Seattle after the company shut down",
         confidence: 0.9,
         tags: [],
         quote: "moved to Seattle last spring",
@@ -225,12 +225,12 @@ test("embedded-quote grounding fallback is off-mode zero-diff", () => {
   };
   const off = filterExtractionResultBySource(result, source, source, undefined, undefined, "off");
   const shadow = filterExtractionResultBySource(result, source, source, undefined, undefined, "shadow");
-  assert.equal(shadow.facts.length, 0, "shadow must not rescue invented prefixes");
-  assert.equal(off.facts.length, 0, "off mode must not rescue quote-bearing facts");
+  assert.equal(shadow.facts.length, 0, "shadow must not rescue facts padded with invented words");
+  assert.equal(off.facts.length, 0, "off mode must not rescue facts padded with invented words");
   const on = filterExtractionResultBySource(result, source, source, undefined, undefined, "on");
   assert.deepEqual(
     on.facts.map((fact) => fact.content),
-    ["Maya's relocation: moved to Seattle last spring"],
+    ["Maya's relocation timeline: moved to Seattle last spring"],
   );
 });
 

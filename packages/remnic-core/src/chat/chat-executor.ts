@@ -60,7 +60,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     },
 
     async entityGet(name: string): Promise<string> {
-      const result = await service.entityGet(name, namespace);
+      const result = await service.entityGet(name, namespace, principal);
       return JSON.stringify(result);
     },
 

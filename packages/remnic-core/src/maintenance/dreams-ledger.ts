@@ -16,6 +16,7 @@ import path from "node:path";
 import { createReadStream, type ReadStream } from "node:fs";
 import { appendFile, lstat, mkdir, readdir, readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -553,6 +554,7 @@ async function listMemoryFiles(memoryDir: string): Promise<string[]> {
     }
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
+      if (isMacOsReplicationJunkBasename(entry.name)) continue;
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         // Skip state/ and archive/ subdirs.

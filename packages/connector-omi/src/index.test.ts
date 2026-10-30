@@ -186,3 +186,52 @@ test("legacy day-window export names still resolve from the entry point", () => 
   assert.deepEqual(zonedDayBounds("2026-06-10", "America/Chicago"), bounds);
   assert.equal(zonedDayStartIso("2026-06-10", "America/Chicago"), bounds.startIso);
 });
+
+test("Omi ingest keeps every conversation and text when segment timestamps overflow", async () => {
+  const stub = stubFetch((url) => {
+    const offset = Number(url.searchParams.get("offset"));
+    return offset === 0 ? Array.from({ length: 100 }, (_, i) => ({
+      id: `c-${i}`,
+      started_at: "2026-06-10T12:00:00Z",
+      finished_at: null,
+      transcript_segments: [
+        { text: "Keep this text.", start: 1e300, end: -1e300 },
+        { text: "And this timed segment.", start: 2, end: 4 },
+      ],
+    })) : [{
+      id: "last",
+      created_at: "2026-06-10T14:00:00Z",
+      started_at: null,
+      finished_at: null,
+      transcript_segments: null,
+    }];
+  });
+  try {
+    const connector = createOmiConnector({ settings: settings(), timezone: "UTC" });
+    const first = await connector.fetchConversations({ date: "2026-06-10", timezone: "UTC" });
+    assert.deepEqual(first.conversations.map((c) => c.id),
+      Array.from({ length: 100 }, (_, i) => `c-${i}`));
+    assert.equal(first.nextCursor, "100");
+    for (const conversation of first.conversations) {
+      assert.deepEqual(conversation.segments.map((segment) => segment.text),
+        ["Keep this text.", "And this timed segment."]);
+      assert.equal(conversation.segments[0].startIso, undefined);
+      assert.equal(conversation.segments[0].endIso, undefined);
+      assert.equal(conversation.segments[1].startIso, "2026-06-10T12:00:02.000Z");
+      assert.equal(conversation.segments[1].endIso, "2026-06-10T12:00:04.000Z");
+      assert.equal(conversation.endIso, undefined);
+    }
+    const last = await connector.fetchConversations({
+      date: "2026-06-10", timezone: "UTC", cursor: first.nextCursor,
+    });
+    assert.deepEqual(last.conversations.map((c) => c.id), ["last"]);
+    assert.equal(last.conversations[0].startIso, "2026-06-10T14:00:00Z");
+    assert.equal(last.conversations[0].endIso, undefined);
+    assert.deepEqual(last.conversations[0].segments, []);
+    assert.equal(last.nextCursor, null);
+    assert.deepEqual(stub.urls.map((url) => url.searchParams.get("offset")), ["0", "100"]);
+    assert.ok(stub.urls.every((url) => url.searchParams.get("limit") === "100"));
+  } finally {
+    stub.restore();
+  }
+});

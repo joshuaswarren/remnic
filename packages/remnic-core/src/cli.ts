@@ -13,6 +13,7 @@ import { ThreadingManager } from "./threading.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { utcDayRange } from "./transcript.js";
 import { padEndDisplay, truncateGraphemeSafe } from "./whitespace.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
 import { registerMeetingsCommands } from "./cli/meetings-commands.js"; import { registerDeepRecallCommands } from "./cli/deep-recall-commands.js"; import { registerRecallNavigationCommands } from "./cli/recall-navigation-commands.js"; import { registerMemoryBrowseCommands } from "./cli/memory-browse-commands.js";
 import { registerExportOkfCommand, registerOkfCommands } from "./cli/okf-commands.js";
@@ -3334,7 +3335,6 @@ export async function resolveMemoryDirForNamespace(
   }
   return candidate;
 }
-
 /**
  * Walk every recall category directory under `memoryDir` recursively and invoke
  * `visit` for every `*.md` file. The directory set is `RECALL_FALLBACK_DIRS`
@@ -3392,6 +3392,7 @@ async function walkMemoryMarkdownFiles(
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue; // never follow symlinked entries
       const entryName = typeof entry.name === "string" ? entry.name : entry.name.toString("utf-8");
+      if (isMacOsReplicationJunkBasename(entryName)) continue;
       const fullPath = path.join(dir, entryName);
       try {
         assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
@@ -3412,7 +3413,6 @@ async function walkMemoryMarkdownFiles(
     await walk(root);
   }
 }
-
 /**
  * List absolute paths of every `*.md` file under each recall category directory
  * of `memoryDir` (facts/, corrections/, decisions/, ...; see

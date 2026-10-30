@@ -620,6 +620,28 @@ test("secure-store migration keeps namespaced file AAD readable through memory r
   }
 });
 
+test("secure-store migration encrypts per-session buffer state files", async () => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-secure-store-buffer-session-"));
+  try {
+    const sessionPath = path.join(memoryDir, "state", "buffer", "session-a.json");
+    await mkdir(path.dirname(sessionPath), { recursive: true });
+    await writeFile(sessionPath, JSON.stringify({ key: "session-a", turns: [] }), "utf8");
+
+    const key = deriveKeyScrypt("buffer-session", Buffer.alloc(KDF_SALT_LENGTH, 0x66), FAST_SCRYPT);
+    const migrated = await migrateMemoryDirToEncrypted(memoryDir, key);
+
+    assert.equal(migrated.encrypted, 1);
+    assert.deepEqual(migrated.errors, []);
+    assert.equal(isEncryptedFile(await readFile(sessionPath)), true);
+    assert.equal(
+      await readMaybeEncryptedFile(sessionPath, key, memoryDir),
+      JSON.stringify({ key: "session-a", turns: [] }),
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("secure-store migration treats missing memory roots as empty", async () => {
   const tempRoot = await mkdtemp(path.join(tmpdir(), "remnic-secure-store-missing-root-"));
   try {

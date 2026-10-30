@@ -5,6 +5,7 @@ import path from "node:path";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import type { MemoryFile } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 
 export interface SupersessionAuditLookup {
   correctionsDir: string;
@@ -27,6 +28,7 @@ export async function hasSupersessionAudit(
   }
 
   for (const entry of entries) {
+    if (isMacOsReplicationJunkBasename(entry.name)) continue;
     if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
     const memory = await lookup.readMemoryByPath(path.join(lookup.correctionsDir, entry.name));
     if (

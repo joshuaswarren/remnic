@@ -17,14 +17,17 @@
  *   - Spec: docs/ideas/parallel-specialized-retrieval.md
  */
 
+import { lstat, readFile, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
-import { log } from "./logger.js";
-import type { QmdSearchResult } from "./types.js";
-import type { QmdClient } from "./qmd.js";
-import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
 import { isAbortError } from "./abort-error.js";
+import { log } from "./logger.js";
+import type { QmdClient } from "./qmd.js";
 import { normalizeRecallTokens } from "./recall-tokenization.js";
+import { isEncryptedFile } from "./secure-store/secure-fs.js";
+import { isTemporalQuery, recencyWindowBoundsFromPrompt } from "./temporal-index.js";
+import type { QmdSearchResult } from "./types.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
+import { isShapedUnnamedEntityRecord } from "./utils/malformed-entity-record.js";
 
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -117,6 +120,7 @@ async function resolveContainedRegularFile(
  * QmdSearchResult[]. Zero LLM inference; pure file I/O.
  *
  * Cost: readdir on entities/ + filename scoring. Typically <5ms.
+ * Scored hits are read, up to the result cap, so a malformed record is not returned.
  *
  */
 // Agents scan one namespace storage dir and return absolute paths. Contextual
@@ -152,9 +156,9 @@ export async function runDirectAgent(
     const queryTokens = tokenize(query);
     if (queryTokens.length === 0) return [];
 
-    const results: ParallelSearchResult[] = [];
+    const scored: Array<{ nameWithoutExt: string; safePath: string; score: number }> = [];
     for (const entry of entries) {
-      if (!entry.endsWith(".md")) continue;
+      if (isMacOsReplicationJunkBasename(entry) || !entry.endsWith(".md")) continue;
 
       // Filename tokens: split on hyphens (normalizeEntityName uses hyphens)
       const nameWithoutExt = entry.slice(0, -3);
@@ -166,14 +170,29 @@ export async function runDirectAgent(
       const fullPath = path.join(entitiesDir, entry);
       const safePath = await resolveContainedRegularFile(memoryDir, fullPath, canonicalRoot);
       if (!safePath) continue;
+      scored.push({ nameWithoutExt, safePath, score });
+    }
 
+    scored.sort((a, b) => b.score - a.score);
+    const results: ParallelSearchResult[] = [];
+    for (const hit of scored) {
+      if (results.length >= maxResults) break;
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(hit.safePath);
+      } catch {
+        continue;
+      }
+      // Ciphertext has no heading. The secure resolver decrypts after this
+      // candidate is kept; this scan does not look up a key.
+      if (!isEncryptedFile(bytes) && isShapedUnnamedEntityRecord(bytes.toString("utf8"))) continue;
       results.push(
         namespaceRelativeResult(
           {
-            docid: nameWithoutExt,
-            path: safePath,
+            docid: hit.nameWithoutExt,
+            path: hit.safePath,
             snippet: "", // populated by augmentWithDirectAndTemporal after merge
-            score,
+            score: hit.score,
             transport: "scoped_prefilter",
             agentSource: "direct",
           },
@@ -183,9 +202,7 @@ export async function runDirectAgent(
       );
     }
 
-    return results
-      .sort((a, b) => b.score - a.score)
-      .slice(0, maxResults);
+    return results;
   } catch (err) {
     log.debug(`DirectFactAgent error: ${err}`);
     return [];

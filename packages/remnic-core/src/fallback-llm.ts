@@ -46,6 +46,7 @@ export {
 export interface FallbackLlmOptions {
   temperature?: number;
   maxTokens?: number;
+  reasoningHeadroomTokens?: number; // Responses API only: extra max_output_tokens for reasoning (they count against it); unset adds none
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Set the Responses API storage policy. Other transports ignore this value. */
@@ -764,17 +765,16 @@ export class FallbackLlmClient {
       return await this.callOllamaChat(effectiveConfig, model.modelId, messages, options);
     }
 
+    const wanted = Math.floor(options.reasoningHeadroomTokens ?? 0);
+    const headroom = Number.isFinite(wanted) ? Math.max(0, wanted) : 0; // NaN and Infinity add nothing
+    const capped = options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom };
+
     if (
       model.providerConfig.api === "openai-responses" ||
       model.providerConfig.api === "openai-codex-responses" ||
       model.providerConfig.api === "azure-openai-responses"
     ) {
-      return await this.callOpenAIResponses(
-        effectiveConfig,
-        model.modelId,
-        messages,
-        options,
-      );
+      return await this.callOpenAIResponses(effectiveConfig, model.modelId, messages, capped);
     }
 
     // For OpenAI-compatible chat-completions APIs (openai-completions,
@@ -785,7 +785,7 @@ export class FallbackLlmClient {
       effectiveConfig,
       model.modelId,
       messages,
-      options,
+      capped,
       shouldAssumeOpenAiChatCompletions(effectiveConfig.baseUrl),
     );
   }

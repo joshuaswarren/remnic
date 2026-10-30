@@ -26,6 +26,7 @@ import {
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { EmbeddingIndexStorageError } from "./embedding-index-storage.js";
 import { isEmbeddingGenerationMarkerPath, matchesOfflineSyncDefaultExclude } from "./offline-sync-exclude-globs.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import {
   applyIncomingEmbeddingGenerations,
   assertEmbeddingGenerationStillIncluded,
@@ -699,6 +700,7 @@ function shouldExcludeRelPath(relPosix: string, includeTranscripts: boolean): bo
   if (parts.some((part) => part === SYNC_INTERNAL_DIR)) return true;
   if (!includeTranscripts && parts[0] === "transcripts") return true;
   const basename = parts[parts.length - 1] ?? "";
+  if (parts.some((part) => isMacOsReplicationJunkBasename(part))) return true;
   if (isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-")) return true;
   if (EXCLUDED_FILE_NAMES.has(basename)) return true;
   if (EXCLUDED_FILE_PREFIXES.some((prefix) => basename.startsWith(prefix))) return true;
@@ -748,6 +750,11 @@ function shouldIgnoreIncomingRuntimePath(relPosix: string): boolean {
   if (isInternalRemnicStatePath(relPosix)) return true;
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
+  // Drop Finder metadata before the structural-exclude throw. An older
+  // peer snapshot that still lists `._*` or `.DS_Store` — including a file
+  // nested under a junk directory — must not fail the whole pull; those
+  // paths are never written.
+  if (parts.some((part) => isMacOsReplicationJunkBasename(part))) return true;
   return isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-");
 }
 

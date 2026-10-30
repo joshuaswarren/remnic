@@ -135,7 +135,7 @@ import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-p
 import type { GraphRecallExpansionOptions, GraphRecallExpansionResult } from "./orchestration/graph-recall-coordinator.js";
 import type { ArtifactRecallOptions } from "./orchestration/recall-search-prefilter.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
-import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
+import { TurnIngestionCoordinator, type IngestReplayBatchOptions, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
@@ -238,6 +238,7 @@ import {
 } from "./maintenance/pattern-reinforcement.js";
 import { refreshConvergedNamespaces } from "./convergence-refresh.js";
 import { ModelRegistry } from "./model-registry.js";
+import { extractionWindowBudgetChars } from "./extraction-window-drain.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "./retrieval.js";
 import {
   mergeWithAgentResults,
@@ -969,6 +970,7 @@ export class Orchestrator {
     this._orchestratorInitCoordinator?.retireStartupEpoch();
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
+    await this._orchestratorInitCoordinator?.drainEntityMigrations();
     if (this.wearablesAutoSyncHandle) {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
@@ -2970,37 +2972,7 @@ export class Orchestrator {
 
   async ingestReplayBatch(
     turns: ReplayTurn[],
-    options: {
-      deadlineMs?: number;
-      archiveLcm?: boolean;
-      abortSignal?: AbortSignal;
-      /**
-       * Pin extraction writes to this namespace instead of deriving one from
-       * `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))` + the
-       * coding overlay (#1495). The access `observe` surface resolves a single
-       * effective scope plan and passes its `writeNamespace` here so the
-       * extracted memories land in the SAME namespace as LCM archival,
-       * objective-state snapshots, and project-scoped recall — without relying
-       * on re-deriving the namespace from a namespace-prefixed session key.
-       * Same hook bulk-import uses (#460).
-       */
-      writeNamespaceOverride?: string;
-      /**
-       * Pin the provenance PRINCIPAL instead of deriving it from
-       * `resolvePrincipal(turn.sessionKey)` (#1495 thread 1). The access
-       * `observe` surface authenticates the caller at the transport layer and
-       * passes its resolved principal here so extracted-memory provenance uses
-       * the SAME identity the surface authorized — independent of storage
-       * routing (`writeNamespaceOverride`) and of whatever `resolvePrincipal`
-       * would parse from the raw session key. Mirrors the recall path's
-       * `principalOverride` (issue #570 PR 4).
-       */
-      principalOverride?: string;
-      /** Forward the observe surface's resolved scope-profile write plan (#3051). */
-      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      /** Persist the authenticated session owner on buffered turns. */
-      sessionOwnerPrincipal?: string;
-    } = {},
+    options: IngestReplayBatchOptions = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.ingestReplayBatch(
       turns,
@@ -3072,13 +3044,8 @@ export class Orchestrator {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -3094,6 +3061,26 @@ export class Orchestrator {
       reason,
       options,
     );
+  }
+
+  /**
+   * Max conversation characters the extraction model can take as input
+   * (context window the ModelRegistry learned, capped by
+   * `localLlmMaxContext` when set). Exposed for the trigger-drain chunking
+   * in the turn-ingestion coordinator so an oversized buffer window is
+   * drained in fitting chunks instead of failing whole.
+   */
+  private extractionWindowBudgetChars(): number {
+    // Object.create(Orchestrator.prototype) test doubles skip the constructor,
+    // so neither modelRegistry nor config exists there: report "no budget".
+    if (!this.modelRegistry) return Number.POSITIVE_INFINITY;
+    return extractionWindowBudgetChars({
+      registry: this.modelRegistry,
+      localExtractionActive:
+        this.config.modelSource !== "gateway" && resolveLocalLlmCapabilities(this.config).localLlm,
+      model: this.config.localLlmModel,
+      maxContext: this.config.localLlmMaxContext,
+    });
   }
 
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {

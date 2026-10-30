@@ -38,7 +38,7 @@ import {
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
-import { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
+import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
   CONSOLIDATION_RESPONSE_SCHEMA,
@@ -54,7 +54,7 @@ import {
 } from "./extraction-prompt.js";
 import { containsExtractionPlaceholder, extractionAttributes, extractionCueAnchors, extractionText, isPlainRecord } from "./extraction-normalization.js";
 import { applyExtractionSpanMaterialization, bindLocalExtractionPrompt, buildSpanMaterializeTurns, stripUntrustedFactSpans, truncateLocalExtractionConversation, type SpanMaterializeTurn } from "./extraction-span-materialize.js";
-import { extractionProviderJsonSchema } from "./extraction-span-wire.js";
+import { extractionProviderJsonSchema, extractionProviderResponseFormat } from "./extraction-span-wire.js";
 import { resolveLocalLlmCapabilities, resolveMemoryLifecycleCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -1244,7 +1244,7 @@ export class ExtractionEngine {
             entities: [],
             questions: [],
             extractionFailure: "local_llm_error",
-            extractionFailureClass: "provider_retryable",
+            extractionFailureClass: err instanceof LocalLlmRejectedError ? "parse_empty" : classifyExtractionThrownError(err),
           };
         }
         log.info("extraction: local LLM error, falling back to gateway default AI:", err);
@@ -1494,9 +1494,8 @@ ${extractionResponseShape(this.config.extraction?.spanMode ?? "off")}
 Conversation:
 ${truncatedConversation}`;
 
-    log.debug(
-      `extractWithLocalLlm: calling localLlm.chatCompletion with prompt length ${localPrompt.length}...`,
-    );
+    log.debug(`extractWithLocalLlm: calling localLlm.chatCompletion with prompt length ${localPrompt.length}...`);
+    const failureDiag: LocalFailureDiag = {};
     const response = await this.localLlm.chatCompletion(
       [
         { role: "system", content: "You are a memory extraction system. Output valid JSON only." },
@@ -1506,15 +1505,18 @@ ${truncatedConversation}`;
         temperature: 0.1,
         maxTokens: contextSizes.maxOutputTokens,
         operation: "extraction",
+        responseFormat: extractionProviderResponseFormat(this.config.extraction?.spanMode ?? "off"),
         disableThinking: shouldEnableLocalExtractionThinking(this.config, conversation.length)
           ? false
           : undefined,
         priority: "background",
         signal,
+        failureDiag,
       },
     );
-
     if (!response?.content) {
+      const rejected = localRejectionStatus(failureDiag);
+      if (rejected !== undefined) throw new LocalLlmRejectedError(rejected); // the endpoint is up and refuses this input
       log.debug("extractWithLocalLlm: chatCompletion returned null or empty content");
       return null;
     }
@@ -1547,12 +1549,10 @@ ${truncatedConversation}`;
     log.debug("extractWithLocalLlm: JSON parse failed, attempting partial extraction...");
     const partial = this.extractPartialFacts(content);
     if (partial.facts.length > 0 || partial.entities.length > 0) {
-      log.debug(
-        `extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`,
-      );
+      log.debug(`extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`);
       return partial;
     }
-    return null;
+    throw new LocalLlmRejectedError(); // the endpoint answered and nothing in the answer is usable
   }
 
   /**

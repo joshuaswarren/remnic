@@ -183,3 +183,27 @@ test("maps Omi memories and drops empty/locked-truncated-empty content", () => {
   assert.equal(memoryToNativeMemory({ id: "m2", content: "  " }), null);
   assert.equal(memoryToNativeMemory({ id: "m3" }), null);
 });
+
+test("non-finite offsets preserve utterances without inventing timestamps", () => {
+  for (const offset of [NaN, Infinity, -Infinity, 1e300, -1e300]) {
+    const conversation = conversationToWearable({
+      id: "bad-clock",
+      started_at: "2026-06-10T14:00:00Z",
+      transcript_segments: [{ text: "Still useful.", is_user: true, start: offset, end: offset }],
+    });
+    assert.deepEqual(conversation.segments, [{
+      text: "Still useful.", speakerKey: "user", isWearer: true,
+    }]);
+  }
+  const unknownStart = conversationToWearable({
+    id: "unknown-start",
+    created_at: "2026-06-10T14:00:00Z",
+    started_at: null,
+    finished_at: null,
+    transcript_segments: [{ text: "Keep untimed text.", start: 2, end: 4 }],
+  });
+  assert.equal(unknownStart.startIso, "2026-06-10T14:00:00Z");
+  assert.equal(unknownStart.endIso, undefined);
+  assert.equal(unknownStart.segments[0].startIso, undefined);
+  assert.equal(unknownStart.segments[0].endIso, undefined);
+});

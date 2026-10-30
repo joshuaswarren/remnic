@@ -359,7 +359,13 @@ export class RemnicClient {
   async mcpListTools(options: RequestOptions = {}): Promise<McpTool[]> {
     const result = await this.mcpRequest("tools/list", {}, options);
     const tools = result.tools;
-    return Array.isArray(tools) ? tools.filter(isMcpTool) : [];
+    // A malformed catalog (no tools array) must fail the listing, not pass as
+    // an empty one: registerMcpTools would treat it as a successful
+    // zero-tool listing and leave the session silently without Remnic tools.
+    if (!Array.isArray(tools)) {
+      throw new Error("Remnic MCP tools/list returned a malformed catalog (tools is not an array)");
+    }
+    return tools.filter(isMcpTool);
   }
 
   async mcpTool(

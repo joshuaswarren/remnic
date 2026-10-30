@@ -277,6 +277,10 @@ import {
 } from "./bench-args.js";
 import { readBenchOptionValue } from "./bench-flags.js";
 import {
+  type LoCoMoReplayExtractionMode,
+  resolveLoCoMoReplayExtractionMode,
+} from "./bench-args-replay-extraction.js";
+import {
   assertCalibrationProvenanceMatches,
   validateCalibrationProvenancePinSet,
 } from "./bench-calibration-binding.js";
@@ -1387,6 +1391,7 @@ export const __benchDatasetTestHooks = {
     args: {
       publishedTrialLimit?: number;
       publishedTrialConcurrency?: number;
+      locomoReplayExtractionMode?: LoCoMoReplayExtractionMode;
       publishedTaskFilter?: string;
     },
     taskSelector?: PackageBenchTaskSelector,
@@ -2525,6 +2530,7 @@ function buildPublishedBenchmarkOptions(
   args: {
     publishedTrialLimit?: number;
     publishedTrialConcurrency?: number;
+    locomoReplayExtractionMode?: LoCoMoReplayExtractionMode;
     publishedTaskFilter?: string;
     memcorrectAdapter?: "remnic" | "prompt-only";
   },
@@ -2542,7 +2548,7 @@ function buildPublishedBenchmarkOptions(
     return {
       ...(trialLimitOptions ?? {}),
       ...(trialConcurrencyOptions ?? {}),
-      replayExtractionMode: "skip",
+      replayExtractionMode: resolveLoCoMoReplayExtractionMode(args),
       ...(taskSelector ? { taskSelector } : {}),
     };
   }
@@ -2966,7 +2972,7 @@ async function runBenchViaPackage(
       : await plan.createAdapter({
       ...plan.runtime.adapterOptions,
       ...(benchmarkId === "locomo"
-        ? { replayExtractionMode: "skip" as const }
+        ? { replayExtractionMode: resolveLoCoMoReplayExtractionMode(parsed) }
         : {}),
       ...(amaBenchProtocol.primaryJudge
         ? { judge: amaBenchProtocol.primaryJudge }

@@ -4,6 +4,84 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.36] — 2026-10-29
+
+### Fixes
+
+- Local LLM transport: `REMNIC_LOCAL_LLM_DIRECT=1` makes the widened undici pool apply even when the process installed its own global dispatcher (for example an agent runtime's managed proxy). Without it the installed dispatcher keeps its own `headersTimeout` (undici defaults to 300s; on the hosts where this was seen the proxy dispatcher enforced it), so a non-streaming completion slower than that limit dies with `fetch failed` at about 301s, whatever `localLlmTimeoutMs` says. Availability probes follow the same route. Off by default; behavior without the flag is unchanged.
+
+## [v10.0.34] — 2026-10-27
+
+### Fixes
+
+- A fail-closed force-flush waits for observe admission, then aborts only the in-flight extraction and drains the preserved turns. It does not cancel the preparation barrier. Replay and import stay protected, and buffer clears disarm preemption first (#3259).
+
+## [v10.0.32] — 2026-10-27
+
+### Fixes
+
+- Local LLM concurrency limiter no longer lets new recall-critical work take the last permit while a background waiter is queued, and the dispatch loop admits eligible waiters behind a temporarily ineligible head without reordering within a class.
+- Standalone startup readiness warms the default namespace's real QMD collection through the same namespace routing a memory search uses — the legacy flat-root base collection for a flat default store, the suffixed namespaced collection once the default namespace migrates under `namespaces/`, and the backend default when namespaces are disabled — instead of passing the namespace name as a QMD collection and warming a nonexistent target while `/engram/v1/health` reported ready. Legitimately empty corpora still warm on the first attempt, and cancellation/degradation propagation into the degraded gate is unchanged (#3253).
+
+## [v10.0.31] — 2026-10-27
+
+### Fixes
+
+- Observe captures are saved in the native buffer before acknowledgment, so extraction deadlines and restarts leave accepted work available for retry. Pending extraction preserves its original scope and rechecks current write permissions; explicit replay and extraction-skipping requests keep their existing behavior ([#3251](https://github.com/joshuaswarren/remnic/issues/3251)).
+
+## [v10.0.8] merged changes — 2026-10-08 to 2026-10-22
+
+Retrospective of 24 PRs merged to `main` through
+[`1bc7f64d7`](https://github.com/joshuaswarren/remnic/commit/1bc7f64d77f561deb4e78399834cdec79b915729)
+(repository version `v10.0.8`). This is not a new release or a channel
+promotion; the earlier version entries below remain unchanged. See the
+[release notes and upgrade guidance](docs/release-notes-2026-10-22.md).
+
+### Features
+
+- Correction plans accept `duplicateOf` with one target ID to draft a recoverable supersede without a model call or hard deletion. An existing `winnerId` can replace a duplicate without creating a new memory or changing derivation lineage ([#3193](https://github.com/joshuaswarren/remnic/pull/3193)).
+- The Pi adapter warns once at startup when its version differs from the daemon's advertised version; an unavailable version probe does not fail startup ([#3198](https://github.com/joshuaswarren/remnic/pull/3198)).
+
+### Fixes
+
+- MCP clients' inferred namespaces resolve to the configured default on flat daemons, while explicit scopes and namespaced-daemon isolation remain strict ([#3171](https://github.com/joshuaswarren/remnic/pull/3171)).
+- Offline-sync exclude globs match paths containing line terminators without allowing `*` to cross directory separators ([#3172](https://github.com/joshuaswarren/remnic/pull/3172)).
+- Warm embedding caches revalidate peer-process index publications, including interrupted/recovered generations; node-local embedding coordination markers are not replicated ([#3176](https://github.com/joshuaswarren/remnic/pull/3176)).
+- Entity mention indexes stay warm across metadata-only score/lifecycle writes. Text changes trigger coalesced background reconciliation; scope, key and alias changes still invalidate the relevant index ([#3178](https://github.com/joshuaswarren/remnic/pull/3178)).
+- Offline `prepare`, `status`, `sync` and watch passes finish pending digest-cache writes before returning, including on failure, so delayed writes cannot recreate removed state ([#3181](https://github.com/joshuaswarren/remnic/pull/3181)).
+- Harmonic source validation uses recent, complete projections instead of unconditional corpus scans, resolves imported frontmatter IDs and cold paths, and persists bounded path/miss lookups. Ready search results are formatted before harmonic enrichment is awaited; recall scope, limits and deadlines are unchanged ([#3187](https://github.com/joshuaswarren/remnic/pull/3187), [#3206](https://github.com/joshuaswarren/remnic/pull/3206)).
+- Unscoped recent-transcript reads skip daily partitions that cannot contribute to the requested window, retaining the clock-skew margin and legacy-file behavior ([#3189](https://github.com/joshuaswarren/remnic/pull/3189)).
+- Scheduled projection rebuilds use a child process, raw-free corpus reads and a streamed lifecycle ledger to reduce daemon heap pressure. Unlocked encrypted stores rebuild in-process; a configurable heap guard can postpone scheduled work ([#3192](https://github.com/joshuaswarren/remnic/pull/3192)).
+- Correction classification has a per-attempt timeout, caller cancellation and gateway fallback when the local model is unavailable ([#3193](https://github.com/joshuaswarren/remnic/pull/3193)).
+- Already-opted-in standalone calibration can use the daemon's configured local LLM when no gateway chain is configured. `calibrationEnabled` remains default-off; this is not flag graduation ([#3196](https://github.com/joshuaswarren/remnic/pull/3196)).
+- Explicit Pi REST/MCP stores add bounded jitter and one transient-failure retry using the same idempotency key. Recall retry behavior and deadlines are unchanged ([#3198](https://github.com/joshuaswarren/remnic/pull/3198)).
+- The supported QMD install is a pinned, patched 2.8.3 build with abandoned-search cancellation and preserved JSON-RPC stdout. Stock packages with the same version string are not equivalent; see the existing [install/migration guide](docs/qmd-2.8.3.md). This records the already-merged pin, not held follow-ups ([#3174](https://github.com/joshuaswarren/remnic/pull/3174)).
+
+### Security
+
+- MCP SDK upgrades from 1.30.0 through 1.32.0 bring issuer-bound OAuth storage, bounded HTTP/batch handling, session-isolated task storage and safer HTTP-client redirects. Custom OAuth stores/providers and cross-origin endpoints need the compatibility review below; optional SDK controls are not automatically enabled by a dependency bump ([#3170](https://github.com/joshuaswarren/remnic/pull/3170), [#3195](https://github.com/joshuaswarren/remnic/pull/3195)).
+- The AI review gate accepts an allowlisted independent agent's formal approval only on the exact current head, rejects self/stale/untrusted verdicts, and removes the no-verdict success waiver while retaining existing exceptions and blockers ([#3204](https://github.com/joshuaswarren/remnic/pull/3204)).
+
+### Docs and maintenance
+
+- Updated model-lab's `datasets` pin from 3.6.0 to 5.0.1; this major-labeled dependency PR precedes the repository's `v10.0.0` version transition, not a newly validated model release ([#3169](https://github.com/joshuaswarren/remnic/pull/3169)).
+- Removed tracked scratch/editor backups and documented ordered offline-sync glob exclusions ([#3172](https://github.com/joshuaswarren/remnic/pull/3172)).
+- Clarified promotion check ordering, exact stable-tag native-helper dispatch and manual package seeding; retained fail-closed handling of ambiguous check records ([#3173](https://github.com/joshuaswarren/remnic/pull/3173)).
+- Added real-filesystem upload-staging coverage and consolidated ownership of the staging type, without changing staging behavior ([#3177](https://github.com/joshuaswarren/remnic/pull/3177)).
+- Clarified agent review/merge duties and explicit holds; the subsequent review-gate change above supersedes the old no-verdict waiver ([#3179](https://github.com/joshuaswarren/remnic/pull/3179), [#3204](https://github.com/joshuaswarren/remnic/pull/3204)).
+- Changed the project funding platform from Buy Me a Coffee to Ko-fi ([#3183](https://github.com/joshuaswarren/remnic/pull/3183)).
+- Added projection/entity-snippet/digest-cache/sleep regressions and shared equivalent non-cancellable sleep implementations without changing caller delays ([#3201](https://github.com/joshuaswarren/remnic/pull/3201)).
+- Updated the bench UI's Vite development dependency from 7.3.6 to 7.3.7 ([#3209](https://github.com/joshuaswarren/remnic/pull/3209)).
+- Added CLI argument-boundary tests for literal text, flag names/order and missing or negative values; parser runtime behavior is unchanged ([#3210](https://github.com/joshuaswarren/remnic/pull/3210)).
+
+### Breaking changes and migration
+
+- **Model-lab:** `datasets` crosses two upstream major versions. Preserve the dependency versions recorded in existing model manifests when reproducing older runs; review upstream loader, media-decoder, column and streaming-shuffle changes before using the new training environment ([#3169](https://github.com/joshuaswarren/remnic/pull/3169)).
+- **MCP integrations:** custom OAuth storage must accept `issuer`; custom credential providers should pass `expectedIssuer`. Configure the final endpoint URL rather than relying on cross-origin redirects after the SDK update ([#3170](https://github.com/joshuaswarren/remnic/pull/3170), [#3195](https://github.com/joshuaswarren/remnic/pull/3195)).
+- **Derived indexes:** an older projection needs an unscoped rebuild before the harmonic fast path is eligible. The merged QMD pin has a separate first-open index migration and backup/rollback requirements; use its existing guide rather than installing an unpatched same-version package ([#3187](https://github.com/joshuaswarren/remnic/pull/3187), [#3174](https://github.com/joshuaswarren/remnic/pull/3174)).
+- **New settings:** `correction.classifyTimeoutMs` defaults to 45,000 ms per attempt; `projectionRebuildHeapUsageLimit` defaults to `0.6` (`1` disables that guard). Neither is a new end-to-end recall deadline ([#3193](https://github.com/joshuaswarren/remnic/pull/3193), [#3192](https://github.com/joshuaswarren/remnic/pull/3192)).
+- **Not included:** held QMD work [#3186](https://github.com/joshuaswarren/remnic/pull/3186) and [#3200](https://github.com/joshuaswarren/remnic/pull/3200) is not represented as shipped. Main-branch inclusion also does not establish npm `beta`/`latest` promotion; see [release channels](docs/releases.md).
+
 ## [v9.69.101] — 2026-10-10
 
 ### Fixed
