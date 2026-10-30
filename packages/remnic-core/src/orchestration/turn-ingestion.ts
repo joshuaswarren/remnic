@@ -42,6 +42,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
 
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
+import { ExtractionDrain } from "./extraction-drain.js";
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
@@ -114,6 +115,8 @@ export interface TurnIngestionDeps {
     },
   ): Promise<void>;
   resolveMemoryIdOrHandle(ref: string, sessionKey?: string): string;
+  /** Max conversation chars the extraction model accepts; absent on legacy hosts (single-run behavior). */
+  extractionWindowBudgetChars?(): number;
   runExtraction(
     ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult>;
@@ -156,9 +159,10 @@ function isFlushPlanRecoveryTurn(
 }
 
 export class TurnIngestionCoordinator {
-  constructor(
-    private readonly deps: TurnIngestionDeps,
-  ) {}
+  private readonly drain: ExtractionDrain; // chunked trigger-drain (extraction-drain.ts)
+  constructor(private readonly deps: TurnIngestionDeps) {
+    this.drain = new ExtractionDrain(deps);
+  }
 
   async processTurn(
     role: "user" | "assistant",
@@ -1067,7 +1071,7 @@ export class TurnIngestionCoordinator {
             effectiveScopePlan = fresh;
           }
         }
-        const result = await this.deps.runExtraction(effectiveTurns, {
+        const result = await this.drain.run(effectiveTurns, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           clearMatchingTurns: options.clearMatchingTurns === true,
@@ -1083,7 +1087,7 @@ export class TurnIngestionCoordinator {
           principalOverride: options.principalOverride,
           scopeProfileWritePlan: effectiveScopePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
-        });
+        }, preemptable);
         settleTask(undefined, result);
       } catch (err) {
         const reason = abortSignal.reason;

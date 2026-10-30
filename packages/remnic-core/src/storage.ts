@@ -144,6 +144,7 @@ import {
 import { supersessionKeysForFact } from "./temporal-supersession.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
+import { saveDroppedExtractionChunk as saveDroppedChunk } from "./storage/dropped-extraction-chunk.js";
 import type {
   AccessTrackingEntry,
   BufferEntryState,
@@ -4799,7 +4800,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return results.filter((filePath): filePath is string => filePath !== null);
   }
 
-
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
     const factPaths: string[] = [];
@@ -5520,6 +5520,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
   async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
+  saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly import("./types.js").BufferTurn[]): Promise<string> { // storage/dropped-extraction-chunk.ts
+    return saveDroppedChunk(this.stateDir, (file, content) => this.writeStorageSecureFile(file, content), bufferKey, reason, turns);
+  }
 
   async loadMeta(): Promise<MetaState> {
     const metaPath = path.join(this.stateDir, "meta.json");
@@ -5564,8 +5567,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
-    const metaPath = path.join(this.stateDir, "meta.json");
-    await this.writeStorageSecureFile(metaPath, JSON.stringify(state, null, 2));
+    await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {
@@ -7208,10 +7210,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveTopics(topics: TopicScore[]): Promise<void> {
     const metaPath = path.join(this.stateDir, "topics.json");
     await mkdir(this.stateDir, { recursive: true });
-    await this.writeStorageSecureFile(
-      metaPath,
-      JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2)
-    );
+    await this.writeStorageSecureFile(metaPath, JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2));
     log.debug(`saved ${topics.length} topic scores`);
   }
 
