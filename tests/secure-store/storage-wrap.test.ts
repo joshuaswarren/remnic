@@ -32,6 +32,7 @@ import {
 } from "../../packages/remnic-core/src/secure-store/secure-fs.js";
 import { generateSalt } from "../../packages/remnic-core/src/secure-store/cipher.js";
 import { StorageManager } from "../../packages/remnic-core/src/storage.js";
+import { bufferSessionFileName } from "../../packages/remnic-core/src/storage/buffer-session-files.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -770,7 +771,7 @@ test("StorageManager — state and index sidecars encrypt, decrypt, and fail cle
     await storage.writeMemory("fact", "private fact hash sidecar content");
 
     const encryptedFiles = [
-      path.join(dir, "state", "buffer.json"),
+      path.join(dir, "state", "buffer", bufferSessionFileName("default")),
       path.join(dir, "state", "meta.json"),
       path.join(dir, "state", "topics.json"),
       path.join(dir, "state", "memory-actions.jsonl"),

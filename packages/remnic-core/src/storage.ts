@@ -142,9 +142,11 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
+import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import type {
   AccessTrackingEntry,
+  BufferEntryState,
   BufferState,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
@@ -5508,23 +5510,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return deleted;
   }
 
-  async loadBuffer(): Promise<BufferState> {
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    try {
-      const raw = await this.readStorageSecureFile(bufferPath);
-      return JSON.parse(raw) as BufferState;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return { turns: [], lastExtractionAt: null, extractionCount: 0 };
-    }
+  // Buffer persistence: one file per session (storage/buffer-session-files.ts).
+  private bufferFiles?: BufferSessionFiles;
+  private bufferSessionFiles(): BufferSessionFiles {
+    const io = { read: (p: string) => this.readStorageSecureFile(p), write: (p: string, c: string) => this.writeStorageSecureFile(p, c) };
+    return (this.bufferFiles ??= new BufferSessionFiles(this.stateDir, io));
   }
-
-  async saveBuffer(state: BufferState): Promise<void> {
-    await this.ensureDirectories();
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
-  }
+  async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }
+  async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
+  async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
+  async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
 
   async loadMeta(): Promise<MetaState> {
     const metaPath = path.join(this.stateDir, "meta.json");
