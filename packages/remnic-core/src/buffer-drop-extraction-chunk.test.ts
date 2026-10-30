@@ -118,3 +118,38 @@ test("a dropped chunk behind a pinned capture is removed by identity, like a suc
     assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["pinned capture"], "and a restart agrees");
   });
 });
+
+test("a failed chunk made only of deferred-retained turns can be dropped, and a restart agrees (Codex P2)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const retained = [makeTurn("s1", "retained one"), makeTurn("s1", "retained two")];
+    const live = makeTurn("s1", "live turn");
+    await buffer.retainDeferredTurns("s1", retained);
+    await buffer.addTurn("s1", live);
+    await buffer.flushPendingSave();
+
+    // The window a trigger snapshot sees is the retained turns followed by the live ones; the first chunk is retained-only.
+    const dropped = await buffer.dropExtractionChunk("s1", retained);
+
+    assert.equal(dropped, 2);
+    assert.deepEqual(buffer.getRetainedDeferredTurns("s1"), []);
+    assert.deepEqual(buffer.getTurns("s1").map((turn) => turn.content), ["live turn"]);
+    const reloaded = await restart();
+    assert.deepEqual(reloaded.getRetainedDeferredTurns("s1"), [], "retained turns stay dropped after a restart");
+    assert.deepEqual(reloaded.getTurns("s1").map((turn) => turn.content), ["live turn"]);
+  });
+});
+
+test("a chunk that spans retained and live turns drops both", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const retained = [makeTurn("s1", "retained one")];
+    const live = [makeTurn("s1", "live one"), makeTurn("s1", "live two")];
+    await buffer.retainDeferredTurns("s1", retained);
+    for (const turn of live) await buffer.addTurn("s1", turn);
+    await buffer.flushPendingSave();
+
+    const dropped = await buffer.dropExtractionChunk("s1", [...retained, live[0]!]);
+
+    assert.equal(dropped, 2);
+    assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["live two"]);
+  });
+});

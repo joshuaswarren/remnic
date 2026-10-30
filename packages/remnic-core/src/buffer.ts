@@ -1106,7 +1106,15 @@ export class SmartBuffer {
     return await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.entryFor(bufferKey);
-      const liveTurns = liveTurnsFromExtractionSnapshot(entry, turns);
+      // A window's head can be deferred-retained turns (retainDeferredTurns): take those out of the chunk first.
+      const retained = [...(entry.retainedTurns ?? [])];
+      const liveTurns: BufferTurn[] = [];
+      for (const turn of turns) {
+        const at = retained.findIndex((kept) => bufferTurnsEqual(kept, turn));
+        if (at >= 0) retained.splice(at, 1);
+        else liveTurns.push(turn);
+      }
+      const retainedDropped = (entry.retainedTurns?.length ?? 0) - retained.length;
       let remaining = entry.turns;
       if (options?.allowNonPrefix === true) {
         remaining = [...entry.turns];
@@ -1117,13 +1125,17 @@ export class SmartBuffer {
       } else {
         remaining = entry.turns.slice(matchingQueuedExtractionPrefixLength(entry.turns, liveTurns));
       }
-      const matchedCount = entry.turns.length - remaining.length;
+      const matchedCount = entry.turns.length - remaining.length + retainedDropped;
       if (matchedCount === 0) return 0;
       if (this.saveTimer) {
         clearTimeout(this.saveTimer);
         this.saveTimer = null;
       }
       entry.turns = remaining;
+      if (retainedDropped > 0) {
+        if (retained.length > 0) entry.retainedTurns = retained;
+        else delete entry.retainedTurns;
+      }
       if (bufferKey === "default") {
         this.state.turns = entry.turns;
       }

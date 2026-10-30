@@ -54,6 +54,8 @@ function drainFixture(options: {
   minChars?: number;
   /** What the buffer's drop reports; default: every turn of the chunk. */
   dropResult?: number;
+  /** The buffer's drop rejects (a failed removal). */
+  dropThrows?: boolean;
 }): DrainFixture {
   const runs: DrainFixture["runs"] = [];
   const dropped: DrainFixture["dropped"] = [];
@@ -89,6 +91,7 @@ function drainFixture(options: {
       getTurns: () => bufferTurns,
       dropExtractionChunk: async (bufferKey: string, turns: readonly BufferTurn[]) => {
         dropped.push({ bufferKey, turns: [...turns] });
+        if (options.dropThrows === true) throw new Error("disk full");
         return options.dropResult ?? turns.length;
       },
     },
@@ -624,4 +627,15 @@ test("a drop that removes nothing stops the drain and keeps the failure count (w
   await drain(fixture, turns);
   assert.equal(fixture.runs.length, 2, "the second failure reaches the threshold but the drop found nothing: the drain stops, no success is claimed");
   assert.equal(fixture.runs[1]!.turns.length, 1, "the same chunk, not the next one");
+});
+
+test("a drop whose removal throws is not success either: the drain stops on the same chunk", async () => {
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "parse_empty" };
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [fail, fail, ok], budget: 100, dropAfterFailures: 2, dropThrows: true });
+  const turns = [makeTurn("u".repeat(60)), makeTurn("v".repeat(60))];
+  await drain(fixture, turns);
+  await drain(fixture, turns);
+  assert.equal(fixture.runs.length, 2, "the third result (the next chunk) was never requested");
+  assert.equal(fixture.runs[1]!.turns.length, 1);
 });
