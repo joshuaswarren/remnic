@@ -218,6 +218,35 @@ test("namespaced recall keeps every namespace candidate and its fanout options (
   }
 });
 
+test("namespaces on: an explicit flat collection keeps its hit paths and the QMD snippet (#3194 guards)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-namespace-guard-"));
+  try {
+    const cfg = parseConfig({ memoryDir, namespacesEnabled: true });
+    const orchestrator = flatHarness(cfg);
+    // Search side: the path normalizer must leave namespace mode alone even for the primary collection.
+    const hit = { docid: "same", path: `${cfg.qmdCollection}/facts/same.md`, score: 1, snippet: "qmd snippet" };
+    orchestrator.qmd = { search: async () => [hit], hybridSearch: async () => [] };
+    const results = await orchestrator.fetchQmdMemoryResultsWithArtifactTopUp("guard", 8, 12, {
+      namespacesEnabled: true, recallNamespaces: ["default"], resolveNamespace: () => "default",
+      collection: cfg.qmdCollection, queryAwarePrefilter: EMPTY_PREFILTER,
+      searchOptions: { candidateLimit: 96, explain: true },
+    });
+    assert.deepEqual(results.map((r) => r.path), [hit.path], "namespace-mode hit paths are not rewritten");
+
+    // Render side: a hydrated memory in namespace mode keeps QMD's snippet (the stored body is for flat recall only).
+    const { id } = await orchestrator.storage.writeMemory("preference", "Stored body that flat recall would render.");
+    const memory = await orchestrator.storage.getMemoryById(id);
+    assert.ok(memory);
+    const input = [{ docid: "qmd-hash", path: memory.path, snippet: "qmd snippet for the namespaced row", line: 7, score: 1 }];
+    const filtered = await orchestrator.filterSearchResultsForRecall(input, undefined, { recallNamespaces: ["default"] });
+    assert.equal(filtered.results.length, 1);
+    assert.equal(filtered.results[0]?.snippet, "qmd snippet for the namespaced row");
+    assert.equal(filtered.results[0]?.line, 7);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test("flat explicit cold and foreign collections retain their candidates and collection selection (#3194)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-collection-parity-"));
   try {
