@@ -1490,6 +1490,8 @@ test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Resp
     await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
     await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: -5 });
     await llm.chatCompletion(messages, { temperature: 0, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: Number.POSITIVE_INFINITY });
+    assert.equal(bodies[5].max_output_tokens, 64, "an infinite headroom adds nothing (it would serialize as null)");
     assert.equal(bodies[0].max_output_tokens, 8, "a non-finite headroom adds nothing");
     assert.equal(bodies[1].max_output_tokens, 64 + 1024, "headroom is added on top of the compact budget");
     assert.equal(bodies[2].max_output_tokens, 64, "no headroom option: exactly maxTokens, as before");

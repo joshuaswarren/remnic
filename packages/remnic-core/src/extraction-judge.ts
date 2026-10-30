@@ -643,6 +643,8 @@ export async function judgeFactDurability(
         // telemetry event reflects the true state rather than always 0.
         const priorDefers = deferCountMap.get(hash) ?? 0;
         deferCountMap.delete(hash);
+        priorDefersSeen.set(hash, 0);
+        deferredThisCall.delete(hash);
         const v: JudgeVerdict = {
           durable: true,
           reason: "Approved by default (judge unavailable or parse error)",
