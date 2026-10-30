@@ -30,6 +30,8 @@ type FakeRunResult = {
   retainedBuffer?: boolean;
   persistedCount?: number;
   durableOutputCount?: number;
+  /** Block until the run's abort signal fires, then throw a generic AbortError (no reason). */
+  waitForAbort?: boolean;
 };
 
 function makeTurn(content: string, sessionKey = "sess-1"): BufferTurn {
@@ -101,6 +103,13 @@ function drainFixture(options: {
       runs.push({ turns: [...turns], options: runOptions });
       if (next instanceof Error) throw next;
       if (next === undefined) throw new Error(`unexpected extraction attempt #${runs.length}`);
+      if (next.waitForAbort === true) {
+        await new Promise<void>((_, reject) => {
+          const fail = () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+          if (runOptions.abortSignal?.aborted) fail();
+          else runOptions.abortSignal?.addEventListener("abort", fail, { once: true });
+        });
+      }
       const result: ExtractionRunResult = {
         status: next.status,
         persistedCount: next.persistedCount ?? 0,
@@ -491,4 +500,51 @@ test("non-preemptable drains register no preemption between chunks", async () =>
 
   assert.equal(fixture.runs.length, 2);
   assert.equal(fixture.preemptRegistrations.length, 0);
+});
+
+test("the unextracted tail of a qualified window stays eligible on the next attempt (codex P1)", async () => {
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true };
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  // First attempt: the user chunk drains, the assistant-only chunk fails and stays in the buffer.
+  const fixture = drainFixture({ runResults: [ok, fail, ok, ok], budget: 100, dropAfterFailures: 3 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.runs.length, 2);
+
+  // Next attempt sees only the retained assistant turn: no user turn, one chunk. It is the tail of a window that qualified.
+  await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.runs.length, 3);
+  assert.equal(fixture.runs[2]!.options.skipUserTurnThreshold, true, "the tail keeps the window's eligibility");
+  assert.equal(fixture.runs[2]!.options.skipCharThreshold, true);
+
+  // The window is done: the same shape of content arriving later is judged on its own.
+  await drain(fixture, [makeAssistantTurn("a".repeat(60))]);
+  assert.equal(fixture.runs.length, 4);
+  assert.notEqual(fixture.runs[3]!.options.skipUserTurnThreshold, true, "eligibility does not outlive the window");
+});
+
+test("a tail's eligibility never applies to unrelated content", async () => {
+  const fail: FakeRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true };
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({ runResults: [ok, fail, ok], budget: 100, dropAfterFailures: 3 });
+  await drain(fixture, [makeTurn("u".repeat(60)), makeAssistantTurn("a".repeat(60))]);
+
+  await drain(fixture, [makeAssistantTurn("z".repeat(60))]);
+  assert.equal(fixture.runs.length, 3);
+  assert.notEqual(fixture.runs[2]!.options.skipUserTurnThreshold, true);
+});
+
+test("a flush that preempts a later chunk surfaces the preemption reason (codex P1)", async () => {
+  const ok: FakeRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
+  const fixture = drainFixture({
+    runResults: [ok, { status: "skipped", waitForAbort: true }],
+    budget: 100,
+    dropAfterFailures: 3,
+  });
+  const turns = [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))];
+  const done = drain(fixture, turns, { preemptable: true });
+  while (fixture.runs.length < 2) await new Promise((resolve) => setImmediate(resolve));
+  fixture.preemptRegistrations[0]!();
+  await done;
+  assert.equal(fixture.settled.length, 1);
+  assert.ok(isPreemptedExtraction(fixture.settled[0]!.error), "the host sees a preemption, not a generic abort");
 });

@@ -55,6 +55,15 @@ export class ExtractionDrain {
    */
   private readonly failures = new Map<string, { fingerprint: string; count: number }>();
 
+  /**
+   * Buffer key to the first turn of the chunk a qualified window stopped on.
+   * The rest of such a window stays eligible on the next attempt even when it
+   * is assistant-only or short: the window passed the thresholds as a whole,
+   * and re-judging its tail would clear it unextracted. Cleared when the
+   * window drains; one entry per key.
+   */
+  private readonly qualified = new Map<string, string>();
+
   constructor(private readonly deps: ExtractionDrainDeps) {}
 
   private failureCount(bufferKey: string, chunk: readonly BufferTurn[]): number {
@@ -96,11 +105,18 @@ export class ExtractionDrain {
       Number.isFinite(budgetChars) &&
       budgetChars > 0;
     const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];
-    if (chunks.length <= 1) return await this.deps.runExtraction(turns, runOptions);
+    const resumed =
+      chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
+    const resumedOptions = resumed ? { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true } : runOptions;
+    if (chunks.length <= 1) {
+      const single = await this.deps.runExtraction(turns, resumedOptions);
+      if (resumed && classifyDrainResult(single) === "drained") this.qualified.delete(runOptions.bufferKey);
+      return single;
+    }
     // Eligibility (minimum user turns) belongs to the whole window: a window
     // that never qualified keeps the single-run path and its threshold skip.
     const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
-    if (!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) {
+    if (!resumedOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) {
       return await this.deps.runExtraction(turns, runOptions);
     }
     // The window qualified as a whole; its chunks must not be re-judged one by
@@ -111,9 +127,11 @@ export class ExtractionDrain {
     const dropAfter = this.deps.config.extractionChunkDropAfterFailures;
     let aggregate: ExtractionRunResult | null = null;
     for (const [position, chunk] of chunks.entries()) {
+      this.qualified.set(bufferKey, chunkFingerprint(chunk.slice(0, 1)));
       let chunkOptions = baseOptions;
+      let preempt: AbortController | undefined;
       if (preemptable && position > 0) {
-        const preempt = new AbortController();
+        preempt = new AbortController();
         this.deps.extractionQueueCoordinator.beginPreemptable(() => preempt.abort(preemptedExtractionError()));
         chunkOptions = {
           ...baseOptions,
@@ -125,7 +143,9 @@ export class ExtractionDrain {
       try {
         result = await this.deps.runExtraction(chunk, chunkOptions);
       } catch (err) {
-        if (isAbortError(err)) throw err;
+        // The chunk-local abort leaves the outer signal untouched, so hand back the
+        // preemption reason the host looks for (as it does for the first chunk).
+        if (isAbortError(err)) throw preempt?.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
         failures += 1;
         if (failures < dropAfter) {
           this.setFailureCount(bufferKey, chunk, failures);
@@ -169,6 +189,7 @@ export class ExtractionDrain {
       // Retain the remaining window for the next trigger (existing behavior).
       return mergeDrainResults(aggregate, result);
     }
+    this.qualified.delete(bufferKey);
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
   }
 
