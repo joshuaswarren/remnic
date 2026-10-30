@@ -5,7 +5,7 @@
  * schema is mode-aware so off-mode structured output cannot advertise `span`.
  */
 
-import { zodToJsonSchema } from "zod-to-json-schema";
+import { z } from "zod";
 import type { ExtractionSpanConfig } from "./extraction-span-config.js";
 import { parseSpanOffsets, type ParsedSpan } from "./extraction-span.js";
 import { ExtractionProviderOutputSchema } from "./schemas.js";
@@ -19,13 +19,16 @@ export function applySpanMode(opts: {
   return parseSpanOffsets(opts.text, { start: opts.start, end: opts.end }, opts.enabled);
 }
 
-const JSON_SCHEMA_OPTS = { $refStrategy: "none" as const, effectStrategy: "input" as const };
-
-const EXTRACTION_PROVIDER_JSON_SCHEMA_WITH_SPAN = zodToJsonSchema(
+// zod 4 ships toJSONSchema natively; zod-to-json-schema emits an empty
+// document for v4 schemas, so the dependency is dropped here. `io: "input"`
+// matches the old effectStrategy: "input" (advertise the input shape of
+// transforms/preprocess to providers).
+// SAFETY: z.toJSONSchema returns a JSON-Schema document — always an object at
+// the root; the record shape is what omitFactSpan walks.
+const EXTRACTION_PROVIDER_JSON_SCHEMA_WITH_SPAN = z.toJSONSchema(
   ExtractionProviderOutputSchema,
-  JSON_SCHEMA_OPTS,
+  { target: "draft-7", io: "input" },
 ) as Record<string, unknown>;
-
 type FactItems = {
   properties?: Record<string, unknown>;
   required?: string[];

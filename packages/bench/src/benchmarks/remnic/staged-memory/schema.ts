@@ -64,7 +64,7 @@ export const StagedMemoryFixtureManifestV1Schema = z
         distractors: z.number().int().nonnegative(),
       })
       .strict(),
-    files: z.record(hex64),
+    files: z.record(z.string(), hex64),
     createdAt: z.literal("1970-01-01T00:00:00.000Z"),
     licenses: z.array(z.object({ source: nonEmpty, license: nonEmpty }).strict()).min(1),
     namespaces: z.array(nonEmpty).min(2),

@@ -104,7 +104,7 @@ test("invalidArgsError: names the failing field path", () => {
   assert.equal(parse.success, false);
   const msg = invalidArgsError("engram.memory_get", parse.error, MEMORY_GET_SCHEMA);
   assert.match(msg, /memory_id/);
-  assert.match(msg, /required/i);
+  assert.match(msg, /received undefined/i);
 });
 
 test("invalidArgsError: the shown example actually parses against the schema", () => {

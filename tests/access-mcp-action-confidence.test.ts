@@ -105,6 +105,6 @@ test("MCP action_confidence rejects unknown risk values before service dispatch"
     content?: Array<{ text?: string }>;
   };
   assert.equal(result.isError, true);
-  assert.match(String(result.content?.[0]?.text ?? ""), /Invalid enum value/);
+  assert.match(String(result.content?.[0]?.text ?? ""), /Invalid option/);
   assert.equal(capture.calls.length, 0);
 });

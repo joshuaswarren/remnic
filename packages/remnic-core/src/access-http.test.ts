@@ -2136,7 +2136,7 @@ test("HTTP offline snapshot rejects out-of-range baseline mtimes as validation e
     assert.equal(response.status, 400);
     assert.equal(body.code, "validation_error");
     assert.equal(body.details?.[0]?.field, "baseFiles.0.mtimeMs");
-    assert.match(body.details?.[0]?.message ?? "", /less than or equal/);
+    assert.match(body.details?.[0]?.message ?? "", /<=8640000000000000/);
     assert.equal(calls, 0);
   } finally {
     await server.stop();

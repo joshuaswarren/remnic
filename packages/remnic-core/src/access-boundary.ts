@@ -306,7 +306,7 @@ export interface OperationSpec<In, Out> {
    * #2829 category aliases) are first-class, declared truthfully instead of
    * cast into an input-equals-output shape.
    */
-  readonly schema: z.ZodType<In, z.ZodTypeDef, unknown>;
+  readonly schema: z.ZodType<In, unknown>;
   /** Handler invoked with the parsed input; throws EngramAccessInputError for domain faults. */
   readonly handler: (input: In, ctx: OperationContext) => Promise<Out>;
   /**
@@ -427,24 +427,48 @@ export function formatZodIssues(error: z.ZodError): string {
       : issue.path.length > 0 ? issue.path.join(".") : "(root)";
     const options = enumOptionsFromIssue(issue);
     const suffix = options ? `. Valid: ${options.join(", ")}` : "";
-    parts.push(`${path}: ${issue.message}${suffix}`);
+    parts.push(`${path}: ${humanReadableIssueMessage(issue, path, hasNumeric)}${suffix}`);
   }
   return parts.length > 0
     ? `request validation failed: ${parts.join("; ")}`
     : "request validation failed";
 }
 
-function enumOptionsFromIssue(issue: z.ZodIssue): readonly string[] | undefined {
-  // zod exposes accepted enum values on the issue for ZodEnum / ZodNativeEnum
-  // and on the options of invalid_union discriminators. Reading them here
+function enumOptionsFromIssue(issue: z.core.$ZodIssue): readonly string[] | undefined {
+  // zod 4 exposes accepted enum values on invalid_value issues as `values`
+  // (the v3 `options` spelling is kept as a fallback). Reading them here
   // keeps "list valid options" in ONE place rather than per handler.
-  if (issue.code === z.ZodIssueCode.invalid_enum_value) {
-    const rawOptions = (issue as { options?: unknown }).options;
-    if (Array.isArray(rawOptions)) {
-      return rawOptions.map((opt) => String(opt));
-    }
+  if (issue.code !== "invalid_value") return undefined;
+  const rawValues = "values" in issue ? issue.values : undefined;
+  return Array.isArray(rawValues) ? rawValues.map((opt) => String(opt)) : undefined;
+}
+
+/**
+ * Human-readable "must be a <type>" message for generic type mismatches
+ * (rule 51). zod 4 removed parse-time error maps, so the boundary applies
+ * this post-parse in formatZodIssues instead — same messages, one place.
+ * The caller supplies the collapsed path label and its numeric-segment
+ * verdict so this helper runs no representation checks of its own.
+ */
+function humanReadableIssueMessage(issue: z.core.$ZodIssue, pathLabel: string, hasNumericPath: boolean): string {
+  if (issue.code !== "invalid_type") return issue.message;
+  const expected = issue.expected;
+  // SAFETY: v4 invalid_type issues carry `received` at runtime; the public
+  // $ZodIssueInvalidType typing omits the field.
+  const received = (issue as { received?: string }).received;
+  if (received === "undefined") return issue.message;
+  if (hasNumericPath && expected) {
+    return `${pathLabel} must be an array of ${expected}s`;
   }
-  return undefined;
+  const fieldName = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "value";
+  switch (expected) {
+    case "string": return `${fieldName} must be a string`;
+    case "boolean": return `${fieldName} must be a boolean`;
+    case "number": return `${fieldName} must be a number`;
+    case "array": return `${fieldName} must be an array`;
+    case "object": return `${fieldName} must be an object`;
+    default: return issue.message;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,33 +482,6 @@ const registry = new Map<OperationName, BoundOperation>();
  * registration is a programming error, not a runtime input fault, so it throws
  * a plain Error (not the input-error class surfaces translate for clients).
  */
-/**
- * Error map that converts Zod's generic type-mismatch messages into
- * human-readable "must be a <type>" messages (rule 51).  Applied at the
- * boundary chokepoint so every operation gets consistent messaging
- * without per-handler boilerplate.
- */
-const humanReadableErrorMap: z.ZodErrorMap = (issue, ctx) => {
-  if (issue.code === z.ZodIssueCode.invalid_type) {
-    if (issue.received === "undefined") return { message: ctx.defaultError };
-    // Array-element type errors — collapse to field-level message.
-    if (issue.path.some((p) => typeof p === "number")) {
-      const arrField = issue.path.filter((p) => typeof p === "string").join(".");
-      return { message: `${arrField} must be an array of ${issue.expected}s` };
-    }
-    const fieldName = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "value";
-    switch (issue.expected) {
-      case "string": return { message: `${fieldName} must be a string` };
-      case "boolean": return { message: `${fieldName} must be a boolean` };
-      case "number": return { message: `${fieldName} must be a number` };
-      case "array": return { message: `${fieldName} must be an array` };
-      case "object": return { message: `${fieldName} must be an object` };
-      default: return { message: ctx.defaultError };
-    }
-  }
-  return { message: ctx.defaultError };
-};
-
 export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOperation<In, Out> {
   if (registry.has(spec.name)) {
     throw new Error(`access-boundary: operation already registered: ${spec.name}`);
@@ -492,7 +489,7 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
   const bound: BoundOperation<In, Out> = {
     spec,
     run: async (rawInput, ctx) => {
-      const parseResult = spec.schema.safeParse(rawInput, { errorMap: humanReadableErrorMap });
+      const parseResult = spec.schema.safeParse(rawInput);
       if (!parseResult.success) {
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
@@ -516,9 +513,19 @@ export function operationRequiresAuthorizedNamespace(name: OperationName): boole
   if (name === "namespace_writable") return false;
   if (IMPLICIT_HTTP_NAMESPACE_OPERATIONS.has(name)) return true;
   let schema: unknown = registry.get(name)?.spec.schema;
-  // preprocess/transform/refine each wrap ZodEffects. One unwrap left
-  // suggestion_submit looking namespace-free after the category transform.
-  while (schema instanceof z.ZodEffects) schema = schema.innerType();
+  // zod 4 has no ZodEffects. Transforms and preprocessors wrap as pipes with
+  // the base schema on the side opposite the ZodTransform. Unwrap until the
+  // base object appears — one unwrap left suggestion_submit looking
+  // namespace-free after the category transform, so the loop stays.
+  while (schema instanceof z.ZodType && !(schema instanceof z.ZodObject)) {
+    // SAFETY: pipe wrappers expose their two sides as `in` / `out`.
+    const wrapper = schema as { in?: unknown; out?: unknown };
+    const sides = [wrapper.in, wrapper.out].filter(
+      (side) => side instanceof z.ZodType && !(side instanceof z.ZodTransform),
+    );
+    if (sides.length !== 1) break;
+    schema = sides[0];
+  }
   return schema instanceof z.ZodObject && Object.hasOwn(schema.shape, "namespace");
 }
 
