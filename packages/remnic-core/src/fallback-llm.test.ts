@@ -1453,6 +1453,57 @@ test("fallback llm uses the Responses API for openai-responses transports", { co
   }
 });
 
+test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Responses API", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "responses-provider/demo-model" } } },
+    models: {
+      providers: {
+        "responses-provider": {
+          baseUrl: "https://responses.example/v1",
+          api: "openai-responses",
+          apiKey: "responses-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<{ max_output_tokens?: number }> = [];
+  // SAFETY: the stub returns the Response shape the client reads and nothing else.
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ output_text: "ok" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const messages = [{ role: "user" as const, content: "Say OK" }];
+    // Non-finite headroom is ignored, like a negative one.
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 8, reasoningHeadroomTokens: Number.NaN });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: -5 });
+    await llm.chatCompletion(messages, { temperature: 0, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: Number.POSITIVE_INFINITY });
+    assert.equal(bodies[5].max_output_tokens, 64, "an infinite headroom adds nothing (it would serialize as null)");
+    assert.equal(bodies[0].max_output_tokens, 8, "a non-finite headroom adds nothing");
+    assert.equal(bodies[1].max_output_tokens, 64 + 1024, "headroom is added on top of the compact budget");
+    assert.equal(bodies[2].max_output_tokens, 64, "no headroom option: exactly maxTokens, as before");
+    assert.equal(bodies[3].max_output_tokens, 64, "a negative headroom adds nothing");
+    assert.equal(bodies[4].max_output_tokens, 4096, "no maxTokens: the default budget is not inflated by headroom");
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm ignores echoed input_text blocks in responses output extraction", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
@@ -2118,6 +2169,49 @@ test("timeout records TimeoutError on failureDiag (issue #2891)", { concurrency:
     assert.equal(classifyAnalysisProviderError(lastError), "timeout");
   } finally {
     restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm adds reasoningHeadroomTokens to the Chat Completions token limit too", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "chat-provider/demo-model" } } },
+    models: {
+      providers: {
+        "chat-provider": {
+          baseUrl: "https://chat.example/v1",
+          api: "openai-completions",
+          apiKey: "chat-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<{ max_tokens?: number; max_completion_tokens?: number }> = [];
+  // SAFETY: the stub returns the Chat Completions shape the client reads and nothing else.
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const messages = [{ role: "user" as const, content: "Say OK" }];
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
+    const limit = (b: (typeof bodies)[number]) => b.max_completion_tokens ?? b.max_tokens;
+    assert.equal(limit(bodies[0]), 64 + 1024, "headroom is added on top of the compact budget");
+    assert.equal(limit(bodies[1]), 64, "no headroom option: exactly maxTokens, as before");
+  } finally {
+    globalThis.fetch = originalFetch;
     clearModelsJsonCache();
     clearSecretCache();
   }

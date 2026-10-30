@@ -142,9 +142,12 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
+import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
+import { saveDroppedExtractionChunk as saveDroppedChunk } from "./storage/dropped-extraction-chunk.js";
 import type {
   AccessTrackingEntry,
+  BufferEntryState,
   BufferState,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
@@ -4797,7 +4800,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return results.filter((filePath): filePath is string => filePath !== null);
   }
 
-
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
     const factPaths: string[] = [];
@@ -5508,22 +5510,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return deleted;
   }
 
-  async loadBuffer(): Promise<BufferState> {
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    try {
-      const raw = await this.readStorageSecureFile(bufferPath);
-      return JSON.parse(raw) as BufferState;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return { turns: [], lastExtractionAt: null, extractionCount: 0 };
-    }
+  // Buffer persistence: one file per session (storage/buffer-session-files.ts).
+  private bufferFiles?: BufferSessionFiles;
+  private bufferSessionFiles(): BufferSessionFiles {
+    const io = { read: (p: string) => this.readStorageSecureFile(p), write: (p: string, c: string) => this.writeStorageSecureFile(p, c) };
+    return (this.bufferFiles ??= new BufferSessionFiles(this.stateDir, io));
   }
-
-  async saveBuffer(state: BufferState): Promise<void> {
-    await this.ensureDirectories();
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
+  async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }
+  async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
+  async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
+  async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
+  saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly import("./types.js").BufferTurn[]): Promise<string> { // storage/dropped-extraction-chunk.ts
+    return saveDroppedChunk(this.stateDir, (file, content) => this.writeStorageSecureFile(file, content), bufferKey, reason, turns);
   }
 
   async loadMeta(): Promise<MetaState> {
@@ -5569,8 +5567,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
-    const metaPath = path.join(this.stateDir, "meta.json");
-    await this.writeStorageSecureFile(metaPath, JSON.stringify(state, null, 2));
+    await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {
@@ -7213,10 +7210,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveTopics(topics: TopicScore[]): Promise<void> {
     const metaPath = path.join(this.stateDir, "topics.json");
     await mkdir(this.stateDir, { recursive: true });
-    await this.writeStorageSecureFile(
-      metaPath,
-      JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2)
-    );
+    await this.writeStorageSecureFile(metaPath, JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2));
     log.debug(`saved ${topics.length} topic scores`);
   }
 

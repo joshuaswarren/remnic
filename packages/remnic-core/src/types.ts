@@ -1299,6 +1299,18 @@ export interface PluginConfig
   extractionJudgeModel: string;
   /** Maximum number of candidate facts per judge LLM batch call. */
   extractionJudgeBatchSize: number;
+  /**
+   * Per-call timeout for the judge LLM (ms). Default 20000: measured 2.1-2.5 s
+   * per compact verdict call (completion budget 24 tokens per candidate, up
+   * to 2048) on a small fast judge model; the big shared core model measured
+   * 13-22 s per compact call, 41 s verbose — raise it there. The earlier 150s
+   * default only papered over 59-305s verbose replies; sub-second budgets
+   * abort every call. On the local LLM path each attempt lasts
+   * min(localLlmTimeoutMs, extractionJudgeTimeoutMs) (localLlmTimeoutMs
+   * defaults to 180000), so a value above localLlmTimeoutMs does not lengthen
+   * an attempt: raise both settings for a slower judge model.
+   */
+  extractionJudgeTimeoutMs: number;
   /** Shadow mode: log judge verdicts but do not filter facts. Default false. */
   extractionJudgeShadow: boolean;
   /**
@@ -1685,6 +1697,13 @@ export interface PluginConfig
   extractionBreakerCooldownMs: number;
   /** Breaker open cooldown (ms) for auth/config failures (longer — provider is misconfigured). */
   extractionBreakerAuthCooldownMs: number;
+  /**
+   * Consecutive failed extraction attempts after which the failing
+   * trigger-drain chunk is dropped (with a side-file copy under
+   * `state/dropped/`) so a session whose window never extracts cannot stall
+   * the buffer forever. Default: `5`.
+   */
+  extractionChunkDropAfterFailures: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;

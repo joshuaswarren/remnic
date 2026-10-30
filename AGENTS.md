@@ -1016,7 +1016,7 @@ packages/remnic-core/src/
 ├── questions/             # Curiosity questions
 ├── summaries/             # Compressed old memories
 └── state/
-    ├── buffer.json        # Current buffer state
+    ├── buffer/            # Current buffer state, one file per session
     └── meta.json          # Extraction counters
 ```
 

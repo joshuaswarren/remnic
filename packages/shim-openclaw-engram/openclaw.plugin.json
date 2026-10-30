@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.36",
+  "version": "10.0.40",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -2452,6 +2452,11 @@
         "type": "boolean",
         "default": false,
         "description": "Emit structured telemetry rows to state/observation-ledger/extraction-judge-verdicts.jsonl on every judge verdict. Off by default; enable to collect defer-rate and latency metrics for operator dashboards."
+      },
+      "extractionJudgeTimeoutMs": {
+        "type": "number",
+        "default": 20000,
+        "minimum": 1
       },
       "extractionMaxEntitiesPerRun": {
         "type": "number",
@@ -7569,6 +7574,12 @@
         "type": "number",
         "default": 5,
         "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
+      },
+      "extractionChunkDropAfterFailures": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 5,
+        "description": "Consecutive failed extraction attempts after which a stuck buffer chunk is dropped (copy saved under state/dropped/ first)."
       },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",

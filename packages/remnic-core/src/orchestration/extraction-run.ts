@@ -38,6 +38,7 @@ export interface ExtractionRunResult {
   persistedCount: number;
   durableOutputCount: number;
   postPersistMetadataFailed?: boolean;
+  retainedBuffer?: boolean; failureClass?: ExtractionFailureClass; // retained: the run left the window in the buffer for a retry (a recorded failure) of this class
 }
 
 export class ExtractionDeadlineError extends Error {
@@ -118,7 +119,7 @@ import {
   commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
-  deriveTopicsFromExtraction,
+  deriveTopicsFromExtraction, emptyExtractionResult,
   runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
@@ -439,7 +440,7 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
-      clearMatchingTurns?: boolean;
+      clearMatchingTurns?: boolean; retentionWindow?: readonly BufferTurn[];
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
@@ -1044,7 +1045,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
+      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;
@@ -1108,7 +1109,7 @@ export class ExtractionRunCoordinator {
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
-        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, turns),
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, options.retentionWindow ?? turns),
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });

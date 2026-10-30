@@ -836,6 +836,7 @@ function isEncryptableStoragePath(filePath: string, rootDir: string): boolean {
   const normalized = normalizeStorageRelativePath(rel);
   if (normalized === "profile.md") return true;
   if (isEncryptableStateSidecar(normalized)) return true;
+  if (isEncryptableBufferSessionFile(normalized)) return true;
   if (isEncryptableSummarySidecar(normalized)) return true;
   const firstSegment = normalized.split("/", 1)[0];
   return ENCRYPTABLE_MARKDOWN_STORAGE_ROOTS.has(firstSegment) && normalized.endsWith(".md");
@@ -901,7 +902,19 @@ const ENCRYPTABLE_STATE_SIDECARS = new Set([
 ]);
 
 function isEncryptableStateSidecar(normalized: string): boolean {
-  return ENCRYPTABLE_STATE_SIDECARS.has(normalized);
+  // state/dropped/ holds copies of extraction-buffer turns dropped after
+  // repeated extraction failures — same content sensitivity as buffer.json.
+  return ENCRYPTABLE_STATE_SIDECARS.has(normalized) || normalized.startsWith("state/dropped/");
+}
+
+/**
+ * Per-session buffer state files (`state/buffer/<session>.json`) hold the same
+ * buffered turns the legacy `state/buffer.json` held, so they are encryptable
+ * state sidecars too — otherwise enabling the secure store would leave the
+ * daemon's buffered turns in plaintext on disk.
+ */
+function isEncryptableBufferSessionFile(normalized: string): boolean {
+  return normalized.startsWith("state/buffer/") && normalized.endsWith(".json");
 }
 
 function isEncryptableSummarySidecar(normalized: string): boolean {
