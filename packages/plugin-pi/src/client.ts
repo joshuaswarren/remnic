@@ -139,6 +139,26 @@ export class RemnicClient {
     return this.request("GET", "/engram/v1/health", undefined, options);
   }
 
+  /**
+   * Liveness probe (issue #3257): readiness-gated `/engram/v1/live`, whose 503
+   * `not_ready` body matches `health()` so callers keep their handling. One
+   * aggregate budget: only a 404 (daemon predating the live route) retries the
+   * legacy `/engram/v1/health` with the remaining time; auth and 503 answers
+   * are final, never re-probed. Diagnostic `health()` is unchanged.
+   */
+  async live(options: RequestOptions = {}): Promise<{ ok: boolean; ready?: boolean }> {
+    const budgetMs = options.timeoutMs ?? this.config.requestTimeoutMs;
+    const deadline = Date.now() + budgetMs;
+    try {
+      return await this.request("GET", "/engram/v1/live", undefined, options);
+    } catch (err) {
+      if (!(err instanceof RemnicHttpError) || err.status !== 404) throw err;
+      const remaining = Math.floor(deadline - Date.now());
+      if (remaining <= 0) throw err;
+      return await this.request("GET", "/engram/v1/health", undefined, { ...options, timeoutMs: remaining });
+    }
+  }
+
   /** Best-effort startup diagnostic, once per extension instance; never gates recall. */
   async warnIfVersionMismatch(options: RequestOptions = {}): Promise<void> {
     if (this.versionCheckStarted) return;

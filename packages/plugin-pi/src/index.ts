@@ -806,7 +806,7 @@ type DaemonProbeResult = "ready" | "starting" | "unreachable";
  */
 async function probeDaemonHealth(client: RemnicClient, config: RemnicPiConfig): Promise<DaemonProbeResult> {
   try {
-    await client.health({ timeoutMs: config.startupRequestTimeoutMs });
+    await client.live({ timeoutMs: config.startupRequestTimeoutMs });
     // A successful probe means the daemon is reachable, so clear any stale
     // cooldown a prior recall/observe timeout left on the shared client.
     client.markReachable();

@@ -1365,7 +1365,7 @@ test("checkDaemonHealth: source uses exit code 2 for 401 to distinguish from oth
   const content = fs.readFileSync(DAEMON_HEALTH_SRC, "utf-8");
   // The script must differentiate 401 (exit 2) from other non-200 statuses (exit 1).
   assert.ok(
-    content.includes("res.statusCode === 401 ? 2 : 1"),
+    content.includes("status === 401 ? 2 : 1"),
     "health probe script must exit(2) on 401 and exit(1) on other errors",
   );
   // The wrapper must recognise exit code 2 as a retriable 401.

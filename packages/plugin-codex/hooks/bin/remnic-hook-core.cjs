@@ -366,33 +366,47 @@ function run(config) {
   // ignore) and green-light a probe whose recall then 401s.
   //
   // When the daemon has an auth token configured, every route — including
-  // /engram/v1/health — returns 401 to unauthenticated requests, so an
+  // /engram/v1/live — returns 401 to unauthenticated requests, so an
   // unauthenticated probe makes the hook wrongly report "daemon not running"
   // and skip recall/observe. Unauthenticated daemons ignore the header.
+  //
+  // One aggregate budget: readiness-gated /engram/v1/live first, and only a
+  // 404 (daemon predating the live route) retries the legacy diagnostic
+  // /engram/v1/health with the remaining time. 401/503 are final answers.
+  // Diagnostic health can outlive this liveness probe's deadline, which is
+  // why the gate probes liveness at all (#3257).
   function httpHealthy(timeoutMs, token) {
     if (DAEMON_URL === null) return Promise.resolve(false);
     const transport = DAEMON_URL.protocol === "https:" ? https : http;
-    return new Promise((resolve) => {
+    const headers = token ? { Authorization: `Bearer ${token}` } : {};
+    const deadline = Date.now() + timeoutMs;
+    const probe = (path, budget) => new Promise((resolve) => {
       const req = transport.request(
         {
           protocol: DAEMON_URL.protocol,
           hostname: DAEMON_URL.hostname,
           port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
-          path: DAEMON_BASE_PATH + "/engram/v1/health",
+          path: DAEMON_BASE_PATH + path,
           method: "GET",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
+          headers,
         },
         (res) => {
           res.resume();
-          resolve(res.statusCode >= 200 && res.statusCode < 300);
+          resolve(res.statusCode || 0);
         },
       );
-      req.on("error", () => resolve(false));
-      req.setTimeout(timeoutMs, () => {
+      req.on("error", () => resolve(0));
+      req.setTimeout(budget, () => {
         req.destroy();
-        resolve(false);
+        resolve(0);
       });
       req.end();
+    });
+    return probe("/engram/v1/live", timeoutMs).then((status) => {
+      if (status !== 404) return status >= 200 && status < 300;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      return probe("/engram/v1/health", remaining).then((legacy) => legacy >= 200 && legacy < 300);
     });
   }
 

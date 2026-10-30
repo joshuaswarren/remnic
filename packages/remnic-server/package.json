@@ -21,6 +21,7 @@
     "dist",
     "src/index.ts",
     "src/admin-console-config.ts",
+    "src/liveness-probe.ts",
     "src/oauth.ts",
     "src/server-env.ts",
     "src/startup-readiness.ts"

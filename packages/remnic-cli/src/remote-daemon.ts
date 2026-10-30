@@ -306,14 +306,26 @@ export interface DaemonHealthProbe {
   error?: string;
 }
 
-/** Probe `/engram/v1/health` without printing. Never throws. */
+/**
+ * Probe readiness-gated `/engram/v1/live` without printing. Never throws.
+ * One aggregate budget: only a 404 (daemon predating the live route) retries
+ * the legacy `/engram/v1/health` path with the remaining time; 401/503 are
+ * final answers, never re-probed.
+ */
 export async function probeDaemonHealth(
   baseUrl: string,
   token: string | undefined,
   timeoutMs = 3000,
 ): Promise<DaemonHealthProbe> {
   try {
-    const response = await daemonFetch(baseUrl, "engram/v1/health", token, timeoutMs);
+    const deadline = Date.now() + timeoutMs;
+    let response = await daemonFetch(baseUrl, "engram/v1/live", token, timeoutMs);
+    if (response.status === 404) {
+      const remaining = deadline - Date.now();
+      if (remaining > 0) {
+        response = await daemonFetch(baseUrl, "engram/v1/health", token, remaining);
+      }
+    }
     return response.ok ? { ok: true, status: response.status } : { ok: false, status: response.status };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

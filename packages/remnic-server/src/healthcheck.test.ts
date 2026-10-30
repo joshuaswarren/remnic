@@ -29,13 +29,15 @@ async function listenForHealthRequest(options: {
   expectedToken: string;
   status?: number;
   hang?: boolean;
+  hangHealth?: boolean;
+  paths?: Record<string, number>;
 }): Promise<HealthHarness> {
   const requests: HealthHarness["requests"] = [];
   const server = createServer((incoming, response) => {
     requests.push({ authorization: incoming.headers.authorization, url: incoming.url });
-    if (options.hang) return;
+    if (options.hang || (options.hangHealth && incoming.url === "/engram/v1/health")) return;
     const status = incoming.headers.authorization === `Bearer ${options.expectedToken}`
-      ? (options.status ?? 200)
+      ? (options.paths?.[incoming.url ?? ""] ?? options.status ?? 200)
       : 401;
     response.writeHead(status).end();
   });
@@ -119,7 +121,7 @@ test("healthcheck authenticates with server.authToken from config", async () => 
       await cliMain(["--healthcheck", "--config", configPath]);
     });
     assert.deepEqual(harness.requests, [{
-      url: "/engram/v1/health",
+      url: "/engram/v1/live",
       authorization: `Bearer ${CONFIG_TOKEN}`,
     }]);
   } finally {
@@ -223,10 +225,59 @@ test("healthcheck accepts only HTTP 200", async () => {
       await withHealthEnvironment({ HOME: fixtureDir }, async () => {
         assert.equal(await runServerHealthcheck({ configPath }), false);
       });
+      // Auth and readiness answers are final: the legacy path is never probed.
+      assert.deepEqual(harness.requests, [{
+        url: "/engram/v1/live",
+        authorization: `Bearer ${CONFIG_TOKEN}`,
+      }]);
     } finally {
       await harness.close();
       await rm(fixtureDir, { recursive: true, force: true });
     }
+  }
+});
+
+test("healthcheck falls back to legacy /health only on 404, within one budget", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-health-"));
+  const harness = await listenForHealthRequest({
+    expectedToken: CONFIG_TOKEN,
+    paths: { "/engram/v1/live": 404 },
+  });
+  const configPath = await writeConfig(fixtureDir, { authToken: CONFIG_TOKEN, port: harness.port });
+
+  try {
+    await withHealthEnvironment({ HOME: fixtureDir }, async () => {
+      assert.equal(await runServerHealthcheck({ configPath, timeoutMs: 1_000 }), true);
+    });
+    assert.deepEqual(harness.requests.map((r) => r.url), [
+      "/engram/v1/live",
+      "/engram/v1/health",
+    ]);
+  } finally {
+    await harness.close();
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
+});
+
+test("healthcheck succeeds via /live when diagnostic /health never resolves", async () => {
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-health-"));
+  const harness = await listenForHealthRequest({
+    expectedToken: CONFIG_TOKEN,
+    hangHealth: true,
+  });
+  const configPath = await writeConfig(fixtureDir, { authToken: CONFIG_TOKEN, port: harness.port });
+
+  try {
+    await withHealthEnvironment({ HOME: fixtureDir }, async () => {
+      assert.equal(await runServerHealthcheck({ configPath, timeoutMs: 1_000 }), true);
+    });
+    assert.deepEqual(harness.requests, [{
+      url: "/engram/v1/live",
+      authorization: `Bearer ${CONFIG_TOKEN}`,
+    }]);
+  } finally {
+    await harness.close();
+    await rm(fixtureDir, { recursive: true, force: true });
   }
 });
 

@@ -159,7 +159,7 @@ test("default Pi extension creates isolated state for each host invocation", asy
   const recallBodies: unknown[] = [];
   process.env.REMNIC_PI_CONFIG = configPath;
   globalThis.fetch = async (input, init) => {
-    if (String(input).endsWith("/engram/v1/health")) {
+    if (String(input).endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (String(input).includes("/engram/v1/namespace/writable")) {
@@ -222,7 +222,7 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   const originalFetch = globalThis.fetch;
   process.env.REMNIC_PI_CONFIG = configPath;
   globalThis.fetch = async (input, init) => {
-    if (String(input).endsWith("/engram/v1/health")) {
+    if (String(input).endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (String(input).includes("/engram/v1/namespace/writable")) {
@@ -373,7 +373,7 @@ test("MCP tools/list retries once after a transient failure and registers tools"
   let mcpCalls = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.endsWith("/mcp")) {
@@ -441,7 +441,7 @@ test("MCP tools/list failure records a warning state entry instead of silently r
   let mcpCalls = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.endsWith("/mcp")) {
@@ -493,7 +493,7 @@ test("MCP tools/list warning fires when the first attempt exhausts the budget", 
   let mcpCalls = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.endsWith("/mcp")) {
@@ -548,7 +548,7 @@ test("a malformed tools/list catalog fails the listing and warns", async (t) => 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.endsWith("/mcp")) {
@@ -601,7 +601,7 @@ test("session_start renders 'Remnic starting' when health answers 503 not_ready 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       // The daemon is up but startup search warm-up has not completed — it must
       // render as starting, not offline, because recall still serves (issue #2215).
       return new Response(
@@ -1161,7 +1161,7 @@ test("empty recall at first before_agent_start does not inject context but a lat
   let recallCallIndex = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.includes("/engram/v1/namespace/writable")) {
@@ -1442,7 +1442,7 @@ test("before_agent_start recall failure notification survives stale Pi ctx after
     const url = String(input);
     // Let health and namespace probes succeed so snapshotPiContext works
     // during the before_agent_start handler.  Only the recall call marks the ctx stale.
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     if (url.includes("/engram/v1/namespace/writable")) {
@@ -2302,8 +2302,8 @@ test("an offline startup health probe trips the circuit breaker so the first tur
   let recallCalls = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
-      // Daemon is offline: a connection-level failure fails fast (health() does not retry).
+    if (url.endsWith("/engram/v1/live")) {
+      // Daemon is offline: a connection-level failure fails fast (live() does not retry).
       throw new Error("The socket connection was closed unexpectedly.");
     }
     // If the breaker let recall through, this would hang until the AbortController fires.
@@ -2348,7 +2348,7 @@ test("an offline startup health probe trips the circuit breaker so the first tur
 test("session_start preserves the recall-disabled status after a successful health probe", async (t) => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
-    if (String(input).endsWith("/engram/v1/health")) {
+    if (String(input).endsWith("/engram/v1/live")) {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     return new Promise<Response>((_resolve, reject) => {
@@ -2764,7 +2764,7 @@ test("session_start trips the circuit breaker on an offline daemon even when sta
   let nonHealthCalls = 0;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
-    if (url.endsWith("/engram/v1/health")) {
+    if (url.endsWith("/engram/v1/live")) {
       throw new Error("The socket connection was closed unexpectedly.");
     }
     // Preflight or recall would land here; if the breaker let either through it

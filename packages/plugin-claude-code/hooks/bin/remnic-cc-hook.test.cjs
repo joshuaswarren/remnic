@@ -122,7 +122,7 @@ function cursorPath(home, sessionId) {
 test("session-start: healthy server returns recall context with codingContext cleared outside a repo", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "remembered preferences", count: 3, mode: "auto" }),
@@ -154,7 +154,7 @@ test("session-start: health probe carries the bearer token (auth-gated daemons)"
   const home = mkHome();
   let healthAuth = "unset";
   const { server, port } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") {
+    if (req.url === "/engram/v1/live") {
       healthAuth = req.headers.authorization || null;
       return res.writeHead(200).end("ok");
     }
@@ -176,10 +176,85 @@ test("session-start: health probe carries the bearer token (auth-gated daemons)"
   }
 });
 
+test("session-start: hung diagnostic /health does not stall the live probe (#3257)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    // The expensive diagnostic route never answers; only /live is healthy.
+    if (req.url === "/engram/v1/health") return;
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "live recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /live recall/);
+    assert.ok(calls.some((c) => c.url === "/engram/v1/recall"), "recall reached the daemon");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: 404 live falls back to legacy health within one budget", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/live") return res.writeHead(404).end();
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "legacy recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /legacy recall/);
+    const probeUrls = calls.filter((c) => c.url === "/engram/v1/live" || c.url === "/engram/v1/health").map((c) => c.url);
+    assert.deepEqual(probeUrls, ["/engram/v1/live", "/engram/v1/health"]);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: 503 live is a final answer with no legacy retry", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/live") return res.writeHead(503).end();
+    // A 503 must NOT be re-probed on the legacy route, even when it would pass.
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "ctx", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook("session-start", { session_id: "s1", cwd: home }, { port, home });
+    assert.match(json.hookSpecificOutput.additionalContext, /daemon not running/);
+    assert.ok(!calls.some((c) => c.url === "/engram/v1/recall"), "recall is skipped");
+    assert.deepEqual(
+      calls.filter((c) => c.url.startsWith("/engram/v1/")).map((c) => c.url),
+      ["/engram/v1/live", "/engram/v1/live"],
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("session-start: REMNIC_DAEMON_URL routes recall to the remote base URL (#2483)", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       return res.writeHead(200, { "Content-Type": "application/json" }).end(
         JSON.stringify({ context: "remote recall", count: 1, mode: "auto" }),
@@ -217,7 +292,7 @@ test("session-start: REMNIC_DAEMON_URL routes recall to the remote base URL (#24
 test("recall body targets REMNIC_NAMESPACE when set, and omits namespace when unset", async () => {
   const mk = () =>
     startServer((req, res) => {
-      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
       if (req.url === "/engram/v1/recall") {
         return res
           .writeHead(200, { "Content-Type": "application/json" })
@@ -274,7 +349,7 @@ test("namespace targeting: ENGRAM_NAMESPACE fallback (recall) and observe body b
   {
     const home = mkHome();
     const { server, port, calls } = await startServer((req, res) => {
-      if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+      if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
       if (req.url === "/engram/v1/recall") {
         return res
           .writeHead(200, { "Content-Type": "application/json" })
@@ -325,7 +400,7 @@ test("session-start: falls back to minimal mode when full recall fails", async (
   const home = mkHome();
   let recallHits = 0;
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") {
       recallHits += 1;
       if (recallHits === 1) return res.writeHead(500).end("boom");
@@ -349,7 +424,7 @@ test("session-start: falls back to minimal mode when full recall fails", async (
 test("session-start: no token → claude-code install hint, no recall call", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     res.writeHead(200).end("{}");
   });
   try {
@@ -617,7 +692,7 @@ test("token resolution: claude-code connector wins over openclaw in tokens.json"
     }),
   );
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") return res.writeHead(200).end("{}");
     res.writeHead(200).end("{}");
   });
@@ -644,7 +719,7 @@ test("token resolution: legacy ~/.engram/tokens.json is the read fallback", asyn
     JSON.stringify({ tokens: [{ connector: "openclaw", token: "legacy-tok" }] }),
   );
   const { server, port, calls } = await startServer((req, res) => {
-    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/live") return res.writeHead(200).end("ok");
     if (req.url === "/engram/v1/recall") return res.writeHead(200).end("{}");
     res.writeHead(200).end("{}");
   });
@@ -671,7 +746,7 @@ test("token resolution: legacy ~/.engram/tokens.json is the read fallback", asyn
 function authEnvServer() {
   const seen = { health: "unset", recall: "unset" };
   return startServer((req, res) => {
-    if (req.url === "/engram/v1/health") {
+    if (req.url === "/engram/v1/live") {
       seen.health = req.headers.authorization || null;
       return res.writeHead(200).end("ok");
     }
