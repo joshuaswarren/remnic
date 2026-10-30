@@ -28,7 +28,12 @@ export type DrainRunOptions = RunOptions & {
 
 /** What the drain needs from its host (structurally satisfied by `TurnIngestionDeps`). */
 export interface ExtractionDrainDeps {
-  config: { extractionMinUserTurns: number; extractionChunkDropAfterFailures: number };
+  config: {
+    extractionMinUserTurns: number;
+    extractionMinChars: number;
+    extractionMaxTurnChars: number;
+    extractionChunkDropAfterFailures: number;
+  };
   extractionWindowBudgetChars?(): number;
   runExtraction(turns: BufferTurn[], options: RunOptions): Promise<ExtractionRunResult>;
   getStorage(): Promise<{
@@ -65,6 +70,16 @@ export class ExtractionDrain {
   private readonly qualified = new Map<string, string>();
 
   constructor(private readonly deps: ExtractionDrainDeps) {}
+
+  /** Characters the coordinator would count for this window: user/assistant text, trimmed and capped per turn, context-only turns left out. */
+  private windowChars(turns: readonly BufferTurn[]): number {
+    let total = 0;
+    for (const turn of turns) {
+      if ((turn.role !== "user" && turn.role !== "assistant") || turn.extractionContextOnly === true) continue;
+      total += turn.content.trim().slice(0, this.deps.config.extractionMaxTurnChars).length;
+    }
+    return total;
+  }
 
   private failureCount(bufferKey: string, chunk: readonly BufferTurn[]): number {
     const entry = this.failures.get(bufferKey);
@@ -113,10 +128,13 @@ export class ExtractionDrain {
       if (resumed && classifyDrainResult(single) === "drained") this.qualified.delete(runOptions.bufferKey);
       return single;
     }
-    // Eligibility (minimum user turns) belongs to the whole window: a window
-    // that never qualified keeps the single-run path and its threshold skip.
+    // Eligibility (minimum user turns and characters) belongs to the whole
+    // window: a window that never qualified keeps the single-run path, which
+    // judges it exactly as before.
     const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
-    if (!resumedOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) {
+    const windowChars = this.windowChars(turns);
+    const belowChars = !resumedOptions.skipCharThreshold && windowChars < this.deps.config.extractionMinChars;
+    if ((!resumedOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars) {
       return await this.deps.runExtraction(turns, runOptions);
     }
     // The window qualified as a whole; its chunks must not be re-judged one by

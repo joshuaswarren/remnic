@@ -50,6 +50,7 @@ function drainFixture(options: {
   bufferTurns?: BufferTurn[];
   sideFileFails?: boolean;
   minUserTurns?: number;
+  minChars?: number;
 }): DrainFixture {
   const runs: DrainFixture["runs"] = [];
   const dropped: DrainFixture["dropped"] = [];
@@ -62,6 +63,8 @@ function drainFixture(options: {
     config: {
       extractionChunkDropAfterFailures: options.dropAfterFailures,
       extractionMinUserTurns: options.minUserTurns ?? 1,
+      extractionMinChars: options.minChars ?? 0,
+      extractionMaxTurnChars: 100_000,
     },
     extractionQueueCoordinator: {
       beginPreemptable: (abort: () => void) => {
@@ -547,4 +550,18 @@ test("a flush that preempts a later chunk surfaces the preemption reason (codex 
   await done;
   assert.equal(fixture.settled.length, 1);
   assert.ok(isPreemptedExtraction(fixture.settled[0]!.error), "the host sees a preemption, not a generic abort");
+});
+
+test("a window below the character minimum is not split into chunks that each skip it (codex P2)", async () => {
+  // The minimum is larger than the model's input budget, so the window spans chunks yet is still below the minimum.
+  const fixture = drainFixture({
+    runResults: [{ status: "skipped", reason: "below_threshold" }],
+    budget: 100,
+    dropAfterFailures: 3,
+    minChars: 1000,
+  });
+  await drain(fixture, [makeTurn("a".repeat(60)), makeTurn("b".repeat(60))]);
+  assert.equal(fixture.runs.length, 1, "one run, as before the drain existed");
+  assert.equal(fixture.runs[0]!.turns.length, 2, "over the whole window");
+  assert.notEqual(fixture.runs[0]!.options.skipCharThreshold, true, "so the coordinator applies its own minimum");
 });
