@@ -310,10 +310,15 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   };
 }
 
-/** Diagnostic state entry the extension records at load time. */
-interface StateEntryData {
-  level: "warning";
-  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED";
+/**
+ * Diagnostic state entry (level + code + message). Covers every diagnostic
+ * code the extension emits so the load-phase queue can carry any of them;
+ * the observed-hash checkpoint entry is written only after load and goes
+ * straight to pi.appendEntry.
+ */
+export interface StateEntryData {
+  level: "info" | "warning" | "error";
+  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED" | "NAMESPACE_NOT_WRITABLE" | "NAMESPACE_OK" | "RECALL_TIMEOUT_TRIP";
   message: string;
   error?: string;
   observedToolNames?: string[];

@@ -6,6 +6,7 @@ import test from "node:test";
 
 import remnicPiExtension, {
   buildCompactionSummary,
+  createLoadPhaseEntryQueue,
   createRemnicPiExtension,
   isDaemonUnreachableError,
   matchRemnicMcpToolName,
@@ -3014,4 +3015,36 @@ test("load phase makes no action-method calls; load-time warnings flush on sessi
     JSON.stringify(entries).includes('"code":"MCP_TOOLS_LIST_FAILED"'),
     "the deferred MCP_TOOLS_LIST_FAILED entry must be recorded once the runtime is live",
   );
+});
+
+test("a throwing deferred appendEntry does not break session_start and later entries still record (COS-487)", async (t) => {
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+  t.after(() => {
+    console.warn = originalWarn;
+  });
+  const recorded: string[] = [];
+  let failNext = true;
+  const queue = createLoadPhaseEntryQueue({
+    on: () => undefined,
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    appendEntry: (type: string) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("boom");
+      }
+      recorded.push(type);
+    },
+  });
+  queue.append("first", { level: "warning", code: "MCP_TOOLS_LIST_FAILED", message: "a" });
+  queue.append("second", { level: "warning", code: "MCP_TOOLS_FILTERED", message: "b" });
+  queue.markLoaded();
+  assert.deepEqual(recorded, [], "nothing is written before the flush");
+  assert.doesNotThrow(() => queue.flush());
+  assert.deepEqual(recorded, ["second"], "a failed entry must not block the rest of the queue");
+  assert.ok(warnings.some((line) => line.includes("deferred state entry dropped: boom")));
+  queue.append("third", { level: "info", code: "NAMESPACE_OK", message: "c" });
+  assert.deepEqual(recorded, ["second", "third"], "post-load entries go straight through");
 });
