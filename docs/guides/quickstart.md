@@ -16,8 +16,13 @@ This installs the `remnic` command (plus a legacy `engram` alias for the v1.x co
 
 ## Step 2: Start the daemon
 
-The daemon is the local memory server every tool connects to. Install it once and it
-auto-starts on boot:
+Create `~/.config/remnic/config.json` before installing the service.
+See [Daemon configuration](./daemon-management.md#configuration) for the file shape.
+Both managed service templates select this path explicitly; `remnic init` writes
+`./remnic.config.json` instead.
+
+The daemon is the local memory server every tool connects to. Install its user
+service to start it automatically with your service manager:
 
 ```bash
 remnic daemon install

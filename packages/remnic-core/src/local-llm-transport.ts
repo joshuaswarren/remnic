@@ -41,6 +41,18 @@ function isPlainPoolingAgent(dispatcher: unknown): boolean {
 }
 
 /**
+ * REMNIC_LOCAL_LLM_DIRECT=1 declares that the local endpoint is reached
+ * directly. Availability probes use this shared plain pool in that mode so they
+ * take the same route as chat requests; `undefined` keeps the global dispatcher.
+ */
+let directProbeAgent: Agent | null = null;
+export function directProbeDispatcher(): Agent | undefined {
+  if (process.env.REMNIC_LOCAL_LLM_DIRECT !== "1") return undefined;
+  directProbeAgent ??= new Agent();
+  return directProbeAgent;
+}
+
+/**
  * Connection pool whose header/body inactivity budgets track the configured
  * request budget.
  *
@@ -72,7 +84,8 @@ export class ChatTransport {
    * because only the dispatcher's owner knows how to rebuild it.
    */
   dispatcherFor(budgetMs: number): Agent | undefined {
-    if (!isPlainPoolingAgent(getGlobalDispatcher())) {
+    // REMNIC_LOCAL_LLM_DIRECT=1: the operator declares the local endpoint is reached directly even though the process installed a global dispatcher for other traffic (an agent runtime's managed proxy). Without it the 300s header cap stands silently on such hosts and every completion slower than five minutes dies with `fetch failed`. Off by default so deployments that must use a proxy keep it.
+    if (!isPlainPoolingAgent(getGlobalDispatcher()) && process.env.REMNIC_LOCAL_LLM_DIRECT !== "1") {
       if (!this.warnedAboutCustomDispatcher) {
         this.warnedAboutCustomDispatcher = true;
         log.debug(

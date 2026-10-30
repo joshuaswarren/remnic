@@ -28,6 +28,7 @@ import type { ExtractionRunResult } from "./extraction-run.js";
 import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import { groupTurnsByExtractionScope, hasPinnedCaptureScope, scopeProfilePlanIdentity } from "../buffer-turn-helpers.js";
 import {
   Orchestrator,
 } from "../orchestrator.js";
@@ -65,13 +66,8 @@ export interface SessionContextDeps {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -103,6 +99,12 @@ export interface SessionFlushOptions {
   /** Resolved profile plan from access scope resolution; avoids recomputing from shared session context. */
   scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
   principalOverride?: string;
+  /**
+   * #3251: the ALREADY-resolved native coding context this flush's plan was
+   * resolved with — plan-pinned flushes drain only captures bound to the
+   * SAME project identity.
+   */
+  codingContext?: CodingContext;
 }
 
 /** Scoped flushes must never claim an opaque buffer without trusted ingestion ownership. */
@@ -475,8 +477,49 @@ export class SessionContextCoordinator {
       ownershipEnforced &&
       ownerPrincipal !== undefined &&
       (resolvedSessionPrincipal === undefined || resolvedSessionPrincipal === "default");
+    // #3251: the flush's effective write namespace. An explicit override pins
+    // it; otherwise it is the session principal's default store. Only PINNED
+    // captures are namespace-compared — legacy unpinned turns keep their
+    // prior semantics (any flush of their session drains them), while a
+    // pinned capture is never drained under a different namespace.
+    const flushNamespace =
+      options.writeNamespaceOverride !== undefined
+        ? options.writeNamespaceOverride
+        : namespacesEnabled && this.deps.config
+          ? defaultNamespaceForPrincipal(resolvePrincipal(sessionKey, this.deps.config), this.deps.config)
+          : undefined;
     const belongsToSession = (turn: BufferTurn): boolean => {
       if (turn.sessionKey !== sessionKey) return false;
+      if (
+        namespacesEnabled &&
+        turn.writeNamespaceOverride !== undefined &&
+        turn.writeNamespaceOverride !== flushNamespace
+      ) {
+        return false;
+      }
+      // Existing profile pins require the same profile and project binding.
+      // Accepted no-plan captures stay unprofiled within the matching namespace.
+      const flushPlanIdentity = scopeProfilePlanIdentity(options.scopeProfileWritePlan);
+      if (flushPlanIdentity !== "" && hasPinnedCaptureScope(turn)) {
+        if (
+          scopeProfilePlanIdentity(turn.scopeProfileWritePlan) !== flushPlanIdentity &&
+          !(turn.acceptedCapture === true && turn.scopeProfileWritePlan === undefined)
+        ) {
+          return false;
+        }
+        // Compare bindings only when the ORIGINAL capture is context-bound —
+        // an unbound capture must not be orphaned by a project attached later.
+        if (
+          options.codingContext &&
+          turn.codingContext &&
+          (turn.codingContext.projectId !== options.codingContext.projectId ||
+            turn.codingContext.rootPath !== options.codingContext.rootPath ||
+            turn.codingContext.branch !== options.codingContext.branch ||
+            turn.codingContext.defaultBranch !== options.codingContext.defaultBranch)
+        ) {
+          return false;
+        }
+      }
       if (!ownershipEnforced || ownerPrincipal === undefined) return true;
       if (turn.sessionOwnerPrincipal === ownerPrincipal) return true;
       return (
@@ -499,60 +542,82 @@ export class SessionContextCoordinator {
     }
     for (const bufferKey of bufferKeys) {
       const turns = this.deps.buffer.getTurns(bufferKey);
-      const turnsForSession = scopedRequest ? turns.filter(belongsToSession) : turns;
+      // #3251: EVERY flush filters — unqualified lifecycle drains must not
+      // clear another namespace's pinned capture; single-store mode no-ops
+      // the filter (namespacesEnabled gate inside belongsToSession).
+      const turnsForSession = turns.filter(belongsToSession);
       if (turnsForSession.length === 0) continue;
-      const retainedTurnsForOtherSessions =
-        scopedRequest && typeof this.deps.buffer.getRetainedDeferredTurns === "function"
-          ? this.deps.buffer
-              .getRetainedDeferredTurns(bufferKey)
-              .filter((turn) => !belongsToSession(turn))
-          : [];
-      try {
-        await new Promise<void>((resolve, reject) => {
-          void this.deps.queueBufferedExtraction(turnsForSession, "trigger_mode", {
-            bufferKey,
-            clearBufferAfterExtraction: true,
-            skipDedupeCheck: true,
-            skipCharThreshold: true,
-            skipUserTurnThreshold: true,
-            failOnExtractionFailure: options.failOnExtractionFailure === true,
-            forceExtractionAttempt: true,
-            abortSignal: options.abortSignal,
-            extractionDeadlineMs: options.extractionDeadlineMs,
-            writeNamespaceOverride: options.writeNamespaceOverride,
-            principalOverride: options.principalOverride,
-            scopeProfileWritePlan: options.scopeProfileWritePlan,
-            clearMatchingTurns: options.clearMatchingTurns ?? scopedRequest,
-            onDurableCommit: options.onCommitted,
-            onTaskSettled: (error) => (error ? reject(error) : resolve()),
-          })
-            .catch(reject);
-        });
-        if (options.reason === "session_end" && this.deps.config.sessionExperience?.enabled === true) {
-          await this.extractSessionEndExperience(turnsForSession, sessionKey, options);
-        }
-      } finally {
+      const scopeGroups = groupTurnsByExtractionScope(turnsForSession);
+      // Filtered or grouped slices need identity clearing rather than prefix clearing.
+      const needsIdentityClear =
+        turnsForSession.length < turns.length || scopeGroups.length > 1;
+      const namespacesOn = this.deps.config
+        ? resolveNamespaceCapabilities(this.deps.config).namespaces === true
+        : true;
+      for (const group of scopeGroups) {
+        const groupPinned =
+          group.writeNamespaceOverride !== undefined ||
+          group.principalOverride !== undefined ||
+          group.scopeProfileWritePlan !== undefined;
+        // Preserve groups captured under another profile or project binding;
+        // the binding compares only when the ORIGINAL group is context-bound.
         if (
-          retainedTurnsForOtherSessions.length > 0 &&
-          typeof this.deps.buffer.retainDeferredTurns === "function"
+          group.scopeProfileWritePlan &&
+          options.scopeProfileWritePlan &&
+          (scopeProfilePlanIdentity(group.scopeProfileWritePlan) !==
+            scopeProfilePlanIdentity(options.scopeProfileWritePlan) ||
+            (options.codingContext &&
+              group.codingContext &&
+              (group.codingContext.projectId !== options.codingContext.projectId ||
+                group.codingContext.rootPath !== options.codingContext.rootPath ||
+                group.codingContext.branch !== options.codingContext.branch ||
+                group.codingContext.defaultBranch !== options.codingContext.defaultBranch)))
         ) {
-          const retainedAfterExtraction = this.deps.buffer.getRetainedDeferredTurns(bufferKey);
-          await this.deps.buffer
-            .retainDeferredTurns(
-              bufferKey,
-              [
-                ...retainedAfterExtraction.filter((turn) => belongsToSession(turn)),
-                ...retainedTurnsForOtherSessions,
-              ],
-              10,
-            )
-            .catch((error: unknown) => {
-              log.warn(
-                `session flush could not restore retained turns for other sessions in ${bufferKey}`,
-                error,
-              );
-            });
+          continue;
         }
+        // Force-flush must reject preserved work before retained-turn cleanup can run.
+        if (
+          groupPinned &&
+          !namespacesOn &&
+          group.writeNamespaceOverride !== undefined &&
+          group.writeNamespaceOverride !== this.deps.config?.defaultNamespace
+        ) {
+          if (options.failOnExtractionFailure === true) {
+            throw new Error(
+              `accepted capture preserved: pinned_namespace_unavailable (${group.writeNamespaceOverride})`,
+            );
+          }
+          log.warn(
+            `flushSession: pinned namespace ${group.writeNamespaceOverride} unavailable while namespaces are disabled; capture stays pending`,
+          );
+          continue;
+        }
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
+          bufferKey,
+          clearBufferAfterExtraction: true,
+          skipDedupeCheck: true,
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          failOnExtractionFailure: options.failOnExtractionFailure === true,
+          preemptRunning:
+            options.reason === "access_force_flush" && options.failOnExtractionFailure === true,
+          forceExtractionAttempt: true,
+          abortSignal: options.abortSignal,
+          extractionDeadlineMs: options.extractionDeadlineMs,
+          writeNamespaceOverride: group.writeNamespaceOverride ?? options.writeNamespaceOverride,
+          principalOverride: group.principalOverride ?? options.principalOverride,
+          scopeProfileWritePlan: group.turns.some((turn) => turn.acceptedCapture === true)
+            ? group.scopeProfileWritePlan ?? null
+            : group.scopeProfileWritePlan ?? options.scopeProfileWritePlan,
+          clearMatchingTurns: options.clearMatchingTurns === true || scopedRequest || groupPinned || needsIdentityClear,
+          onDurableCommit: options.onCommitted,
+          onTaskSettled: (error) => (error ? reject(error) : resolve()),
+        }).catch(reject);
+        await promise;
+      }
+      if (options.reason === "session_end" && this.deps.config.sessionExperience?.enabled === true) {
+        await this.extractSessionEndExperience(turnsForSession, sessionKey, options);
       }
     }
   }

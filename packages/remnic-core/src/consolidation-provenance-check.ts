@@ -30,6 +30,7 @@ import {
 // lock-step with the doctor scan.
 import { sidecarKey } from "./page-versioning.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
 /**
  * Regex to spot a `derived_via: <value>` line in the raw YAML frontmatter
@@ -549,6 +550,7 @@ async function* walkMarkdownFiles(root: string, memoryDir: string): AsyncGenerat
     return;
   }
   for (const entry of entries) {
+    if (isMacOsReplicationJunkBasename(entry.name)) continue;
     const full = path.join(root, entry.name);
     if (entry.isSymbolicLink()) continue;
     if (entry.isDirectory()) {

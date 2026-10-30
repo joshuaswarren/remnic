@@ -12,6 +12,7 @@ import {
 } from "undici";
 
 import { LocalLlmClient } from "./local-llm.js";
+import { probeFetch } from "./local-llm-helpers.js";
 import { classifyAnalysisProviderError } from "./activity/timeline/analysis-provider.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { initLogger, resetLogger } from "./logger.js";
@@ -464,6 +465,69 @@ test("a process-wide custom dispatcher is left in place", async () => {
   const restored = new ChatTransport().dispatcherFor(900_000);
   assert.ok(restored);
   await restored.close();
+});
+
+test("an explicit opt-in widens the pool even when a custom global dispatcher is installed", async () => {
+  // Some hosts install a process-wide dispatcher (for example an agent runtime's
+  // managed proxy) that is unrelated to the LAN model server. There the 300s
+  // header cap stood silently and every slow completion died with `fetch failed`
+  // at 301s. REMNIC_LOCAL_LLM_DIRECT=1 declares that the local endpoint is
+  // reached directly, so the transport uses its own pool. Without the flag the
+  // previous behavior (leave the custom dispatcher alone) is unchanged.
+  const original = getGlobalDispatcher();
+  const proxy = new ProxyAgent("http://127.0.0.1:9");
+  const priorFlag = process.env.REMNIC_LOCAL_LLM_DIRECT;
+  try {
+    setGlobalDispatcher(proxy);
+    delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    assert.equal(new ChatTransport().dispatcherFor(900_000), undefined, "no flag: custom dispatcher stays");
+
+    process.env.REMNIC_LOCAL_LLM_DIRECT = "1";
+    const transport = new ChatTransport();
+    const agent = transport.dispatcherFor(900_000);
+    assert.ok(agent instanceof Agent, "flag set: the widened pool must be used");
+    assert.ok(!(agent instanceof ProxyAgent), "flag set: the proxy dispatcher must not be used");
+    await agent.close();
+
+    process.env.REMNIC_LOCAL_LLM_DIRECT = "0";
+    assert.equal(new ChatTransport().dispatcherFor(900_000), undefined, "flag 0: custom dispatcher stays");
+  } finally {
+    if (priorFlag === undefined) delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    else process.env.REMNIC_LOCAL_LLM_DIRECT = priorFlag;
+    setGlobalDispatcher(original);
+    await proxy.close();
+  }
+});
+
+test("REMNIC_LOCAL_LLM_DIRECT=1 also sends availability probes around a global proxy dispatcher", async () => {
+  // A host whose global dispatcher cannot reach the LAN model server would fail
+  // checkAvailability() before any chat request runs, so direct mode must cover
+  // the probe as well as ChatTransport.post.
+  const server = http.createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end('{"data":[]}');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // SAFETY: listen(0, "127.0.0.1") above binds a TCP port, so address() is an AddressInfo, never a pipe string or null.
+  const { port } = server.address() as AddressInfo;
+  const url = `http://127.0.0.1:${port}/v1/models`;
+  const original = getGlobalDispatcher();
+  const priorFlag = process.env.REMNIC_LOCAL_LLM_DIRECT;
+  try {
+    setGlobalDispatcher(new ProxyAgent("http://127.0.0.1:9"));
+    delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    const viaProxy = await probeFetch(url, { timeoutMs: 2_000, headers: {} });
+    assert.equal(viaProxy.ok, false, "no flag: the probe goes through the (unreachable) proxy");
+
+    process.env.REMNIC_LOCAL_LLM_DIRECT = "1";
+    const direct = await probeFetch(url, { timeoutMs: 2_000, headers: {} });
+    assert.equal(direct.ok, true, "flag set: the probe reaches the endpoint directly");
+  } finally {
+    if (priorFlag === undefined) delete process.env.REMNIC_LOCAL_LLM_DIRECT;
+    else process.env.REMNIC_LOCAL_LLM_DIRECT = priorFlag;
+    setGlobalDispatcher(original);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });
 
 test("aborting during a retry backoff stops the local request lane", async () => {

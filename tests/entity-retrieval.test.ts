@@ -10,6 +10,10 @@ import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "@remnic/core/entity-retrieval";
 import { containsPhrase } from "../packages/remnic-core/src/entity-retrieval-boundaries.js";
 import {
+  applyCarriedMemorySnippets,
+  type CarriedMemorySnippet,
+} from "../packages/remnic-core/src/entity-mention-carry.js";
+import {
   dropEntityMentionIndexCache,
   settleEntityMentionIndex,
 } from "../packages/remnic-core/src/entity-mention-index-cache.js";
@@ -2515,4 +2519,30 @@ test("entity recall reports mid-build cancellation as an abort, not an empty sec
     }),
     (err: unknown) => err instanceof Error && err.name === "AbortError",
   );
+});
+
+test("carried entity snippets round-trip by canonical id without sharing arrays", () => {
+  const previous = new Map<string, CarriedMemorySnippet>([
+    ["person:alpha", { memorySnippets: ["first fact", "second fact"], memorySnippetOrigins: ["user", undefined] }],
+    ["person:beta", { memorySnippets: ["legacy fact"] }],
+  ]);
+  const rebuilt: Array<CarriedMemorySnippet & { canonicalId: string }> = ["person:beta", "person:alpha"]
+    .map((canonicalId) => ({ canonicalId, memorySnippets: [], memorySnippetOrigins: undefined }));
+  assert.equal(applyCarriedMemorySnippets(rebuilt, previous), false);
+  assert.deepEqual(rebuilt.map(({ canonicalId, ...snippets }) => snippets), [
+    { memorySnippets: ["legacy fact"], memorySnippetOrigins: undefined },
+    { memorySnippets: ["first fact", "second fact"], memorySnippetOrigins: ["user", undefined] },
+  ]);
+  assert.notEqual(rebuilt[1].memorySnippets, previous.get("person:alpha")!.memorySnippets);
+  assert.notEqual(rebuilt[1].memorySnippetOrigins, previous.get("person:alpha")!.memorySnippetOrigins);
+  rebuilt[1].memorySnippets.push("new fact");
+  rebuilt[1].memorySnippetOrigins!.push("user");
+  assert.deepEqual(previous.get("person:alpha"), {
+    memorySnippets: ["first fact", "second fact"], memorySnippetOrigins: ["user", undefined],
+  });
+  assert.equal(applyCarriedMemorySnippets(rebuilt, previous), false);
+  assert.deepEqual(rebuilt[1].memorySnippets, ["first fact", "second fact"]);
+  const added = { canonicalId: "person:new", memorySnippets: ["keep existing"] };
+  assert.equal(applyCarriedMemorySnippets([...rebuilt, added], previous), true);
+  assert.deepEqual(added.memorySnippets, ["keep existing"]);
 });

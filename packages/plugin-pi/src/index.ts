@@ -35,6 +35,8 @@ export interface RemnicPiExtensionOptions extends LoadConfigOptions {
 }
 
 const STATE_CUSTOM_TYPE = "remnic_state";
+/** A retry needs at least this much remaining startup budget to be worth starting. */
+const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 250;
 const MAX_OBSERVED_HASHES = 2000;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
@@ -156,6 +158,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // the namespace preflight and every later hook each burn a full request
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
       const probe = await probeDaemonHealth(client, config);
+      if (probe !== "unreachable") {
+        await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
+      }
       if (config.statusEnabled) {
         session.setStatus(
           "remnic",
@@ -411,9 +416,40 @@ async function registerMcpTools(
   recallTimeoutBreaker: RecallTimeoutBreaker,
 ): Promise<void> {
   let tools: McpTool[] = [];
-  try {
-    tools = await client.mcpListTools({ timeoutMs: config.startupRequestTimeoutMs });
-  } catch {
+  // A transient failure at session start used to silently register zero
+  // tools for the whole session (recall kept working, so the session looked
+  // healthy). Retry once inside the remaining startup budget, and record a
+  // warning state entry when the catalog still cannot be listed.
+  const budgetStartedAt = Date.now();
+  let listed = false;
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= 1 && !listed; attempt += 1) {
+    const remaining = config.startupRequestTimeoutMs - (Date.now() - budgetStartedAt);
+    if (remaining <= 0) break;
+    if (attempt > 0 && remaining < MCP_TOOLS_LIST_RETRY_FLOOR_MS) break;
+    try {
+      // Honor the configured budget exactly: the floor only decides whether
+      // a retry may start, never how long a request may take.
+      tools = await client.mcpListTools({ timeoutMs: remaining });
+      listed = true;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (!listed) {
+    // Warn on every terminal failure — including when the first attempt
+    // exhausted the budget and the retry never started.
+    const reason = lastError === undefined ? "no attempt completed" : errorMessage(lastError);
+    const message =
+      `Remnic MCP tools/list failed (${reason}) — no Remnic tools registered for this session. ` +
+      "Resolve the reported error, then restart the session (tool registration runs at extension load; /remnic-status checks health but does not re-register).";
+    console.warn(`[remnic] ${message}`);
+    pi.appendEntry(STATE_CUSTOM_TYPE, {
+      level: "warning",
+      code: "MCP_TOOLS_LIST_FAILED",
+      message,
+      error: reason,
+    });
     return;
   }
   let registeredCount = 0;

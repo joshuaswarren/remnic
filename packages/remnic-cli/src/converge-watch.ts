@@ -4,6 +4,7 @@
  * stays under the #1995 new-file LOC ratchet.
  */
 
+import type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
 import type { ConvergeApplyOptions, ConvergeApplyResult } from "./converge.js";
 
 export interface ConvergeWatchOptions extends ConvergeApplyOptions {
@@ -28,9 +29,11 @@ export interface ConvergeWatchOutcome {
   cycles: number;
   convergedCycles: number;
   appliedCycles: number;
-  /** Threw, stopped on unresolved conflicts, or completed with failed transfers — every cycle the pair did NOT make progress. `cycles === convergedCycles + appliedCycles + failedCycles` always holds. */
+  /** Threw, stopped on unresolved conflicts, or completed with failed transfers — every cycle the pair did NOT make progress. A `partial` cycle (some namespaces excluded, the rest applied or already in agreement) counts as applied: the pair made progress. `cycles === convergedCycles + appliedCycles + failedCycles` always holds. */
   failedCycles: number;
   lastStatus: ConvergeApplyResult["status"] | "error" | "aborted";
+  /** Namespaces the most recent cycle left out of the plan. Empty when that cycle threw or excluded none. */
+  lastExcludedNamespaces: ConvergeNamespaceExclusion[];
 }
 
 const CONVERGE_WATCH_MIN_INTERVAL_MS = 1000;
@@ -80,6 +83,7 @@ export async function convergeWatch(options: ConvergeWatchOptions): Promise<Conv
     appliedCycles: 0,
     failedCycles: 0,
     lastStatus: "aborted",
+    lastExcludedNamespaces: [],
   };
 
   while (maxCycles === undefined || outcome.cycles < maxCycles) {
@@ -103,11 +107,13 @@ export async function convergeWatch(options: ConvergeWatchOptions): Promise<Conv
         outcome.failedCycles += 1;
       } else outcome.appliedCycles += 1;
       outcome.lastStatus = result.status;
+      outcome.lastExcludedNamespaces = result.excludedNamespaces ? [...result.excludedNamespaces] : [];
       onCycle?.(outcome.cycles, { result });
     } catch (err) {
       outcome.cycles += 1;
       outcome.failedCycles += 1;
       outcome.lastStatus = "error";
+      outcome.lastExcludedNamespaces = [];
       onCycle?.(outcome.cycles, { error: err });
     }
     if (maxCycles !== undefined && outcome.cycles >= maxCycles) break;

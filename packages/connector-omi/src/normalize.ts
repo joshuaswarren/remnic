@@ -142,14 +142,8 @@ export function conversationToWearable(
         : typeof segment.speaker === "string" && segment.speaker.trim().length > 0
           ? segment.speaker.trim()
           : undefined;
-    const startIso =
-      !Number.isNaN(startedAtMs) && typeof segment.start === "number"
-        ? new Date(startedAtMs + segment.start * 1_000).toISOString()
-        : undefined;
-    const endIso =
-      !Number.isNaN(startedAtMs) && typeof segment.end === "number"
-        ? new Date(startedAtMs + segment.end * 1_000).toISOString()
-        : undefined;
+    const startIso = segmentTimestamp(startedAtMs, segment.start);
+    const endIso = segmentTimestamp(startedAtMs, segment.end);
     segments.push({
       text,
       // person_id is the most stable key when the user has tagged the
@@ -174,7 +168,7 @@ export function conversationToWearable(
     ...(title && title.length > 0 ? { title } : {}),
     ...(overview && overview.length > 0 ? { summary: overview } : {}),
     startIso: conversation.started_at ?? conversation.created_at ?? "",
-    ...(conversation.finished_at !== undefined
+    ...(typeof conversation.finished_at === "string"
       ? { endIso: conversation.finished_at }
       : {}),
     ...(typeof address === "string" && address.length > 0
@@ -182,6 +176,13 @@ export function conversationToWearable(
       : {}),
     segments,
   };
+}
+
+function segmentTimestamp(startedAtMs: number, offset: number | undefined): string | undefined {
+  if (typeof offset !== "number") return undefined;
+  const instant = new Date(startedAtMs + offset * 1_000);
+  // Invalid/out-of-range timing must not discard the segment's usable text.
+  return Number.isNaN(instant.getTime()) ? undefined : instant.toISOString();
 }
 
 export function memoryToNativeMemory(memory: OmiMemory): WearableNativeMemory | null {

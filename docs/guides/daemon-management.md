@@ -50,7 +50,11 @@ remnic daemon status      # running state + pid, port, service, memory extension
 
 ### Config File
 
-`~/.config/remnic/config.json` (or `REMNIC_CONFIG_PATH`; `ENGRAM_CONFIG_PATH` still works during v1.x):
+Installed launchd and systemd services explicitly read
+`~/.config/remnic/config.json`. Create that file before `remnic daemon install`.
+`remnic init` writes `./remnic.config.json` in the current directory instead.
+A manually started server uses the [config discovery order](../cli.md#conventions),
+including `REMNIC_CONFIG_PATH` and legacy `ENGRAM_CONFIG_PATH`.
 
 ```json
 {
@@ -79,10 +83,10 @@ matching the other `server.*` fields.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `REMNIC_CONFIG_PATH` | `~/.config/remnic/config.json` | Config file path (`ENGRAM_CONFIG_PATH` also supported in v1.x) |
-| `REMNIC_MEMORY_DIR` | `~/.remnic/memory/` | Memory store directory (`ENGRAM_MEMORY_DIR` also supported in v1.x) |
+| `REMNIC_MEMORY_DIR` | Configured `remnic.memoryDir`; core fallback `~/.openclaw/workspace/memory/local` | Memory store override (`ENGRAM_MEMORY_DIR` also supported in v1.x) |
 | `REMNIC_HOST` | `127.0.0.1` | Bind address (`ENGRAM_HOST` also supported) |
 | `REMNIC_PORT` | `4318` | Bind port (`ENGRAM_PORT` also supported) |
-| `OPENAI_API_KEY` | — | Required for LLM extraction |
+| `OPENAI_API_KEY` | — | Optional OpenAI extraction key; not needed with a configured local model |
 
 ## Logs
 

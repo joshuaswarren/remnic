@@ -1,4 +1,5 @@
 import { log } from "./logger.js";
+import { isUnsupportedJsonSchemaError } from "./fallback-llm-codex-subscription.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import type { PluginConfig } from "./types.js";
 import fs from "node:fs";
@@ -9,6 +10,7 @@ import { mergeEnv, readEnvVar } from "./runtime/env.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
 import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { ChatTransport } from "./local-llm-transport.js";
+import { LocalLlmRateLimitSession, resolveRateLimitSettings } from "./local-llm-rate-limit.js";
 import {
   extractNonRecoverableBackendReason,
   extractNonRecoverableBackendReasonFromErrorText,
@@ -952,7 +954,7 @@ export class LocalLlmClient {
         ? `${baseUrl}/chat/completions`
         : `${baseUrl}/v1/chat/completions`;
 
-      const requestBodyJson = JSON.stringify(requestBody);
+      let requestBodyJson = JSON.stringify(requestBody);
       log.debug(
         `local LLM: sending request to ${chatUrl} with model ${this.config.localLlmModel}`,
       );
@@ -964,11 +966,30 @@ export class LocalLlmClient {
           ? Math.min(this.config.localLlmTimeoutMs, options.timeoutMs)
           : this.config.localLlmTimeoutMs;
       const maxAttempts = 1 + Math.max(0, this.config.localLlmRetry5xxCount);
+      // COS-447: rate-limit responses (429/503/408, LiteLLM cooldown) get
+      // their own retry budget with exponential full-jitter backoff, and a
+      // process-wide semaphore caps concurrent HTTP attempts across clients.
+      // Waits are bounded by the request timeout so a short caller budget
+      // (e.g. rerankTimeoutMs) is never stretched by a long cooldown.
+      const rateLimit = new LocalLlmRateLimitSession(chatUrl, resolveRateLimitSettings(this.config),
+        (queueMeta?.priority ?? options.priority) === "recall-critical", effectiveTimeoutMs);
+      let lastRateLimitDelayMs: number | null = null;
       let response: Response | null = null, responseBody = "";
       let lastAbortError: Error | null = null;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         response = null;
         responseBody = "";
+        // Wait out the shared endpoint backoff, then take a concurrency slot.
+        const gate = await rateLimit.beforeAttempt(options.signal);
+        if (gate.kind === "skip") {
+          log.warn(gate.reason === "queue"
+            ? `local LLM concurrency queue exceeded the ${effectiveTimeoutMs}ms request budget; skipping request (op=${operation})`
+            : `local LLM rate-limit backoff active (${gate.remainingMs}ms remaining); skipping request (op=${operation})`);
+          if (options.failureDiag)
+            options.failureDiag.lastError = Object.assign(new Error("local LLM rate limited"), { status: 429 });
+          return null;
+        }
+        if (gate.kind === "aborted") return null;
         const attemptAbort = new AbortController();
         const onCallerAbort = (): void => {
           attemptAbort.abort(options.signal?.reason);
@@ -984,14 +1005,31 @@ export class LocalLlmClient {
         try {
           response = await this.chatTransport.post({
             url: chatUrl,
-            headers: this.buildRequestHeaders({
-              "Content-Type": "application/json",
-            }),
+            headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
             body: requestBodyJson,
             signal: attemptAbort.signal,
             budgetMs: this.config.localLlmTimeoutMs,
           });
           responseBody = await response.text();
+          if (
+            response.status === 400 &&
+            requestBody.response_format &&
+            isUnsupportedJsonSchemaError(`400 ${responseBody}`)
+          ) {
+            // Match gateway degradation without extending this attempt's deadline.
+            delete requestBody.response_format;
+            requestBodyJson = JSON.stringify(requestBody);
+            log.debug("local LLM rejected native JSON schema; retrying without it");
+            response = null;
+            response = await this.chatTransport.post({
+              url: chatUrl,
+              headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
+              body: requestBodyJson,
+              signal: attemptAbort.signal,
+              budgetMs: this.config.localLlmTimeoutMs,
+            });
+            responseBody = await response.text();
+          }
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
           if (options.signal?.aborted) {
@@ -1016,9 +1054,13 @@ export class LocalLlmClient {
         } finally {
           clearTimeout(attemptTimeout);
           options.signal?.removeEventListener("abort", onCallerAbort);
+          gate.release();
         }
 
-        if (response.ok) break;
+        if (response.ok) {
+          rateLimit.onSuccess();
+          break;
+        }
         if (response.status >= 500 && attempt < maxAttempts) {
           const nonRecoverableReason =
             extractNonRecoverableBackendReasonFromErrorText(responseBody);
@@ -1030,6 +1072,14 @@ export class LocalLlmClient {
             this.consecutive400s = 0;
             return null;
           }
+        }
+        const decision = rateLimit.onResponse(response.status, response.headers?.get("retry-after"), responseBody);
+        lastRateLimitDelayMs = decision.kind === "not-rate-limited" ? null : decision.delayMs;
+        if (decision.kind === "give-up") break;
+        if (decision.kind === "retry") {
+          log.warn(`local LLM rate limited: ${response.status}; backing off ${decision.delayMs}ms before retry ${decision.retry}/${rateLimit.settings.retryCount} (op=${operation}, serverHintMs=${decision.hintMs ?? "none"}, consecutive=${decision.consecutive})`);
+          attempt -= 1; // own retry budget; the loop top waits out the backoff
+          continue;
         }
         if (response.status < 500 || attempt >= maxAttempts) break;
 
@@ -1056,6 +1106,8 @@ export class LocalLlmClient {
       }
 
       if (!response.ok) {
+        if (lastRateLimitDelayMs !== null)
+          log.warn(`local LLM rate-limit retries exhausted: op=${operation} retries=${rateLimit.retryCount} nextBackoffMs=${lastRateLimitDelayMs}`);
         let reason = "";
         try {
           const parsed = JSON.parse(responseBody) as { error?: { message?: string } };

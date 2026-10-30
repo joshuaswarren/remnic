@@ -1,6 +1,9 @@
 # CLI reference
 
-The complete reference for the standalone `remnic` command-line interface. Every command here is part of the `@remnic/cli` package and runs against your local memory store — no account, no cloud. For the OpenClaw-hosted `openclaw engram` surface, see [OpenClaw-hosted commands](#openclaw-hosted-commands) at the end.
+The `@remnic/cli` package provides the standalone `remnic` command. This page covers
+common commands. Some commands use a remote daemon or external provider when
+configured. For the OpenClaw-hosted `openclaw engram` surface, see
+[OpenClaw-hosted commands](#openclaw-hosted-commands) at the end.
 
 ## Install
 
@@ -15,14 +18,17 @@ New to Remnic? Start with the [quickstart](guides/quickstart.md), then come back
 ## Conventions
 
 - Most commands accept `--json` for machine-readable output.
-- Configuration is resolved in this order:
-  1. `REMNIC_CONFIG_PATH` environment variable (`ENGRAM_CONFIG_PATH` is still honored during the compatibility window)
-  2. `./remnic.config.json` in the current directory
-  3. `~/.config/remnic/config.json` (default)
+- Configuration discovery uses this order:
+  1. An explicit `--config <path>` for commands that support that option
+  2. `REMNIC_CONFIG_PATH` (or legacy `ENGRAM_CONFIG_PATH`)
+  3. The first existing file in the current directory: `remnic.config.json`, then `engram.config.json`
+  4. The first existing home config: `~/.config/remnic/config.json`, then `~/.config/engram/config.json`
+  If no candidate exists, the default path is `~/.config/remnic/config.json`.
 - Placeholders use `<angle-brackets>`. Optional arguments use `[square-brackets]`.
-- Run any command with `--help` for its full option list.
+- Use `remnic --help` for top-level usage. Command-specific help is available where
+  implemented, such as `remnic import --help`; `--help` is not a universal no-op.
 
-Remnic ships 35 top-level command names (`benchmark` is a compatibility alias of `bench`), grouped below by what you reach for them.
+Common commands are grouped below. `benchmark` is a compatibility alias of `bench`.
 
 ## Setup & health
 
@@ -32,7 +38,7 @@ Remnic ships 35 top-level command names (`benchmark` is a compatibility alias of
 | `remnic migrate [--rollback] [--json]` | Run — or with `--rollback`, undo — the first-run Engram-to-Remnic migration |
 | `remnic status [--json]` | Show server/daemon status and health |
 | `remnic doctor` | Diagnose the install (Node version, config, API key, memory dir, daemon) |
-| `remnic config` | Print the resolved configuration |
+| `remnic config` | Print the selected config file with supported secret fields redacted; this does not expand defaults |
 | `remnic daemon <start\|stop\|restart\|install\|uninstall\|status>` | Manage the background HTTP server. `install`/`uninstall` register or remove the OS service; `start`/`stop`/`restart`/`status` control a running one |
 | `remnic token <generate\|list\|revoke> [connector-id]` | Manage bearer tokens for the access server |
 | `remnic onboard [dir] [--json]` | Analyze a project directory (language detection, doc discovery, ingestion plan) |
@@ -72,6 +78,12 @@ each write; see the API reference (api.md#http) for the exact guarantee.
 ```bash
 remnic briefing --since 7d --focus project:acme-webshop --format markdown --save
 ```
+
+Startup runs entity canonical-ID migration in the background.
+Briefings read the existing corpus without waiting for that migration.
+Full startup readiness and shutdown wait for the background job.
+Memory and entity writes still wait for migration.
+If migration moves an entity file during a read, the reader retries the journal's canonical ID.
 
 ## Connectors & integrations
 
@@ -139,7 +151,11 @@ remnic import --adapter chatgpt --file ./conversations.json --dry-run
 | `remnic binary <scan\|status\|run\|clean>` | Binary-file lifecycle: `scan`, `status`, `run [--dry-run]`, `clean --force` |
 | `remnic extensions <list\|show\|validate\|reload>` | Manage memory extensions |
 
-`bench` actions: `list`, `run`, `datasets` (`download`/`status`), `runs` (`list`/`show`/`delete`), `compare`, `results`, `baseline` (`save`/`list`), `export`, `publish`, `published`, `judge-calibrate`, `ui`, `providers` (`discover`). The `check` and `report` actions run under the `benchmark` alias. `published` and `judge-calibrate` are maintainer tools for the published-benchmark harness.
+Common `bench` actions include `list`, `run`, `datasets` (`download`/`status`), `runs`
+(`list`/`show`/`delete`), `compare`, `results`, `baseline` (`save`/`list`), `export`,
+`publish`, `published`, `judge-calibrate`, `ui`, and `providers` (`discover`).
+`check` and `report` work under both `bench` and `benchmark`. `published` and
+`judge-calibrate` are maintainer tools for the published-benchmark harness.
 
 ```bash
 remnic bench list

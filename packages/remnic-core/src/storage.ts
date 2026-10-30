@@ -65,6 +65,7 @@ import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
 import { assertSafeEntityId } from "./storage/entity-id-safety.js";
 export { normalizeEntityName } from "./entity-id-normalization.js";
 import { isErrnoCode } from "./utils/errno.js";
+import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
@@ -141,9 +142,12 @@ import {
   type TombstoneStats,
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
+import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
+import { saveDroppedExtractionChunk as saveDroppedChunk } from "./storage/dropped-extraction-chunk.js";
 import type {
   AccessTrackingEntry,
+  BufferEntryState,
   BufferState,
   ConfidenceTier,
   ContinuityIncidentCloseInput,
@@ -2322,10 +2326,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private _entityStore: EntityStore | undefined;
 
   private get entityStore(): EntityStore {
-    if (!this._entityStore) {
-      this._entityStore = new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this));
-    }
-    return this._entityStore;
+    return (this._entityStore ??= new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this)));
   }
 
   /** IdentityContinuityStore (storage.ts decomposition). Lazy; selfDeps live wiring. */
@@ -3219,6 +3220,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       secureStoreKeyProvider: () => this._secureStoreKey,
       secureStoreWriteKeyProvider: () => this.resolveWriteKey(),
       lockOptions: () => this.factHashIndexLockOptions,
+      captureLockLimitSource: () => this.captureLockLimitSource(),
       parseMemory: (filePath, content) =>
         parseTombstoneBlockedOfflineSyncMemory(
           filePath,
@@ -3232,6 +3234,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       readAllColdMemories: () => this.readAllColdMemories(),
     };
   }
+
+  /**
+   * Lock-limit source for tombstone-blocked captures. Undefined until the
+   * converge path installs capture-lock limits, so an ordinary capture
+   * resolves to the legacy short bounds instead of the converge deadline.
+   */
+  private captureLockLimitSource(): ContentHashIndexLockOptions | undefined {
+    const options = this.factHashIndexLockOptions;
+    const keys = ["captureWriteLockInitialDelayMs", "captureWriteLockMaxDelayMs", "captureWriteLockDeadlineMs", "captureWriteLockSignal"] as const;
+    return keys.some((key) => options[key] !== undefined) ? options : undefined;
+  }
+
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;
@@ -3523,6 +3537,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private currentHistoricalIds(): Readonly<Record<string, string>> {
     return this.historicalEntityCanonicalIds.get(this.stateDir);
   }
+
+  /** Journal completion for EntityStore's legacy-id retry gate (live view). */
+  entityCanonicalMigrationComplete = entityRefs.memoizedJournalCompletion(this.historicalEntityCanonicalIds, () => this.stateDir);
+
+  normalizeEntityName(raw: string, type: string): string {
+    return entityRefs.resolveHistoricalEntityCanonicalId(
+      this.entityStore.normalizeEntityName(raw, type),
+      this.currentHistoricalIds()
+    );
+  }
   /** Post-persist repair subsystem (issue #2213) — storage/entity-ref-repair.ts. */
   private _entityRefRepair: EntityRefRepair | undefined;
   private get entityRefRepair(): EntityRefRepair {
@@ -3547,12 +3571,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     () => this.runLegacyEntityCanonicalIdMigration(),
     () => entityMigration.getFingerprint(this.baseDir, this.entitiesDir, () => String(this.getEntityMutationVersion()))
   );
-  normalizeEntityName(raw: string, type: string): string {
-    return entityRefs.resolveHistoricalEntityCanonicalId(
-      this.entityStore.normalizeEntityName(raw, type),
-      this.currentHistoricalIds()
-    );
-  }
 
   /**
    * Read-only view of this store's user alias table, for call sites that
@@ -3609,7 +3627,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return completionFingerprint;
   }
 
-  async ensureDirectories(): Promise<void> {
+  async ensureDirectories(options: { waitForEntityMigration?: boolean } = {}): Promise<void> {
     await mkdir(this.baseDir, { recursive: true });
     await entityMigration.validateRoots(this.baseDir, this.entitiesDir, this.stateDir, this.archiveDir);
     const today = new Date().toISOString().slice(0, 10);
@@ -3626,7 +3644,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     await mkdir(this.identityAuditsWeeklyDir, { recursive: true });
     await mkdir(this.identityAuditsMonthlyDir, { recursive: true });
     await mkdir(path.join(this.baseDir, "config"), { recursive: true });
-    await this.entityCanonicalIdMigration.ensure();
+    await this.entityCanonicalIdMigration.begin(options.waitForEntityMigration !== false, this.entitiesDir);
     // Activate the corpus sentinel at setup (issue #1902, Cursor Medium): an
     // existing corpus predating this feature has a size-0/absent sentinel, which
     // getCachedMemories treats as a miss — so a read-heavy workload would never
@@ -3640,9 +3658,9 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (this.hotMemoriesCacheEnabled && this.getMemoryCorpusVersion() === 0) {
       this.bumpMemoryCorpusVersion();
     }
-    await this.entityCanonicalIdMigration.markDirectoriesInitialized();
+    return this.entityCanonicalIdMigration.finishBegin(options.waitForEntityMigration !== false);
   }
-
+  drainEntityCanonicalIdMigration = (): Promise<void> => this.entityCanonicalIdMigration.drain();
   /**
    * Resolve the on-disk write path for a memory of the given category, creating
    * the target directory. Category routing goes through the shared
@@ -4064,7 +4082,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (!memory) return;
     await this.addActiveFactContentHash(memory);
   }
-
 
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;
@@ -4783,7 +4800,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return results.filter((filePath): filePath is string => filePath !== null);
   }
 
-
   private orderWindowPaths(filePaths: string[]): string[] {
     const correctionPaths: string[] = [];
     const factPaths: string[] = [];
@@ -4869,7 +4885,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
     const readDir = async (dir: string) => {
       try {
-        const entries = await readdir(dir, { withFileTypes: true });
+        const entries = (await readdir(dir, { withFileTypes: true })).filter((e) => !isMacOsReplicationJunkBasename(e.name));
         for (const entry of entries) {
           checkCorpusReadAbort(options);
           const fullPath = path.join(dir, entry.name);
@@ -5494,22 +5510,18 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return deleted;
   }
 
-  async loadBuffer(): Promise<BufferState> {
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    try {
-      const raw = await this.readStorageSecureFile(bufferPath);
-      return JSON.parse(raw) as BufferState;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return { turns: [], lastExtractionAt: null, extractionCount: 0 };
-    }
+  // Buffer persistence: one file per session (storage/buffer-session-files.ts).
+  private bufferFiles?: BufferSessionFiles;
+  private bufferSessionFiles(): BufferSessionFiles {
+    const io = { read: (p: string) => this.readStorageSecureFile(p), write: (p: string, c: string) => this.writeStorageSecureFile(p, c) };
+    return (this.bufferFiles ??= new BufferSessionFiles(this.stateDir, io));
   }
-
-  async saveBuffer(state: BufferState): Promise<void> {
-    await this.ensureDirectories();
-    const bufferPath = path.join(this.stateDir, "buffer.json");
-    await this.writeStorageSecureFile(bufferPath, JSON.stringify(state, null, 2));
+  async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }
+  async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
+  async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
+  async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
+  saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly import("./types.js").BufferTurn[]): Promise<string> { // storage/dropped-extraction-chunk.ts
+    return saveDroppedChunk(this.stateDir, (file, content) => this.writeStorageSecureFile(file, content), bufferKey, reason, turns);
   }
 
   async loadMeta(): Promise<MetaState> {
@@ -5555,8 +5567,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
-    const metaPath = path.join(this.stateDir, "meta.json");
-    await this.writeStorageSecureFile(metaPath, JSON.stringify(state, null, 2));
+    await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {
@@ -7120,7 +7131,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       const summaries: MemorySummary[] = [];
 
       for (const file of files) {
-        if (!file.endsWith(".json")) continue;
+        if (isMacOsReplicationJunkBasename(file) || !file.endsWith(".json")) continue;
         const filePath = path.join(this.summariesDir, file);
         const raw = await this.readStorageSecureFile(filePath);
         summaries.push(JSON.parse(raw) as MemorySummary);
@@ -7199,10 +7210,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveTopics(topics: TopicScore[]): Promise<void> {
     const metaPath = path.join(this.stateDir, "topics.json");
     await mkdir(this.stateDir, { recursive: true });
-    await this.writeStorageSecureFile(
-      metaPath,
-      JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2)
-    );
+    await this.writeStorageSecureFile(metaPath, JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2));
     log.debug(`saved ${topics.length} topic scores`);
   }
 

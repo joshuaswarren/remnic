@@ -6,6 +6,7 @@ import { StorageManager } from "../storage.js";
 import { keyring, secureStoreDir } from "../secure-store/index.js";
 import type { PluginConfig } from "../types.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
+import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
 import {
   namespaceIdentityLegacyToken,
   namespaceIdentityToken,
@@ -30,6 +31,7 @@ async function hasStoredEntries(p: string): Promise<boolean> {
     if (!entry.isDirectory()) return true;
     const children = await readdir(p, { withFileTypes: true });
     for (const child of children) {
+      if (isMacOsReplicationJunkBasename(child.name)) continue;
       const childPath = path.join(p, child.name);
       if (child.isSymbolicLink() || child.isFile()) return true;
       if (child.isDirectory() && (await hasStoredEntries(childPath))) return true;
