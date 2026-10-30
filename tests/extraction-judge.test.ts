@@ -1165,6 +1165,25 @@ test("judge asks the fallback route for reasoning headroom and keeps the compact
   assert.ok(JUDGE_REASONING_HEADROOM_TOKENS >= 512, "headroom is large enough to hold reasoning before the verdict");
 });
 
+test("judge turns thinking off on the local route and keeps the compact budget", async () => {
+  clearVerdictCache();
+  const seen: Array<{ maxTokens?: number; disableThinking?: boolean }> = [];
+  const local = {
+    chatCompletion: async (_msgs: any, options: any) => {
+      seen.push({ maxTokens: options.maxTokens, disableThinking: options.disableThinking });
+      return { content: JSON.stringify({ verdicts: [{ index: 0, kind: "accept" }] }) };
+    },
+  };
+  // SAFETY: the mock implements the one local-client method the judge calls.
+  await judgeFactDurability(
+    [{ text: "The staging database moves on Monday", category: "fact", confidence: 0.6, importanceLevel: "normal" }],
+    makeConfig({ extractionJudgeBatchSize: 1, modelSource: "plugin" }),
+    local as any,
+    null,
+  );
+  assert.deepEqual(seen, [{ maxTokens: judgeMaxTokens(1), disableThinking: true }]);
+});
+
 test("PR 2: auto-approved categories never emit defer", async () => {
   clearVerdictCache();
   const candidates: JudgeCandidate[] = [

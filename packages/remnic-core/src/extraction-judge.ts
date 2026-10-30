@@ -705,6 +705,8 @@ async function callJudgeLlm(
       const result = await (localLlm as any).chatCompletion(messages, {
         temperature: 0.1,
         maxTokens,
+        // A verdict needs no reasoning: keep a thinking-capable model from spending the compact budget on it.
+        disableThinking: true,
         responseFormat: { type: "json_object" },
         timeoutMs: config.extractionJudgeTimeoutMs,
         // The client applies timeoutMs per attempt and retries an abort once:
