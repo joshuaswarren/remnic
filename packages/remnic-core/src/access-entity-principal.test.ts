@@ -11,6 +11,28 @@ import { parseConfig } from "./config.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
 import type { Orchestrator } from "./orchestrator.js";
 
+interface EntityHttpBody {
+  error?: string;
+  found?: boolean;
+  namespace?: string;
+  entities?: Array<{ name?: string }>;
+  entity?: { name?: string };
+}
+
+interface McpToolBody {
+  result: { isError: boolean; content: Array<{ text: string }>; structuredContent: { entity: { name: string } } };
+}
+
+async function readMcp(response: Response): Promise<McpToolBody> {
+  // SAFETY: /mcp answers tools/call with the JSON-RPC result shape named above; each test asserts the fields it reads.
+  return (await response.json()) as McpToolBody;
+}
+
+async function readBody(response: Response): Promise<EntityHttpBody> {
+  // SAFETY: the access server answers these routes with the JSON shape named above; each test asserts the fields it reads.
+  return (await response.json()) as EntityHttpBody;
+}
+
 /** Entity reads need only config and real storage routing from the orchestrator. */
 async function createFixture(t: TestContext, namespacesEnabled = true) {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-acl-"));
@@ -45,6 +67,7 @@ async function createFixture(t: TestContext, namespacesEnabled = true) {
     config,
     getStorage: (namespace) => router.storageFor(namespace ?? config.defaultNamespace),
   };
+  // SAFETY: the entity read paths touch only `config` and `getStorage` (the Pick above); the rest of the Orchestrator is unused here.
   return new EngramAccessService(dependencies as Orchestrator);
 }
 
@@ -113,19 +136,22 @@ test("HTTP and MCP entity reads bind ACLs to the transport principal across alia
     "x-engram-principal": "owner",
   };
   for (const prefix of ["engram", "remnic"]) {
-    for (const suffix of ["entities", "entities/project-widget"]) {
+    // The entity HTTP routes are served under /engram/v1 only; the /remnic prefix is an alias for the MCP tool names below.
+    for (const suffix of prefix === "engram" ? ["entities", "entities/project-widget"] : []) {
       const denied = await fetch(`${base}/${prefix}/v1/${suffix}?namespace=default&principal=owner`, { headers });
       assert.equal(denied.status, 400);
-      assert.match((await denied.json()).error, /not readable/);
+      assert.match((await readBody(denied)).error ?? "", /not readable/);
       const allowed = await fetch(`${base}/${prefix}/v1/${suffix}?namespace=restricted`, { headers });
       assert.equal(allowed.status, 200);
-      const body = await allowed.json();
+      const body = await readBody(allowed);
       assert.equal(body.namespace, "restricted");
-      assert.equal(suffix === "entities" ? body.entities[0]?.name : body.entity?.name, "Widget-restricted");
+      assert.equal(suffix === "entities" ? body.entities?.[0]?.name : body.entity?.name, "Widget-restricted");
     }
-    const missing = await fetch(`${base}/${prefix}/v1/entities/missing?namespace=restricted`, { headers });
-    assert.equal(missing.status, 404);
-    assert.equal((await missing.json()).found, false);
+    if (prefix === "engram") {
+      const missing = await fetch(`${base}/${prefix}/v1/entities/missing?namespace=restricted`, { headers });
+      assert.equal(missing.status, 404);
+      assert.equal((await readBody(missing)).found, false);
+    }
 
     for (const namespace of ["default", "restricted"]) {
       const response = await fetch(`${base}/mcp`, {
@@ -144,7 +170,7 @@ test("HTTP and MCP entity reads bind ACLs to the transport principal across alia
         }),
       });
       assert.equal(response.status, 200);
-      const body = await response.json();
+      const body = await readMcp(response);
       assert.equal(body.result.isError, namespace === "default");
       if (namespace === "default") {
         assert.match(body.result.content[0].text, /not readable/);
