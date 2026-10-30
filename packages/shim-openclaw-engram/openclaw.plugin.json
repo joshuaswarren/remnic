@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.17",
+  "version": "10.0.40",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -2453,6 +2453,11 @@
         "default": false,
         "description": "Emit structured telemetry rows to state/observation-ledger/extraction-judge-verdicts.jsonl on every judge verdict. Off by default; enable to collect defer-rate and latency metrics for operator dashboards."
       },
+      "extractionJudgeTimeoutMs": {
+        "type": "number",
+        "default": 20000,
+        "minimum": 1
+      },
       "extractionMaxEntitiesPerRun": {
         "type": "number",
         "default": 6,
@@ -3321,7 +3326,7 @@
       },
       "localLlmApiKeyEnv": {
         "type": "string",
-        "description": "Optional environment variable name for a local LLM API key. A missing variable leaves local auth unset so read-only CLI commands can still load config."
+        "description": "Optional env var name for a local LLM API key; a missing variable leaves local auth unset."
       },
       "localLlmAuthHeader": {
         "type": "boolean",
@@ -3331,13 +3336,13 @@
       "localLlmDisableThinking": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), suppress thinking on supported local backends for extraction and other terse structured operations. `localLlmThinkingThresholdChars` re-enables thinking for short extractions. Consolidation and the fast tier are unaffected."
+        "description": "Suppress thinking on supported local backends for terse structured ops (default true). Consolidation and the fast tier are unaffected."
       },
       "localLlmThinkingThresholdChars": {
         "type": "integer",
         "minimum": 0,
         "default": 3000,
-        "description": "Enable thinking for local extraction when the transcript is shorter than this many characters. Set to 0 to keep thinking suppressed for every extraction. Consolidation is unaffected."
+        "description": "Enable thinking for local extraction when the transcript is shorter than this. 0 keeps it suppressed."
       },
       "localLlmEnabled": {
         "type": "boolean",
@@ -3347,12 +3352,12 @@
       "localLlmFallback": {
         "type": "boolean",
         "default": true,
-        "description": "Legacy alias for taskLlmFallback. Use the gateway/task LLM chain when the local LLM path fails or is unavailable."
+        "description": "Legacy alias for taskLlmFallback."
       },
       "localLlmFastEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable a separate smaller/faster local LLM for quick operations (rerank, entity_summary, tmt_summary, compression_guideline)."
+        "description": "Enable a smaller/faster local LLM for quick ops (rerank, entity_summary, tmt_summary, compression_guideline)."
       },
       "localLlmFastModel": {
         "type": "string",
@@ -3362,11 +3367,11 @@
       "localLlmFastTimeoutMs": {
         "type": "number",
         "default": 15000,
-        "description": "Timeout for fast-tier local LLM requests (ms). Lower than primary since fast ops should complete quickly."
+        "description": "Timeout for fast-tier local LLM requests (ms)."
       },
       "localLlmFastUrl": {
         "type": "string",
-        "description": "Endpoint for the fast-tier local LLM. Defaults to the same endpoint as localLlmUrl when not set."
+        "description": "Fast-tier local LLM endpoint. Defaults to localLlmUrl."
       },
       "localLlmHeaders": {
         "type": "object",
@@ -3377,11 +3382,11 @@
       },
       "localLlmHomeDir": {
         "type": "string",
-        "description": "Optional home directory override for local LLM helpers (LM Studio settings + CLI PATH resolution)."
+        "description": "Optional home directory override for local LLM helpers (LM Studio settings, CLI PATH)."
       },
       "localLlmMaxContext": {
         "type": "number",
-        "description": "Override the detected context window for local LLM. Set to 32768 if your LLM server defaults to 32K context despite the model supporting 128K."
+        "description": "Override the detected local LLM context window (e.g. 32768 when the server defaults to 32K)."
       },
       "localLlmModel": {
         "type": "string",
@@ -3399,7 +3404,7 @@
           "max"
         ],
         "default": "none",
-        "description": "Ollama-backend thinking suppression: reasoning_effort injected for thinking-suppressed operations (Ollama ignores chat_template_kwargs). Empty string disables injection."
+        "description": "Ollama think-off: reasoning_effort sent for thinking-suppressed ops. Empty disables."
       },
       "localLlmRetry5xxCount": {
         "type": "number",
@@ -3411,10 +3416,34 @@
         "default": 400,
         "description": "Base backoff delay between local LLM retries (ms)."
       },
+      "localLlmRateLimitRetryCount": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 3,
+        "description": "Retries on 429/503/408 or proxy cooldown (jittered backoff, honors Retry-After)."
+      },
+      "localLlmRateLimitBackoffBaseMs": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 1000,
+        "description": "Base rate-limit backoff (ms)."
+      },
+      "localLlmRateLimitBackoffMaxMs": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 60000,
+        "description": "Max rate-limit backoff (ms); a longer Retry-After skips the retry."
+      },
+      "localLlmMaxConcurrency": {
+        "type": "integer",
+        "minimum": 0,
+        "default": 4,
+        "description": "Process-wide cap on concurrent local LLM requests (0 = unlimited). Caps above 1 reserve one permit for recall-critical work."
+      },
       "localLlmTimeoutMs": {
         "type": "number",
         "default": 180000,
-        "description": "Hard timeout for local LLM requests (ms). Legacy alias for taskLlmTimeoutMs on the gateway/task chain when that key is absent."
+        "description": "Hard timeout for local LLM requests (ms). Legacy alias for taskLlmTimeoutMs when that key is absent."
       },
       "taskLlmTimeoutMs": {
         "type": "number",
@@ -3722,13 +3751,13 @@
         "type": "number",
         "default": 16777216,
         "minimum": 0,
-        "description": "Size (bytes) at which a namespace-catalog touch auto-compacts <memoryDir>/state/namespaces.jsonl. The append-only log is folded (last-record-wins; every namespace row preserved) and atomically rewritten once it exceeds this size. Default 16777216 (16 MB); 0 disables auto-compaction."
+        "description": "Size in bytes at which a namespace-catalog touch compacts <memoryDir>/state/namespaces.jsonl (last-record-wins, every namespace row preserved, atomic rewrite). Default 16777216; 0 disables."
       },
       "namespacesCatalogReadTouchCoalesceMs": {
         "type": "number",
         "default": 60000,
         "minimum": 0,
-        "description": "Coalescing window (ms) for repeated pure-timestamp read touches on an already-known namespace. Buffered per (namespace, kind) and flushed once per window; observable touches (first sight, provenance/field change) always flush immediately. Default 60000; 0 disables read coalescing."
+        "description": "Coalescing window (ms) for repeated timestamp-only read touches on a known namespace; observable touches always flush at once. Default 60000; 0 disables."
       },
       "namespacesCatalogTouchStateWrites": {
         "type": "boolean",
@@ -4037,7 +4066,7 @@
             "const": false
           }
         ],
-        "description": "Optional OpenAI API key for plugin mode (or set OPENAI_API_KEY env var). Ignored by default gateway-mode installs; in plugin mode, Remnic may send conversation and memory content to OpenAI or the configured OpenAI-compatible endpoint for extraction, consolidation, summarization, and embeddings."
+        "description": "Optional OpenAI API key for plugin mode (or OPENAI_API_KEY). Ignored by default in gateway mode (only the implicit env read is skipped); in plugin mode Remnic may send conversation and memory content to OpenAI or the configured endpoint."
       },
       "openaiBaseUrl": {
         "type": "string",
@@ -5049,7 +5078,7 @@
       "recallStandingBlock": {
         "type": "boolean",
         "default": false,
-        "description": "Prefix-cache-stable standing memory block (issue #2971): a byte-stable index over pinned/high-value memories placed before per-turn recall so the LLM prefix cache survives across turns. The builder refuses clock/date/counter content at build time. Default false keeps recall output byte-identical; recall-path injection lands in a later wiring slice."
+        "description": "Prefix-cache-stable standing memory block (#2971): a byte-stable index of pinned/high-value memories placed before per-turn recall. Default false keeps recall output byte-identical."
       },
       "standingBlockFreshDays": {
         "type": "number",
@@ -5066,7 +5095,7 @@
       "recallRecognitionTier": {
         "type": "boolean",
         "default": false,
-        "description": "Full-index recognition tier (issue #2975): small namespaces recall by recognizing against the whole compact index instead of vector search; absent or oversized indexes fall back to vector search deterministically. Default false keeps recall byte-identical; recall-path wiring lands in a later slice."
+        "description": "Full-index recognition tier (#2975): small namespaces recall against the whole compact index instead of vector search; absent or oversized indexes fall back to vector search. Default false."
       },
       "recognitionIndexMaxEntries": {
         "type": "integer",
@@ -5159,7 +5188,7 @@
           "auto"
         ],
         "default": "manual",
-        "description": "Disclosure auto-escalation policy. When 'auto', recalls without an explicit caller-supplied disclosure escalate from chunk to section if the top-K confidence falls below recallDisclosureEscalationThreshold. 'raw' is never auto-selected. Default 'manual' preserves pre-#677 behavior."
+        "description": "Disclosure auto-escalation: when 'auto', recalls without a caller-supplied disclosure escalate from chunk to section below recallDisclosureEscalationThreshold confidence; 'raw' is never auto-selected. Default 'manual'."
       },
       "recallDisclosureEscalationThreshold": {
         "type": "number",
@@ -5394,7 +5423,7 @@
       "recallPlannerModel": {
         "type": "string",
         "default": "gpt-5.5",
-        "description": "Model for LLM-based recall planning (recallPlannerLlmEnabled). A 'provider/model' string resolved through the gateway providers/chain - any configured provider works (OpenAI, Anthropic, Ollama, Codex, gateway personas). Tried first, with taskModelChain / gateway defaults as fallback."
+        "description": "'provider/model' for LLM recall planning (recallPlannerLlmEnabled), resolved through gateway providers; tried first, with taskModelChain / gateway defaults as fallback."
       },
       "recallPlannerShadowMode": {
         "type": "boolean",
@@ -5978,7 +6007,7 @@
           "enabled": {
             "type": "boolean",
             "default": false,
-            "description": "Stamp a `subject` (user|agent) on extracted memories: category defaults (preference/relationship/moment/commitment → user; procedure/principle/skill → agent) with an optional extractor override for fact/decision-like facts. Default off - writes stay byte-identical until enabled."
+            "description": "Stamp `subject` (user|agent) on extracted memories from category defaults, with an optional extractor override. Default off."
           }
         }
       },
@@ -6259,7 +6288,7 @@
       "tombstonesEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "Master gate for the tombstone non-resurrection invariant. When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active - visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
+        "description": "Master gate for tombstone non-resurrection: a fact matching an active tombstone is persisted as pending_review + blockedBy, never silently dropped. Off restores pre-feature behavior."
       },
       "tombstonesSemanticMatch": {
         "type": "boolean",
@@ -6653,7 +6682,7 @@
                       "file"
                     ],
                     "default": "memoryDir",
-                    "description": "Where a day's journal body is read. 'memoryDir' uses journal/<date>.md under the memory dir. 'vault' reads vault.readback.journalSection in the vault daily note and requires vault.enabled, a resolvable dailyNotePath, and a non-empty journalSection. Legacy 'file' aliases 'memoryDir' and warns."
+                    "description": "Where a day's journal body is read: 'memoryDir' (journal/<date>.md) or 'vault' (vault.readback.journalSection; needs vault.enabled, dailyNotePath and a non-empty journalSection). Legacy 'file' aliases 'memoryDir' and warns."
                   },
                   "heading": {
                     "type": "string",
@@ -7545,6 +7574,12 @@
         "type": "number",
         "default": 5,
         "description": "Consecutive provider failures before the extraction circuit breaker opens and short-circuits extraction."
+      },
+      "extractionChunkDropAfterFailures": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 5,
+        "description": "Consecutive failed extraction attempts after which a stuck buffer chunk is dropped (copy saved under state/dropped/ first)."
       },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",

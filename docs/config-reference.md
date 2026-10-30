@@ -1,8 +1,19 @@
 # Config Reference
 
-All settings live in `openclaw.json` under `plugins.entries.openclaw-remnic.config`. (Installs created before the rename may still use the legacy `openclaw-engram` entry key; Remnic reads either.)
+OpenClaw stores core settings in `openclaw.json` under
+`plugins.entries.openclaw-remnic.config`. Legacy installs may use the
+`openclaw-engram` entry key. Standalone installs put core settings in the `remnic`
+block of their config file and HTTP settings in a separate `server` block.
+Legacy standalone `engram` blocks and flat core settings remain supported;
+the selected nested block overrides flat values.
 
-Use `openclaw engram config-review` for opinionated tuning recommendations and `openclaw engram doctor` for runtime or configuration problems. The narrative sections below explain the major feature groups; the schema-complete appendix at the bottom is the authoritative default-and-recommended matrix for every shipped config key. Remnic ships 752 schema-validated top-level options plus 4 tuning presets, so treat the appendix as the source of truth and reach for a preset before hand-tuning individual keys.
+Use `openclaw engram config-review` for tuning recommendations and
+`openclaw engram doctor` for runtime or config problems. Standalone users can run
+`remnic doctor` and inspect their config file with `remnic config`.
+The tables below cover feature groups and defaults, but do not list every shipped
+key. The [plugin schema](../openclaw.plugin.json) and
+[core parser](../packages/remnic-core/src/config.ts) define accepted values and
+defaults. Four optional tuning presets provide starting points.
 
 ## Core
 
@@ -261,7 +272,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
-| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json` on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer/` (one file per session) on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
@@ -1007,6 +1018,10 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmRetryBackoffMs` | `400` | Base backoff in milliseconds for local endpoint retries |
 | `localLlm400TripThreshold` | `5` | Consecutive 4xx responses before the local endpoint is temporarily tripped |
 | `localLlm400CooldownMs` | `120000` | Cooldown window before retrying a tripped local endpoint |
+| `localLlmRateLimitRetryCount` | `3` | Retries for rate-limit responses (429/503/408 or LiteLLM `No deployments available`/cooldown). Each retry waits an exponential full-jitter backoff, never less than the server's `Retry-After` (delta-seconds or HTTP-date) or LiteLLM's `Try again in N seconds` hint. The wait is shared process-wide per endpoint, so one client's 429 slows every client. Separate from `localLlmRetry5xxCount`. |
+| `localLlmRateLimitBackoffBaseMs` | `1000` | Base delay for rate-limit backoff; the ceiling doubles per consecutive rate-limit response. |
+| `localLlmRateLimitBackoffMaxMs` | `60000` | Ceiling for rate-limit backoff. A server hint longer than this skips the retry instead of waiting. |
+| `localLlmMaxConcurrency` | `4` | Process-wide cap on concurrent local LLM HTTP attempts across all clients. Caps above `1` reserve one permit for recall-critical work; background requests share the remaining permits. `1` stays serial; `0` disables the cap. |
 | `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, restores pre-change behavior exactly: the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | Per-fingerprint exponential backoff schedule (1m, 5m, 30m, 2h), indexed by attempt. After a failed extraction, that fingerprint is not re-attempted until its backoff elapses. |
 | `extractionRetryMaxBackoffMs` | `21600000` | Upper bound (6h) on any single backoff interval, and the long-park interval once `parse_empty` exhausts its attempt cap. |
@@ -1015,6 +1030,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `extractionBreakerFailureThreshold` | `5` | Consecutive provider failures before the process-level circuit breaker opens and short-circuits extraction for all fingerprints. |
 | `extractionBreakerCooldownMs` | `300000` | Breaker open cooldown (5m) for transient provider failures (429/5xx/network). A half-open probe after cooldown closes the breaker on one success. |
 | `extractionBreakerAuthCooldownMs` | `1800000` | Breaker open cooldown (30m) for auth/config failures (401/403 or "no models configured"), which open the breaker immediately instead of hot-looping. |
+| `extractionChunkDropAfterFailures` | `5` | Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall its buffer forever. Only failures that are the chunk's own count: an empty or unparseable answer, and (local model) an answer that is unusable or an HTTP 400, 413 or 422. An outage never counts: provider errors, timeouts, 429, 5xx, an unreachable local endpoint, and auth or configuration failures (including 401, 403, 404, 405 and 410 from a local endpoint). The counts live in memory, so a restart starts them again from zero. |
 | `localLlmMaxContext` | `(unset)` | Override context window size |
 | `localLlmFastEnabled` | `false` | Enable a separate fast local tier for short planner/rerank/helper calls |
 | `localLlmFastModel` | `""` | Optional model id for the fast local tier |
@@ -1631,6 +1647,7 @@ retain the guarantee.
 | `extractionJudgeEnabled` | `false` | Enable the LLM-as-judge post-extraction durability filter |
 | `extractionJudgeModel` | `""` | Model override for judge; empty = use configured local model |
 | `extractionJudgeBatchSize` | `20` | Max candidates per LLM batch call |
+| `extractionJudgeTimeoutMs` | `20000` | Per-call judge LLM timeout (ms); compact verdict measures 2.1-2.5 s on a small fast judge model (13-22 s, 41 s verbose, on the big shared core model) |
 | `extractionJudgeShadow` | `false` | Shadow mode: log verdicts without filtering |
 
 ## Semantic Chunking (issue #368)
@@ -1953,9 +1970,11 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `converge.captureWriteLockDeadlineMs` | `60000` | Capture write-lock acquire deadline (ms); expiry fails that transfer only |
 
 
-## Schema-Complete Default and Recommended Settings
+## Default and recommended settings
 
-This appendix is flattened from the runtime config schema and the live `parseConfig({})` defaults so the page stays complete even when newer or advanced settings have not yet been expanded in the narrative sections above. Unless noted otherwise, the recommended value matches the shipped default.
+This appendix lists defaults and recommended settings for the keys below.
+It is not a complete schema listing. Unless noted otherwise, the recommended
+value matches the shipped default.
 
 | Setting | Default | Recommended |
 |---------|---------|-------------|
@@ -2268,6 +2287,10 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `localLlmRetryBackoffMs` | `400` | `400` |
 | `localLlm400TripThreshold` | `5` | `5` |
 | `localLlm400CooldownMs` | `120000` | `120000` |
+| `localLlmRateLimitRetryCount` | `3` | `3` |
+| `localLlmRateLimitBackoffBaseMs` | `1000` | `1000` |
+| `localLlmRateLimitBackoffMaxMs` | `60000` | `60000` |
+| `localLlmMaxConcurrency` | `4` | `4` |
 | `extractionRetryEnabled` | `true` | `true` (set `false` to fully restore pre-change extraction behavior — the config-only rollback) |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | `[60000, 300000, 1800000, 7200000]` |
 | `extractionRetryMaxBackoffMs` | `21600000` | `21600000` |
@@ -2276,6 +2299,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `extractionBreakerFailureThreshold` | `5` | `5` |
 | `extractionBreakerCooldownMs` | `300000` | `300000` |
 | `extractionBreakerAuthCooldownMs` | `1800000` | `1800000` |
+| `extractionChunkDropAfterFailures` | `5` | `5` |
 | `localLlmMaxContext` | (unset) | (unset) |
 | `localLlmFastEnabled` | `false` | `false` unless you have a separate fast local tier |
 | `localLlmFastModel` | `""` | `""` |
@@ -2410,7 +2434,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `lifecycleStaleDecayThreshold` | `0.65` | `0.65` |
 | `lifecycleArchiveDecayThreshold` | `0.85` | `0.85` |
 | `lifecycleProtectedCategories` | `["decision","principle","commitment","preference","procedure"]` | `["decision","principle","commitment","preference","procedure"]` |
-| `lifecycleMetricsEnabled` | `false` | `true` when `lifecyclePolicyEnabled=true` |
+| `lifecycleMetricsEnabled` | `true` | `true` when lifecycle policy is enabled. When omitted, it follows the resolved `dreams.phases.lightSleep.enabled` gate. |
 | `procedural.enabled` | `true` | `true` (default-on since issue #567 PR 4/5) or `false` to opt out. See [procedural-memory.md](procedural-memory.md). |
 | `procedural.minOccurrences` | `3` | `3` (use `0` only to intentionally disable mining; see narrative section) |
 | `procedural.successFloor` | `0.75` | `0.75` (raised from `0.7` in issue #567 PR 3/5) |
@@ -2506,6 +2530,7 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `extractionJudgeEnabled` | `false` | `false` |
 | `extractionJudgeModel` | `""` | `""` |
 | `extractionJudgeBatchSize` | `20` | `20` |
+| `extractionJudgeTimeoutMs` | `20000` | `20000` |
 | `extractionJudgeShadow` | `false` | `false` |
 | `semanticChunkingEnabled` | `false` | `false` |
 | `semanticChunkingConfig` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` |

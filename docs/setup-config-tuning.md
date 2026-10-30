@@ -461,6 +461,9 @@ Reliability / load:
   - `extractionParseEmptyMaxAttempts: 3` — after 3 unparseable responses a fingerprint is long-parked (never marked processed).
   - `extractionBreakerFailureThreshold: 5` — consecutive provider failures before the process-level breaker opens and short-circuits extraction for all sessions. A 401/403/"no models configured" opens it immediately.
   - `extractionBreakerCooldownMs: 300000` / `extractionBreakerAuthCooldownMs: 1800000` — breaker open cooldown for transient (5m) vs auth/config (30m) failures. After cooldown a half-open probe closes the breaker on one success and clears retry state. Watch `openclaw remnic doctor` (the `extraction-resilience` check) for a breaker stuck `open` or `auth_config` errors.
+- Trigger-drain stall protection (oversized buffer windows):
+  - Windows that outgrow the extraction model's input budget (`localLlmMaxContext` when set, otherwise the learned context window) are drained chunk by chunk: each successful run clears its chunk, so a long session shrinks across observes instead of failing whole on every trigger.
+  - `extractionChunkDropAfterFailures: 5` — after this many consecutive failed attempts on the same head chunk, the chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall the buffer forever. Breaker-open and backoff retention never count toward the threshold, and neither does an outage (provider errors, timeouts, 429, 5xx, an unreachable or auth-failing endpoint). A local model that is up but keeps rejecting the chunk (an unusable answer, or HTTP 400, 413 or 422) does count, so that chunk is dropped after its recovery copy is saved. The counts and a partly drained window's eligibility are held in memory; a restart starts them again.
 
 Latency:
 - Increase `conversationRecallTimeoutMs` only if your QMD host is consistently fast.

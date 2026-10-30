@@ -87,7 +87,7 @@ function scopeProfileSelfNamespace(principal: string | undefined, config: Plugin
   return derivedScopeProfileSelfNamespace(principal, config) ?? existing;
 }
 
-function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
+export function hasExplicitNamespacePolicy(namespace: string, config: PluginConfig): boolean {
   const identity = normalizeNamespaceIdentity(namespace);
   return (config.namespacePolicies ?? []).some(
     (policy) => normalizeNamespaceIdentity(policy.name) === identity,

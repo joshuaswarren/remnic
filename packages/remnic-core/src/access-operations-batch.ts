@@ -279,7 +279,7 @@ defineOperation({
     };
   },
 });
-defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace)) }) });
+defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
 // Issue #2482: observe validates through the canonical observeRequestSchema
 // (same as HTTP/MCP wire validation). Nullable wire fields (parts /
@@ -472,7 +472,7 @@ defineOperation({
     return { result: getRecallTimingStatus(ctx.service.configRef) };
   },
 });
-defineOperation({ name: "entity_list", description: "List entities.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.entityList() }) });
+defineOperation({ name: "entity_list", description: "List entities.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.entityList({}, ctx.authenticatedPrincipal) }) });
 defineOperation({ name: "maintenance_status", description: "Maintenance status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.maintenance() }) });
 defineOperation({ name: "quality_status", description: "Quality status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.quality() }) });
 defineOperation({ name: "trust_zones_status", description: "Trust-zone status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.trustZoneStatus() }) });

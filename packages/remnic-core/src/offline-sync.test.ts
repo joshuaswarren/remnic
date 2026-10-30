@@ -506,6 +506,15 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/embeddings/other.json"), false);
     // Shard preference is scoped to the embedding index directory.
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/other/shard-0000.json"), false);
+    // Per-session buffer files are remote-authoritative like the legacy
+    // single state/buffer.json they replaced.
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer/session-a.json"), true);
+    assert.equal(
+      shouldPreferIncomingOfflineRuntimeFile("namespaces/team/state/buffer/session-a.json"),
+      true,
+    );
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer/notes.txt"), false);
+    assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/buffer-other/session-a.json"), false);
 
     // buildOfflineSyncSnapshotForPaths still rejects explicitly excluded
     // paths so callers cannot bypass the default exclude via path lists.

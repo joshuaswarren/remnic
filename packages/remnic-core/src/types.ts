@@ -31,7 +31,7 @@ import type { SessionExperienceConfig } from "./experience/session-experience-co
 import type { ActionGateConfig } from "./coding/action-gate.js";
 import type { ActiveContextConfigFields } from "./active-context-config.js";
 import type { LocalLlmConfig } from "./local-llm-config.js";
-import type { AmbientCaptureProvenance, BufferTurnOwner, SecurityConfig, OriginMetadata } from "./security/types.js";
+import type { SecurityConfig, OriginMetadata } from "./security/types.js";
 export type MemorySubject = "user" | "agent";
 export type SubjectGuardMode = "off" | "warn" | "enforce";
 export type ReasoningEffort = "none" | "low" | "medium" | "high";
@@ -1299,6 +1299,18 @@ export interface PluginConfig
   extractionJudgeModel: string;
   /** Maximum number of candidate facts per judge LLM batch call. */
   extractionJudgeBatchSize: number;
+  /**
+   * Per-call timeout for the judge LLM (ms). Default 20000: measured 2.1-2.5 s
+   * per compact verdict call (completion budget 24 tokens per candidate, up
+   * to 2048) on a small fast judge model; the big shared core model measured
+   * 13-22 s per compact call, 41 s verbose — raise it there. The earlier 150s
+   * default only papered over 59-305s verbose replies; sub-second budgets
+   * abort every call. On the local LLM path each attempt lasts
+   * min(localLlmTimeoutMs, extractionJudgeTimeoutMs) (localLlmTimeoutMs
+   * defaults to 180000), so a value above localLlmTimeoutMs does not lengthen
+   * an attempt: raise both settings for a slower judge model.
+   */
+  extractionJudgeTimeoutMs: number;
   /** Shadow mode: log judge verdicts but do not filter facts. Default false. */
   extractionJudgeShadow: boolean;
   /**
@@ -1648,6 +1660,14 @@ export interface PluginConfig
   localLlmRetryBackoffMs: number;
   localLlm400TripThreshold: number;
   localLlm400CooldownMs: number;
+  /** COS-447: retries for rate-limit responses (429/503/408, LiteLLM cooldown). Default 3. */
+  localLlmRateLimitRetryCount?: number;
+  /** COS-447: base delay for exponential full-jitter rate-limit backoff (ms). Default 1000. */
+  localLlmRateLimitBackoffBaseMs?: number;
+  /** COS-447: ceiling for rate-limit backoff; longer server hints skip the retry (ms). Default 60000. */
+  localLlmRateLimitBackoffMaxMs?: number;
+  /** Process-wide local LLM HTTP cap; above 1, reserves one permit for recall-critical work. 0 = unlimited. Default 4. */
+  localLlmMaxConcurrency?: number;
   /** Ollama-backend thinking suppression: `reasoning_effort` value injected on
    *  `/v1/chat/completions` for THINKING_SUPPRESSED_OPERATIONS ("none" | "low" |
    *  "medium" | "high" | "max"; "" disables injection). Ollama ignores
@@ -1677,6 +1697,13 @@ export interface PluginConfig
   extractionBreakerCooldownMs: number;
   /** Breaker open cooldown (ms) for auth/config failures (longer — provider is misconfigured). */
   extractionBreakerAuthCooldownMs: number;
+  /**
+   * Consecutive failed extraction attempts after which the failing
+   * trigger-drain chunk is dropped (with a side-file copy under
+   * `state/dropped/`) so a session whose window never extracts cannot stall
+   * the buffer forever. Default: `5`.
+   */
+  extractionChunkDropAfterFailures: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;
@@ -2648,22 +2675,8 @@ export interface SourceConnectorProvenance {
   sourceConnector?: string;
   originRole?: "user" | "assistant" | "tool";
 }
-export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: string;
-  sourceValidAt?: string;
-  sessionKey?: string;
-  logicalSessionKey?: string;
-  providerThreadId?: string | null;
-  turnFingerprint?: string;
-  persistProcessedFingerprint?: boolean;
-  extractionContextOnly?: boolean;
-  parts?: import("./message-parts/index.js").LcmMessagePartInput[];
-  rawContent?: unknown;
-  sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;
-  importProvenance?: import("./bulk-import/types.js").ImportTurnProvenance;
-}
+export type { BufferTurn } from "./buffer-turn.js";
+import type { BufferTurn } from "./buffer-turn.js";
 
 export interface BufferEntryState {
   turns: BufferTurn[];
@@ -3460,6 +3473,11 @@ export interface QmdSearchResult extends OriginMetadata, RecallDriftAnnotation, 
   path: string;
   snippet: string;
   score: number;
+  /**
+   * Pool-normalized rank × multiplier from the last adjusted rerank stage.
+   * MMR prefers it over `score`; additive boosts compose on this scale.
+   */
+  effectiveScore?: number;
   line?: number;
   explain?: QmdSearchExplain;
   transport?: "daemon" | "subprocess" | "hybrid" | "scoped_prefilter";

@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  JUDGE_REASONING_HEADROOM_TOKENS,
+  judgeMaxTokens,
   judgeFactDurability,
   clearVerdictCache,
   verdictCacheSize,
@@ -1034,6 +1036,152 @@ test("PR 2: duplicate defer candidates in one batch increment counter once", asy
   for (const v of r.verdicts.values()) {
     assert.equal(v.kind, "defer");
   }
+});
+
+test("identical defer candidates in different batches advance the cap once and share one verdict", async () => {
+  // CodeRabbit on PR 3264: the defer bookkeeping lived per batch. With one prior deferral and a cap of 2, the first copy of a
+  // candidate was deferred (count 2) and a copy in the NEXT batch then met the cap and was rejected (and cached).
+  clearVerdictCache();
+  const cache = new Map<string, JudgeVerdict>();
+  const defers = new Map<string, number>();
+  const deferAll = {
+    chatCompletion: async (_msgs: any) => {
+      // SAFETY: the judge's user message is a JSON array of indexed candidates; the mock reads only `index`.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
+    },
+  };
+  const one: JudgeCandidate = { text: "Ambiguous follow-up across batches", category: "fact", confidence: 0.5, importanceLevel: "normal" };
+  const cfg = makeConfig({ extractionJudgeMaxDeferrals: 2, extractionJudgeBatchSize: 1 });
+  // SAFETY: the mock implements the one client method the judge calls.
+  const first = await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  assert.equal(first.deferred, 1);
+  assert.equal([...defers.values()][0], 1, "one prior deferral recorded");
+
+  // SAFETY: same mock.
+  const r = await judgeFactDurability([one, { ...one }, { ...one }], cfg, deferAll as any, null, cache, defers);
+  assert.equal(r.deferred, 1, "the key advances the cap once for the whole call");
+  assert.equal(r.deferredCappedToReject, 0, "no copy is rejected by a count another copy produced");
+  assert.equal([...defers.values()][0], 2, "the counter went from 1 to 2, not to the cap or beyond");
+  for (const v of r.verdicts.values()) assert.equal(v.kind, "defer", "every copy shares the first sighting's verdict");
+  assert.equal(cache.size, 0, "defer is still not cached in the cache this call used");
+});
+
+test("an accept clears the deferral snapshot, so a later copy in another batch starts fresh", async () => {
+  // CodeRabbit on PR 3264: the snapshot taken at the first sighting kept the old count after an accept cleared the counter,
+  // so a later defer for an identical candidate met the cap and rejected it, overwriting the accepted cache entry.
+  clearVerdictCache();
+  const cache = new Map<string, JudgeVerdict>();
+  const defers = new Map<string, number>();
+  const one: JudgeCandidate = { text: "Same candidate in two batches", category: "fact", confidence: 0.5, importanceLevel: "normal" };
+  const cfg = makeConfig({ extractionJudgeMaxDeferrals: 2, extractionJudgeBatchSize: 1 });
+  // First call: defer the candidate twice so the counter reaches the cap of 2.
+  const deferAll = {
+    chatCompletion: async (_msgs: any) => {
+      // SAFETY: the judge's user message is a JSON array of indexed candidates; the mock reads only `index`.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
+    },
+  };
+  // SAFETY: the mock implements the one client method the judge calls.
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  // SAFETY: same mock.
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  assert.equal([...defers.values()][0], 2, "setup: the counter is at the cap");
+
+  let call = 0;
+  const acceptThenDefer = {
+    chatCompletion: async (_msgs: any) => {
+      call++;
+      // SAFETY: same shape as above.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      const kind = call === 1 ? "accept" : "defer";
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind })) }) };
+    },
+  };
+  // SAFETY: same mock.
+  const r = await judgeFactDurability([one, { ...one }], cfg, acceptThenDefer as any, null, cache, defers);
+  assert.equal(r.deferredCappedToReject, 0, "the second copy is not rejected by a count the accept already cleared");
+});
+
+test("a fail-open batch clears the deferral snapshot, so a later copy starts fresh", async () => {
+  // Phosphene on PR 3264: copies in three batches answered defer / unparseable / defer. The unparseable batch cleared the counter
+  // but not the first-sighting snapshot, so the third copy was rejected for a cap it no longer had.
+  clearVerdictCache();
+  const cache = new Map<string, JudgeVerdict>();
+  const defers = new Map<string, number>();
+  const one: JudgeCandidate = { text: "Same candidate across a bad batch", category: "fact", confidence: 0.5, importanceLevel: "normal" };
+  const cfg = makeConfig({ extractionJudgeMaxDeferrals: 2, extractionJudgeBatchSize: 1 });
+  const deferAll = {
+    chatCompletion: async (_msgs: any) => {
+      // SAFETY: the judge's user message is a JSON array of indexed candidates; the mock reads only `index`.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
+    },
+  };
+  // SAFETY: the mock implements the one client method the judge calls.
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  // SAFETY: same mock.
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  assert.equal([...defers.values()][0], 2, "setup: the counter is at the cap");
+
+  let call = 0;
+  const deferBadDefer = {
+    chatCompletion: async (_msgs: any) => {
+      call++;
+      if (call === 2) return { content: "not json" };
+      // SAFETY: same shape as above.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
+    },
+  };
+  // SAFETY: same mock.
+  const r = await judgeFactDurability([one, { ...one }, { ...one }], cfg, deferBadDefer as any, null, cache, defers);
+  const kinds = [...r.verdicts.entries()].sort((x, y) => x[0] - y[0]).map(([, v]) => v.kind ?? (v.durable ? "accept" : "reject"));
+  assert.equal(kinds[2], "defer", "the third copy defers; it is not capped by a count the bad batch cleared");
+  assert.equal([...defers.values()][0], 1, "the counter restarted at one");
+});
+
+test("judge asks the fallback route for reasoning headroom and keeps the compact budget", async () => {
+  clearVerdictCache();
+  const seen: Array<{ maxTokens?: number; reasoningHeadroomTokens?: number }> = [];
+  const fallback = {
+    chatCompletion: async (_msgs: any, options: any) => {
+      seen.push({ maxTokens: options.maxTokens, reasoningHeadroomTokens: options.reasoningHeadroomTokens });
+      return { content: JSON.stringify({ verdicts: [{ index: 0, kind: "accept" }] }), modelUsed: "mock" };
+    },
+  };
+  const cfg = makeConfig({ extractionJudgeBatchSize: 1 });
+  // SAFETY: the mock implements the one fallback-client method the judge calls.
+  await judgeFactDurability(
+    [{ text: "The release branch is frozen until Friday", category: "fact", confidence: 0.6, importanceLevel: "normal" }],
+    cfg,
+    null,
+    fallback as any,
+  );
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].maxTokens, judgeMaxTokens(1), "the compact per-batch budget is unchanged");
+  assert.equal(seen[0].reasoningHeadroomTokens, JUDGE_REASONING_HEADROOM_TOKENS);
+  assert.ok(JUDGE_REASONING_HEADROOM_TOKENS >= 512, "headroom is large enough to hold reasoning before the verdict");
+});
+
+test("judge turns thinking off on the local route and keeps the compact budget", async () => {
+  clearVerdictCache();
+  const seen: Array<{ maxTokens?: number; disableThinking?: boolean }> = [];
+  const local = {
+    chatCompletion: async (_msgs: any, options: any) => {
+      seen.push({ maxTokens: options.maxTokens, disableThinking: options.disableThinking });
+      return { content: JSON.stringify({ verdicts: [{ index: 0, kind: "accept" }] }) };
+    },
+  };
+  // SAFETY: the mock implements the one local-client method the judge calls.
+  await judgeFactDurability(
+    [{ text: "The staging database moves on Monday", category: "fact", confidence: 0.6, importanceLevel: "normal" }],
+    makeConfig({ extractionJudgeBatchSize: 1, modelSource: "plugin" }),
+    local as any,
+    null,
+  );
+  assert.deepEqual(seen, [{ maxTokens: judgeMaxTokens(1), disableThinking: true }]);
 });
 
 test("PR 2: auto-approved categories never emit defer", async () => {
