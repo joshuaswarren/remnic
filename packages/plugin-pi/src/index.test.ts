@@ -2962,7 +2962,7 @@ async function loadLikeOmp(
   const wrapped: PiApi = {
     ...pi,
     on: (event, handler) => {
-      if (event === "session_start") sessionStart.push(handler as TestPiEventHandler);
+      if (event === "session_start") sessionStart.push(handler);
       pi.on?.(event, handler);
     },
     appendEntry: (type, data) => {
@@ -2971,7 +2971,7 @@ async function loadLikeOmp(
       }
       pi.appendEntry(type, data);
     },
-  } as PiApi;
+  };
   await extension(wrapped);
   loading = false;
   for (const handler of sessionStart) await handler({}, undefined);
@@ -2997,7 +2997,7 @@ test("load phase makes no action-method calls; load-time warnings flush on sessi
   });
   await extension({
     on: (event, handler) => {
-      if (event === "session_start") handlers.push(handler as TestPiEventHandler);
+      if (event === "session_start") handlers.push(handler);
     },
     registerCommand: () => undefined,
     registerTool: () => undefined,
@@ -3011,7 +3011,7 @@ test("load phase makes no action-method calls; load-time warnings flush on sessi
   loading = false;
   for (const handler of handlers) await handler({}, undefined);
   assert.ok(
-    entries.some(([, data]) => (data as { code?: string })?.code === "MCP_TOOLS_LIST_FAILED"),
+    JSON.stringify(entries).includes('"code":"MCP_TOOLS_LIST_FAILED"'),
     "the deferred MCP_TOOLS_LIST_FAILED entry must be recorded once the runtime is live",
   );
 });

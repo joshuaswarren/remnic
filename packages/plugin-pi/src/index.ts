@@ -310,20 +310,31 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
   };
 }
 
-type AppendEntryFn = (customType: string, data?: unknown) => void;
+/** Diagnostic state entry the extension records at load time. */
+interface StateEntryData {
+  level: "warning";
+  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED";
+  message: string;
+  error?: string;
+  observedToolNames?: string[];
+}
+type AppendEntryFn = (customType: string, data: StateEntryData) => void;
+
+/** Load-phase buffer for state entries; see createLoadPhaseEntryQueue. */
+export interface LoadPhaseEntryQueue {
+  append: AppendEntryFn;
+  markLoaded: () => void;
+  flush: () => void;
+}
 
 /**
  * Buffers appendEntry calls made while the extension factory is loading.
  * omp forbids action methods during load; entries are replayed on the first
  * session_start, and calls made after load go straight through.
  */
-export function createLoadPhaseEntryQueue(pi: PiApi): {
-  append: AppendEntryFn;
-  markLoaded: () => void;
-  flush: () => void;
-} {
+export function createLoadPhaseEntryQueue(pi: PiApi): LoadPhaseEntryQueue {
   let loading = true;
-  const pending: Array<[string, unknown]> = [];
+  const pending: Array<[string, StateEntryData]> = [];
   return {
     append(customType, data) {
       if (loading) {
