@@ -395,16 +395,24 @@ export class RecallSearchPipelineCoordinator {
       }
 
       let primaryResults = options.collection
-        ? await this.deps.qmd.search(
-            prompt,
-            options.collection,
-            fetchLimit,
-            primarySearchOptions,
-            {
-              ...(options.abortSignal ? { signal: options.abortSignal } : {}),
-              onDegradation: options.onDegradation,
-            },
-          )
+        ? options.abortSignal
+          ? await this.deps.qmd.search(
+              prompt,
+              options.collection,
+              fetchLimit,
+              primarySearchOptions,
+              {
+                signal: options.abortSignal,
+                onDegradation: options.onDegradation,
+              },
+            )
+          : await this.deps.qmd.search(
+              prompt,
+              options.collection,
+              fetchLimit,
+              primarySearchOptions,
+              { onDegradation: options.onDegradation },
+            )
         : await this.deps.searchAcrossNamespaces({
             query: prompt,
             namespaces: options.namespacesEnabled
@@ -734,9 +742,7 @@ export class RecallSearchPipelineCoordinator {
         // limps home later cannot mutate a recorded recall's collector.
         coldQmdObserverActive = false;
         if (longTerm.length > 0) {
-          log.debug(
-            `cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`,
-          );
+          log.debug(`cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`);
         }
       }
     }
@@ -934,9 +940,7 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (caps.rerank && this.deps.config.rerankProvider === "cloud") {
-      log.debug(
-        "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
-      );
+      log.debug("rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank");
     }
 
     if (caps.recallTrustScore && results.length > 0) {
@@ -1144,9 +1148,8 @@ export class RecallSearchPipelineCoordinator {
     const buildRecallRow = (r: QmdSearchResult, memory: MemoryFile | undefined): QmdSearchResult => ({
       ...r,
       // Render loaded flat memories, not QMD's front-matter/chunk preview (#3194).
-      ...(memory && !resolveNamespaceCapabilities(this.deps.config).namespaces
-        ? { snippet: memory.content, line: undefined }
-        : {}),
+      snippet: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? memory.content : r.snippet,
+      line: memory && !resolveNamespaceCapabilities(this.deps.config).namespaces ? undefined : r.line,
       sourceConnector: memory ? memory.frontmatter.sourceConnector : undefined,
       origin: memory ? memory.frontmatter.origin : undefined,
       // #1952: an active state view carries the chain fields the inject
@@ -1356,9 +1359,7 @@ export class RecallSearchPipelineCoordinator {
       }
     }
     if (connectorPartitionFilteredCount > 0) {
-      log.debug(
-        `connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`,
-      );
+      log.debug(`connector partition filter removed ${connectorPartitionFilteredCount} tool-scoped candidates from recall`);
     }
     if (supportPassportFilteredCount > 0) {
       log.debug(

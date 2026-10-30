@@ -539,7 +539,8 @@ test("explicit tag misses suppress fresh QMD cache hits", async () => {
     "What happened with #beta?",
     "user:test:query-aware-tag-cache-miss",
   );
-  assert.match(cachedContext, /alpha result/i);
+  // #3194: flat recall renders the stored memory body, not QMD's snippet.
+  assert.match(cachedContext, /Alpha-tagged cached QMD result/i);
   assert.equal(qmdCalls, 2);
 
   await indexMemoriesBatch(
@@ -557,7 +558,7 @@ test("explicit tag misses suppress fresh QMD cache hits", async () => {
   );
 
   assert.equal(qmdCalls, 2);
-  assert.doesNotMatch(context, /alpha result/i);
+  assert.doesNotMatch(context, /Alpha-tagged cached QMD result/i);
 });
 
 test("query-aware prefilter scopes candidate paths to authorized namespaces", async () => {

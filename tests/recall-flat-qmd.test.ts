@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { parseConfig } from "@remnic/core/config";
+import type { PluginConfig } from "@remnic/core/types";
 import { Orchestrator, type QueryAwarePrefilter } from "@remnic/core/orchestrator";
 import type { QmdSearchResult } from "@remnic/core/types";
 import type { StorageManager } from "@remnic/core";
@@ -19,6 +20,18 @@ type FlatRecallHarness = Pick<RecallSearchPipelineCoordinator,
   namespaceSearchRouter: Pick<NamespaceSearchRouter, "searchAcrossNamespaces">;
   formatQmdResults(title: string, results: QmdSearchResult[]): string;
 };
+
+function isFlatRecallHarness(value: Orchestrator | FlatRecallHarness): value is FlatRecallHarness {
+  return ["storage", "qmd", "namespaceSearchRouter", "fetchQmdMemoryResultsWithArtifactTopUp", "filterSearchResultsForRecall", "formatQmdResults"]
+    .every((member) => member in value);
+}
+
+/** The orchestrator seen through the members these tests drive; fails loudly if one is renamed. */
+function flatHarness(cfg: PluginConfig): FlatRecallHarness {
+  const orchestrator: Orchestrator | FlatRecallHarness = new Orchestrator(cfg);
+  if (!isFlatRecallHarness(orchestrator)) throw new Error("Orchestrator no longer exposes the flat recall members under test");
+  return orchestrator;
+}
 
 const EMPTY_PREFILTER: QueryAwarePrefilter = {
   candidatePaths: null,
@@ -40,7 +53,7 @@ for (const explicitCollection of [false, true]) {
         [cfg.recallOuterTimeoutMs, cfg.recallCoreDeadlineMs, cfg.recallEnrichmentDeadlineMs, cfg.qmdDaemonTimeoutMs],
         [75_000, 75_000, 60_000, 60_000],
       );
-      const orchestrator = new Orchestrator(cfg) as unknown as FlatRecallHarness;
+      const orchestrator = flatHarness(cfg);
       const memories = await Promise.all(["shared", "qmd-only", "native-only", "hybrid-only"].map(async (label) => {
         const { id } = await orchestrator.storage.writeMemory("fact", `Recall regression ${label} body.`);
         const memory = await orchestrator.storage.getMemoryById(id);
@@ -72,7 +85,7 @@ for (const explicitCollection of [false, true]) {
         namespacesEnabled: false,
         recallNamespaces: ["default"],
         resolveNamespace: () => "default",
-        ...(explicitCollection ? { collection: cfg.qmdCollection } : {}),
+        collection: explicitCollection ? cfg.qmdCollection : undefined,
         queryAwarePrefilter: { ...EMPTY_PREFILTER, candidatePaths: seedPaths },
         searchOptions,
         abortSignal: controller.signal,
@@ -102,7 +115,7 @@ test("flat QMD-only hits render hydrated memory bodies, not front matter or chun
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flat-render-"));
   try {
     const cfg = parseConfig({ memoryDir, namespacesEnabled: false });
-    const orchestrator = new Orchestrator(cfg) as unknown as FlatRecallHarness;
+    const orchestrator = flatHarness(cfg);
     const { id } = await orchestrator.storage.writeMemory("preference", "Prefer a concise memory body over YAML metadata.");
     const memory = await orchestrator.storage.getMemoryById(id);
     assert.ok(memory);
@@ -125,7 +138,7 @@ for (const budget of [undefined, 90_000, 0]) {
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-flat-budget-"));
     try {
       const cfg = parseConfig({ memoryDir, namespacesEnabled: false, recallEnrichmentDeadlineMs: budget });
-      const orchestrator = new Orchestrator(cfg) as unknown as FlatRecallHarness;
+      const orchestrator = flatHarness(cfg);
       let now = Date.now();
       t.mock.method(Date, "now", () => now);
       const lateElapsed = budget === 0 ? 120_000 : (budget ?? 60_000) - 1;
@@ -168,7 +181,7 @@ test("namespaced recall keeps every namespace candidate and its fanout options (
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-namespace-parity-"));
   try {
     const cfg = parseConfig({ memoryDir, namespacesEnabled: true });
-    const orchestrator = new Orchestrator(cfg) as unknown as FlatRecallHarness;
+    const orchestrator = flatHarness(cfg);
     const namespaces = ["team-a", "team-b"];
     const hits = namespaces.map((namespace) => ({
       docid: namespace, namespace, path: path.join(memoryDir, "namespaces", namespace, "facts/same.md"),
@@ -209,7 +222,7 @@ test("flat explicit cold and foreign collections retain their candidates and col
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-collection-parity-"));
   try {
     const cfg = parseConfig({ memoryDir, namespacesEnabled: false });
-    const orchestrator = new Orchestrator(cfg) as unknown as FlatRecallHarness;
+    const orchestrator = flatHarness(cfg);
     for (const collection of [cfg.qmdColdCollection, "external-notes"]) {
       assert.ok(collection);
       const hit = { docid: collection, path: `${collection}/facts/same.md`, score: 1, snippet: collection };
