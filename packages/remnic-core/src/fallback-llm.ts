@@ -765,14 +765,16 @@ export class FallbackLlmClient {
       return await this.callOllamaChat(effectiveConfig, model.modelId, messages, options);
     }
 
+    // OpenAI routes (Responses and Chat Completions) count reasoning tokens against the cap.
+    const headroom = Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0)) || 0; // `|| 0`: NaN adds nothing
+    const capped = options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom };
+
     if (
       model.providerConfig.api === "openai-responses" ||
       model.providerConfig.api === "openai-codex-responses" ||
       model.providerConfig.api === "azure-openai-responses"
     ) {
-      const headroom = Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0)) || 0; // `|| 0`: NaN adds nothing
-      return await this.callOpenAIResponses(effectiveConfig, model.modelId, messages,
-        options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom });
+      return await this.callOpenAIResponses(effectiveConfig, model.modelId, messages, capped);
     }
 
     // For OpenAI-compatible chat-completions APIs (openai-completions,
@@ -783,7 +785,7 @@ export class FallbackLlmClient {
       effectiveConfig,
       model.modelId,
       messages,
-      options,
+      capped,
       shouldAssumeOpenAiChatCompletions(effectiveConfig.baseUrl),
     );
   }

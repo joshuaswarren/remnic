@@ -1453,7 +1453,7 @@ test("fallback llm uses the Responses API for openai-responses transports", { co
   }
 });
 
-test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Responses API only", { concurrency: false }, async () => {
+test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Responses API", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();
 
@@ -2167,6 +2167,49 @@ test("timeout records TimeoutError on failureDiag (issue #2891)", { concurrency:
     assert.equal(classifyAnalysisProviderError(lastError), "timeout");
   } finally {
     restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm adds reasoningHeadroomTokens to the Chat Completions token limit too", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "chat-provider/demo-model" } } },
+    models: {
+      providers: {
+        "chat-provider": {
+          baseUrl: "https://chat.example/v1",
+          api: "openai-completions",
+          apiKey: "chat-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<{ max_tokens?: number; max_completion_tokens?: number }> = [];
+  // SAFETY: the stub returns the Chat Completions shape the client reads and nothing else.
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const messages = [{ role: "user" as const, content: "Say OK" }];
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
+    const limit = (b: (typeof bodies)[number]) => b.max_completion_tokens ?? b.max_tokens;
+    assert.equal(limit(bodies[0]), 64 + 1024, "headroom is added on top of the compact budget");
+    assert.equal(limit(bodies[1]), 64, "no headroom option: exactly maxTokens, as before");
+  } finally {
+    globalThis.fetch = originalFetch;
     clearModelsJsonCache();
     clearSecretCache();
   }

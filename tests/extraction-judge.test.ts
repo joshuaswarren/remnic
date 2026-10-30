@@ -1064,7 +1064,43 @@ test("identical defer candidates in different batches advance the cap once and s
   assert.equal(r.deferredCappedToReject, 0, "no copy is rejected by a count another copy produced");
   assert.equal([...defers.values()][0], 2, "the counter went from 1 to 2, not to the cap or beyond");
   for (const v of r.verdicts.values()) assert.equal(v.kind, "defer", "every copy shares the first sighting's verdict");
-  assert.equal(verdictCacheSize(), 0, "defer is still not cached");
+  assert.equal(cache.size, 0, "defer is still not cached in the cache this call used");
+});
+
+test("an accept clears the deferral snapshot, so a later copy in another batch starts fresh", async () => {
+  // CodeRabbit on PR 3264: the snapshot taken at the first sighting kept the old count after an accept cleared the counter,
+  // so a later defer for an identical candidate met the cap and rejected it, overwriting the accepted cache entry.
+  clearVerdictCache();
+  const cache = new Map<string, JudgeVerdict>();
+  const defers = new Map<string, number>();
+  const one: JudgeCandidate = { text: "Same candidate in two batches", category: "fact", confidence: 0.5, importanceLevel: "normal" };
+  const cfg = makeConfig({ extractionJudgeMaxDeferrals: 2, extractionJudgeBatchSize: 1 });
+  // First call: defer the candidate twice so the counter reaches the cap of 2.
+  const deferAll = {
+    chatCompletion: async (_msgs: any) => {
+      // SAFETY: the judge's user message is a JSON array of indexed candidates; the mock reads only `index`.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
+    },
+  };
+  // SAFETY: the mock implements the one client method the judge calls.
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
+  assert.equal([...defers.values()][0], 2, "setup: the counter is at the cap");
+
+  let call = 0;
+  const acceptThenDefer = {
+    chatCompletion: async (_msgs: any) => {
+      call++;
+      // SAFETY: same shape as above.
+      const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
+      const kind = call === 1 ? "accept" : "defer";
+      return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind })) }) };
+    },
+  };
+  // SAFETY: same mock.
+  const r = await judgeFactDurability([one, { ...one }], cfg, acceptThenDefer as any, null, cache, defers);
+  assert.equal(r.deferredCappedToReject, 0, "the second copy is not rejected by a count the accept already cleared");
 });
 
 test("judge asks the fallback route for reasoning headroom and keeps the compact budget", async () => {

@@ -601,6 +601,8 @@ export async function judgeFactDurability(
             // On accept/reject, clear any outstanding defer counter so a
             // future reappearance of the same text starts fresh.
             deferCountMap.delete(key);
+            priorDefersSeen.set(key, 0);
+            deferredThisCall.delete(key);
           }
 
           verdicts.set(idx, verdict);
