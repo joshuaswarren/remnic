@@ -7,7 +7,7 @@
 import { buildJudgeRequest } from "../packages/remnic-core/src/extraction-judge.ts";
 
 const samples = [
-  { text: "Joshua prefers dark mode in every editor and terminal", category: "preference", confidence: 0.92 },
+  { text: "The user prefers dark mode in every editor and terminal", category: "preference", confidence: 0.92 },
   { text: "The production deploy is running right now", category: "task", confidence: 0.7 },
   { text: "Weekly demos happen on Fridays at 16:00", category: "fact", confidence: 0.81 },
   { text: "Ran npm install and the tests went green", category: "task", confidence: 0.65 },

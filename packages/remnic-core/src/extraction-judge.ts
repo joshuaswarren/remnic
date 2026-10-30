@@ -247,6 +247,12 @@ Example output:
 const JUDGE_TOKENS_PER_CANDIDATE = 24;
 /** Ceiling on one judge reply: the old flat budget. */
 export const MAX_JUDGE_TOKENS = 2048;
+/**
+ * Extra completion tokens for a judge call routed through the Responses API. Reasoning tokens count against
+ * `max_output_tokens`, so the compact verdict budget alone can be spent before a reasoning-enabled model answers; the
+ * unparsed batch would then fail open as durable. A cap, not a target: a non-reasoning model still writes a short reply.
+ */
+export const JUDGE_REASONING_HEADROOM_TOKENS = 1024;
 /** Largest batch whose verdict array fits MAX_JUDGE_TOKENS; a larger configured batch is split. */
 export const MAX_JUDGE_BATCH = Math.floor(MAX_JUDGE_TOKENS / JUDGE_TOKENS_PER_CANDIDATE);
 
@@ -522,6 +528,10 @@ export async function judgeFactDurability(
 
   // Batch the pending candidates up to batchSize
   const batchSize = Math.min(config.extractionJudgeBatchSize, MAX_JUDGE_BATCH);
+  // Defer bookkeeping spans the WHOLE call, not one batch: identical candidates can land in different batches, and each key
+  // must advance the defer cap once and decide against the same prior count (the snapshot taken at its first sighting).
+  const deferredThisCall = new Set<string>();
+  const priorDefersSeen = new Map<string, number>();
   for (let batchStart = 0; batchStart < pendingIndices.length; batchStart += batchSize) {
     const batchIndices = pendingIndices.slice(batchStart, batchStart + batchSize);
     const request = buildJudgeRequest(
@@ -538,18 +548,18 @@ export async function judgeFactDurability(
 
       if (llmResponse) {
         const parsed = parseJudgeResponse(llmResponse, batchIndices);
-        // Per-batch defer-increment dedupe (codex P2): a single extraction
+        // Per-call defer-increment dedupe (codex P2): a single extraction
         // pass must not advance the cap more than once for identical
-        // candidate content, even if the same text appears multiple times
-        // in the same LLM response. Duplicate hits share the first
-        // increment's `priorDeferrals` snapshot.
-        const deferredThisBatch = new Set<string>();
+        // candidate content, even if the same text appears several times in
+        // one LLM response or in different batches of one call. Duplicate
+        // hits share the first sighting's `priorDeferrals` snapshot.
         for (const [idx, rawVerdict] of parsed.entries()) {
           const c = candidates[idx];
           const key = cacheKey(c.text, c.category);
           let verdict = rawVerdict;
           let source: JudgeVerdictObservation["source"] = "llm";
-          const priorDefers = deferCountMap.get(key) ?? 0;
+          if (!priorDefersSeen.has(key)) priorDefersSeen.set(key, deferCountMap.get(key) ?? 0);
+          const priorDefers = priorDefersSeen.get(key) ?? 0;
 
           // Defer cap (issue #562, PR 2). A candidate that has already been
           // deferred `deferCap` times is forcibly rejected so a pathological
@@ -565,15 +575,15 @@ export async function judgeFactDurability(
               // Only clear + count the cap conversion once per batch for
               // this key — duplicates in the same response all resolve to
               // reject but should not inflate the cap-rejection counter.
-              if (!deferredThisBatch.has(key)) {
+              if (!deferredThisCall.has(key)) {
                 deferCountMap.delete(key);
                 deferredCappedToReject++;
-                deferredThisBatch.add(key);
+                deferredThisCall.add(key);
               }
-            } else if (!deferredThisBatch.has(key)) {
+            } else if (!deferredThisCall.has(key)) {
               deferCountMap.set(key, priorDefers + 1);
               deferred++;
-              deferredThisBatch.add(key);
+              deferredThisCall.add(key);
               // Bound the per-process defer-counter map.
               if (deferCountMap.size > DEFER_COUNT_MAX_SIZE) {
                 const drop = Math.floor(deferCountMap.size / 2);
@@ -585,7 +595,7 @@ export async function judgeFactDurability(
                 }
               }
             }
-            // else: duplicate defer for a key already counted this batch —
+            // else: duplicate defer for a key already counted this call —
             // no additional counter increment, verdict still marked defer.
           } else {
             // On accept/reject, clear any outstanding defer counter so a
@@ -717,6 +727,7 @@ async function callJudgeLlm(
         {
           temperature: 0.1,
           maxTokens,
+          reasoningHeadroomTokens: JUDGE_REASONING_HEADROOM_TOKENS,
           timeoutMs: config.extractionJudgeTimeoutMs,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...gatewayChain,

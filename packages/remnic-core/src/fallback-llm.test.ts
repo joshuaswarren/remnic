@@ -1453,6 +1453,51 @@ test("fallback llm uses the Responses API for openai-responses transports", { co
   }
 });
 
+test("fallback llm adds reasoningHeadroomTokens to max_output_tokens on the Responses API only", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const llm = new FallbackLlmClient({
+    agents: { defaults: { model: { primary: "responses-provider/demo-model" } } },
+    models: {
+      providers: {
+        "responses-provider": {
+          baseUrl: "https://responses.example/v1",
+          api: "openai-responses",
+          apiKey: "responses-key",
+          models: [],
+        },
+      },
+    },
+  });
+
+  const originalFetch = globalThis.fetch;
+  const bodies: Array<{ max_output_tokens?: number }> = [];
+  globalThis.fetch = (async (_url, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return new Response(JSON.stringify({ output_text: "ok" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const messages = [{ role: "user" as const, content: "Say OK" }];
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: 1024 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64 });
+    await llm.chatCompletion(messages, { temperature: 0, maxTokens: 64, reasoningHeadroomTokens: -5 });
+    await llm.chatCompletion(messages, { temperature: 0, reasoningHeadroomTokens: 1024 });
+    assert.equal(bodies[0].max_output_tokens, 64 + 1024, "headroom is added on top of the compact budget");
+    assert.equal(bodies[1].max_output_tokens, 64, "no headroom option: exactly maxTokens, as before");
+    assert.equal(bodies[2].max_output_tokens, 64, "a negative headroom adds nothing");
+    assert.equal(bodies[3].max_output_tokens, 4096, "no maxTokens: the default budget is not inflated by headroom");
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
 test("fallback llm ignores echoed input_text blocks in responses output extraction", { concurrency: false }, async () => {
   clearModelsJsonCache();
   clearSecretCache();

@@ -88,7 +88,7 @@ The following categories are **auto-approved** without LLM evaluation:
 The judge asks for a **compact verdict**: one JSON object with a single
 `verdicts` key holding `{"index": N, "kind": "accept"|"reject"|"defer"}`
 objects with no reason text, and a completion budget of
-`judgeMaxTokens(batchSize)` — scaled to the batch size (24 tokens per candidate, 64 minimum), capped at 2048 tokens.
+`judgeMaxTokens(batchSize)` — scaled to the batch size (24 tokens per candidate, 64 minimum), capped at 2048 tokens. On the Responses API the fallback client adds `JUDGE_REASONING_HEADROOM_TOKENS` (1024) to `max_output_tokens`, because reasoning tokens count against that limit and a reasoning-enabled model could otherwise spend the compact budget before it writes a verdict; other routes send the compact budget unchanged.
 (The wrapper object is required: `response_format: json_object` only accepts
 a top-level object.) Verbose replies (reason + durable per
 verdict) took 59-305 s per call on the deployed core model, which the first

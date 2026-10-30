@@ -46,6 +46,12 @@ export {
 export interface FallbackLlmOptions {
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Extra completion tokens added to `max_output_tokens` on the Responses API only. Reasoning tokens count against that
+   * limit, so a compact `maxTokens` can be spent before a reasoning-enabled model writes its answer. Other transports and
+   * callers that leave this unset send exactly `maxTokens`.
+   */
+  reasoningHeadroomTokens?: number;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Set the Responses API storage policy. Other transports ignore this value. */
@@ -1043,7 +1049,8 @@ export class FallbackLlmClient {
     const body: Record<string, unknown> = {
       model: modelId,
       input,
-      max_output_tokens: Math.max(0, Math.floor(options.maxTokens ?? 4096)),
+      max_output_tokens: Math.max(0, Math.floor(options.maxTokens ?? 4096)) +
+        (options.maxTokens === undefined ? 0 : Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0))),
       ...buildChatCompletionTemperature(modelId, options.temperature ?? 0.3, {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
