@@ -24,7 +24,7 @@
  * `queueBufferedExtraction` builder delegates push+scheduling here.
  */
 
-import { isAbortError } from "../abort-error.js";
+import { isAbortError, preemptedExtractionError } from "../abort-error.js";
 import { log } from "../logger.js";
 
 /**
@@ -40,6 +40,7 @@ export class ExtractionQueueCoordinator {
   /** Whether the serial drain loop is currently running. */
   private processing = false;
   private accepting = true;
+  private runningPreempt: (() => void) | undefined;
 
   /** Current queue depth (idle-wait + test seam). */
   get length(): number {
@@ -56,9 +57,14 @@ export class ExtractionQueueCoordinator {
    * the production entry point — the orchestrator's `queueBufferedExtraction`
    * builds each task closure and hands it here.
    */
-  enqueue(task: () => Promise<void>): boolean {
+  enqueue(task: () => Promise<void>, options?: { front?: boolean }): boolean {
     if (!this.accepting) return false;
-    this.queue.push(task);
+    if (options?.front) {
+      this.preemptRunning();
+      this.queue.unshift(task);
+    } else {
+      this.queue.push(task);
+    }
     if (!this.processing) {
       this.processing = true;
       this.processQueue().catch((err) => {
@@ -68,6 +74,34 @@ export class ExtractionQueueCoordinator {
     }
     return true;
   }
+
+  /** Automatic extraction registers this so a fail-closed flush can abort it. */
+  beginPreemptable(abort: () => void): void {
+    this.runningPreempt = abort;
+  }
+
+  endPreemptable(): void {
+    this.runningPreempt = undefined;
+  }
+
+  preemptRunning(): void {
+    const abort = this.runningPreempt;
+    this.runningPreempt = undefined;
+    abort?.();
+  }
+  runPreemptable<T>(
+    preemptable: boolean,
+    parent: AbortSignal | undefined,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const preempt = new AbortController();
+    if (preemptable) this.beginPreemptable(() => preempt.abort(preemptedExtractionError()));
+    const signal = parent ? AbortSignal.any([parent, preempt.signal]) : preempt.signal;
+    return Promise.resolve(run(signal)).finally(() => {
+      if (preemptable) this.endPreemptable();
+    });
+  }
+
 
   /** Stop new producers from entering the queue. */
   stopAccepting(): void {

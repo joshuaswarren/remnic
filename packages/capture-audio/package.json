@@ -1,6 +1,6 @@
 {
   "name": "@remnic/capture-audio",
-  "version": "10.0.33",
+  "version": "10.0.40",
   "description": "Desktop audio capture daemon for Remnic — local spool, loopback HTTP API, and replay ingestion for the wearable source `desktop` (à-la-carte)",
   "type": "module",
   "main": "dist/index.js",
@@ -39,10 +39,10 @@
     "tsx": "^4.0.0"
   },
   "peerDependencies": {
-    "@remnic/core": "^10.0.33",
+    "@remnic/core": "^10.0.40",
     "sherpa-onnx-node": "*",
-    "@remnic/capture-native-darwin-arm64": "^10.0.33",
-    "@remnic/capture-native-darwin-x64": "^10.0.33"
+    "@remnic/capture-native-darwin-arm64": "^10.0.40",
+    "@remnic/capture-native-darwin-x64": "^10.0.40"
   },
   "peerDependenciesMeta": {
     "sherpa-onnx-node": {

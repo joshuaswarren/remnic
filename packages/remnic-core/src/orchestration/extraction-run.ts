@@ -38,6 +38,7 @@ export interface ExtractionRunResult {
   persistedCount: number;
   durableOutputCount: number;
   postPersistMetadataFailed?: boolean;
+  retainedBuffer?: boolean; failureClass?: ExtractionFailureClass; // retained: the run left the window in the buffer for a retry (a recorded failure) of this class
 }
 
 export class ExtractionDeadlineError extends Error {
@@ -118,7 +119,7 @@ import {
   commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
   deriveSourceConnector,
-  deriveTopicsFromExtraction,
+  deriveTopicsFromExtraction, emptyExtractionResult,
   runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
@@ -439,19 +440,17 @@ export class ExtractionRunCoordinator {
     turns: BufferTurn[],
     options: {
       clearBufferAfterExtraction?: boolean;
-      clearMatchingTurns?: boolean;
+      clearMatchingTurns?: boolean; retentionWindow?: readonly BufferTurn[];
       skipCharThreshold?: boolean;
       skipUserTurnThreshold?: boolean;
       deadlineMs?: number;
       bufferKey?: string;
       abortSignal?: AbortSignal;
       failOnExtractionFailure?: boolean;
-      /**
-       * Called immediately after durable extraction persistence returns, before
-       * any metadata, retention, or helper work. Lifecycle callers use this
-       * as the write-rate-limit commit boundary.
-       */
+      /** Write-rate commit boundary, after persistence returns. */
       onDurableCommit?: () => void;
+      /** Disarm preemption once persistence can no longer be aborted. */
+      onBeforePersist?: () => void;
       /**
        * Explicit namespace override for the write path (#460).  When set, this
        * is the namespace where extraction writes go instead of the one derived
@@ -550,8 +549,9 @@ export class ExtractionRunCoordinator {
         if (deadlineTimer) clearTimeout(deadlineTimer);
       }
     };
-    const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
-      if (options?.ignoreAbort !== true) {
+    const clearBuffer = async (clearOptions?: { ignoreAbort?: boolean }) => {
+      options.onBeforePersist?.();
+      if (clearOptions?.ignoreAbort !== true) {
         throwIfDeadlineExceeded("before_clear_buffer");
         throwIfAborted("before_clear_buffer");
       }
@@ -1045,7 +1045,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
+      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;
@@ -1063,6 +1063,7 @@ export class ExtractionRunCoordinator {
       }
     }
     const originContext = deriveExtractionOriginContext(targetTurns, result.sourceConnector);
+    options.onBeforePersist?.();
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
@@ -1108,7 +1109,7 @@ export class ExtractionRunCoordinator {
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
-        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, turns),
+        this.deps.getBuffer().retainDeferredTurns(key, retainedTurns, max, options.retentionWindow ?? turns),
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });

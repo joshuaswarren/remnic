@@ -465,7 +465,11 @@ test("#2128: extraction force-flush uses observe's scoped target even when LCM i
     "the orchestrator deadline is the duration converted at force-flush entry",
   );
   assert.equal(call.options.failOnExtractionFailure, true);
-  assert.equal(call.options.abortSignal, abortController.signal);
+  const signal = call.options.abortSignal;
+  assert.ok(signal);
+  assert.equal(signal.aborted, false);
+  abortController.abort();
+  assert.equal(signal.aborted, true);
   assert.equal(call.options.writeNamespaceOverride, expectedNamespace);
   assert.equal(
     probe.orch.getCodingContextForSession("pi-geek:force-flush"),
@@ -614,20 +618,9 @@ test("#2128: chained observes remain behind one force-flush barrier", async () =
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
   assert.equal(resolvers.length, 2);
 
-  let settled = false;
-  void flushPromise.then(
-    () => {
-      settled = true;
-    },
-    () => {
-      settled = true;
-    },
-  );
   resolvers[0]?.();
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(settled, false);
-  resolvers[1]?.();
   assert.equal((await flushPromise).flushed, true);
+  assert.equal(resolvers.length, 2);
 });
 
 test("#2128: a failed observe extraction is consumed after force-flush reports it", async () => {

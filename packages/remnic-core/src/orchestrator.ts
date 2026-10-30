@@ -238,6 +238,7 @@ import {
 } from "./maintenance/pattern-reinforcement.js";
 import { refreshConvergedNamespaces } from "./convergence-refresh.js";
 import { ModelRegistry } from "./model-registry.js";
+import { extractionWindowBudgetChars } from "./extraction-window-drain.js";
 import { applyRuntimeRetrievalPolicy, expandQuery } from "./retrieval.js";
 import {
   mergeWithAgentResults,
@@ -3043,13 +3044,8 @@ export class Orchestrator {
       ) => void;
       bufferKey?: string;
       abortSignal?: AbortSignal;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * `runExtraction` writes to this namespace instead of deriving one
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * Used by bulk-import to pin writes to a deterministic namespace
-       * regardless of user-configured principal routing rules.
-       */
+      preemptable?: boolean;
+      preemptRunning?: boolean;
       writeNamespaceOverride?: string;
       /**
        * Pin the provenance principal (#1495 thread 1). Forwarded to
@@ -3065,6 +3061,26 @@ export class Orchestrator {
       reason,
       options,
     );
+  }
+
+  /**
+   * Max conversation characters the extraction model can take as input
+   * (context window the ModelRegistry learned, capped by
+   * `localLlmMaxContext` when set). Exposed for the trigger-drain chunking
+   * in the turn-ingestion coordinator so an oversized buffer window is
+   * drained in fitting chunks instead of failing whole.
+   */
+  private extractionWindowBudgetChars(): number {
+    // Object.create(Orchestrator.prototype) test doubles skip the constructor,
+    // so neither modelRegistry nor config exists there: report "no budget".
+    if (!this.modelRegistry) return Number.POSITIVE_INFINITY;
+    return extractionWindowBudgetChars({
+      registry: this.modelRegistry,
+      localExtractionActive:
+        this.config.modelSource !== "gateway" && resolveLocalLlmCapabilities(this.config).localLlm,
+      model: this.config.localLlmModel,
+      maxContext: this.config.localLlmMaxContext,
+    });
   }
 
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {

@@ -272,7 +272,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
-| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer.json` on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
+| `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer/` (one file per session) on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
@@ -1030,6 +1030,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `extractionBreakerFailureThreshold` | `5` | Consecutive provider failures before the process-level circuit breaker opens and short-circuits extraction for all fingerprints. |
 | `extractionBreakerCooldownMs` | `300000` | Breaker open cooldown (5m) for transient provider failures (429/5xx/network). A half-open probe after cooldown closes the breaker on one success. |
 | `extractionBreakerAuthCooldownMs` | `1800000` | Breaker open cooldown (30m) for auth/config failures (401/403 or "no models configured"), which open the breaker immediately instead of hot-looping. |
+| `extractionChunkDropAfterFailures` | `5` | Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall its buffer forever. Only failures that are the chunk's own count: an empty or unparseable answer, and (local model) an answer that is unusable or an HTTP 400, 413 or 422. An outage never counts: provider errors, timeouts, 429, 5xx, an unreachable local endpoint, and auth or configuration failures (including 401, 403, 404, 405 and 410 from a local endpoint). The counts live in memory, so a restart starts them again from zero. |
 | `localLlmMaxContext` | `(unset)` | Override context window size |
 | `localLlmFastEnabled` | `false` | Enable a separate fast local tier for short planner/rerank/helper calls |
 | `localLlmFastModel` | `""` | Optional model id for the fast local tier |
@@ -1646,6 +1647,7 @@ retain the guarantee.
 | `extractionJudgeEnabled` | `false` | Enable the LLM-as-judge post-extraction durability filter |
 | `extractionJudgeModel` | `""` | Model override for judge; empty = use configured local model |
 | `extractionJudgeBatchSize` | `20` | Max candidates per LLM batch call |
+| `extractionJudgeTimeoutMs` | `20000` | Per-call judge LLM timeout (ms); compact verdict measures 2.1-2.5 s on a small fast judge model (13-22 s, 41 s verbose, on the big shared core model) |
 | `extractionJudgeShadow` | `false` | Shadow mode: log verdicts without filtering |
 
 ## Semantic Chunking (issue #368)
@@ -2297,6 +2299,7 @@ value matches the shipped default.
 | `extractionBreakerFailureThreshold` | `5` | `5` |
 | `extractionBreakerCooldownMs` | `300000` | `300000` |
 | `extractionBreakerAuthCooldownMs` | `1800000` | `1800000` |
+| `extractionChunkDropAfterFailures` | `5` | `5` |
 | `localLlmMaxContext` | (unset) | (unset) |
 | `localLlmFastEnabled` | `false` | `false` unless you have a separate fast local tier |
 | `localLlmFastModel` | `""` | `""` |
@@ -2527,6 +2530,7 @@ value matches the shipped default.
 | `extractionJudgeEnabled` | `false` | `false` |
 | `extractionJudgeModel` | `""` | `""` |
 | `extractionJudgeBatchSize` | `20` | `20` |
+| `extractionJudgeTimeoutMs` | `20000` | `20000` |
 | `extractionJudgeShadow` | `false` | `false` |
 | `semanticChunkingEnabled` | `false` | `false` |
 | `semanticChunkingConfig` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` | `{"targetTokens":200,"minTokens":100,"maxTokens":400,"smoothingWindowSize":3,"boundaryThresholdStdDevs":1.0,"embeddingBatchSize":32,"fallbackToRecursive":true}` |

@@ -62,7 +62,8 @@ OpenClaw-hosted installs commonly use the following memory layout:
 ├── config/
 │   └── aliases.json            # Entity name aliases
 └── state/
-    ├── buffer.json             # Unbatched turns (survives restarts)
+    ├── buffer/                 # Unbatched turns, one file per session (survives restarts)
+    │   └── <session>.json
     ├── entity-synthesis-queue.json # Stale entity syntheses waiting for bounded rebuild
     ├── meta.json               # Extraction count, timestamps, totals
     ├── topics.json             # Extracted topics (v1.2)

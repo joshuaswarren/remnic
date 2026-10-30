@@ -8,6 +8,18 @@ All notable changes to this project will be documented in this file.
 
 - Server, connector, remote CLI, hook-runner and Pi-plugin liveness checks use authenticated, readiness-gated `/engram/v1/live`, so slow diagnostic health work does not falsely mark a reachable daemon unavailable and skip recall or observe. Daemons predating the live route are still reachable: probes retry the legacy `/engram/v1/health` path only on 404, within the original single deadline, while authentication and 503 `not_ready` answers stay final. Existing authentication, timeouts and startup status gates remain intact; detailed health readers are unchanged (#3257).
 
+## [v10.0.36] — 2026-10-29
+
+### Fixes
+
+- Local LLM transport: `REMNIC_LOCAL_LLM_DIRECT=1` makes the widened undici pool apply even when the process installed its own global dispatcher (for example an agent runtime's managed proxy). Without it the installed dispatcher keeps its own `headersTimeout` (undici defaults to 300s; on the hosts where this was seen the proxy dispatcher enforced it), so a non-streaming completion slower than that limit dies with `fetch failed` at about 301s, whatever `localLlmTimeoutMs` says. Availability probes follow the same route. Off by default; behavior without the flag is unchanged.
+
+## [v10.0.34] — 2026-10-27
+
+### Fixes
+
+- A fail-closed force-flush waits for observe admission, then aborts only the in-flight extraction and drains the preserved turns. It does not cancel the preparation barrier. Replay and import stay protected, and buffer clears disarm preemption first (#3259).
+
 ## [v10.0.32] — 2026-10-27
 
 ### Fixes

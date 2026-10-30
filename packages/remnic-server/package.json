@@ -1,6 +1,6 @@
 {
   "name": "@remnic/server",
-  "version": "10.0.33",
+  "version": "10.0.40",
   "description": "Standalone Remnic memory server — HTTP + MCP without OpenClaw",
   "type": "module",
   "main": "dist/index.js",
@@ -21,6 +21,7 @@
     "dist",
     "src/index.ts",
     "src/admin-console-config.ts",
+    "src/liveness-probe.ts",
     "src/oauth.ts",
     "src/server-env.ts",
     "src/startup-readiness.ts"
