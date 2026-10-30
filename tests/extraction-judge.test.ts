@@ -1046,16 +1046,19 @@ test("identical defer candidates in different batches advance the cap once and s
   const defers = new Map<string, number>();
   const deferAll = {
     chatCompletion: async (_msgs: any) => {
+      // SAFETY: the judge's user message is a JSON array of indexed candidates; the mock reads only `index`.
       const items = JSON.parse(_msgs[1].content) as Array<{ index: number }>;
       return { content: JSON.stringify({ verdicts: items.map((it) => ({ index: it.index, kind: "defer" })) }) };
     },
   };
   const one: JudgeCandidate = { text: "Ambiguous follow-up across batches", category: "fact", confidence: 0.5, importanceLevel: "normal" };
   const cfg = makeConfig({ extractionJudgeMaxDeferrals: 2, extractionJudgeBatchSize: 1 });
+  // SAFETY: the mock implements the one client method the judge calls.
   const first = await judgeFactDurability([one], cfg, deferAll as any, null, cache, defers);
   assert.equal(first.deferred, 1);
   assert.equal([...defers.values()][0], 1, "one prior deferral recorded");
 
+  // SAFETY: same mock.
   const r = await judgeFactDurability([one, { ...one }, { ...one }], cfg, deferAll as any, null, cache, defers);
   assert.equal(r.deferred, 1, "the key advances the cap once for the whole call");
   assert.equal(r.deferredCappedToReject, 0, "no copy is rejected by a count another copy produced");
@@ -1074,6 +1077,7 @@ test("judge asks the fallback route for reasoning headroom and keeps the compact
     },
   };
   const cfg = makeConfig({ extractionJudgeBatchSize: 1 });
+  // SAFETY: the mock implements the one fallback-client method the judge calls.
   await judgeFactDurability(
     [{ text: "The release branch is frozen until Friday", category: "fact", confidence: 0.6, importanceLevel: "normal" }],
     cfg,

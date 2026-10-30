@@ -775,11 +775,13 @@ export class FallbackLlmClient {
       model.providerConfig.api === "openai-codex-responses" ||
       model.providerConfig.api === "azure-openai-responses"
     ) {
+      // Reasoning tokens count against max_output_tokens: add the caller's headroom to a given budget (Responses API only).
+      const headroom = Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0)) || 0; // `|| 0`: NaN adds nothing
       return await this.callOpenAIResponses(
         effectiveConfig,
         model.modelId,
         messages,
-        options,
+        options.maxTokens === undefined ? options : { ...options, maxTokens: options.maxTokens + headroom },
       );
     }
 
@@ -1049,8 +1051,7 @@ export class FallbackLlmClient {
     const body: Record<string, unknown> = {
       model: modelId,
       input,
-      max_output_tokens: Math.max(0, Math.floor(options.maxTokens ?? 4096)) +
-        (options.maxTokens === undefined ? 0 : Math.max(0, Math.floor(options.reasoningHeadroomTokens ?? 0))),
+      max_output_tokens: Math.max(0, Math.floor(options.maxTokens ?? 4096)),
       ...buildChatCompletionTemperature(modelId, options.temperature ?? 0.3, {
         assumeOpenAI: shouldAssumeOpenAiChatCompletions(config.baseUrl),
       }),
