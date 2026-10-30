@@ -88,6 +88,7 @@ const migrationSummary: TierMigrationCycleSummary = {
 
 interface Harness {
   config: PluginConfig;
+  buffer: SmartBuffer;
   storageForNs: (ns: string) => Promise<StorageManager>;
   setStorageForDelay: (delayMs: number) => void;
   newCoordinator: () => ExtractionRunCoordinator;
@@ -105,7 +106,7 @@ interface Harness {
     coord: ExtractionRunCoordinator,
     content: string,
     opts?: { force?: boolean; failClosed?: boolean; writeNamespaceOverride?: string },
-  ) => Promise<{ status: string; reason?: string }>;
+  ) => Promise<{ status: string; reason?: string; failureClass?: string; retainedBuffer?: boolean }>;
   cleanup: () => Promise<void>;
   passiveCapture: () => { principal?: string; namespace?: string } | null;
   setThreadingBlock: (blocked: boolean) => void;
@@ -201,6 +202,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
 
   return {
     config,
+    buffer,
     storageForNs,
     setStorageForDelay: (delayMs) => {
       storageForDelayMs = delayMs;
@@ -243,7 +245,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
         forceExtractionAttempt: opts.force === true,
         writeNamespaceOverride: opts.writeNamespaceOverride,
       });
-      return { status: result.status, reason: result.reason };
+      return { status: result.status, reason: result.reason, failureClass: result.failureClass, retainedBuffer: result.retainedBuffer };
     },
     cleanup: async () => {
       StorageManager.clearAllStaticCaches();
@@ -1333,6 +1335,85 @@ test("#3140: a successful flush heals the recorded LLM health", async () => {
     });
   } finally {
     resetExtractionLlmHealthForTests();
+    await h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Wiring the trigger drain depends on (#3266): what a real run hands back, and what it asks of the buffer
+// ---------------------------------------------------------------------------
+
+test("a retained failure carries the extraction's failure class, so the drain can tell an outage from a bad chunk", async () => {
+  for (const cls of ["provider_retryable", "auth_config", "parse_empty"] as const) {
+    const h = await makeHarness({ extractionRetryScheduleMs: [3_600_000], extractionBreakerFailureThreshold: 100 });
+    try {
+      h.setRespond(() => failureResult(cls));
+      const result = await h.run(h.newCoordinator(), `class-${cls}`);
+      assert.equal(result.retainedBuffer, true, `${cls}: the window is kept for a retry`);
+      assert.equal(result.failureClass, cls, `${cls}: the class reaches the run result`);
+    } finally {
+      await h.cleanup();
+    }
+  }
+});
+
+test("a failure with no class defaults to provider_retryable on the run result, like the retry bookkeeping", async () => {
+  const h = await makeHarness({ extractionRetryScheduleMs: [3_600_000], extractionBreakerFailureThreshold: 100 });
+  try {
+    h.setRespond(() => ({ ...failureResult("parse_empty"), extractionFailureClass: undefined }));
+    const result = await h.run(h.newCoordinator(), "class-default");
+    assert.equal(result.failureClass, "provider_retryable");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("a run without a failure reports no failure class", async () => {
+  const h = await makeHarness();
+  try {
+    h.setRespond(() => ({ ...successResult(), facts: [] }));
+    const result = await h.run(h.newCoordinator(), "class-none");
+    assert.equal(result.failureClass, undefined);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("the retention window a chunk run is given reaches the buffer as the processed snapshot (#3266)", async () => {
+  const h = await makeHarness();
+  try {
+    const seen: Array<readonly BufferTurn[] | undefined> = [];
+    const original = h.buffer.retainDeferredTurns.bind(h.buffer);
+    h.buffer.retainDeferredTurns = async (key, turns, max, processed) => {
+      seen.push(processed);
+      await original(key, turns, max, processed);
+    };
+    const chunk = makeTurns("chunk-turns");
+    const window = [...makeTurns("earlier-turns"), ...chunk];
+    h.setRespond(() => successResult());
+    await h.newCoordinator().runExtraction(chunk, {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: true,
+      bufferKey: "window",
+      failOnExtractionFailure: false,
+      forceExtractionAttempt: false,
+      retentionWindow: window,
+    });
+    assert.equal(seen.length, 1, "the run asked the buffer to update its retention slot once");
+    assert.deepEqual(seen[0], window, "with the window it was given, not just its own chunk");
+
+    seen.length = 0;
+    await h.newCoordinator().runExtraction(chunk, {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: true,
+      bufferKey: "window",
+      failOnExtractionFailure: false,
+      forceExtractionAttempt: false,
+    });
+    assert.deepEqual(seen[0], chunk, "without a window the run keeps naming its own turns");
+  } finally {
     await h.cleanup();
   }
 });

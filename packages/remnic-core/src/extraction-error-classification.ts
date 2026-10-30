@@ -85,3 +85,26 @@ export function formatExtractionParseFailureLog(input: {
     `traceId=${input.traceId}`,
   ].join(" ");
 }
+
+/**
+ * The local endpoint answered, and what it said rejects this input (unusable content, or a client error that is not
+ * auth, timeout or rate limiting): the chunk's problem, not an outage. Retried like an empty parse, and a trigger-drain
+ * chunk that keeps drawing it is dropped after its recovery copy is saved.
+ */
+export class LocalLlmRejectedError extends Error {
+  constructor(readonly httpStatus?: number) {
+    super(httpStatus === undefined ? "local LLM answered with unusable content" : `local LLM rejected the input (HTTP ${httpStatus})`);
+    this.name = "LocalLlmRejectedError";
+  }
+}
+
+/** What the local client recorded about a failed call (`failureDiag`). */
+export interface LocalFailureDiag {
+  lastError?: unknown;
+}
+
+/** The HTTP status when the local endpoint is up and refuses this input (4xx except auth, timeout and rate limit); else undefined. */
+export function localRejectionStatus(diag: LocalFailureDiag): number | undefined {
+  const status = httpStatusFromError(diag.lastError);
+  return status !== undefined && status >= 400 && status < 500 && ![401, 403, 408, 429].includes(status) ? status : undefined;
+}
