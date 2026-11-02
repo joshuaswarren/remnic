@@ -3741,7 +3741,7 @@ test("buildOfflineSyncSnapshot skips a file that vanishes during the walk", asyn
   }
 });
 
-test("base snapshot omits a file that vanishes before the fast-base stat", async () => {
+test("base snapshot fails when a base-known file vanishes before the fast-base stat", async () => {
   const root = await tempDir("remnic-offline-base-vanish");
   try {
     await write(root, "facts/keep.md", "keep");
@@ -3751,10 +3751,40 @@ test("base snapshot omits a file that vanishes before the fast-base stat", async
       sourceId: "local",
       includeContent: false,
     });
-    const vanished = await buildOfflineSyncSnapshotFromBase({
+    await assert.rejects(
+      () => buildOfflineSyncSnapshotFromBase({
+        root,
+        sourceId: "local",
+        baseFiles: baseSnapshot.files,
+        baseCapturedAt: new Date(),
+        includeContent: false,
+        excludeFile: async ({ path: relPath, filePath }) => {
+          if (relPath === "facts/gone.md") await rm(filePath, { force: true });
+          return false;
+        },
+      }),
+      /base file vanished during walk/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("base snapshot omits a brand-new file that vanishes during the walk", async () => {
+  const root = await tempDir("remnic-offline-new-vanish");
+  try {
+    await write(root, "facts/keep.md", "keep");
+    await write(root, "facts/gone.md", "gone");
+    const baseSnapshot = await buildOfflineSyncSnapshot({
       root,
       sourceId: "local",
-      baseFiles: baseSnapshot.files,
+      includeContent: false,
+    });
+    const baseFiles = baseSnapshot.files.filter((file) => file.path !== "facts/gone.md");
+    const snapshot = await buildOfflineSyncSnapshotFromBase({
+      root,
+      sourceId: "local",
+      baseFiles,
       baseCapturedAt: new Date(),
       includeContent: false,
       excludeFile: async ({ path: relPath, filePath }) => {
@@ -3762,7 +3792,32 @@ test("base snapshot omits a file that vanishes before the fast-base stat", async
         return false;
       },
     });
-    assert.deepEqual(vanished.files.map((file) => file.path), ["facts/keep.md"]);
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/keep.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("snapshot fails when an embedding generation member vanishes during the walk", async () => {
+  const root = await tempDir("remnic-offline-shard-vanish");
+  try {
+    await write(root, "state/embeddings/shard-0000.json", "a");
+    await write(root, "state/embeddings/shard-0001.json", "b");
+    await assert.rejects(
+      () => buildOfflineSyncSnapshot({
+        root,
+        sourceId: "local",
+        includeContent: false,
+        readFileDigest: async ({ path: relPath, filePath }) => {
+          if (relPath === "state/embeddings/shard-0000.json") {
+            await rm(path.join(root, "state/embeddings/shard-0001.json"), { force: true });
+          }
+          const content = await readFile(filePath);
+          return { sha256: createHash("sha256").update(content).digest("hex"), bytes: content.length };
+        },
+      }),
+      /embedding generation member vanished/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

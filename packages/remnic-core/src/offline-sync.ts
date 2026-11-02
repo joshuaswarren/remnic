@@ -802,6 +802,19 @@ async function readOfflineSyncFileRecord(
   }
 }
 
+// A vanished path may only be omitted when nothing can misread the gap:
+// embedding generations travel and replace as one unit (issue #3148), and a
+// base-known file omitted here would fabricate a delete in
+// buildOfflineSyncChangesetFromSnapshot.
+function assertSnapshotVanishIsSafe(relPath: string, base: ReadonlyMap<string, unknown> | undefined): void {
+  if (embeddingGenerationMembership(relPath) !== null) {
+    throw new Error(`offline sync embedding generation member vanished during snapshot walk: ${relPath}`);
+  }
+  if (base?.has(relPath)) {
+    throw new Error(`offline sync snapshot base file vanished during walk: ${relPath}`);
+  }
+}
+
 async function readPresentOfflineSyncFileRecord(
   options: OfflineSyncFileRecordOptions,
 ): Promise<OfflineSyncFileRecord> {
@@ -919,6 +932,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         signal: options.signal,
       });
       if (record) yield record;
+      else assertSnapshotVanishIsSafe(relPosix, undefined);
     }
   }
 
@@ -1079,9 +1093,12 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       try {
         st = await stat(abs);
       } catch (error) {
-        // Same race readOfflineSyncFileRecord tolerates: the file vanished
-        // between readdir and stat, so the snapshot omits it.
-        if (isNotFoundError(error)) continue;
+        // Same race readOfflineSyncFileRecord tolerates, unless omitting the
+        // path could fabricate a delete or downgrade a generation.
+        if (isNotFoundError(error)) {
+          assertSnapshotVanishIsSafe(relPosix, base);
+          continue;
+        }
         throw error;
       }
       const baseEntry = base.get(relPosix);
@@ -1104,6 +1121,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         signal: options.signal,
       });
       if (record) files.push(record);
+      else assertSnapshotVanishIsSafe(relPosix, base);
     }
   }
 
@@ -1199,6 +1217,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       signal: options.signal,
     });
     if (record) files.push(record);
+    else assertSnapshotVanishIsSafe(relPath, undefined);
   }
   throwIfOfflineSyncAborted(options.signal);
 
