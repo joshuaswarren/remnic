@@ -135,6 +135,7 @@ export async function advanceEmbeddingGenerationMarker<T>(
     const markerAbs = await resolveSafeArchiveTarget(root, `${stateDirRel}/${GENERATION_MARKER_BASENAME}`);
     await assertEmbeddingGenerationLockHeld(lockPath, section);
     await beginGenerationMarker(markerAbs);
+    await assertEmbeddingGenerationLockHeld(lockPath, section);
     const result = await write();
     await assertEmbeddingGenerationLockHeld(lockPath, section);
     await completeGenerationMarker(markerAbs);
