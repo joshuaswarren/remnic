@@ -71,6 +71,7 @@ import {
   assertNonNegativeFinite,
   assertOfflineSyncMtimeMs,
   offlineSyncRegularFilePresent,
+  OfflineSyncCensusRaceError,
   OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS,
 } from "./offline-sync-file-io.js";
 import { CENSUS_MAX_MTIME_MS, isSha256Hex } from "./census-validation.js";
@@ -807,18 +808,12 @@ async function readOfflineSyncFileRecord(
           `offline sync embedding generation member vanished during snapshot walk: ${options.relPath}`,
         );
       }
-      throw offlineSyncCensusRaceError(options.relPath, error);
+      throw new OfflineSyncCensusRaceError(options.relPath, error);
     }
     throw error;
   }
 }
 
-function offlineSyncCensusRaceError(relPath: string, cause?: unknown): Error {
-  return new Error(
-    `offline sync census race: ${relPath} vanished during digest; retry the snapshot`,
-    cause === undefined ? undefined : { cause },
-  );
-}
 
 // Pre-stat vanish (readdir then lstat/stat ENOENT) may omit only when nothing
 // can misread the gap: embedding generations travel as one unit (issue #3148),
@@ -1470,6 +1465,12 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
         now: options.now,
         userExcludeRegexps: options.userExcludeRegexps,
         readFile: options.readFile,
+      }).catch((error: Error) => {
+        // Keep the message the CLI retry loop matches: it defers this path and rebuilds the census.
+        if (error instanceof OfflineSyncCensusRaceError) {
+          throw new Error(`offline sync file changed while building changeset: ${relPath}`, { cause: error });
+        }
+        throw error;
       });
       const record = file.files[0];
       if (!record || typeof record.contentBase64 !== "string" || record.sha256 !== currentEntry.sha256) {

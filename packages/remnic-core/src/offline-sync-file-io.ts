@@ -139,3 +139,14 @@ export async function offlineSyncRegularFilePresent(
   });
   return Boolean(st && !st.isSymbolicLink() && st.isFile());
 }
+
+/** A path the census observed vanished before its digest was read: a retryable race, never a confirmed delete. */
+export class OfflineSyncCensusRaceError extends Error {
+  constructor(readonly relPath: string, cause?: unknown) {
+    super(
+      `offline sync census race: ${relPath} vanished during digest; retry the snapshot`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "OfflineSyncCensusRaceError";
+  }
+}

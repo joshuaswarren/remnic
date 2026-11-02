@@ -4017,3 +4017,38 @@ test("sender snapshot omission from digest race must not delete receiver shared-
   }
 });
 
+
+test("a file vanishing during the changeset upsert read keeps the retryable changed-while-building message", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-changeset-vanish-"));
+  try {
+    const rel = "facts/volatile.md";
+    const bytes = Buffer.from("volatile bytes\n");
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    await writeFile(path.join(root, rel), bytes);
+    const currentFile = {
+      path: rel,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.byteLength,
+      mtimeMs: 1,
+    };
+    await assert.rejects(
+      buildOfflineSyncChangesetFromSnapshot({
+        root,
+        sourceId: "laptop",
+        baseFiles: [],
+        currentFiles: [currentFile],
+        readFile: async () => {
+          await rm(path.join(root, rel), { force: true });
+          throw Object.assign(new Error("ENOENT: file vanished"), { code: "ENOENT" });
+        },
+      }),
+      (error: Error) => {
+        // The CLI retry loop matches this exact prefix to defer the path and rebuild the census.
+        assert.equal(error.message, `offline sync file changed while building changeset: ${rel}`);
+        return true;
+      },
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
