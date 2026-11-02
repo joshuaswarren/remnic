@@ -2406,15 +2406,20 @@ export class QmdClient implements SearchBackend {
       clearQmdResultCaches();
       log.debug(`QMD update completed for collection=${name}`);
     } catch (err) {
-      const at = Date.now();
-      if (options.perCollectionThrottle) {
-        globalState.lastUpdateFailByCollectionMs[name] = at;
-        globalState.lastGlobalUpdateFailAtMs = at;
-      } else {
-        this._lastUpdateFailAtMs = at;
-        globalState.lastGlobalUpdateFailAtMs = at;
-      }
       const msg = err instanceof Error ? err.message : String(err);
+      // Another qmd process holds the index. Arming the 15-minute failure
+      // backoff would make the next converge attempt fail even after the lock
+      // is gone. A real index failure still backs off.
+      if (!/database is locked|SQLITE_BUSY/i.test(msg)) {
+        const at = Date.now();
+        if (options.perCollectionThrottle) {
+          globalState.lastUpdateFailByCollectionMs[name] = at;
+          globalState.lastGlobalUpdateFailAtMs = at;
+        } else {
+          this._lastUpdateFailAtMs = at;
+          globalState.lastGlobalUpdateFailAtMs = at;
+        }
+      }
       log.warn(`QMD update failed for collection ${name}: ${msg}`);
       if (options.strict) {
         throw err;
