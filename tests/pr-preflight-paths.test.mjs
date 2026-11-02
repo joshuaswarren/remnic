@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkTypePackageDirs, noCheckTypePackageDirs } from "../scripts/check-type-packages.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const preflightScript = resolve(rootDir, "scripts/pr-preflight.sh");
+const checkTypePackagesScript = resolve(rootDir, "scripts/check-type-packages.mjs");
 const coveredPackages = checkTypePackageDirs();
 const noCheckTypePackages = noCheckTypePackageDirs();
 
@@ -18,7 +20,7 @@ function scopeList(stdout, label) {
   return line.slice(prefix.length).trim().split(/\s+/).filter(Boolean);
 }
 
-/** Checked and skipped must be a partition — never both (pipefail + grep -Fxq). */
+/** Checked and skipped must be a partition — never both. */
 function assertExclusivePackageScope(stdout, context) {
   const checked = scopeList(stdout, "Checked") ?? [];
   const skipped = scopeList(stdout, "Skipped") ?? [];
@@ -31,46 +33,57 @@ function assertExclusivePackageScope(stdout, context) {
 }
 
 /**
- * Under `set -o pipefail`, `printf … | grep -Fxq` can exit 141 on an early match
- * once the producer still has data to write (SIGPIPE). Membership then looks false
- * and a covered package is appended to Skipped while still listed in Checked.
- * Pin the production script off that pipeline; selection tests below exercise the
- * real `--print-quick-package-scope` path.
+ * Isolated workspace large enough that old `printf|grep -Fxq` membership under
+ * `set -o pipefail` dual-lists early covered names into Skipped. Copies the
+ * production preflight + check-type-packages scripts (no new prod seam).
+ * ~1200+ covered names is the observed SIGPIPE threshold on Linux; 2000 is
+ * the stable pin.
  */
-const preflightSource = readFileSync(preflightScript, "utf8");
-assert.equal(
-  preflightSource.includes("set -euo pipefail"),
-  true,
-  "preflight keeps pipefail; membership must tolerate it",
-);
-assert.doesNotMatch(
-  preflightSource,
-  /printf '%s\\n' "\$\{[^}]+\[@\]\}" \| grep -Fxq/,
-  "quick_package_scope must not use printf|grep -Fxq membership under pipefail",
-);
+const PIPEFAIL_COVERED_COUNT = 2000;
+const PIPEFAIL_EARLY_COVERED = "connector-droid";
+const PIPEFAIL_NOCHECK = ["nocheck-alpha", "nocheck-zeta"];
 
-/** Synthetic early match + large haystack: proves pipefail misclassifies grep -Fxq. */
-{
-  const probe = spawnSync(
-    "bash",
-    [
-      "-c",
-      [
-        "set -euo pipefail",
-        'haystack=("connector-droid")',
-        "for i in $(seq 1 4000); do haystack+=(\"pad-$i\"); done",
-        'if printf "%s\\n" "${haystack[@]}" | grep -Fxq "connector-droid"; then echo MATCH; else echo MISS; fi',
-      ].join("\n"),
-    ],
-    { encoding: "utf8" },
-  );
-  assert.equal(probe.status, 0, probe.stderr);
-  assert.equal(
-    probe.stdout.trim(),
-    "MISS",
-    "control: early grep -Fxq under pipefail must misclassify so the production ban stays load-bearing",
-  );
+function writeFixturePackage(packagesDir, name, { checkTypes }) {
+  const dir = join(packagesDir, name);
+  mkdirSync(dir, { recursive: true });
+  const manifest = {
+    name: `@fixture/${name}`,
+    private: true,
+  };
+  if (checkTypes) {
+    manifest.scripts = { "check-types": "tsc -p tsconfig.json --noEmit" };
+  }
+  writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest)}\n`);
 }
+
+function buildPipefailMembershipFixture(fixtureRoot) {
+  const packagesDir = join(fixtureRoot, "packages");
+  const scriptsDir = join(fixtureRoot, "scripts");
+  mkdirSync(packagesDir, { recursive: true });
+  mkdirSync(scriptsDir, { recursive: true });
+  writeFileSync(join(fixtureRoot, "tsconfig.json"), "{}\n");
+  cpSync(preflightScript, join(scriptsDir, "pr-preflight.sh"));
+  cpSync(checkTypePackagesScript, join(scriptsDir, "check-type-packages.mjs"));
+
+  writeFixturePackage(packagesDir, PIPEFAIL_EARLY_COVERED, { checkTypes: true });
+  for (let i = 1; i <= PIPEFAIL_COVERED_COUNT; i += 1) {
+    writeFixturePackage(packagesDir, `pkg-${String(i).padStart(4, "0")}`, { checkTypes: true });
+  }
+  for (const name of PIPEFAIL_NOCHECK) {
+    writeFixturePackage(packagesDir, name, { checkTypes: false });
+  }
+
+  return join(scriptsDir, "pr-preflight.sh");
+}
+
+function packageScopeAt(scriptPath, cwd, files) {
+  return spawnSync("bash", [scriptPath, "--print-quick-package-scope"], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, PREFLIGHT_CHANGED_FILES: files },
+  });
+}
+
 
 
 const guardedPaths = [
@@ -188,6 +201,46 @@ try {
   if (!hadNodeModules) rmSync(nodeModulesDir, { recursive: true, force: true });
   if (!hadDist) rmSync(importWecloneDistDir, { recursive: true, force: true });
 }
+
+// Pipefail membership (#3231 prerequisite): real --print-quick-package-scope on
+// an isolated workspace with enough covered manifests that the old
+// printf|grep -Fxq path dual-lists early members. Fixture copies the production
+// scripts from this checkout (parent restores the old script to observe RED).
+{
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "remnic-preflight-memb-"));
+  try {
+    const fixtureScript = buildPipefailMembershipFixture(fixtureRoot);
+    const largeScope = packageScopeAt(fixtureScript, fixtureRoot, "tsconfig.json");
+    assert.equal(largeScope.status, 0, largeScope.stderr || largeScope.stdout);
+    assert.match(largeScope.stdout, /Quick package scope: all packages/);
+
+    const expectedChecked = [
+      PIPEFAIL_EARLY_COVERED,
+      ...Array.from({ length: PIPEFAIL_COVERED_COUNT }, (_, i) => `pkg-${String(i + 1).padStart(4, "0")}`),
+    ].sort();
+    const expectedSkipped = [...PIPEFAIL_NOCHECK].sort();
+
+    assert.deepEqual(
+      scopeList(largeScope.stdout, "Checked"),
+      expectedChecked,
+      "large fixture: every check-types package must be checked exactly once",
+    );
+    assert.deepEqual(
+      scopeList(largeScope.stdout, "Skipped"),
+      expectedSkipped,
+      "large fixture: only no-check-types packages may skip",
+    );
+    assertExclusivePackageScope(largeScope.stdout, "large fixture all-packages scope");
+    assert.equal(
+      (scopeList(largeScope.stdout, "Skipped") ?? []).includes(PIPEFAIL_EARLY_COVERED),
+      false,
+      `${PIPEFAIL_EARLY_COVERED} must not dual-list into Skipped under pipefail membership`,
+    );
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
 
 const workspaceConfigScope = packageScope("pnpm-workspace.yaml");
 assert.equal(workspaceConfigScope.status, 0, workspaceConfigScope.stderr);
