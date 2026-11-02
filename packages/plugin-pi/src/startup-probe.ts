@@ -70,9 +70,13 @@ class StartupProbeChain {
   async run(): Promise<DaemonProbeResult> {
     const { probeHealth, statusLabel, recallDisabledStatus, errorText } = this.deps;
     const { client, config, recallTimeoutBreaker, session } = this.ctx;
+    // Sample before the deferred health round-trip so a markReachable from a
+    // newer successful call (e.g. manual /remnic-recall) supersedes this chain's
+    // unreachable verdict without blocking that call on startup.
+    const reachabilityGeneration = client.reachabilityGenerationToken();
     try {
       const verdict = await probeHealth(client, config);
-      this.applyBreaker(verdict);
+      this.applyBreaker(verdict, reachabilityGeneration);
       const probe = verdict.result;
       if (probe !== "unreachable") {
         await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
@@ -95,11 +99,13 @@ class StartupProbeChain {
     }
   }
 
-  /** A superseded or post-shutdown chain must not touch the shared breaker. */
-  private applyBreaker(verdict: DaemonHealthVerdict): void {
+  /** Epoch/liveness plus reachability-generation: stale unreachable must not clobber a newer success. */
+  private applyBreaker(verdict: DaemonHealthVerdict, reachabilityGeneration: number): void {
     if (!this.isCurrent()) return;
     if (verdict.breaker === "reachable") this.ctx.client.markReachable();
-    else if (verdict.breaker === "unreachable") this.ctx.client.markUnreachable(this.ctx.config.daemonCooldownMs);
+    else if (verdict.breaker === "unreachable") {
+      this.ctx.client.markUnreachableIfGeneration(reachabilityGeneration, this.ctx.config.daemonCooldownMs);
+    }
   }
 
   /**

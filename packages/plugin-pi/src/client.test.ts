@@ -469,6 +469,21 @@ test("circuit breaker reports unreachable during cooldown and recovers (#1626)",
   assert.ok(client.isReachable(), "reachable again after success");
 });
 
+test("markUnreachableIfGeneration drops stale samples after a newer markReachable", () => {
+  const client = new RemnicClient(baseConfig());
+  const sample = client.reachabilityGenerationToken();
+  client.markUnreachableIfGeneration(sample, 5000);
+  assert.ok(!client.isReachable(), "matching generation still trips");
+  client.markReachable();
+  assert.ok(client.isReachable(), "success clears the breaker");
+  client.markUnreachableIfGeneration(sample, 5000);
+  assert.ok(client.isReachable(), "stale generation after success does not trip");
+  const fresh = client.reachabilityGenerationToken();
+  client.markUnreachableIfGeneration(fresh, 5000);
+  assert.ok(!client.isReachable(), "a fresh sample after success still trips");
+});
+
+
 
 test("truncateObserveMessage drops bulky rawContent and parts so the chunk fits (#1600, review cursor+codex)", () => {
   const config = baseConfig();
