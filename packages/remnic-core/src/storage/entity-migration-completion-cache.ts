@@ -9,10 +9,11 @@
  * ponytail: in-place entity *content* edits still skip revalidation.
  */
 
-import { lstat } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import { isErrnoCode } from "../utils/errno.js";
+import { pathIsInside } from "../utils/path-containment.js";
 import { getFingerprint } from "./entity-canonical-id-migration.js";
 import {
   ENTITY_CANONICAL_ID_MIGRATION_FILE,
@@ -27,6 +28,34 @@ export type EntityMigrationCompletionCacheDeps = {
   readonly entitiesDir: string;
   getEntityMutationVersion(): number;
 };
+
+/**
+ * True when `entitiesDir` is a real directory inside `baseDir`.
+ * lstat first so a symlinked root is never realpath'd into trust.
+ */
+export async function isTrustedEntitiesRoot(
+  baseDir: string,
+  entitiesDir: string,
+): Promise<boolean> {
+  let rootStat;
+  try {
+    rootStat = await lstat(entitiesDir);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return false;
+    throw err;
+  }
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return false;
+  let memoryRoot: string;
+  let entitiesReal: string;
+  try {
+    memoryRoot = await realpath(baseDir);
+    entitiesReal = await realpath(entitiesDir);
+  } catch (err) {
+    if (isErrnoCode(err, "ENOENT")) return false;
+    throw err;
+  }
+  return pathIsInside(memoryRoot, entitiesReal);
+}
 
 export class EntityMigrationCompletionCache {
   private cache: { version: number; inputSig: string; completed: boolean } | undefined;
@@ -58,12 +87,19 @@ export class EntityMigrationCompletionCache {
     return [entitiesSig, aliasesSig, journalSig, reconcileSig, consumingSig].join("|");
   }
 
-  /** True when journal completion attests to live fingerprint inputs. */
+  /**
+   * True when journal completion attests to live fingerprint inputs.
+   * Untrusted entities roots (symlink / outside base) never reach getFingerprint.
+   */
   async isCompleted(deps: EntityMigrationCompletionCacheDeps): Promise<boolean> {
     const version = deps.getEntityMutationVersion();
     const inputSig = await this.inputSig(deps);
     const cached = this.cache;
     if (cached && cached.version === version && cached.inputSig === inputSig) return cached.completed;
+    if (!(await isTrustedEntitiesRoot(deps.baseDir, deps.entitiesDir))) {
+      this.cache = { version, inputSig, completed: false };
+      return false;
+    }
     const completed = await entityCanonicalIdMigrationCompleted(path.join(deps.baseDir, "state"), () =>
       getFingerprint(deps.baseDir, deps.entitiesDir, () => String(version)));
     this.cache = { version, inputSig, completed };

@@ -10,7 +10,7 @@
  *   - fragmented-entity merge (consolidation)
  */
 
-import { lstat, readdir, realpath, unlink } from "node:fs/promises";
+import { lstat, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
@@ -18,6 +18,7 @@ import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { assertSafeEntityId } from "./entity-id-safety.js";
 import {
   EntityMigrationCompletionCache,
+  isTrustedEntitiesRoot,
   readEntityFileResolvingRename,
 } from "./entity-migration-completion-cache.js";
 import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
@@ -38,7 +39,6 @@ import type {
   ScoredEntity,
 } from "../types.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { pathIsInside } from "../utils/path-containment.js";
 import {
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
@@ -426,39 +426,12 @@ export class EntityStore {
   }
 
   /**
-   * True when `entities/` is a real directory inside this memory root.
-   * `realpath` on a symlinked root would treat the link target as trusted,
-   * so the check uses `lstat` first and refuses the scan when the root
-   * itself is a symlink.
-   */
-  private async isTrustedEntitiesRoot(): Promise<boolean> {
-    let rootStat;
-    try {
-      rootStat = await lstat(this.deps.entitiesDir);
-    } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return false;
-      throw err;
-    }
-    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) return false;
-    let memoryRoot: string;
-    let entitiesReal: string;
-    try {
-      memoryRoot = await realpath(this.deps.baseDir);
-      entitiesReal = await realpath(this.deps.entitiesDir);
-    } catch (err) {
-      if (isErrnoCode(err, "ENOENT")) return false;
-      throw err;
-    }
-    return pathIsInside(memoryRoot, entitiesReal);
-  }
-
-  /**
    * Entity directory listing with macOS replication junk removed.
    * One summary warning per directory and count, shared with migration.
    * A symlinked entities root yields an empty list and is not read.
    */
   private async readEntityDirectoryNames(): Promise<string[]> {
-    if (!(await this.isTrustedEntitiesRoot())) return [];
+    if (!(await isTrustedEntitiesRoot(this.deps.baseDir, this.deps.entitiesDir))) return [];
     const entries = await readdir(this.deps.entitiesDir);
     const { kept, ignored } = withoutMacOsReplicationJunk(entries, (name) => name);
     warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {
@@ -719,7 +692,7 @@ export class EntityStore {
       // #3207 semantics): resolve empty rather than following it. Within a
       // trusted root, readdir directly so planted entries reach the secure
       // read instead of being swallowed by the listing guards.
-      if (!(await this.isTrustedEntitiesRoot())) return [];
+      if (!(await isTrustedEntitiesRoot(this.deps.baseDir, this.deps.entitiesDir))) return [];
       const listed = await readdir(this.deps.entitiesDir);
       const { kept: entries, ignored } = withoutMacOsReplicationJunk(listed, (name) => name);
       warnIgnoredMacOsReplicationJunk(this.deps.entitiesDir, ignored, (message) => {

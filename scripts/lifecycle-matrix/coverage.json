@@ -22,6 +22,7 @@
     "packages/remnic-core/src/storage/entity-canonical-id-migration-runner.ts",
     "packages/remnic-core/src/storage/entity-canonical-id-migration-adapter.ts",
     "packages/remnic-core/src/storage/entity-canonical-id-references.ts",
+    "packages/remnic-core/src/storage/entity-migration-completion-cache.ts",
     "packages/remnic-core/src/storage/entity-canonical-id-lock.ts",
     "packages/remnic-core/src/storage/entity-mention-frontmatter-hold.ts",
     "packages/remnic-core/src/storage/entity-ref-repair.ts",
