@@ -109,6 +109,8 @@ export class RemnicClient {
   // callers skip fast instead of blocking every turn on a doomed request (#1626).
   private unreachableUntil = 0;
   private consecutiveFailures = 0;
+  /** Bumped on every markReachable so a deferred startup probe can drop a stale unreachable. */
+  private reachabilityGeneration = 0;
 
   constructor(private readonly config: RemnicPiConfig) {}
 
@@ -117,10 +119,16 @@ export class RemnicClient {
     return Date.now() >= this.unreachableUntil;
   }
 
+  /** Sample before a deferred probe; compare later via markUnreachableIfGeneration. */
+  reachabilityGenerationToken(): number {
+    return this.reachabilityGeneration;
+  }
+
   /** Clear the circuit breaker — call after any successful daemon interaction. */
   markReachable(): void {
     this.consecutiveFailures = 0;
     this.unreachableUntil = 0;
+    this.reachabilityGeneration += 1;
   }
 
   /**
@@ -133,6 +141,15 @@ export class RemnicClient {
     const factor = 2 ** Math.min(this.consecutiveFailures - 1, 4);
     const cooldown = Math.min(baseCooldownMs * factor, MAX_COOLDOWN_MS);
     this.unreachableUntil = Date.now() + cooldown;
+  }
+
+  /**
+   * Trip unreachable only if no markReachable has run since `generation` was
+   * sampled. A late startup-health failure must not clobber a newer success.
+   */
+  markUnreachableIfGeneration(generation: number, baseCooldownMs: number): void {
+    if (generation !== this.reachabilityGeneration) return;
+    this.markUnreachable(baseCooldownMs);
   }
 
   async health(options: RequestOptions = {}): Promise<Record<string, unknown>> {
