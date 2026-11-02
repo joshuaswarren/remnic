@@ -52,10 +52,10 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
     await seed.ensureDirectories();
     const reader = new StorageManager(dir);
     await reader.ensureDirectories({ waitForEntityMigration: false });
-    const internals = reader as unknown as { readStorageSecureFile: (filePath: string) => Promise<string> };
-    const originalRead = internals.readStorageSecureFile.bind(internals);
+    // Bracket access is TypeScript's typed escape hatch for the private reader.
+    const originalRead = reader["readStorageSecureFile"].bind(reader);
     const reads: string[] = [];
-    internals.readStorageSecureFile = async (filePath) => {
+    reader["readStorageSecureFile"] = async (filePath: string) => {
       reads.push(path.basename(filePath));
       return originalRead(filePath);
     };
@@ -198,10 +198,10 @@ for (const mutation of mutations) {
   test(`${mutation.name} awaits migration for a ${caller} caller`, async () => {
     const fixture = await legacyStore();
     let settled = false;
-    let failure: unknown;
+    let failure: Error | undefined;
     const operation = mutation.run(fixture.storage, caller === "legacy" ? "legacy-person" : fixture.id).then(
       () => { settled = true; },
-      (error: unknown) => { failure = error; settled = true; },
+      (error: Error) => { failure = error; settled = true; },
     );
     let probeFailure: unknown;
     try {

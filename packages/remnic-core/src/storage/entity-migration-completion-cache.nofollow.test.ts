@@ -191,6 +191,7 @@ mock.reset();
 
     let result: ProbeResult;
     try {
+      // SAFETY: the child probe in this file writes `resultFile` as a ProbeResult before exiting.
       result = JSON.parse(await readFile(resultFile, "utf8")) as ProbeResult;
     } catch {
       assert.fail(

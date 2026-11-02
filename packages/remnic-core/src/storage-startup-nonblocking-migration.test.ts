@@ -46,6 +46,7 @@ async function gateMigration(dir: string): Promise<() => Promise<void>> {
 
 async function journalComplete(dir: string): Promise<boolean> {
   try {
+    // SAFETY: the journal is written by this test fixture and carries an optional boolean `complete`.
     const state = JSON.parse(await readFile(path.join(dir, MIGRATION_JOURNAL_FILE), "utf8")) as {
       complete?: boolean;
     };
@@ -99,12 +100,12 @@ test("default ensureDirectories still waits behind a held migration lock", async
     const storage = new StorageManager(dir);
     const releaseGate = await gateMigration(dir);
     let settled = false;
-    let setupError: unknown;
+    let setupError: Error | undefined;
     const gatedSetup = storage.ensureDirectories().then(
       () => {
         settled = true;
       },
-      (err: unknown) => {
+      (err: Error) => {
         setupError = err;
         settled = true;
       },
@@ -148,7 +149,7 @@ test("entity writes queue behind the migration they trigger", async () => {
     const releaseGate = await gateMigration(dir);
     const readiness = storage.ensureDirectories({ waitForEntityMigration: false });
     const { promise: written, resolve: writeSettled } = Promise.withResolvers<void>();
-    let writeError: unknown;
+    let writeError: Error | undefined;
     let failure: unknown;
     try {
       const outcome = await Promise.race([readiness, sleep(READINESS_BUDGET_MS).then(() => "timeout")]);
@@ -157,7 +158,7 @@ test("entity writes queue behind the migration they trigger", async () => {
       // deferred startup opens READ readiness only.
       storage.writeEntity("Alice", "person", ["Alice works on Remnic"]).then(
         () => writeSettled(),
-        (err: unknown) => {
+        (err: Error) => {
           writeError = err;
           writeSettled();
         },

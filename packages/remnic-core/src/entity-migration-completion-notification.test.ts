@@ -62,27 +62,25 @@ test("orchestrator wires completion with auto-embed off and blocks it from teard
       knowledgeIndexEnabled: false,
     }),
   );
-  // Test-only access to orchestrator internals (private wiring surfaces),
-  // mirroring the sibling orchestrator tests' as-any convention.
-  const internals = orchestrator as unknown as {
-    storage: StorageManager;
-    storageRouter: { storageFor(namespace: string): Promise<StorageManager> };
-    requestQmdMaintenance: () => void;
-    maintenanceScheduler: { dispose: () => Promise<void> };
+  // Test-only access to the Orchestrator's private wiring fields: bracket access
+  // is TypeScript's typed escape hatch for private members, so no assertion.
+  const internals = {
+    get storage() { return orchestrator["storage"]; },
+    get storageRouter() { return orchestrator["storageRouter"]; },
+    get maintenanceScheduler() { return orchestrator["maintenanceScheduler"]; },
+    set requestQmdMaintenance(fn: () => void) { orchestrator["requestQmdMaintenance"] = fn; },
   };
   try {
     // Wiring must exist independent of auto-embed.
     const onMigrationComplete = internals.storage.onEntityMigrationComplete;
-    assert.equal(
-      typeof onMigrationComplete,
-      "function",
+    assert.ok(
+      onMigrationComplete instanceof Function,
       "the default storage must carry the migration completion slot without auto-embed",
     );
     const namespaceStorage = await internals.storageRouter.storageFor("proj-a");
     const onNamespaceMigrationComplete = namespaceStorage.onEntityMigrationComplete;
-    assert.equal(
-      typeof onNamespaceMigrationComplete,
-      "function",
+    assert.ok(
+      onNamespaceMigrationComplete instanceof Function,
       "a router-created namespace storage must carry the slot without auto-embed",
     );
 

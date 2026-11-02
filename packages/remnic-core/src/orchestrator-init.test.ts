@@ -1585,6 +1585,7 @@ for (const namespace of ["default", "shared"]) {
       assert.equal(existsSync(journalPath), false, "startup must not run the migration");
       await rm(lockPath);
       await storage.ensureDirectories();
+      // SAFETY: the journal is written by the migration under test and carries an optional boolean `complete`.
       const state = JSON.parse(await readFile(journalPath, "utf8")) as { complete?: boolean };
       assert.equal(state.complete, true, "default setup must still run migration");
     } finally {
