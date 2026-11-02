@@ -3740,3 +3740,30 @@ test("buildOfflineSyncSnapshot skips a file that vanishes during the walk", asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("base snapshot omits a file that vanishes before the fast-base stat", async () => {
+  const root = await tempDir("remnic-offline-base-vanish");
+  try {
+    await write(root, "facts/keep.md", "keep");
+    await write(root, "facts/gone.md", "gone");
+    const baseSnapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+    });
+    const vanished = await buildOfflineSyncSnapshotFromBase({
+      root,
+      sourceId: "local",
+      baseFiles: baseSnapshot.files,
+      baseCapturedAt: new Date(),
+      includeContent: false,
+      excludeFile: async ({ path: relPath, filePath }) => {
+        if (relPath === "facts/gone.md") await rm(filePath, { force: true });
+        return false;
+      },
+    });
+    assert.deepEqual(vanished.files.map((file) => file.path), ["facts/keep.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

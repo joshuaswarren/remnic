@@ -3,14 +3,16 @@ import test from "node:test";
 
 import { refreshConvergedNamespaces } from "./convergence-refresh.js";
 
-test("a min-interval QMD skip does not fail convergence refresh", async () => {
+test("convergence refresh requests a forced, strict index update", async () => {
+  let observedOptions: unknown;
   let continued = false;
   await assert.rejects(
     () => refreshConvergedNamespaces(
       ["generalist"],
       {
-        updateNamespacesDetailed: async () => {
-          throw new Error("QMD update skipped by global min-interval gate");
+        updateNamespacesDetailed: async (_namespaces, _execution, options) => {
+          observedOptions = options;
+          return { backendCount: 1, eligibleNamespaces: ["generalist"] };
         },
       },
       async () => {
@@ -22,6 +24,28 @@ test("a min-interval QMD skip does not fail convergence refresh", async () => {
     /storage-reached/,
   );
   assert.equal(continued, true);
+  assert.deepEqual(observedOptions, { strict: true, force: true });
+});
+
+test("an index-update throttle skip fails convergence refresh", async () => {
+  let continued = false;
+  await assert.rejects(
+    () => refreshConvergedNamespaces(
+      ["generalist"],
+      {
+        updateNamespacesDetailed: async () => {
+          throw new Error("QMD update skipped by min-interval gate");
+        },
+      },
+      async () => {
+        continued = true;
+        throw new Error("storage-reached");
+      },
+      false,
+    ),
+    /min-interval/,
+  );
+  assert.equal(continued, false);
 });
 
 test("a real QMD refresh failure still fails convergence refresh", async () => {

@@ -217,7 +217,7 @@ export class NamespaceSearchRouter {
   async updateNamespaces(
     namespaces: string[],
     execution?: SearchExecutionOptions,
-    options?: { strict?: boolean },
+    options?: { strict?: boolean; force?: boolean },
   ): Promise<number> {
     return (await this.updateNamespacesDetailed(namespaces, execution, options)).backendCount;
   }
@@ -225,7 +225,7 @@ export class NamespaceSearchRouter {
   async updateNamespacesDetailed(
     namespaces: string[],
     execution?: SearchExecutionOptions,
-    options?: { strict?: boolean },
+    options?: { strict?: boolean; force?: boolean },
   ): Promise<NamespaceUpdateResult> {
     const unique = Array.from(new Set(namespaces.map((value) => value.trim()).filter(Boolean)));
     const eligible = (await Promise.all(
@@ -578,10 +578,14 @@ function backendSearchLimit(
 async function updateBackendRecord(
   record: NamespaceBackendRecord,
   execution?: SearchExecutionOptions,
-  options?: { strict?: boolean },
+  options?: { strict?: boolean; force?: boolean },
 ): Promise<void> {
   if (options?.strict === true) {
     if (
+      // Forced refreshes must skip the throttled all-collections update: its
+      // success has to prove the current writes are indexed, which a throttle
+      // skip cannot.
+      options.force !== true &&
       record.backend.updatesAllCollections?.() === true &&
       typeof record.backend.updateStrict === "function"
     ) {

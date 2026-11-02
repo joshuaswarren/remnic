@@ -12,6 +12,7 @@ import {
   utimes,
   writeFile,
 } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import path from "node:path";
 import {
   DEFAULT_TRANSFER_EXCLUDE_DIRS,
@@ -1074,7 +1075,15 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         path: relPosix,
         filePath: abs,
       })) continue;
-      const st = await stat(abs);
+      let st: Stats;
+      try {
+        st = await stat(abs);
+      } catch (error) {
+        // Same race readOfflineSyncFileRecord tolerates: the file vanished
+        // between readdir and stat, so the snapshot omits it.
+        if (isNotFoundError(error)) continue;
+        throw error;
+      }
       const baseEntry = base.get(relPosix);
       if (
         options.includeContent !== true &&
