@@ -3713,3 +3713,30 @@ test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inl
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("buildOfflineSyncSnapshot skips a file that vanishes during the walk", async () => {
+  const root = await tempDir("remnic-offline-vanish");
+  try {
+    await write(root, "facts/keep.md", "keep");
+    await write(root, "facts/gone.md", "gone");
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+      readFileDigest: async ({ path: relPath, filePath }) => {
+        if (relPath.endsWith("gone.md")) {
+          await rm(filePath);
+          throw Object.assign(new Error("ENOENT: vanished"), { code: "ENOENT" });
+        }
+        const content = await readFile(filePath);
+        return {
+          sha256: createHash("sha256").update(content).digest("hex"),
+          bytes: content.length,
+        };
+      },
+    });
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/keep.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

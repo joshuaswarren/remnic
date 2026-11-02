@@ -80,6 +80,28 @@ test("updateStrict respects QMD update min-interval throttles", async () => {
   assert.equal(calls.length, 1);
 });
 
+test("a locked qmd update does not suppress the next strict update", async () => {
+  const client = new QmdClient("memories", 3, { updateMinIntervalMs: 0 });
+  client.resetUpdateThrottles();
+  const internals = client as unknown as SubprocessInternals;
+  let calls = 0;
+  internals.available = true;
+  internals.runQmdCommand = async () => {
+    calls += 1;
+    if (calls === 1) throw new Error("qmd update failed (code 1): SqliteError: database is locked");
+    return { stdout: "", stderr: "" };
+  };
+
+  try {
+    await assert.rejects(() => client.updateStrict(), /database is locked/);
+    await client.updateStrict();
+  } finally {
+    client.resetUpdateThrottles();
+  }
+
+  assert.equal(calls, 2);
+});
+
 test("embedCollectionStrict rejects QMD embed subprocess failures", async () => {
   const client = new QmdClient("memories", 3, { updateMinIntervalMs: 60_000 });
   client.resetUpdateThrottles();
