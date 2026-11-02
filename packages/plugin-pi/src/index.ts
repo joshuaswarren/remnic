@@ -603,7 +603,7 @@ async function registerMcpTools(
       observedToolNames: observedNames,
     });
   }
-  return allRegistered;
+  return allRegistered && seenPiToolNames.size > 0;
 }
 
 /** Plain JSON Schema: Pi validates tool parameters as plain JSON Schema. */

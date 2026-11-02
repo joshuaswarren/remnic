@@ -208,6 +208,30 @@ test("/remnic-status registers the MCP tools that the startup listing failed to 
   assert.ok(notifications.length > 0, "the status command must answer the user");
 });
 
+for (const initialNames of [[], ["unrelated_tool"]]) {
+  test(`/remnic-status recovers after a catalog with no matching tools: ${JSON.stringify(initialNames)}`, async (t) => {
+    const catalog = initialNames.map((name) => ({ name }));
+    const { listCalls } = installFetch(t, { catalog, listingHealthy: () => true });
+    const harness = createHarness();
+    const extension = createRemnicPiExtension({
+      config: { ...baseConfig(), authToken: "catalog-recovery-token" },
+    });
+
+    await extension(harness.pi);
+    assert.deepEqual(harness.registered, []);
+    assert.equal(listCalls(), 1);
+
+    catalog.splice(0, catalog.length, { name: "remnic_recall" });
+    await runStatus(harness);
+    assert.deepEqual(harness.registered, ["remnic_recall"]);
+    assert.equal(listCalls(), 2);
+
+    await runStatus(harness);
+    assert.deepEqual(harness.registered, ["remnic_recall"]);
+    assert.equal(listCalls(), 2, "successful registration must complete recovery");
+  });
+}
+
 test("the status retry registers only the tool whose registration failed", async (t) => {
   installFetch(t, {
     catalog: [{ name: "remnic_alpha" }, { name: "remnic_beta" }],
