@@ -22,38 +22,43 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
     });
     const qmdCalls: Array<{
       namespaces: string[];
-      options: { strict?: boolean } | undefined;
+      options: { strict?: boolean; force?: boolean } | undefined;
     }> = [];
     const storageCalls: string[] = [];
     const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
-    const internals = orchestrator as unknown as {
+    type ConvergenceRefreshInternals = {
       config: { defaultNamespace: string; qmdEnabled: boolean };
       namespaceSearchRouter: {
         updateNamespacesDetailed(
           namespaces: string[],
           execution?: unknown,
-          options?: { strict?: boolean }
+          options?: { strict?: boolean; force?: boolean },
         ): Promise<{ backendCount: number; eligibleNamespaces: string[] }>;
       };
       getStorage(namespace: string): Promise<StorageManager>;
-    };
-    internals.config = { defaultNamespace: "default", qmdEnabled: true };
-    internals.namespaceSearchRouter = {
-      async updateNamespacesDetailed(namespaces, _execution, options) {
-        qmdCalls.push({ namespaces, options });
-        return { backendCount: 1, eligibleNamespaces: namespaces };
-      },
     };
     const storageByNamespace = new Map([
       ["team", teamStorage],
       ["shared", sharedStorage],
     ]);
-    internals.getStorage = async (namespace) => {
-      storageCalls.push(namespace);
-      const storage = storageByNamespace.get(namespace);
-      assert.ok(storage);
-      return storage;
+    // SAFETY: fresh prototype instance under test; every internals field is
+    // provided here before refreshNamespacesAfterConvergence runs.
+    const internals: ConvergenceRefreshInternals = {
+      config: { defaultNamespace: "default", qmdEnabled: true },
+      namespaceSearchRouter: {
+        async updateNamespacesDetailed(namespaces, _execution, options) {
+          qmdCalls.push({ namespaces, options });
+          return { backendCount: 1, eligibleNamespaces: namespaces };
+        },
+      },
+      getStorage: async (namespace) => {
+        storageCalls.push(namespace);
+        const storage = storageByNamespace.get(namespace);
+        assert.ok(storage);
+        return storage;
+      },
     };
+    Object.assign(orchestrator, internals);
     const refreshSurface = orchestrator as unknown as {
       refreshNamespacesAfterConvergence(namespaces: readonly string[]): Promise<void>;
     };
@@ -63,7 +68,7 @@ test("refreshNamespacesAfterConvergence runs one strict QMD batch and rebuilds e
     assert.deepEqual(qmdCalls, [
       {
         namespaces: ["team", "shared"],
-        options: { strict: true },
+        options: { strict: true, force: true },
       },
     ]);
     assert.deepEqual(storageCalls, ["team", "shared"]);
