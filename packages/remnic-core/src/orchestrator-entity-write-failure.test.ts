@@ -5,9 +5,11 @@ import test from "node:test";
 import { SmartBuffer } from "./buffer.js";
 import { resetExtractionLlmHealthForTests } from "./extraction-llm-health.js";
 import { Orchestrator } from "./orchestrator.js";
-import { ContentHashIndex } from "./storage.js";
+import { ContentHashIndex, type StorageManager } from "./storage.js";
 import {
   cleanupDir,
+  harmonicNodeStoreStatus,
+  makeHarmonicLifecycleConfig,
   makeLifecycleConfig,
   mkTempMemoryDir,
   stubExtraction,
@@ -120,3 +122,150 @@ for (const includeFact of [false, true]) {
     }
   });
 }
+
+test("#3231: entity failure after a committed fact still runs deferred post-write maintenance", async () => {
+  // Partial-success path: fact (preference) is durable, later writeEntity throws.
+  // Batch-end finalization in persistExtraction (hash flush, behavior ledger,
+  // harmonic construction, temporal/tag index) and runExtraction's
+  // requestQmdMaintenance must still cover the earlier durable write. Retry
+  // exact-dedupes the fact (`continue`), so those effects are not re-queued.
+  const memoryDir = await mkTempMemoryDir("entity-write-failure-maintenance");
+  const preference =
+    "Prefers terse queue names for background jobs in Project Alpha.";
+  const config = makeHarmonicLifecycleConfig(memoryDir, {
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+    extractionMinImportanceLevel: "trivial",
+    entityActivityLogEnabled: false,
+    queryAwareIndexingEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config);
+  const storage = await orchestrator.getStorageForNamespace();
+  const writeEntity = storage.writeEntity.bind(storage);
+  const temporalIdBatches: string[][] = [];
+  const orchPriv = orchestrator as unknown as {
+    updateTemporalTagIndexes: (
+      target: StorageManager,
+      persistedIds: string[],
+    ) => Promise<void>;
+  };
+  const originalTemporal = orchPriv.updateTemporalTagIndexes.bind(orchestrator);
+  orchPriv.updateTemporalTagIndexes = async (target, persistedIds) => {
+    temporalIdBatches.push([...persistedIds]);
+    return originalTemporal(target, persistedIds);
+  };
+  let qmdMaintenanceCalls = 0;
+  const originalQmd = orchestrator.requestQmdMaintenance.bind(orchestrator);
+  orchestrator.requestQmdMaintenance = () => {
+    qmdMaintenanceCalls += 1;
+    originalQmd();
+  };
+  try {
+    await storage.ensureDirectories();
+    await orchestrator.buffer.load();
+    const bufferKey = "entity-write-failure-maintenance";
+    await orchestrator.buffer.addTurn(bufferKey, {
+      role: "user",
+      content: preference,
+      sessionKey: bufferKey,
+      timestamp: "2026-10-01T12:00:00.000Z",
+      sourceValidAt: "2026-10-01T12:00:00.000Z",
+      persistProcessedFingerprint: true,
+    });
+    await orchestrator.buffer.flushPendingSave({ throwOnFailure: true });
+    const turns = orchestrator.buffer.getTurns(bufferKey);
+    assert.equal(turns.length, 1);
+    stubExtraction(orchestrator, (): ExtractionResult => ({
+      facts: [
+        {
+          content: preference,
+          category: "preference",
+          confidence: 0.95,
+          tags: ["queue-naming"],
+        },
+      ],
+      entities: [{ name: "Alpha", type: "project", facts: ["Uses a queue"] }],
+      questions: [],
+      profileUpdates: [],
+    }));
+    const writeFailure = Object.assign(new Error("synthetic entity write denied"), {
+      code: "EACCES",
+    });
+    storage.writeEntity = async () => {
+      throw writeFailure;
+    };
+
+    await assert.rejects(
+      orchestrator.runExtraction(turns, { bufferKey }),
+      (error: unknown) => error === writeFailure,
+      "entity I/O failure must still reach the caller",
+    );
+
+    const facts = (await storage.readAllMemories()).filter(
+      (m) => m.frontmatter.category === "preference",
+    );
+    assert.equal(facts.length, 1, "the preference fact must remain durable");
+    const factId = facts[0]!.frontmatter.id;
+    const hashes = new ContentHashIndex(path.join(storage.dir, "state"));
+    await hashes.load();
+    assert.equal(hashes.has(preference), true, "deferred fact hash must flush before rejection");
+
+    const signals = await storage.readBehaviorSignals(50);
+    assert.ok(
+      signals.some(
+        (s) => s.memoryId === factId && s.signalType === "preference_affinity",
+      ),
+      "batch-end behavior-signal append must cover the committed preference before rethrow",
+    );
+
+    const harmonic = await harmonicNodeStoreStatus(memoryDir);
+    assert.equal(harmonic.nodes.invalid, 0);
+    assert.ok(
+      harmonic.nodes.valid > 0 && (harmonic.latestNode?.sourceMemoryIds ?? []).includes(factId),
+      "batch-end harmonic construction must cover the committed fact before rethrow",
+    );
+
+    assert.ok(
+      temporalIdBatches.some((ids) => ids.includes(factId)),
+      "batch-end temporal/tag index update must include the committed fact before rethrow",
+    );
+    assert.ok(
+      qmdMaintenanceCalls > 0,
+      "partial durable writes must still schedule QMD reindex before the entity error propagates",
+    );
+
+    // Retry exact-dedupes the preference (`continue`), so missing deferred
+    // effects are not re-queued. Prove the failure-path finalization is the
+    // only chance they have to land.
+    storage.writeEntity = writeEntity;
+    const retried = await orchestrator.runExtraction(turns, { bufferKey });
+    assert.equal(retried.status, "completed");
+    assert.equal(
+      (await storage.readAllMemories()).filter((m) => m.frontmatter.category === "preference").length,
+      1,
+      "retry must not duplicate the already-committed preference",
+    );
+    assert.ok(
+      (await storage.readBehaviorSignals(50)).some(
+        (s) => s.memoryId === factId && s.signalType === "preference_affinity",
+      ),
+      "behavior signals must survive retry without relying on re-queue from the deduped fact",
+    );
+    assert.ok(
+      ((await harmonicNodeStoreStatus(memoryDir)).latestNode?.sourceMemoryIds ?? []).includes(factId),
+      "harmonic records must survive retry without relying on re-queue from the deduped fact",
+    );
+  } finally {
+    storage.writeEntity = writeEntity;
+    orchestrator.requestQmdMaintenance = originalQmd;
+    orchPriv.updateTemporalTagIndexes = originalTemporal;
+    try {
+      await orchestrator.destroy();
+    } finally {
+      resetExtractionLlmHealthForTests();
+      await cleanupDir(memoryDir);
+    }
+  }
+});
+
