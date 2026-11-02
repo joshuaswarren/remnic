@@ -880,7 +880,7 @@ export {
   type OfflineSyncSnapshot,
   type OfflineSyncState,
 } from "./offline-sync.js";
-export { embeddingGenerationMembership, divergedEmbeddingGenerationDeferrals } from "./offline-sync-embedding-generation.js";
+export { advanceEmbeddingGenerationMarker, embeddingGenerationMembership, divergedEmbeddingGenerationDeferrals } from "./offline-sync-embedding-generation.js";
 export { EmbeddingIndexCapacityError, EmbeddingIndexFileStore, EmbeddingIndexStorageError, parseEmbeddingIndexDocument, serializeEmbeddingShard, shardEntriesForIndex, shardIndexOf, validateShardMembership } from "./embedding-index-storage.js";
 
 // ---------------------------------------------------------------------------

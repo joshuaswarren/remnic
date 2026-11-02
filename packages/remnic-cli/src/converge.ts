@@ -72,7 +72,7 @@ import {
 } from "./converge-report.js";
 import { type ConvergeWatchOutcome, convergeWatch } from "./converge-watch.js";
 import { parseTokenFileFlag, resolveCredentialChannel } from "./credential-channel.js";
-import { createConvergeStorageIoOpener, handleConvergeTransferResults } from "./converge-capture-lock.js";
+import { createConvergeStorageIoOpener, deleteConvergeFile, handleConvergeTransferResults } from "./converge-capture-lock.js";
 
 export type { ConvergePlanProgressEvent } from "./converge-plan-cache.js";
 export type { ConvergeNamespaceExclusion } from "./converge-namespace-exclusions.js";
@@ -791,7 +791,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
             const filePath = path.join(rootDir, localPath);
             const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
             if (current.sha256 === entry.localSha256) {
-              await io.deleteFile!({ root: rootDir, path: localPath, filePath });
+              await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath });
               deleted = true;
             }
           } catch {
@@ -846,7 +846,7 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
               const filePath = path.join(rootDir, localPath);
               const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
               if (current.sha256 === entry.localSha256) {
-                await io.deleteFile!({ root: rootDir, path: localPath, filePath });
+                await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath });
                 deletedLocal = true;
               }
             } catch {

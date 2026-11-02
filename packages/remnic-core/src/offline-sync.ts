@@ -30,6 +30,7 @@ import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.j
 import {
   applyIncomingEmbeddingGenerations,
   assertEmbeddingGenerationStillIncluded,
+  advanceEmbeddingGenerationMarker,
   computeOmittedEmbeddingGenerationPaths,
   divergedEmbeddingGenerationDeferrals,
   embeddingGenerationMembership,
@@ -2422,7 +2423,9 @@ export async function applyOfflineSyncFileContentChunk(options: {
       };
     }
 
-    await writeSafeFileFromUpload(root, relPath, upload, options.readFile, options.writeFileChunks, mtimeMs);
+    await advanceEmbeddingGenerationMarker(root.abs, embeddingGenerationMembership(relPath), () =>
+      writeSafeFileFromUpload(root, relPath, upload, options.readFile, options.writeFileChunks, mtimeMs),
+    );
     return {
       ...baseResult,
       applied: true,

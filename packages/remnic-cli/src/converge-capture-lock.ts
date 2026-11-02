@@ -1,4 +1,4 @@
-import { resolveConvergeCaptureWriteLockBackoff } from "@remnic/core";
+import { advanceEmbeddingGenerationMarker, embeddingGenerationMembership, resolveConvergeCaptureWriteLockBackoff, type OfflineSyncFileTarget } from "@remnic/core";
 import { isTombstoneBlockedCaptureWriteLockBusy } from "@remnic/core/capture-write-lock-backoff.js";
 import type { ConvergeConfig } from "@remnic/core/types.js";
 
@@ -11,6 +11,11 @@ export function createConvergeStorageIoOpener(
 ): (rootDir: string) => Promise<OfflineStorageIo> {
   const backoff = resolveConvergeCaptureWriteLockBackoff(convergeConfig);
   return (rootDir: string) => createOfflineStorageIo(rootDir, undefined, undefined, backoff, signal);
+}
+
+// Keep this outside the shared IO adapter: generation removal already holds its lock.
+export async function deleteConvergeFile(io: OfflineStorageIo, target: OfflineSyncFileTarget): Promise<void> {
+  await advanceEmbeddingGenerationMarker(target.root, embeddingGenerationMembership(target.path), () => io.deleteFile!(target));
 }
 
 type TransferEntry = { namespace?: string; path?: string };
