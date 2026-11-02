@@ -39,6 +39,7 @@ sections above are maintained by hand and never touched by automation.
 <!-- BEGIN GENERATED CONTRIBUTORS (contributors.yml; do not hand-edit) -->
 
 - [@100menotu001](https://github.com/100menotu001)
+- [@cursoragent](https://github.com/cursoragent)
 - [@dfein38347g](https://github.com/dfein38347g)
 - [@earlvanze](https://github.com/earlvanze)
 - [@Fancyhe1](https://github.com/Fancyhe1)
