@@ -540,6 +540,7 @@ Read [Accessibility](ACCESSIBILITY.md) for useful features, privacy limits, and 
 - [Feature roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1) — current priority order, blockers, and next work.
 - [Issues](https://github.com/joshuaswarren/remnic/issues) — report a bug or request a feature.
 - [Contributing](CONTRIBUTING.md) — how to build Remnic and open a pull request.
+- [Contributors](CONTRIBUTORS.md) — every outside contributor and what they built.
 
 ## Support
 
