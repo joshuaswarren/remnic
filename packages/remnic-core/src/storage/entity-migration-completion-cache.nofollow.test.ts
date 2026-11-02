@@ -7,48 +7,92 @@
  * guard. A planted complete journal makes that path reachable after a
  * missing-id ENOENT.
  *
- * Instrumentation: canary dir mode 000. Any readdir of the external tree
- * surfaces EACCES. The security property is "no throw / no enumeration",
- * not "empty content". Temp roots only — no real user directories.
+ * Instrumentation (deterministic): spawn a plain child (not nested --test —
+ * node skips recursive test runs) with --experimental-test-module-mocks that
+ * wraps node:fs/promises.readdir via mock.module, dynamic-imports the real
+ * EntityMigrationCompletionCache, and records every readdir whose realpath is
+ * the external canary (or whose path is the entities symlink). Assert
+ * externalCount === 0 — not merely completed === false. chmod/EACCES is not
+ * used (false-green on this host).
  *
- * Expected today: RED (EACCES from external readdir).
- * After root nofollow guard: completed === false, no EACCES.
+ * Dynamic import in the probe is intentional: mock.module must install before
+ * the cache module loads fs.promises (module-loading boundary).
+ *
+ * Temp roots only. Expected today: RED (externalCount >= 1).
+ * After root nofollow guard: externalCount === 0 and completed === false.
  */
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import {
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-import { isErrnoCode } from "../utils/errno.js";
 import { ENTITY_CANONICAL_ID_MIGRATION_FILE } from "./entity-canonical-id-references.js";
-import { EntityMigrationCompletionCache } from "./entity-migration-completion-cache.js";
-import { getFingerprint } from "./entity-canonical-id-migration.js";
+
+function findRepoRoot(startDir: string): string {
+  let dir = startDir;
+  for (;;) {
+    if (existsSync(path.join(dir, "packages", "remnic-core", "package.json"))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) {
+      throw new Error(`remnic repo root not found from ${startDir}`);
+    }
+    dir = parent;
+  }
+}
+
+const REPO_ROOT = findRepoRoot(path.dirname(fileURLToPath(import.meta.url)));
+const CACHE_MODULE = path.join(
+  REPO_ROOT,
+  "packages",
+  "remnic-core",
+  "src",
+  "storage",
+  "entity-migration-completion-cache.ts",
+);
+
+type ProbeResult = {
+  completed: boolean | null;
+  err: string | null;
+  externalCount: number;
+  seen: Array<{ raw: string; real: string }>;
+  canaryReal: string;
+};
 
 test("isCompleted must not readdir through a symlinked entities root", async () => {
-  // Root bypasses mode bits; EACCES instrumentation would be meaningless.
-  if (process.getuid?.() === 0) return;
-
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-entities-root-nofollow-"));
   const memoryDir = path.join(root, "memory");
   const canaryDir = path.join(root, "canary-external");
   const entitiesDir = path.join(memoryDir, "entities");
   const stateDir = path.join(memoryDir, "state");
+  const probeFile = path.join(root, "completion-cache-nofollow.probe.mts");
+  const resultFile = path.join(root, "probe-result.json");
 
   try {
-    await mkdir(memoryDir, { recursive: true });
     await mkdir(stateDir, { recursive: true });
     await mkdir(path.join(memoryDir, "config"), { recursive: true });
     await mkdir(canaryDir, { recursive: true });
-    // Distinct external entry so a full fingerprint walk has something to list.
     await writeFile(path.join(canaryDir, "outside-only.md"), "canary external entity body\n");
 
     await symlink(canaryDir, entitiesDir);
     assert.equal(
       (await lstat(entitiesDir)).isSymbolicLink(),
       true,
-      "fixture: entities/ must be a symlink to the external canary",
+      "fixture: entities/ must be a symlink to the external canary directory",
     );
+    const canaryReal = await realpath(canaryDir);
 
     // Regular complete journal — completionFingerprint compare invokes getFingerprint.
     await writeFile(
@@ -61,56 +105,118 @@ test("isCompleted must not readdir through a symlinked entities root", async () 
       }),
     );
 
-    // Instrument the fingerprint readdir seam: lock the external tree.
-    // EACCES is proof the walk crossed the symlink; a root guard never opens it.
-    await chmod(canaryDir, 0o000);
+    // Plain probe script (no nested --test: parent already runs under the test
+    // runner, and node skips recursive test-file execution).
+    // Dynamic import loads cache after mock.module wraps readdir.
+    await writeFile(
+      probeFile,
+      `import { mock } from "node:test";
+import path from "node:path";
+import { writeFile } from "node:fs/promises";
+import { readdir as realReaddir, realpath } from "node:fs/promises";
 
-    const deps = {
-      baseDir: memoryDir,
-      entitiesDir,
-      getEntityMutationVersion: () => 0,
-    };
-    const cache = new EntityMigrationCompletionCache();
+const canaryReal = ${JSON.stringify(canaryReal)};
+const memoryDir = ${JSON.stringify(memoryDir)};
+const entitiesDir = ${JSON.stringify(entitiesDir)};
+const cacheModule = ${JSON.stringify(CACHE_MODULE)};
+const resultFile = ${JSON.stringify(resultFile)};
+const seen = [];
 
-    // Seam probe (documents current leak shape for the parent RED log).
-    // Not a pass condition — the security assert below is.
-    let seamCode: string | undefined;
-    try {
-      await getFingerprint(memoryDir, entitiesDir, () => "0");
-    } catch (err) {
-      seamCode = isErrnoCode(err, "EACCES") ? "EACCES" : isErrnoCode(err, "EPERM") ? "EPERM" : undefined;
-      if (seamCode === undefined) throw err;
+const fsp = await import("node:fs/promises");
+mock.module("node:fs/promises", {
+  namedExports: {
+    ...fsp,
+    readdir: async (p, ...a) => {
+      const raw = path.resolve(String(p));
+      let real = raw;
+      try { real = await realpath(raw); } catch { /* keep raw */ }
+      seen.push({ raw, real });
+      return realReaddir(p, ...a);
+    },
+  },
+});
+
+// Dynamic import: mock.module must wrap fs.promises before the cache loads it.
+const { EntityMigrationCompletionCache } = await import(cacheModule);
+const cache = new EntityMigrationCompletionCache();
+let completed = null;
+let err = null;
+try {
+  completed = await cache.isCompleted({
+    baseDir: memoryDir,
+    entitiesDir,
+    getEntityMutationVersion: () => 0,
+  });
+} catch (e) {
+  err = e && typeof e === "object" && "code" in e ? String(e.code) : String(e);
+}
+const entitiesResolved = path.resolve(entitiesDir);
+const external = seen.filter((s) => s.real === canaryReal || s.raw === entitiesResolved);
+const payload = {
+  completed,
+  err,
+  seen,
+  externalCount: external.length,
+  canaryReal,
+};
+await writeFile(resultFile, JSON.stringify(payload), "utf8");
+console.log(JSON.stringify(payload));
+mock.reset();
+`,
+    );
+
+    const probe = spawnSync(
+      process.execPath,
+      [
+        "--experimental-test-module-mocks",
+        "--import",
+        "tsx",
+        "--conditions=remnic-source",
+        probeFile,
+      ],
+      {
+        encoding: "utf8",
+        cwd: REPO_ROOT,
+        env: {
+          ...process.env,
+          NODE_PATH: path.join(REPO_ROOT, "node_modules"),
+        },
+        timeout: 60_000,
+      },
+    );
+
+    if (probe.error) {
+      assert.fail(`probe failed to start: ${probe.error.message}`);
     }
 
-    let completed: boolean | undefined;
-    let enumerationErr: unknown;
+    let result: ProbeResult;
     try {
-      completed = await cache.isCompleted(deps);
-    } catch (err) {
-      enumerationErr = err;
+      result = JSON.parse(await readFile(resultFile, "utf8")) as ProbeResult;
+    } catch {
+      assert.fail(
+        [
+          "probe did not write result file",
+          `status=${String(probe.status)} signal=${String(probe.signal)}`,
+          `stdout:\n${probe.stdout ?? ""}`,
+          `stderr:\n${probe.stderr ?? ""}`,
+        ].join("\n"),
+      );
+      return;
     }
 
     assert.equal(
-      enumerationErr,
-      undefined,
+      result.externalCount,
+      0,
       [
-        "isCompleted must refuse a symlinked entities root before fingerprintEntityEntries readdir.",
-        "EACCES/EPERM on the locked canary means the external tree was enumerated.",
-        seamCode ? `getFingerprint seam observed ${seamCode} on the same fixture.` : "getFingerprint seam did not throw.",
-        enumerationErr instanceof Error
-          ? `isCompleted threw: ${(enumerationErr as NodeJS.ErrnoException).code ?? enumerationErr.message}`
-          : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
+        "isCompleted must not readdir a symlinked entities root (external canary).",
+        `externalCount=${result.externalCount} canaryReal=${result.canaryReal}`,
+        `seen=${JSON.stringify(result.seen)}`,
+        result.err ? `isCompleted err=${result.err}` : `completed=${String(result.completed)}`,
+      ].join(" "),
     );
-    assert.equal(completed, false, "untrusted entities root must not report migration complete");
+    assert.equal(result.err, null, "untrusted root must fail closed without throwing through external IO");
+    assert.equal(result.completed, false, "untrusted entities root must not report migration complete");
   } finally {
-    try {
-      await chmod(canaryDir, 0o700);
-    } catch {
-      // best-effort so rm can collect the tree
-    }
     await rm(root, { recursive: true, force: true });
   }
 });
