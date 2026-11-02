@@ -3714,32 +3714,36 @@ test("applyOfflineSyncSnapshot consumes readIncomingFile for records without inl
   }
 });
 
-test("buildOfflineSyncSnapshot skips a file that vanishes during the walk", async () => {
+test("buildOfflineSyncSnapshot fails closed when a file vanishes during digest", async () => {
   const root = await tempDir("remnic-offline-vanish");
   try {
     await write(root, "facts/keep.md", "keep");
     await write(root, "facts/gone.md", "gone");
-    const snapshot = await buildOfflineSyncSnapshot({
-      root,
-      sourceId: "local",
-      includeContent: false,
-      readFileDigest: async ({ path: relPath, filePath }) => {
-        if (relPath.endsWith("gone.md")) {
-          await rm(filePath);
-          throw Object.assign(new Error("ENOENT: vanished"), { code: "ENOENT" });
-        }
-        const content = await readFile(filePath);
-        return {
-          sha256: createHash("sha256").update(content).digest("hex"),
-          bytes: content.length,
-        };
-      },
-    });
-    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/keep.md"]);
+    await assert.rejects(
+      () => buildOfflineSyncSnapshot({
+        root,
+        sourceId: "local",
+        includeContent: false,
+        readFileDigest: async ({ path: relPath, filePath }) => {
+          if (relPath.endsWith("gone.md")) {
+            await rm(filePath);
+            throw Object.assign(new Error("ENOENT: vanished"), { code: "ENOENT" });
+          }
+          const content = await readFile(filePath);
+          return {
+            sha256: createHash("sha256").update(content).digest("hex"),
+            bytes: content.length,
+          };
+        },
+      }),
+      /census race|vanished during digest|retry the snapshot/i,
+    );
+    assert.equal(await readUtf8(root, "facts/keep.md"), "keep");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
+
 
 test("base snapshot fails when a base-known file vanishes before the fast-base stat", async () => {
   const root = await tempDir("remnic-offline-base-vanish");
@@ -3770,7 +3774,7 @@ test("base snapshot fails when a base-known file vanishes before the fast-base s
   }
 });
 
-test("base snapshot omits a brand-new file that vanishes during the walk", async () => {
+test("base snapshot omits a brand-new file that vanishes before the fast-base stat", async () => {
   const root = await tempDir("remnic-offline-new-vanish");
   try {
     await write(root, "facts/keep.md", "keep");
@@ -3798,6 +3802,7 @@ test("base snapshot omits a brand-new file that vanishes during the walk", async
   }
 });
 
+
 test("snapshot fails when an embedding generation member vanishes during the walk", async () => {
   const root = await tempDir("remnic-offline-shard-vanish");
   try {
@@ -3822,3 +3827,193 @@ test("snapshot fails when an embedding generation member vanishes during the wal
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a transient snapshot omission must not emit a delete for a shared-base file", async () => {
+  const root = await tempDir("remnic-offline-uncertain-delete");
+  try {
+    await write(root, "facts/keep.md", "keep");
+    await write(root, "facts/race.md", "race-v1");
+    const base = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+    });
+    // Live census fail-closes on digest ENOENT. A stale/incomplete currentFiles
+    // list is still possible from an older client cache — that path must not
+    // emit a confirmed delete when the file is back on disk.
+    const incompleteFiles = base.files.filter((file) => file.path !== "facts/race.md");
+    assert.deepEqual(
+      incompleteFiles.map((file) => file.path),
+      ["facts/keep.md"],
+      "fixture: the race path is absent from the incomplete currentFiles view",
+    );
+    await write(root, "facts/race.md", "race-v1");
+    const changeset = await buildOfflineSyncChangesetFromSnapshot({
+      root,
+      sourceId: "local",
+      currentFiles: incompleteFiles,
+      baseFiles: base.files,
+    });
+    assert.equal(
+      changeset.changes.filter((change) => change.path === "facts/race.md" && change.type === "delete").length,
+      0,
+      "an unreadable/recreated path must not become a confirmed delete against the shared base",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("apply must not overwrite a recreated local file omitted from the local census", async () => {
+  const root = await tempDir("remnic-offline-uncertain-overwrite");
+  try {
+    const recreated = "recreated local bytes";
+    const incoming = "incoming remote bytes";
+    await write(root, "facts/race.md", recreated);
+    const incomingSha = createHash("sha256").update(incoming).digest("hex");
+    // Local census omitted the recreated path (stale/racy currentFiles).
+    // Incoming is base-less, so the apply path would treat it as a pure create.
+    const result = await applyOfflineSyncSnapshot({
+      root,
+      currentFiles: [],
+      baseFiles: [],
+      snapshot: {
+        format: OFFLINE_SYNC_SNAPSHOT_FORMAT,
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "remote",
+        includeTranscripts: false,
+        files: [{
+          path: "facts/race.md",
+          sha256: incomingSha,
+          bytes: Buffer.byteLength(incoming),
+          mtimeMs: 2,
+          contentBase64: Buffer.from(incoming).toString("base64"),
+        }],
+      },
+    });
+    assert.equal(
+      await readUtf8(root, "facts/race.md"),
+      recreated,
+      "recreated local content must survive when the local census omitted it",
+    );
+    assert.equal(result.upserted, 0, "must not publish over an uncertain local path");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("changeset apply must not overwrite a recreated local file omitted by controlled digest census", async () => {
+  // Public applyOfflineSyncChangeset builds local currentFiles via
+  // buildOfflineSyncSnapshotForPaths when currentFiles is omitted. A controlled
+  // digest that recreates local bytes then throws ENOENT must fail closed at
+  // the shared census boundary — never export confirmed absence and overwrite.
+  const root = await tempDir("remnic-offline-changeset-uncertain-overwrite");
+  try {
+    const recreated = "recreated local bytes";
+    const incoming = "incoming remote bytes";
+    const incomingSha = createHash("sha256").update(incoming).digest("hex");
+    await write(root, "facts/race.md", recreated);
+
+    await assert.rejects(
+      () => applyOfflineSyncChangeset({
+        root,
+        // No currentFiles: exercise the public snapshotForPaths census path.
+        returnCurrentFiles: false,
+        writeConflictCopies: false,
+        readFileDigest: async ({ path: relPath, filePath }) => {
+          if (relPath === "facts/race.md") {
+            await writeFile(filePath, recreated);
+            throw Object.assign(new Error("ENOENT: vanished during census"), { code: "ENOENT" });
+          }
+          const content = await readFile(filePath);
+          return {
+            sha256: createHash("sha256").update(content).digest("hex"),
+            bytes: content.length,
+          };
+        },
+        changeset: {
+          format: "remnic.offline-sync.changeset.v1",
+          schemaVersion: 1,
+          createdAt: new Date().toISOString(),
+          sourceId: "remote",
+          includeTranscripts: false,
+          changes: [{
+            type: "upsert",
+            path: "facts/race.md",
+            file: {
+              path: "facts/race.md",
+              sha256: incomingSha,
+              bytes: Buffer.byteLength(incoming),
+              mtimeMs: 2,
+              contentBase64: Buffer.from(incoming).toString("base64"),
+            },
+          }],
+        },
+      }),
+      /census race|vanished during digest|retry the snapshot/i,
+    );
+
+    assert.equal(
+      await readUtf8(root, "facts/race.md"),
+      recreated,
+      "recreated local content must survive a fail-closed public changeset census race",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sender snapshot omission from digest race must not delete receiver shared-base file", async () => {
+  // Root premise: sender digest race must not export an apparently-complete
+  // snapshot that omits the path. Fail closed at the shared census boundary so
+  // no consumer can assign confirmed absence. Sender and receiver bytes stay.
+  const senderRoot = await tempDir("remnic-offline-sender-uncertain-omit");
+  const receiverRoot = await tempDir("remnic-offline-receiver-shared-base");
+  try {
+    const good = "unchanged good fact bytes";
+    const keep = "keep peer";
+    await write(senderRoot, "facts/race.md", good);
+    await write(senderRoot, "facts/keep.md", keep);
+    await write(receiverRoot, "facts/race.md", good);
+    await write(receiverRoot, "facts/keep.md", keep);
+
+    const sharedBase = await buildOfflineSyncSnapshot({
+      root: receiverRoot,
+      sourceId: "shared",
+      includeContent: false,
+    });
+    assert.ok(
+      sharedBase.files.some((file) => file.path === "facts/race.md"),
+      "fixture: shared base includes the good race path",
+    );
+
+    await assert.rejects(
+      () => buildOfflineSyncSnapshot({
+        root: senderRoot,
+        sourceId: "sender",
+        includeContent: false,
+        readFileDigest: async ({ path: relPath, filePath }) => {
+          if (relPath === "facts/race.md") {
+            await writeFile(filePath, good);
+            throw Object.assign(new Error("ENOENT: vanished during sender census"), { code: "ENOENT" });
+          }
+          const content = await readFile(filePath);
+          return {
+            sha256: createHash("sha256").update(content).digest("hex"),
+            bytes: content.length,
+          };
+        },
+      }),
+      /census race|vanished during digest|retry the snapshot/i,
+    );
+
+    assert.equal(await readUtf8(senderRoot, "facts/race.md"), good, "sender bytes preserved");
+    assert.equal(await readUtf8(receiverRoot, "facts/race.md"), good, "receiver bytes preserved without a false snapshot");
+    assert.equal(await readUtf8(receiverRoot, "facts/keep.md"), keep);
+  } finally {
+    await rm(senderRoot, { recursive: true, force: true });
+    await rm(receiverRoot, { recursive: true, force: true });
+  }
+});
+

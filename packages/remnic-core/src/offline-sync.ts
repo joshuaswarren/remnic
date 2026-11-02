@@ -70,6 +70,7 @@ import {
   setSafeFileMtime,
   assertNonNegativeFinite,
   assertOfflineSyncMtimeMs,
+  offlineSyncRegularFilePresent,
   OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS,
 } from "./offline-sync-file-io.js";
 import { CENSUS_MAX_MTIME_MS, isSha256Hex } from "./census-validation.js";
@@ -793,19 +794,35 @@ async function canReuseFastBaseFileStateFromDisk(
 
 async function readOfflineSyncFileRecord(
   options: OfflineSyncFileRecordOptions,
-): Promise<OfflineSyncFileRecord | null> {
+): Promise<OfflineSyncFileRecord> {
   try {
     return await readPresentOfflineSyncFileRecord(options);
   } catch (error) {
-    // A file removed between readdir and stat/hash is a race, not a corrupt corpus.
-    if (isNotFoundError(error)) return null;
+    // Caller already observed the path (readdir/lstat). Digest ENOENT is an
+    // ambiguous race: exporting a silent omission assigns confirmed absence to
+    // every consumer (full snapshot apply + changeset apply). Fail closed.
+    if (isNotFoundError(error)) {
+      if (embeddingGenerationMembership(options.relPath) !== null) {
+        throw new Error(
+          `offline sync embedding generation member vanished during snapshot walk: ${options.relPath}`,
+        );
+      }
+      throw offlineSyncCensusRaceError(options.relPath, error);
+    }
     throw error;
   }
 }
 
-// A vanished path may only be omitted when nothing can misread the gap:
-// embedding generations travel and replace as one unit (issue #3148), and a
-// base-known file omitted here would fabricate a delete in
+function offlineSyncCensusRaceError(relPath: string, cause?: unknown): Error {
+  return new Error(
+    `offline sync census race: ${relPath} vanished during digest; retry the snapshot`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+// Pre-stat vanish (readdir then lstat/stat ENOENT) may omit only when nothing
+// can misread the gap: embedding generations travel as one unit (issue #3148),
+// and a base-known file omitted here would fabricate a delete in
 // buildOfflineSyncChangesetFromSnapshot.
 function assertSnapshotVanishIsSafe(relPath: string, base: ReadonlyMap<string, unknown> | undefined): void {
   if (embeddingGenerationMembership(relPath) !== null) {
@@ -815,6 +832,7 @@ function assertSnapshotVanishIsSafe(relPath: string, base: ReadonlyMap<string, u
     throw new Error(`offline sync snapshot base file vanished during walk: ${relPath}`);
   }
 }
+
 
 async function readPresentOfflineSyncFileRecord(
   options: OfflineSyncFileRecordOptions,
@@ -923,7 +941,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         path: relPosix,
         filePath: abs,
       })) continue;
-      const record = await readOfflineSyncFileRecord({
+      yield await readOfflineSyncFileRecord({
         root,
         relPath: relPosix,
         filePath: abs,
@@ -932,8 +950,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
         readFileDigest: options.readFileDigest,
         signal: options.signal,
       });
-      if (record) yield record;
-      else assertSnapshotVanishIsSafe(relPosix, undefined);
+
     }
   }
 
@@ -1094,8 +1111,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       try {
         st = await stat(abs);
       } catch (error) {
-        // Same race readOfflineSyncFileRecord tolerates, unless omitting the
-        // path could fabricate a delete or downgrade a generation.
+        // Pre-stat vanish after readdir: omit only when assertSnapshotVanishIsSafe allows.
         if (isNotFoundError(error)) {
           assertSnapshotVanishIsSafe(relPosix, base);
           continue;
@@ -1112,7 +1128,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         files.push(baseEntry);
         continue;
       }
-      const record = await readOfflineSyncFileRecord({
+      files.push(await readOfflineSyncFileRecord({
         root,
         relPath: relPosix,
         filePath: abs,
@@ -1120,9 +1136,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
         signal: options.signal,
-      });
-      if (record) files.push(record);
-      else assertSnapshotVanishIsSafe(relPosix, base);
+      }));
     }
   }
 
@@ -1208,7 +1222,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
     })) {
       throw new Error(`offline sync snapshot path is excluded: ${relPath}`);
     }
-    const record = await readOfflineSyncFileRecord({
+    files.push(await readOfflineSyncFileRecord({
       root,
       relPath,
       filePath,
@@ -1216,9 +1230,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
       readFile: options.readFile,
       readFileDigest: options.readFileDigest,
       signal: options.signal,
-    });
-    if (record) files.push(record);
-    else assertSnapshotVanishIsSafe(relPath, undefined);
+    }));
   }
   throwIfOfflineSyncAborted(options.signal);
 
@@ -1414,6 +1426,11 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
   excludeNodeLocalState?: boolean;
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
 }): Promise<OfflineSyncChangeset> {
+  const root = await prepareSafeArchiveRoot(
+    path.resolve(options.root),
+    "buildOfflineSyncChangesetFromSnapshot",
+    "root",
+  );
   const includeTranscripts = options.includeTranscripts !== false;
   const excludedPaths = new Set(
     (options.excludePaths ?? []).map((relPath) => normalizeRelativePath(relPath, "excludePaths[]")),
@@ -1467,6 +1484,8 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
       continue;
     }
     if (!currentEntry && baseEntry) {
+      // Census miss is not confirmed delete — recheck disk (transient ENOENT / recreate).
+      if (await offlineSyncRegularFilePresent(root, relPath)) continue;
       const mtimeMs = deletionMtimeByPath?.get(relPath);
       changes.push({
         type: "delete",
@@ -1808,6 +1827,12 @@ export async function applyOfflineSyncSnapshot(options: {
         continue;
       }
       if (!currentEntry && !base) {
+        // Census miss with on-disk file: uncertain local presence, do not overwrite.
+        if (await offlineSyncRegularFilePresent(root, relPath)) {
+          pendingLocal += 1;
+          skipped += 1;
+          continue;
+        }
         await writeSafeFile(root, relPath, requiredBuffer(incomingBuffers, relPath), options.writeFile, incoming.mtimeMs);
         nextBase.set(relPath, toFileState(incoming));
         upserted += 1;

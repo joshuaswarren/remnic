@@ -124,3 +124,18 @@ export async function setSafeFileMtime(
   await utimes(target, mtime, mtime);
   return true;
 }
+
+/** True when a regular (non-symlink) file exists at the archive-relative path. */
+export async function offlineSyncRegularFilePresent(
+  root: SafeArchiveRoot,
+  relPath: string,
+): Promise<boolean> {
+  const filePath = await resolveSafeArchiveTarget(root, relPath);
+  const st = await lstat(filePath).catch((error: NodeJS.ErrnoException) => {
+    // SAFETY: Node fs errors carry `code`; only ENOENT means absent, all other
+    // errno codes must propagate so census uncertainty fails closed.
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  return Boolean(st && !st.isSymbolicLink() && st.isFile());
+}
