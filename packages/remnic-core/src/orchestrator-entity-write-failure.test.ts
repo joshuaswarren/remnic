@@ -5,7 +5,7 @@ import test from "node:test";
 import { SmartBuffer } from "./buffer.js";
 import { resetExtractionLlmHealthForTests } from "./extraction-llm-health.js";
 import { Orchestrator } from "./orchestrator.js";
-import { ContentHashIndex, type StorageManager } from "./storage.js";
+import { ContentHashIndex } from "./storage.js";
 import {
   cleanupDir,
   harmonicNodeStoreStatus,
@@ -16,6 +16,7 @@ import {
 } from "./testing/orchestrator-lite.js";
 import type { ExtractionResult } from "./types.js";
 
+/** Owner contract for the private Orchestrator temporal/tag batch hook. */
 const FACT = "Project Alpha uses a queue for background processing.";
 
 for (const includeFact of [false, true]) {
@@ -68,7 +69,7 @@ for (const includeFact of [false, true]) {
 
       await assert.rejects(
         orchestrator.runExtraction(turns, options),
-        (error: unknown) => error === writeFailure,
+        (error: Error) => error === writeFailure,
         "the original entity I/O failure must reach the caller",
       );
       assert.equal(entityWriteAttempts, 1, "the failure must come from the real entity persistence path");
@@ -144,14 +145,9 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
   const storage = await orchestrator.getStorageForNamespace();
   const writeEntity = storage.writeEntity.bind(storage);
   const temporalIdBatches: string[][] = [];
-  const orchPriv = orchestrator as unknown as {
-    updateTemporalTagIndexes: (
-      target: StorageManager,
-      persistedIds: string[],
-    ) => Promise<void>;
-  };
-  const originalTemporal = orchPriv.updateTemporalTagIndexes.bind(orchestrator);
-  orchPriv.updateTemporalTagIndexes = async (target, persistedIds) => {
+  // Bracket access is TypeScript's typed escape hatch for the private method; the spy only wraps and restores it.
+  const originalTemporal = orchestrator["updateTemporalTagIndexes"].bind(orchestrator);
+  orchestrator["updateTemporalTagIndexes"] = async (target, persistedIds) => {
     temporalIdBatches.push([...persistedIds]);
     return originalTemporal(target, persistedIds);
   };
@@ -198,7 +194,7 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
 
     await assert.rejects(
       orchestrator.runExtraction(turns, { bufferKey }),
-      (error: unknown) => error === writeFailure,
+      (error: Error) => error === writeFailure,
       "entity I/O failure must still reach the caller",
     );
 
@@ -259,7 +255,7 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
   } finally {
     storage.writeEntity = writeEntity;
     orchestrator.requestQmdMaintenance = originalQmd;
-    orchPriv.updateTemporalTagIndexes = originalTemporal;
+    orchestrator["updateTemporalTagIndexes"] = originalTemporal;
     try {
       await orchestrator.destroy();
     } finally {
