@@ -25,6 +25,8 @@ Part of the Omarchy on Apple Silicon ecosystem:
 - [omarchy-inference-fleet](https://github.com/joshuaswarren/omarchy-inference-fleet) — reproducible, pinned single-node MLX inference baselines.
 - Platform upstream: [omarchy-mac](https://github.com/omacom/omarchy-mac) — Omarchy on Apple Silicon Macs.
 
+<!-- end The projects -->
+
 - **Your files, your machine.** Memory records are plain markdown files with YAML frontmatter on your disk. Remnic also keeps local JSON and SQLite state; it does not require an external database service. `cat`, `grep`, edit, and version-control your memory files with the tools you already use.
 - **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, Factory Droid, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
 - **Automatic extraction and recall.** Remnic watches conversations, distills durable knowledge, and injects the right context back when it is needed.
