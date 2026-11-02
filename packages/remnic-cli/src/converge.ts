@@ -789,11 +789,8 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
           try {
             const io = await openStorageIo(rootDir);
             const filePath = path.join(rootDir, localPath);
-            const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
-            if (current.sha256 === entry.localSha256) {
-              await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath });
-              deleted = true;
-            }
+            await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath }, entry.localSha256);
+            deleted = true;
           } catch {
             deleted = false;
           }
@@ -844,11 +841,8 @@ export async function executeConvergeApply(options: ConvergeApplyOptions = {}): 
             try {
               const io = await openStorageIo(rootDir);
               const filePath = path.join(rootDir, localPath);
-              const current = await io.readFileDigest({ root: rootDir, path: localPath, filePath });
-              if (current.sha256 === entry.localSha256) {
-                await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath });
-                deletedLocal = true;
-              }
+              await deleteConvergeFile(io, { root: rootDir, path: localPath, filePath }, entry.localSha256);
+              deletedLocal = true;
             } catch {
               deletedLocal = false;
             }

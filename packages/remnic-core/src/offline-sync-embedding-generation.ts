@@ -125,14 +125,19 @@ export async function advanceEmbeddingGenerationMarker<T>(
   rootAbs: string,
   membership: EmbeddingGenerationMembership | null,
   write: () => Promise<T>,
+  validate?: () => Promise<void>,
 ): Promise<T> {
-  if (!membership) return write();
+  if (!membership) {
+    await validate?.();
+    return write();
+  }
   const root = await prepareSafeArchiveRoot(rootAbs, "advanceEmbeddingGenerationMarker", "root");
   const stateDirRel = membership.shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length);
   const stateDirAbs = await resolveSafeArchiveTarget(root, stateDirRel);
   const lockPath = embeddingGenerationLockPath(stateDirAbs);
   return await withEmbeddingGenerationLock(stateDirAbs, async (section) => {
     const markerAbs = await resolveSafeArchiveTarget(root, `${stateDirRel}/${GENERATION_MARKER_BASENAME}`);
+    await validate?.();
     await assertEmbeddingGenerationLockHeld(lockPath, section);
     await beginGenerationMarker(markerAbs);
     await assertEmbeddingGenerationLockHeld(lockPath, section);

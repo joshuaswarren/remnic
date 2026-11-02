@@ -14,8 +14,21 @@ export function createConvergeStorageIoOpener(
 }
 
 // Keep this outside the shared IO adapter: generation removal already holds its lock.
-export async function deleteConvergeFile(io: OfflineStorageIo, target: OfflineSyncFileTarget): Promise<void> {
-  await advanceEmbeddingGenerationMarker(target.root, embeddingGenerationMembership(target.path), () => io.deleteFile!(target));
+export async function deleteConvergeFile(
+  io: OfflineStorageIo,
+  target: OfflineSyncFileTarget,
+  expectedSha256: string,
+): Promise<void> {
+  await advanceEmbeddingGenerationMarker(
+    target.root,
+    embeddingGenerationMembership(target.path),
+    () => io.deleteFile!(target),
+    async () => {
+      if ((await io.readFileDigest(target)).sha256 !== expectedSha256) {
+        throw new Error(`converge file changed before deletion: ${target.path}`);
+      }
+    },
+  );
 }
 
 type TransferEntry = { namespace?: string; path?: string };
