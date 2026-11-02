@@ -5805,6 +5805,15 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
     ? new FileCalendarSource(config.briefing.calendarSource)
     : undefined;
 
+  // Read before buildBriefing: it drains correction notifications at most
+  // once, so a deadline during this read must not lose them.
+  // Opt-in matched place names (issue #2925): same gate + section the
+  // access service appends, so CLI and server briefings stay identical.
+  const locationSection =
+    includeLocation && locationTaggingEnabled(config.location)
+      ? await briefingLocationSection(storage.dir, window.from.toISOString(), config.location)
+      : undefined;
+
   const result = await buildBriefing({
     storage,
     abortSignal,
@@ -5825,18 +5834,10 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
       : orchestrator.briefingChainFollowupGenerator,
   });
 
-  // Opt-in matched place names (issue #2925): same gate + section the
-  // access service appends, so CLI and server briefings stay identical.
-  if (includeLocation && locationTaggingEnabled(config.location)) {
-    const section = await briefingLocationSection(
-      storage.dir,
-      window.from.toISOString(),
-      config.location,
-    );
-    if (section) {
-      result.markdown += `\n\n${section}\n`;
-      result.json = { ...result.json, locationContext: section };
-    }
+  abortSignal.throwIfAborted();
+  if (locationSection) {
+    result.markdown += `\n\n${locationSection}\n`;
+    result.json = { ...result.json, locationContext: locationSection };
   }
   abortSignal.throwIfAborted();
 
