@@ -106,4 +106,7 @@ export interface ExtractionPersistDeps {
    */
   invalidateGraphEdgeCache?: (storage: StorageManager) => void;
   updateTemporalTagIndexes: (storage: StorageManager, persistedIds: string[]) => Promise<void>;
+  /** Schedule QMD reindex after partial durable writes that throw out of persist. */
+  requestQmdMaintenance: () => void;
+
 }

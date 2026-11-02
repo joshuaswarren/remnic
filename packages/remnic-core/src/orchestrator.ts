@@ -865,6 +865,7 @@ export class Orchestrator {
         invalidateGraphEdgeCache: (storage) => this.graphIndexFor(storage).invalidateEdgeCache(),
         updateTemporalTagIndexes: (storage, persistedIds) =>
           this.updateTemporalTagIndexes(storage, persistedIds),
+        requestQmdMaintenance: () => this.requestQmdMaintenance(),
       });
     }
     return this._extractionPersistCoordinator;
