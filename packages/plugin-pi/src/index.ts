@@ -19,6 +19,7 @@ import {
   toObserveMessage,
 } from "./messages.js";
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
+import { createMcpRegistration } from "./mcp-registration.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -151,6 +152,11 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
     // written during load and flush them once the runtime is live (the first
     // session_start). COS-487.
     const loadPhase = createLoadPhaseEntryQueue(pi);
+    const ensureMcpTools = createMcpRegistration((registered) =>
+      config.mcpToolsEnabled && config.authToken
+        ? registerMcpTools(pi, client, config, recallTimeoutBreaker, registered, loadPhase.append)
+        : Promise.resolve(true),
+    );
     pi.on("session_start", async (_event, ctx) => {
       loadPhase.flush();
       const session = snapshotPiContext(ctx, { includeSessionHistory: true });
@@ -302,10 +308,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       };
     });
 
-    registerCommands(pi, client, config, recallTimeoutBreaker);
-    if (config.mcpToolsEnabled && config.authToken) {
-      await registerMcpTools(pi, client, config, recallTimeoutBreaker, loadPhase.append);
-    }
+    registerCommands(pi, client, config, recallTimeoutBreaker, ensureMcpTools);
+    await ensureMcpTools();
     loadPhase.markLoaded();
   };
 }
@@ -318,7 +322,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
  */
 export interface StateEntryData {
   level: "info" | "warning" | "error";
-  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED" | "NAMESPACE_NOT_WRITABLE" | "NAMESPACE_OK" | "RECALL_TIMEOUT_TRIP";
+  code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_REGISTER_FAILED" | "MCP_TOOLS_FILTERED" | "NAMESPACE_NOT_WRITABLE" | "NAMESPACE_OK" | "RECALL_TIMEOUT_TRIP";
   message: string;
   error?: string;
   observedToolNames?: string[];
@@ -374,6 +378,7 @@ function registerCommands(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  ensureMcpTools: () => Promise<void>,
 ): void {
   pi.registerCommand("remnic-status", {
     description: "Check Remnic daemon status",
@@ -383,6 +388,7 @@ function registerCommands(
       // The daemon responded (any HTTP result), so clear any stale cooldown a
       // prior timeout left on the shared client (cursor review).
       client.markReachable();
+      if (health.ok) await ensureMcpTools();
       session.notify(`Remnic ${health.ok ? "healthy" : "unhealthy"} at ${config.remnicDaemonUrl}`, health.ok ? "success" : "warning");
     }),
   });
@@ -477,8 +483,9 @@ async function registerMcpTools(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  registered: Set<string>,
   appendEntry: AppendEntryFn = (customType, data) => pi.appendEntry(customType, data),
-): Promise<void> {
+): Promise<boolean> {
   let tools: McpTool[] = [];
   // A transient failure at session start used to silently register zero
   // tools for the whole session (recall kept working, so the session looked
@@ -505,8 +512,8 @@ async function registerMcpTools(
     // exhausted the budget and the retry never started.
     const reason = lastError === undefined ? "no attempt completed" : errorMessage(lastError);
     const message =
-      `Remnic MCP tools/list failed (${reason}) — no Remnic tools registered for this session. ` +
-      "Resolve the reported error, then restart the session (tool registration runs at extension load; /remnic-status checks health but does not re-register).";
+      `Remnic MCP tools/list failed (${reason}). ` +
+      "Resolve the reported error, then run /remnic-status to retry missing tool registrations.";
     console.warn(`[remnic] ${message}`);
     appendEntry(STATE_CUSTOM_TYPE, {
       level: "warning",
@@ -514,9 +521,9 @@ async function registerMcpTools(
       message,
       error: reason,
     });
-    return;
+    return false;
   }
-  let registeredCount = 0;
+  let allRegistered = true;
   const seenPiToolNames = new Set<string>();
   for (const tool of tools) {
     const match = matchRemnicMcpToolName(tool.name);
@@ -525,8 +532,8 @@ async function registerMcpTools(
     // register the first occurrence only.
     if (seenPiToolNames.has(match.piToolName)) continue;
     seenPiToolNames.add(match.piToolName);
-    registeredCount++;
-    pi.registerTool({
+    if (registered.has(match.piToolName)) continue;
+    const definition = {
       name: match.piToolName,
       label: match.serverToolName,
       description: tool.description ?? `Call ${tool.name}`,
@@ -570,9 +577,18 @@ async function registerMcpTools(
           details: result,
         };
       },
-    });
+    };
+    try {
+      pi.registerTool(definition);
+      registered.add(match.piToolName);
+    } catch (err) {
+      allRegistered = false;
+      const message = `Remnic MCP tool ${match.piToolName} registration failed: ${errorMessage(err)}. Run /remnic-status to retry.`;
+      console.warn(`[remnic] ${message}`);
+      appendEntry(STATE_CUSTOM_TYPE, { level: "warning", code: "MCP_TOOLS_REGISTER_FAILED", message });
+    }
   }
-  if (tools.length > 0 && registeredCount === 0) {
+  if (tools.length > 0 && seenPiToolNames.size === 0) {
     const observedNames = tools.map((tool) => tool.name).filter(isString);
     const observed = observedNames.slice(0, 10).join(", ");
     const message =
@@ -587,6 +603,7 @@ async function registerMcpTools(
       observedToolNames: observedNames,
     });
   }
+  return allRegistered;
 }
 
 /** Plain JSON Schema: Pi validates tool parameters as plain JSON Schema. */
