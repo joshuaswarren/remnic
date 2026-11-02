@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- The Pi plugin's `session_start` no longer blocks on the daemon health probe. The startup probe chain (health → version check → namespace preflight) now runs in the background, so process startup and extension reloads no longer stall on the daemon round trip. The first turn's recall awaits the in-flight probe (bounded by the smaller of `startupRequestTimeoutMs` and the turn budget) before deciding to recall, so a daemon the probe just found unreachable is skipped instead of consuming the full turn budget. Reachability, status, and namespace-preflight behavior are unchanged (#3273).
+
 ## [v10.0.41] — 2026-10-30
 
 ### Fixes
