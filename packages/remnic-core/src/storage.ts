@@ -17,6 +17,7 @@ import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
 import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
 import { isAbortError, raceAbort } from "./abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "./corpus-read-cancellation.js";
+import { scopedCaptureWriteLockLimits } from "./capture-write-lock-scope.js";
 import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-search.js";
 import path from "node:path";
 import { resolveSafeStoragePath } from "./storage-paths.js";
@@ -3241,7 +3242,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
    * resolves to the legacy short bounds instead of the converge deadline.
    */
   private captureLockLimitSource(): ContentHashIndexLockOptions | undefined {
-    const options = this.factHashIndexLockOptions;
+    const options = { ...this.factHashIndexLockOptions, ...scopedCaptureWriteLockLimits(this) };
     const keys = ["captureWriteLockInitialDelayMs", "captureWriteLockMaxDelayMs", "captureWriteLockDeadlineMs", "captureWriteLockSignal"] as const;
     return keys.some((key) => options[key] !== undefined) ? options : undefined;
   }
