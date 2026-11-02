@@ -2,7 +2,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { RemnicClient } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
-import type { PiApi, PiContextSnapshot, DaemonProbeResult } from "./index.js";
+import type { PiApi, PiContextSnapshot, DaemonProbeResult, StateEntryData } from "./index.js";
 import type { RecallTimeoutBreaker } from "./recall-timeout-breaker.js";
 
 // The index.ts-local helpers the startup chain depends on, threaded in as
@@ -14,7 +14,7 @@ export type StartupProbeDeps = {
   statusLabel: (probe: DaemonProbeResult, namespace: string | undefined) => string;
   recallDisabledStatus: string;
   /** Append a persistent `remnic_state` entry; the chain owns the preflight payloads. */
-  appendStateEntry: (data: Record<string, unknown>) => void;
+  appendStateEntry: (data: StateEntryData) => void;
   errorText: (cause: unknown) => string;
 };
 

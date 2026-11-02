@@ -2634,6 +2634,7 @@ test("before_agent_start awaits the in-flight startup probe before a first-turn 
   assert.equal(probeResolvedAt, null, "the startup probe is still in flight right after session_start returns");
 
   // emit resolves the handler's return value: the injected { systemPrompt } (or undefined).
+  // SAFETY: before_agent_start returns { systemPrompt } when recall injects context; assertion below reads only that field.
   const result = await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
 
   assert.ok(probeResolvedAt !== null, "the startup probe resolved");
@@ -2767,7 +2768,7 @@ test("a superseded startup probe cannot trip the breaker or override a newer suc
   t.after(() => { globalThis.fetch = originalFetch; });
 
   const { pi, emit } = makePiHarness();
-  (pi as any).appendEntry = (_type: string, data: unknown) => { entries.push(data); };
+  pi.appendEntry = (_type, data) => { entries.push(data); };
   const extension = createRemnicPiExtension({
     config: {
       ...baseConfig(),
@@ -2824,7 +2825,7 @@ test("session_shutdown before a slow probe settles suppresses its status and pre
   t.after(() => { globalThis.fetch = originalFetch; });
 
   const { pi, emit } = makePiHarness();
-  (pi as any).appendEntry = (_type: string, data: unknown) => { entries.push(data); };
+  pi.appendEntry = (_type, data) => { entries.push(data); };
   const extension = createRemnicPiExtension({
     config: {
       ...baseConfig(),
@@ -2879,7 +2880,7 @@ test("a preflight response released after session_shutdown publishes no entry or
   t.after(() => { globalThis.fetch = originalFetch; });
 
   const { pi, emit } = makePiHarness();
-  (pi as any).appendEntry = (_type: string, data: unknown) => { entries.push(data); };
+  pi.appendEntry = (_type, data) => { entries.push(data); };
   const extension = createRemnicPiExtension({
     config: {
       ...baseConfig(),

@@ -339,9 +339,17 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
 export interface StateEntryData {
   level: "info" | "warning" | "error";
   code: "MCP_TOOLS_LIST_FAILED" | "MCP_TOOLS_FILTERED" | "NAMESPACE_NOT_WRITABLE" | "NAMESPACE_OK" | "RECALL_TIMEOUT_TRIP";
-  message: string;
+  /** Omitted only by the silent NAMESPACE_OK heartbeat. */
+  message?: string;
   error?: string;
   observedToolNames?: string[];
+  namespace?: string;
+  reason?: string;
+  persistent?: boolean;
+  recordedAt?: string;
+  threshold?: number;
+  window?: number;
+  disabledAt?: string;
 }
 type AppendEntryFn = (customType: string, data: StateEntryData) => void;
 
