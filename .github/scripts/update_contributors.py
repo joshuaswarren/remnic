@@ -107,7 +107,7 @@ def collect_authors(contributors, pr_authors, owner, extra_exclude=()):
 def render_registry(entries):
     lines = ["- [@%s](https://github.com/%s)" % (name, name) for name in entries]
     body = "\n".join(lines) if lines else EMPTY_REGISTRY_LINE
-    return "%s\n\n%s\n%s\n\n%s" % (BEGIN_MARKER, body, ANON_NOTE, END_MARKER)
+    return "%s\n\n%s\n\n%s\n\n%s" % (BEGIN_MARKER, body, ANON_NOTE, END_MARKER)
 
 
 def update_contributors_md(existing, registry):

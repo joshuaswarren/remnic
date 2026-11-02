@@ -39,7 +39,6 @@ sections above are maintained by hand and never touched by automation.
 <!-- BEGIN GENERATED CONTRIBUTORS (contributors.yml; do not hand-edit) -->
 
 - [@100menotu001](https://github.com/100menotu001)
-- [@cursoragent](https://github.com/cursoragent)
 - [@dfein38347g](https://github.com/dfein38347g)
 - [@earlvanze](https://github.com/earlvanze)
 - [@Fancyhe1](https://github.com/Fancyhe1)
@@ -50,6 +49,7 @@ sections above are maintained by hand and never touched by automation.
 - [@ramarivera](https://github.com/ramarivera)
 - [@RichardHojunJang](https://github.com/RichardHojunJang)
 - [@rmichelena](https://github.com/rmichelena)
+
 _Linked GitHub accounts only. Anonymous (unlinked) commit authors are
 enumerable through the API (anon=true) but are identified there only by
 name/email, which this registry does not publish; credit them by hand in
