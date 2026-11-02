@@ -19,7 +19,7 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
-import { throwIfAborted } from "./abort-error.js";
+import { isAbortError, throwIfAborted } from "./abort-error.js";
 import { withBriefingDeadline } from "./briefing-deadline.js";
 import { withBriefingFollowupTimeout } from "./briefing-followup-timeout.js";
 import { extractJsonCandidates } from "./json-extract.js";
@@ -924,14 +924,13 @@ async function buildBriefingWithSignal(options: BuildBriefingOptions, signal: Ab
     suggestedFollowups: followups,
   };
 
-  // Drain auto-applied passive-correction notifications (issue #1581). The
-  // queue is cleared on read, so each notification surfaces in exactly one
-  // briefing. Fail-open: a drain error never blocks the briefing.
-  // A cancelled briefing must not consume notifications nobody receives.
+  // Drain auto-applied passive-correction notifications (issue #1581): cleared on read,
+  // so each surfaces in exactly one briefing. Fail-open except cancellation, which must
+  // not consume notifications nobody receives.
   throwIfAborted(signal, "briefing aborted");
   let correctionNotifications: BriefingResult["correctionNotifications"];
   try {
-    const drained = await drainPassiveCorrectionNotifications(options.storage.dir);
+    const drained = await drainPassiveCorrectionNotifications(options.storage.dir, signal);
     if (drained.length > 0) {
       correctionNotifications = drained.map((n) => ({
         planId: n.planId,
@@ -941,6 +940,7 @@ async function buildBriefingWithSignal(options: BuildBriefingOptions, signal: Ab
       }));
     }
   } catch (err) {
+    if (isAbortError(err)) throw err;
     log.debug(`briefing: correction notification drain failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
   }
 
