@@ -16,7 +16,10 @@ import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-can
 import { normalizeEntityStructuredSection, sortStructuredSectionsBySchema } from "../entity-schema.js";
 import { withEntityCanonicalMutationLock } from "./entity-canonical-id-lock.js";
 import { assertSafeEntityId } from "./entity-id-safety.js";
-import { getFingerprint } from "./entity-canonical-id-migration.js";
+import {
+  EntityMigrationCompletionCache,
+  readEntityFileResolvingRename,
+} from "./entity-migration-completion-cache.js";
 import { isMalformedEntityRecord } from "../utils/malformed-entity-record.js";
 import { log } from "../logger.js";
 import {
@@ -37,10 +40,6 @@ import type {
 import { isErrnoCode } from "../utils/errno.js";
 import { pathIsInside } from "../utils/path-containment.js";
 import {
-  ENTITY_CANONICAL_ID_MIGRATION_FILE,
-  ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER,
-  ENTITY_CANONICAL_ID_RECONCILE_MARKER,
-  entityCanonicalIdMigrationCompleted,
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
   resolveHistoricalEntityCanonicalId,
@@ -95,14 +94,7 @@ export interface EntityStoreDeps {
 export class EntityStore {
   /** Filename → file identity of the last indexable check. Unchanged files are not reread. */
   private readonly entityIndexableCache = new Map<string, { identity: string; ok: boolean }>();
-  /**
-   * Amortized migration-completion verdict. Key covers every getFingerprint
-   * input that is cheap to lstat: entity mutation version, entities/ dir,
-   * config/aliases.json, the journal, and reconcile markers. Full fingerprint
-   * (including entity entry enumeration) runs only on key miss.
-   * ponytail: in-place entity *content* edits still skip revalidation.
-   */
-  private migrationCompletedCache: { version: number; inputSig: string; completed: boolean } | undefined;
+  private readonly migrationCompletion = new EntityMigrationCompletionCache();
 
   constructor(
     private readonly deps: EntityStoreDeps,
@@ -391,86 +383,11 @@ export class EntityStore {
     return normalized;
   }
 
-  private async readEntityFileResolvingRename(firstPath: string, entityId: string) {
-    try {
-      return { id: entityId, content: await this.deps.readStorageSecureFile(firstPath) };
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      // ENOENT: renamed away (retry below). ELOOP: planted symlink — skip.
-      if (isErrnoCode(err, "ELOOP")) return null;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-    }
-    const historicalIds = this.deps.currentHistoricalIds();
-    const canonical = resolveHistoricalEntityCanonicalId(entityId, historicalIds);
-    const candidates = new Set([canonical]);
-    for (const legacy of Object.keys(historicalIds)) {
-      if (resolveHistoricalEntityCanonicalId(legacy, historicalIds) === canonical) candidates.add(legacy);
-    }
-    candidates.delete(entityId);
-    for (const candidate of candidates) {
-      try {
-        return {
-          id: candidate,
-          content: await this.deps.readStorageSecureFile(
-            path.join(this.deps.entitiesDir, `${candidate}.md`),
-          ),
-        };
-      } catch (err) {
-        if (err instanceof SecureStoreLockedError) throw err;
-        // ENOENT/ELOOP: gone or a planted symlink — try the next candidate.
-        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) continue;
-        throw err;
-      }
-    }
-    return null;
-  }
-
-  /** lstat identity for one fingerprint input path; nofollow; missing → stable token. */
-  private async migrationInputPathSig(filePath: string): Promise<string> {
-    try {
-      const s = await lstat(filePath);
-      return `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}:${s.isSymbolicLink() ? "L" : s.isDirectory() ? "D" : "F"}`;
-    } catch {
-      return "missing";
-    }
-  }
-
-  /**
-   * Cheap coherence key for migrationCompletedCached. entities/ absence is
-   * uncacheable (random suffix) so we never pin a false complete.
-   */
-  private async migrationInputSig(): Promise<string> {
-    const stateDir = path.join(this.deps.baseDir, "state");
-    const entitiesSig = await this.migrationInputPathSig(this.deps.entitiesDir);
-    if (entitiesSig === "missing") return `entities-missing:${Math.random()}`;
-    const [aliasesSig, journalSig, reconcileSig, consumingSig] = await Promise.all([
-      this.migrationInputPathSig(path.join(this.deps.baseDir, "config", "aliases.json")),
-      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE)),
-      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
-      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),
-    ]);
-    return [entitiesSig, aliasesSig, journalSig, reconcileSig, consumingSig].join("|");
-  }
-
-  /** Amortized entityCanonicalIdMigrationCompleted — see migrationCompletedCache. */
-  private async migrationCompletedCached(): Promise<boolean> {
-    const version = this.deps.getEntityMutationVersion();
-    const inputSig = await this.migrationInputSig();
-    const cached = this.migrationCompletedCache;
-    if (cached && cached.version === version && cached.inputSig === inputSig) return cached.completed;
-    const completed = await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
-      getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(version)));
-    this.migrationCompletedCache = { version, inputSig, completed };
-    return completed;
-  }
-
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) return "";
-    // Physical hit always wins. On miss, skip rename/body-scan only when the
-    // amortized completion verdict attests to live fingerprint inputs (not a
-    // bare journal.complete flag — aliases/reconcile/journal drift must reopen
-    // compatibility). A validated-complete miss is a gone legacy id.
+    // Physical hit wins. Miss skips rename/body-scan only when amortized
+    // completion attests live fingerprint inputs (not bare journal.complete).
     const readDirect = async (): Promise<string | undefined> => {
       try {
         return await this.deps.readStorageSecureFile(filePath);
@@ -482,11 +399,10 @@ export class EntityStore {
     };
     const direct = await readDirect();
     if (direct !== undefined) return direct;
-    if (await this.migrationCompletedCached()) return "";
-    const renamed = await this.readEntityFileResolvingRename(filePath, name);
+    if (await this.migrationCompletion.isCompleted(this.deps)) return "";
+    const renamed = await readEntityFileResolvingRename(this.deps, filePath, name);
     if (renamed !== null) return renamed.content;
-    // Deferred / no-journal / fingerprint-stale path: match legacy filename by body id.
-    // ponytail: scan only incomplete-migration misses; index if those become hot.
+    // Deferred / fingerprint-stale: match legacy filename by body id.
     let legacy: string | undefined;
     for (const file of await this.readEntityDirectoryNames()) {
       if (!file.endsWith(".md") || !(await this.isContainedRegularEntityFile(file))) continue;
@@ -835,11 +751,11 @@ export class EntityStore {
                 // rename: resolve through historical ids like a direct read.
                 // Still-present symlinks/dirs stay skipped.
                 if (await this.isMissingEntry(entry)) {
-                  return await this.readEntityFileResolvingRename(entryPath, entityId);
+                  return await readEntityFileResolvingRename(this.deps, entryPath, entityId);
                 }
                 return null;
               }
-              return await this.readEntityFileResolvingRename(entryPath, entityId);
+              return await readEntityFileResolvingRename(this.deps, entryPath, entityId);
             } catch (err) {
               // Lock and decrypt failures abort the corpus read (the store
               // is unusable or tampered); anything else isolates to this entry.
