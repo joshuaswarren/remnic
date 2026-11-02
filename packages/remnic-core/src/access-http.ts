@@ -1979,6 +1979,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         service: this.service,
         principal: this.resolveRequestPrincipal(req),
         respondJson: (status, payload) => this.respondJson(res, status, payload),
+        abortSignal,
       });
       return;
     }

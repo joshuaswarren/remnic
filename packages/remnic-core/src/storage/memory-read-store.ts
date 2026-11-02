@@ -41,7 +41,7 @@ export interface MemoryReadStoreDeps {
   readonly artifactsDir: string;
   readonly baseDir: string;
   readonly bufferSurpriseLedgerPath: string;
-  collectActiveMemoryPaths(): Promise<string[]>;
+  collectActiveMemoryPaths(options?: CorpusReadOptions): Promise<string[]>;
   readonly correctionsDir: string;
   ensureDirectories(): Promise<void>;
   readonly entitySchemas: PluginConfig["entitySchemas"] | undefined;
@@ -79,6 +79,7 @@ export interface MemoryReadStoreDeps {
     remainingSlots: number,
     remainingInspectionBudget: number,
     readBatchSize: number,
+    options?: CorpusReadOptions,
   ): Promise<{ memories: MemoryFile[]; filePaths: string[] }>;
   readonly reasoningTracesDir: string;
   resolveTierRootDir(tier: "hot" | "cold"): string;
@@ -408,8 +409,10 @@ export class MemoryReadStore {
     maxMemories?: number;
     batchSize?: number;
     updatedAfter?: Date;
+    abortSignal?: AbortSignal;
   } = {}): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
-    const allPaths = await this.deps.collectActiveMemoryPaths();
+    const readOptions: CorpusReadOptions = { abortSignal: options.abortSignal };
+    const allPaths = await this.deps.collectActiveMemoryPaths(readOptions);
     const sortedPaths = this.deps.orderWindowPaths(allPaths);
     const maxMemories =
       typeof options.maxMemories === "number" && Number.isFinite(options.maxMemories)
@@ -422,6 +425,8 @@ export class MemoryReadStore {
     const selectedPaths: string[] = [];
 
     for (let i = 0; i < sortedPaths.length; i += normalizedBatchSize) {
+      // Per batch: an abandoned caller must not keep the scan running (#3139).
+      checkCorpusReadAbort(readOptions);
       if (
         maxMemories !== undefined
         && (memories.length >= maxMemories || (maxCandidatePaths !== undefined && selectedPaths.length >= maxCandidatePaths))
@@ -436,7 +441,7 @@ export class MemoryReadStore {
       const remainingInspectionBudget = maxCandidatePaths === undefined ? undefined : Math.max(0, maxCandidatePaths - selectedPaths.length);
       const { memories: batchMemories, filePaths: parsedCandidatePaths } = remainingSlots === undefined
         ? {
-            memories: await this.deps.readParsedMemoriesFromPaths(candidateBatchPaths, normalizedBatchSize),
+            memories: await this.deps.readParsedMemoriesFromPaths(candidateBatchPaths, normalizedBatchSize, readOptions),
             filePaths: candidateBatchPaths,
           }
         : await this.deps.readWindowBoundedBatch(
@@ -444,6 +449,7 @@ export class MemoryReadStore {
             remainingSlots,
             remainingInspectionBudget ?? remainingSlots,
             normalizedBatchSize,
+            readOptions,
           );
       selectedPaths.push(...parsedCandidatePaths);
       for (const memory of batchMemories) {

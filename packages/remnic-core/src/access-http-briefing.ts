@@ -9,6 +9,8 @@ export interface BriefingHttpOptions {
   service: EngramAccessService;
   principal: string | undefined;
   respondJson: JsonResponder;
+  /** HTTP request lifetime; aborting it stops the briefing (issue #3139). */
+  abortSignal?: AbortSignal;
 }
 
 /**
@@ -27,9 +29,11 @@ export async function respondBriefingHttp(options: BriefingHttpOptions): Promise
   if (!op) {
     throw new EngramAccessInputError("access-boundary: operation not registered: briefing");
   }
+  // SAFETY: the built-in briefing operation returns { result }; this adapter passes it through unchanged.
   const output = (await op.run(options.gatedBody, {
     service: options.service,
     authenticatedPrincipal: options.principal,
+    abortSignal: options.abortSignal,
   })) as { result: unknown };
   options.respondJson(200, output.result);
 }

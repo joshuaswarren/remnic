@@ -19,12 +19,14 @@ import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
+import { throwIfAborted } from "./abort-error.js";
+import { withBriefingDeadline } from "./briefing-deadline.js";
 import { withBriefingFollowupTimeout } from "./briefing-followup-timeout.js";
 import { extractJsonCandidates } from "./json-extract.js";
 import { drainPassiveCorrectionNotifications } from "./correction/passive-correction-notifications.js";
 import { excludeSupportPassportPrivateMemories } from "./support-passport/card-projection.js";
 import { normalizeEntityName, StorageManager } from "./storage.js";
-import { safeReadMemories } from "./briefing-window.js";
+import { safeReadEntities, safeReadMemories } from "./briefing-window.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import type {
   BriefingActiveThread,
@@ -817,6 +819,8 @@ export interface BuildBriefingOptions {
   followupGenerator?: BriefingFollowupGenerator;
   /** Injected "now" — makes tests deterministic. */
   now?: Date;
+  /** Caller cancellation must not consume correction notifications. */
+  abortSignal?: AbortSignal;
 }
 
 const MAX_ACTIVE_THREADS = 8;
@@ -830,15 +834,23 @@ const MAX_OPEN_COMMITMENTS = 8;
  * omitted and `followupsUnavailableReason` is set.
  */
 export async function buildBriefing(options: BuildBriefingOptions): Promise<BriefingResult> {
+  return withBriefingDeadline(
+    (signal) => buildBriefingWithSignal(options, signal),
+    options.abortSignal,
+  );
+}
+
+async function buildBriefingWithSignal(options: BuildBriefingOptions, signal: AbortSignal): Promise<BriefingResult> {
   const now = options.now ?? new Date();
   const window = options.window ?? defaultWindow(now);
   const maxFollowups = clampFollowups(options.maxFollowups);
   const focus = options.focus ?? null;
 
   const [allMemories, allEntities] = await Promise.all([
-    safeReadMemories(options.storage, window).then(excludeSupportPassportPrivateMemories),
-    safeReadEntities(options.storage),
+    safeReadMemories(options.storage, window, { signal }).then(excludeSupportPassportPrivateMemories),
+    safeReadEntities(options.storage, signal),
   ]);
+  throwIfAborted(signal, "briefing aborted");
 
   const memoriesInWindow = filterMemoriesByWindow(allMemories, window);
   const focusedMemories = focus
@@ -852,6 +864,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   const calendarLoadResult = options.calendarSource
     ? await loadTodayCalendar(options.calendarSource, now)
     : undefined;
+  throwIfAborted(signal, "briefing aborted");
 
   const calendarSourceErrors: BriefingCalendarSourceError[] =
     calendarLoadResult?.error ? [calendarLoadResult.error] : [];
@@ -904,6 +917,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
       log.warn(`briefing: ${followupsUnavailableReason}`);
     }
   }
+  throwIfAborted(signal, "briefing aborted");
 
   const sections: BriefingSections = {
     ...sectionsBase,
@@ -913,6 +927,8 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
   // Drain auto-applied passive-correction notifications (issue #1581). The
   // queue is cleared on read, so each notification surfaces in exactly one
   // briefing. Fail-open: a drain error never blocks the briefing.
+  // A cancelled briefing must not consume notifications nobody receives.
+  throwIfAborted(signal, "briefing aborted");
   let correctionNotifications: BriefingResult["correctionNotifications"];
   try {
     const drained = await drainPassiveCorrectionNotifications(options.storage.dir);
@@ -975,15 +991,6 @@ function defaultWindow(now: Date): ParsedBriefingWindow {
   const parsed = parseBriefingWindow("yesterday", now);
   if (parsed) return parsed;
   return { from: new Date(now.getTime() - DAY_MS), to: now, label: "yesterday" };
-}
-
-async function safeReadEntities(storage: StorageManager): Promise<EntityFile[]> {
-  try {
-    return await storage.readAllEntityFiles();
-  } catch (err) {
-    log.warn(`briefing: readAllEntityFiles failed: ${err}`);
-    return [];
-  }
 }
 
 function memoryTimestamp(memory: MemoryFile): number {

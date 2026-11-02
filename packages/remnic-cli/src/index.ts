@@ -84,6 +84,7 @@ import {
   migrateFromEngram,
   rollbackFromEngramMigration,
   buildBriefing,
+  withBriefingDeadline,
   parseBriefingWindow,
   parseBriefingFocus,
   validateBriefingFormat,
@@ -5715,7 +5716,7 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
   }
 }
 
-async function cmdBriefing(rest: string[]): Promise<void> {
+async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<void> {
   initLogger();
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
@@ -5797,6 +5798,7 @@ async function cmdBriefing(rest: string[]): Promise<void> {
 
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
+  abortSignal.throwIfAborted();
   const storage = await orchestrator.getStorage(config.defaultNamespace);
 
   const calendarSource = config.briefing.calendarSource
@@ -5805,6 +5807,7 @@ async function cmdBriefing(rest: string[]): Promise<void> {
 
   const result = await buildBriefing({
     storage,
+    abortSignal,
     window,
     focus,
     namespace: config.defaultNamespace,
@@ -5835,6 +5838,7 @@ async function cmdBriefing(rest: string[]): Promise<void> {
       result.json = { ...result.json, locationContext: section };
     }
   }
+  abortSignal.throwIfAborted();
 
   const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;
   console.log(payload);
@@ -12968,7 +12972,7 @@ Options:
     }
 
     case "briefing": {
-      await cmdBriefing(rest);
+      await withBriefingDeadline((signal) => cmdBriefing(rest, signal));
       break;
     }
 

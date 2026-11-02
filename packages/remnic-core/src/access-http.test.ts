@@ -15,6 +15,7 @@ import {
   EngramAccessInputError,
   type EngramAccessRecallRequest,
   type EngramAccessService,
+  type EngramAccessBriefingRequest,
 } from "./access-service.js";
 import {
   tokenCapabilityStore,
@@ -859,17 +860,23 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
     assert.equal(body.format, "markdown");
     assert.equal(body.markdown, "# Briefing");
     assert.deepEqual(body.json.sections.activeThreads, []);
-    assert.deepEqual(calls, [
-      {
-        since: "24h",
-        focus: undefined,
-        includeLocation: undefined,
-        namespace: "team",
-        format: "markdown",
-        maxFollowups: 5,
-        principal: "panel-user",
-      },
-    ]);
+    assert.equal(calls.length, 1);
+    // SAFETY: the registered handler builds this request after validating the HTTP body; assertions below check its values.
+    const captured = calls[0] as EngramAccessBriefingRequest;
+    const { abortSignal, ...briefingRequest } = captured;
+    assert.ok(
+      abortSignal instanceof AbortSignal,
+      "the briefing request carries the HTTP request lifetime signal",
+    );
+    assert.deepEqual(briefingRequest, {
+      since: "24h",
+      focus: undefined,
+      includeLocation: undefined,
+      namespace: "team",
+      format: "markdown",
+      maxFollowups: 5,
+      principal: "panel-user",
+    });
 
     const invalid = await fetch(
       `http://127.0.0.1:${status.port}/engram/v1/briefing`,

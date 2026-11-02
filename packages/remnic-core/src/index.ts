@@ -657,7 +657,7 @@ export {
   type ParsedBriefingWindow,
   type BriefingFormatValue,
 } from "./briefing.js";
-
+export { withBriefingDeadline, BriefingTimeoutError, BRIEFING_DEADLINE_MS } from "./briefing-deadline.js";
 // ---------------------------------------------------------------------------
 // Binary lifecycle management (#367)
 // ---------------------------------------------------------------------------

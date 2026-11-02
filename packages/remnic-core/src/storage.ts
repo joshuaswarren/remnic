@@ -4833,13 +4833,16 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     candidateBatchPaths: string[],
     remainingSlots: number,
     remainingInspectionBudget: number,
-    readBatchSize: number
+    readBatchSize: number,
+    options?: CorpusReadOptions
   ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
     const memories: MemoryFile[] = [];
     const filePaths: string[] = [];
     const normalizedReadBatchSize = this.normalizeMemoryReadBatchSize(readBatchSize);
 
     for (let index = 0; index < candidateBatchPaths.length; ) {
+      // Per batch: an abandoned caller must not keep the scan running (#3139).
+      checkCorpusReadAbort(options);
       if (memories.length >= remainingSlots || filePaths.length >= remainingInspectionBudget) break;
       const availableSlots = remainingSlots - memories.length;
       const availableInspectionBudget = remainingInspectionBudget - filePaths.length;
@@ -4852,7 +4855,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       index += candidatePaths.length;
       if (candidatePaths.length === 0) break;
       filePaths.push(...candidatePaths);
-      const parsedMemories = await this.readParsedMemoriesFromPaths(candidatePaths, candidatePaths.length);
+      const parsedMemories = await this.readParsedMemoriesFromPaths(candidatePaths, candidatePaths.length, options);
       if (parsedMemories.length === 0) continue;
       memories.push(...parsedMemories.slice(0, availableSlots));
     }
