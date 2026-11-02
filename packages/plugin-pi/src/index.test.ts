@@ -2543,6 +2543,80 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
   assert.ok(recallCalls > recallCallsBeforeAuto, "automatic recall ran after manual recall cleared the breaker");
 });
 
+test("a successful /remnic-recall is not clobbered by a late startup health unreachable verdict", async (t) => {
+  // Deterministic form of the race the breaker-clear test avoids with a 50ms sleep:
+  // hold startup /live, succeed /remnic-recall (markReachable), then release /live as
+  // unreachable while epoch/liveness stay current. A late applyBreaker must not wipe
+  // the fresh manual success — next automatic work must still reach the daemon.
+  const originalFetch = globalThis.fetch;
+  let recallCalls = 0;
+  let healthStarted = false;
+  let healthSettled = false;
+  const { promise: healthHeld, resolve: releaseHealth } = Promise.withResolvers<void>();
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/live")) {
+      healthStarted = true;
+      await healthHeld;
+      healthSettled = true;
+      throw new Error("The socket connection was closed unexpectedly.");
+    }
+    if (url.endsWith("/engram/v1/recall")) {
+      recallCalls += 1;
+      const body = init?.body ? JSON.parse(String(init.body)) : {};
+      if (body.query === "manual") {
+        return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ context: "auto context" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, namespace: "default" }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      // Large enough that the deferred hold, not the client AbortController, owns settlement.
+      startupRequestTimeoutMs: 60_000,
+      daemonCooldownMs: 60_000,
+    },
+  });
+  await extension(pi);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "manual-beats-late-startup-health" },
+  };
+
+  await emit("session_start", {}, ctx);
+  await waitFor(() => healthStarted, "startup health request is held in flight");
+
+  await runCommand("remnic-recall", "manual", ctx);
+  assert.ok(recallCalls >= 1, "manual recall reached the daemon and markReachable ran");
+  assert.equal(healthSettled, false, "startup health is still held after manual success");
+
+  releaseHealth();
+  await waitFor(() => healthSettled, "startup health settles unreachable after manual success");
+  await flushBackgroundChains();
+
+  const recallCallsBeforeAuto = recallCalls;
+  await emit("before_agent_start", { prompt: "auto", systemPrompt: "" }, ctx);
+  assert.ok(
+    recallCalls > recallCallsBeforeAuto,
+    "automatic recall still runs after a late startup health unreachable; manual markReachable must not be clobbered",
+  );
+});
+
+
 test("session_start returns without awaiting a slow startup probe (#3273 phase 1)", async (t) => {
   const originalFetch = globalThis.fetch;
   let probeResolved = false;
