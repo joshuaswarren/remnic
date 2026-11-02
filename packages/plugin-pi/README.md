@@ -92,7 +92,7 @@ Supported config keys:
 
 Boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"` are treated as false.
 
-> **Remote daemons: raise `startupRequestTimeoutMs`.** MCP tool registration happens once at session start (`tools/list` against the daemon) under this timeout, and a timeout is swallowed silently — the session simply runs without any `remnic_*` tools, while the separate (lighter) health probe can still report the daemon as ready. The `1000` default is tuned for a localhost daemon; when `remnicDaemonUrl` points at another machine (Tailscale/MagicDNS, VPN, LAN), one cold DNS resolution or relayed round trip can exceed it. Set `"startupRequestTimeoutMs": 10000` for remote daemons, and prefer a stable Tailscale IP over a MagicDNS name on hosts where MagicDNS is not enabled.
+> **Remote daemons: raise `startupRequestTimeoutMs`.** MCP `tools/list` registration uses this budget and retries once within it. If listing or individual registrations still fail, the extension records a warning; after fixing connectivity, run `/remnic-status` to retry missing registrations without restarting. Successful registrations are retained, and overlapping attempts share one request. The `1000` default suits a local daemon; consider `"startupRequestTimeoutMs": 10000` for remote daemons with slower DNS or relayed connections.
 
 Example:
 
@@ -121,7 +121,7 @@ The extension registers these Pi slash commands:
 
 | Command | Description |
 | --- | --- |
-| `/remnic-status` | Check Remnic daemon health |
+| `/remnic-status` | Check daemon health and retry missing MCP tool registrations when healthy |
 | `/remnic-recall <query>` | Recall Remnic context for a query |
 | `/remnic-remember <memory>` | Explicitly store a memory |
 | `/remnic-lcm-search <query>` | Search archived Pi context |
