@@ -28,7 +28,7 @@ Remnic stores memories as Markdown on your disk. It also keeps local indexes and
 
 For local-only use, check each route:
 
-1. Use `modelSource: "plugin"` for the [local LLM path](docs/guides/local-llm.md). With `modelSource: "gateway"`, the gateway controls the main extraction route.
+1. Use `modelSource: "plugin"` and set `localLlmEnabled: true` for the [local LLM path](docs/guides/local-llm.md). With `modelSource: "gateway"`, the gateway controls the main extraction route.
 2. Check the model server and its exact model ID. A server on your LAN is another machine. Its name does not prove where the model runs.
 3. Set `taskLlmFallback: false` to stop fallback from the local task route. The default is `true`. The older `localLlmFallback` key applies only when the new key is absent. The `local-llm-heavy` preset does not turn fallback off.
 4. Check embeddings, reranking, briefing follow-ups, search, clients, connectors, and sharing on their own. Turn off routes you do not want. `openaiApiKey: false` stops Remnic from inheriting `OPENAI_API_KEY` for its direct provider. It does not change a host client's model routes.
