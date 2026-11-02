@@ -8,6 +8,23 @@ Open-source, local-first memory and context for AI agents. One memory store, eve
 
 Website: **[remnic.ai](https://remnic.ai)** - guide library, comparisons, benchmarks, and changelog.
 
+## The projects
+
+Part of the Omarchy on Apple Silicon ecosystem:
+
+- [omarchy-mlx](https://github.com/joshuaswarren/omarchy-mlx) — MLX on the Apple GPU under Linux, and Core ML models on the Neural Engine..
+- [omarchy-ane](https://github.com/joshuaswarren/omarchy-ane) — Linux driver for the Apple Neural Engine: DRM kernel modules and libane..
+- [mil-hwx-compiler](https://github.com/joshuaswarren/mil-hwx-compiler) — compiles Core ML MIL into ANE programs on Linux (M1/M2 targets)..
+- [metal2vk](https://github.com/joshuaswarren/metal2vk) — translates Metal compute kernels to Vulkan SPIR-V with open tools..
+- [mesa-1](https://github.com/joshuaswarren/mesa-1) — Mesa fork carrying the Honeykrisp Vulkan driver work for Apple silicon..
+- [omarchy-cluster](https://github.com/joshuaswarren/omarchy-cluster) — one local model split across Macs on macOS and Omarchy Linux..
+- [omarchy-apple-dev](https://github.com/joshuaswarren/omarchy-apple-dev) — build and ship iOS apps from Omarchy Linux, no Xcode or Mac..
+- [omarchy-egpu](https://github.com/joshuaswarren/omarchy-egpu) — eGPU setup, diagnostics and measured local-inference results on Omarchy Linux..
+- [ane-linux-experiments](https://github.com/joshuaswarren/ane-linux-experiments) — Neural Engine on Linux: verified primitives, receipt-backed macOS parity..
+- [coreglass](https://github.com/joshuaswarren/coreglass) — profiler that shows where local inference loses speed on Apple Silicon Linux..
+- [omarchy-inference-fleet](https://github.com/joshuaswarren/omarchy-inference-fleet) — reproducible, pinned single-node MLX inference baselines..
+- Platform upstream: [omarchy-mac](https://github.com/omacom/omarchy-mac) — Omarchy on Apple Silicon Macs.
+
 - **Your files, your machine.** Memory records are plain markdown files with YAML frontmatter on your disk. Remnic also keeps local JSON and SQLite state; it does not require an external database service. `cat`, `grep`, edit, and version-control your memory files with the tools you already use.
 - **One memory across every tool.** OpenClaw, Claude Code, Codex CLI, Cursor, ChatGPT (developer mode), Hermes, Replit, Pi, omp, Factory Droid, and any MCP client read and write the same store. Tell one agent a preference; every agent knows it.
 - **Automatic extraction and recall.** Remnic watches conversations, distills durable knowledge, and injects the right context back when it is needed.
