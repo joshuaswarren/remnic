@@ -18,6 +18,61 @@ function scopeList(stdout, label) {
   return line.slice(prefix.length).trim().split(/\s+/).filter(Boolean);
 }
 
+/** Checked and skipped must be a partition — never both (pipefail + grep -Fxq). */
+function assertExclusivePackageScope(stdout, context) {
+  const checked = scopeList(stdout, "Checked") ?? [];
+  const skipped = scopeList(stdout, "Skipped") ?? [];
+  const overlap = checked.filter((name) => skipped.includes(name));
+  assert.deepEqual(
+    overlap,
+    [],
+    `${context}: packages must not appear in both Checked and Skipped (overlap: ${overlap.join(", ")})`,
+  );
+}
+
+/**
+ * Under `set -o pipefail`, `printf … | grep -Fxq` can exit 141 on an early match
+ * once the producer still has data to write (SIGPIPE). Membership then looks false
+ * and a covered package is appended to Skipped while still listed in Checked.
+ * Pin the production script off that pipeline; selection tests below exercise the
+ * real `--print-quick-package-scope` path.
+ */
+const preflightSource = readFileSync(preflightScript, "utf8");
+assert.equal(
+  preflightSource.includes("set -euo pipefail"),
+  true,
+  "preflight keeps pipefail; membership must tolerate it",
+);
+assert.doesNotMatch(
+  preflightSource,
+  /printf '%s\\n' "\$\{[^}]+\[@\]\}" \| grep -Fxq/,
+  "quick_package_scope must not use printf|grep -Fxq membership under pipefail",
+);
+
+/** Synthetic early match + large haystack: proves pipefail misclassifies grep -Fxq. */
+{
+  const probe = spawnSync(
+    "bash",
+    [
+      "-c",
+      [
+        "set -euo pipefail",
+        'haystack=("connector-droid")',
+        "for i in $(seq 1 4000); do haystack+=(\"pad-$i\"); done",
+        'if printf "%s\\n" "${haystack[@]}" | grep -Fxq "connector-droid"; then echo MATCH; else echo MISS; fi',
+      ].join("\n"),
+    ],
+    { encoding: "utf8" },
+  );
+  assert.equal(probe.status, 0, probe.stderr);
+  assert.equal(
+    probe.stdout.trim(),
+    "MISS",
+    "control: early grep -Fxq under pipefail must misclassify so the production ban stays load-bearing",
+  );
+}
+
+
 const guardedPaths = [
   "src/orchestrator.ts",
   "src/storage.ts",
@@ -76,6 +131,21 @@ const coreScope = packageScope("packages/remnic-core/src/index.ts");
 assert.equal(coreScope.status, 0, coreScope.stderr);
 assert.match(coreScope.stdout, /Checked packages:.*plugin-openclaw/);
 assert.match(coreScope.stdout, /Checked packages:.*bench-ui/);
+assertExclusivePackageScope(coreScope.stdout, "remnic-core dependents");
+{
+  const coreChecked = scopeList(coreScope.stdout, "Checked") ?? [];
+  const coreSkipped = scopeList(coreScope.stdout, "Skipped") ?? [];
+  assert.ok(
+    coreChecked.includes("connector-droid"),
+    "connector-droid declares check-types and is in the remnic-core dependent set",
+  );
+  assert.equal(
+    coreSkipped.includes("connector-droid"),
+    false,
+    "connector-droid must not also land in Skipped (pipefail false-negative membership)",
+  );
+}
+
 
 const pythonPluginScope = packageScope("packages/plugin-hermes/remnic_hermes/hermes_llm_bridge.py");
 assert.equal(pythonPluginScope.status, 0, pythonPluginScope.stderr);
@@ -94,6 +164,9 @@ assert.ok(
   coveredPackages.includes("import-weclone"),
   "import-weclone declares scripts.check-types and must always be checked"
 );
+assertExclusivePackageScope(rootConfigScope.stdout, "all-packages scope");
+assertExclusivePackageScope(affectedScope.stdout, "remnic-cli affected scope");
+
 
 // Clean CI vs hydrated local (#2851): node_modules and package build output
 // must not change the quick package scope. Only simulate hydration with
@@ -108,6 +181,9 @@ try {
   const hydratedScope = packageScope("tsconfig.json");
   assert.equal(hydratedScope.status, 0, hydratedScope.stderr);
   assert.equal(hydratedScope.stdout, rootConfigScope.stdout);
+  assertExclusivePackageScope(hydratedScope.stdout, "hydrated all-packages scope");
+  assertExclusivePackageScope(rootConfigScope.stdout, "pre-hydration baseline");
+
 } finally {
   if (!hadNodeModules) rmSync(nodeModulesDir, { recursive: true, force: true });
   if (!hadDist) rmSync(importWecloneDistDir, { recursive: true, force: true });
