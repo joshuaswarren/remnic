@@ -241,7 +241,7 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 | Manually restate preferences every session | Preferences persist across sessions, agents, and projects |
 | A context-switching tax when you resume work | Session-start recall brings you back up to speed |
 | Built-in agent memory that does not scale | Hybrid search, lifecycle management, namespaces, and governance |
-| Third-party memory services that cost money and hold your data | Everything stays local: your filesystem, your rules |
+| Third-party memory services that cost money and hold your data | Local memory files, with model and integration routes you control |
 
 
 ## How Remnic compares
@@ -439,12 +439,12 @@ Config gates, lint finding codes, and the full category-to-type mapping: [docs/o
 
 ## Privacy and your data
 
-Local-first is a trust feature, not a tagline.
+Memory records live in your configured directory. Local-first storage does not make every model or integration local-only.
 
-- **Everything lives on your disk** as markdown you can inspect, edit, back up, and version-control. There is no Remnic cloud and no account.
-- **Retrieval never needs the network.** Recall runs entirely against your local files and index.
-- **Extraction uses the provider you choose.** When Remnic distills a memory, it calls whatever model provider you configured. To keep every byte on-device, route extraction to a [local LLM](docs/guides/local-llm.md) or use `--dry-run` on imports to preview without writing.
-- **Sensitive tools see what you surface.** When a hosted client such as ChatGPT calls Remnic's tools, the content it reads and writes also passes through that client's pipeline. Treat what you expose accordingly.
+- Remnic stores memories as Markdown, alongside local indexes and other state. You can inspect, back up, and version-control the files.
+- Model calls follow your configuration. The local LLM route is **fail-open by default**; the `local-llm-heavy` preset does not disable cloud fallback.
+- For local-only use, check model routing, fallback, embeddings, reranking, briefing follow-ups, search backends, and connected clients separately. The [accessibility and privacy guide](ACCESSIBILITY.md#local-only-use-and-privacy) explains the limits and current verification status.
+- Hosted clients process memories they receive through Remnic's tools. Connectors, remote services, and deliberate sharing add their own data flows.
 - **Keep user data out of git.** Paths that contain memory content (`facts/`, `entities/`, `profile.md`) should never be committed. Enable [at-rest encryption](docs/encryption.md) if the disk itself is untrusted.
 
 ## Architecture
@@ -505,6 +505,7 @@ Running Remnic for a team or across machines? `remnic daemon start` hands off to
 The complete, organized docs hub lives at **[docs/README.md](docs/README.md)**. Starting points by journey:
 
 - **Start here:** [Quickstart](docs/guides/quickstart.md) - [Getting started](docs/getting-started.md) - [CLI reference](docs/cli.md)
+- [Accessibility](ACCESSIBILITY.md) covers helpful features, privacy controls, testing limits, and feedback.
 - **Connect your tools:** [Connector setup](docs/integration/connector-setup.md) - [ChatGPT](docs/integration/chatgpt.md) - [Plugins index](docs/plugins/README.md) - [Deployment topologies](docs/integration/deployment-topologies.md)
 - **Configure:** [Config reference](docs/config-reference.md) - [Search backends](docs/search-backends.md) - [Local LLM](docs/guides/local-llm.md) - [Cost control](docs/guides/cost-control.md)
 - **Operate:** [Operations](docs/operations.md) - [Retention policy](docs/retention-policy.md) - [Import / export](docs/import-export.md) - [Standalone server](docs/guides/standalone-server.md)
@@ -516,9 +517,9 @@ The website publishes the [guide library](https://remnic.ai/guides) (what is AI 
 
 **Do I need OpenClaw?** No. Remnic runs standalone through `@remnic/cli` and connects to any tool over MCP or HTTP. OpenClaw simply gets the deepest native integration.
 
-**Does it work offline or without an API key?** Retrieval works with no provider at all. Extraction needs a model, but you can route it to a [local LLM](docs/guides/local-llm.md) to keep everything on-device.
+**Does it work offline or without an API key?** Local file retrieval can work without a model provider. Extraction needs a model. A [local LLM](docs/guides/local-llm.md) can serve it, but fallback and other configured routes need separate checks before claiming local-only operation.
 
-**Where is my data?** In markdown files under your configured memory directory. Nothing leaves your machine except during extraction with a remote provider, or when a hosted client reads memories through Remnic's tools.
+**Where is my data?** Memory records live under your configured memory directory. Models, search services, hosted clients, connectors, and sharing can send data elsewhere. See [Privacy and your data](#privacy-and-your-data).
 
 **How much does it cost?** The software is MIT and free. Your only cost is your chosen extraction provider, which is zero when you use a local LLM.
 
@@ -534,7 +535,7 @@ The website publishes the [guide library](https://remnic.ai/guides) (what is AI 
 
 Engram is now Remnic. Canonical packages live under the `@remnic/*` scope, and OpenClaw installs use [`@remnic/plugin-openclaw`](https://www.npmjs.com/package/@remnic/plugin-openclaw). The legacy `engram` CLI name, the `openclaw engram` command namespace, and the `/engram/v1/...` HTTP paths remain available as a compatibility surface during the rename window. Migrating an existing install? Run `remnic openclaw migrate-engram --yes`, which backs up the legacy extension, installs the new plugin, preserves your `memoryDir`, and switches the memory slot. Full steps: [Engram to Remnic migration guide](docs/guides/openclaw-engram-to-remnic.md).
 
-## Community and roadmap
+Read [Accessibility](ACCESSIBILITY.md) for useful features, privacy limits, and the local-model checks marked Measured or Not measured.
 
 - [Feature roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1) — current priority order, blockers, and next work.
 - [Issues](https://github.com/joshuaswarren/remnic/issues) — report a bug or request a feature.
