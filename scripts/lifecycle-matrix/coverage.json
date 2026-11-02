@@ -242,6 +242,7 @@
     "packages/remnic-core/src/storage/entity-canonical-id-migration-runner.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/entity-canonical-id-migration.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/entity-canonical-id-references.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/entity-migration-completion-cache.ts": "entity-migration-completion-cache",
     "packages/remnic-core/src/storage/entity-mention-frontmatter-hold.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/entity-ref-repair.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/memory-frontmatter-metadata.ts": "extraction-lifecycle",

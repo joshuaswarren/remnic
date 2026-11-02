@@ -25,25 +25,23 @@ export class EntityCanonicalIdMigrationRunner {
   }
 
   /**
-   * Second half: return the directory-initialized barrier when waiting, or
-   * detach it with a warning when the caller deferred the migration.
+   * Second half: await the migration barrier when waiting; when deferred, only
+   * mark directories initialized so unlock/mutation paths start the flight later.
+   * Do not detach a background ensure here — that keeps read-only CLIs alive.
    */
   public finishBegin(wait: boolean): Promise<void> {
-    const barrier = this.markDirectoriesInitialized();
-    if (wait) return barrier;
-    // Thrown rejections are Error-or-primitive; the message extractor
-    // handles both without asserting a shape.
-    const describeDeferredFailure = (failure: Error | string): string =>
-      failure instanceof Error ? failure.message : failure;
-    void barrier.catch(describeDeferredFailureAndWarn);
-    function describeDeferredFailureAndWarn(failure: Error | string): void {
-      console.warn(`entity canonical-id migration deferred at startup failed: ${describeDeferredFailure(failure)}`);
-    }
-    return Promise.resolve();
+    if (wait) return this.markDirectoriesInitialized(true);
+    return this.markDirectoriesInitialized(false);
   }
 
-  public async markDirectoriesInitialized(): Promise<void> {
+  /**
+   * Record that entity directories are ready. When `startMigration` is false
+   * (lazy startup), skip ensure so no background flight starts until unlock
+   * or an explicit ensure/trigger.
+   */
+  public async markDirectoriesInitialized(startMigration = true): Promise<void> {
     this.directoriesInitialized = true;
+    if (!startMigration) return;
     await this.ensure();
   }
 
