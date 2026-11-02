@@ -265,7 +265,9 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
   };
   await remnicPiExtension(second.pi);
   await second.emit("session_start", {}, secondContext);
-
+  // The status reflects the (shared, still-tripped) breaker and is written by the
+  // background probe once it settles (#3273 phase 1).
+  await waitFor(() => secondStatuses.length > 0, "second-session recall-disabled status");
   assert.deepEqual(secondStatuses.at(-1), ["remnic", "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)"]);
 
   fs.writeFileSync(configPath, JSON.stringify({ ...reloadConfig, authToken: "other-token" }));
@@ -277,6 +279,9 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     ui: { setStatus: (key: string, value: string) => differentCredentialStatuses.push([key, value]), notify: () => {} },
     sessionManager: { getSessionId: () => "breaker-reload-different-credential" },
   });
+  // A different credential gets a fresh (un-tripped) breaker → ready status,
+  // written by the background probe once it settles (#3273 phase 1).
+  await waitFor(() => differentCredentialStatuses.length > 0, "different-credential ready status");
   assert.deepEqual(differentCredentialStatuses.at(-1), ["remnic", "Remnic ready"]);
 
   fs.writeFileSync(
@@ -291,6 +296,9 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     ui: { setStatus: (key: string, value: string) => changedPolicyStatuses.push([key, value]), notify: () => {} },
     sessionManager: { getSessionId: () => "breaker-reload-policy-change" },
   });
+  // A changed recall-timeout policy gets a fresh breaker → ready status,
+  // written by the background probe once it settles (#3273 phase 1).
+  await waitFor(() => changedPolicyStatuses.length > 0, "changed-policy ready status");
   assert.deepEqual(changedPolicyStatuses.at(-1), ["remnic", "Remnic ready"]);
 });
 
@@ -366,6 +374,9 @@ test("session_start status probe uses the startup timeout", async (t) => {
     sessionManager: { getSessionId: () => "startup-timeout-test", getEntries: () => [] },
   });
 
+  // The offline status is written by the background probe once the startup-timeout
+  // abort fires (#3273 phase 1).
+  await waitFor(() => statuses.length > 0, "offline status after the startup probe times out");
   assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
 });
 
@@ -639,6 +650,9 @@ test("session_start renders 'Remnic starting' when health answers 503 not_ready 
     sessionManager: { getSessionId: () => "starting-status-test", getEntries: () => [] },
   });
 
+  // The starting status is written by the background probe once the 503 not_ready
+  // answer is processed (#3273 phase 1).
+  await waitFor(() => statuses.length > 0, "starting status after a not_ready probe");
   assert.deepEqual(statuses, [["remnic", "Remnic starting"]]);
 });
 
@@ -2029,6 +2043,36 @@ function makePiHarness(): {
   };
 }
 
+/**
+ * Poll until `predicate` returns true, failing after `timeoutMs`. Since #3273
+ * phase 1 the session_start startup probe (health -> version -> preflight) runs
+ * in the BACKGROUND, so tests that assert on its side effects (status label,
+ * breaker state, remnic_state entry, notification) must wait for the effect to
+ * appear instead of reading it immediately after emitting session_start.
+ */
+async function waitFor(predicate: () => boolean, label: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() >= deadline) throw new Error(`waitFor timed out after ${timeoutMs}ms: ${label}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/**
+ * Yield the event loop enough times for an async chain that only awaits
+ * already-resolved promises (the mocked fetch responds on the next microtask)
+ * to settle fully. Used for tests whose assertions are NEGATIVE (no entry or
+ * notification): there is no positive effect to poll for, so the background
+ * startup chain must have run to completion first, otherwise the absence is
+ * asserted before the chain could have produced anything.
+ */
+async function flushBackgroundChains(): Promise<void> {
+  for (let i = 0; i < 12; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function makeStaleCtx(options: {
   sessionId: string;
   cwd?: string;
@@ -2489,6 +2533,13 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
   await emit("session_start", {}, ctx);
   assert.equal(recallCalls, 0, "no recall at session_start");
 
+  // Let the in-flight startup probe settle before the manual recall, mirroring
+  // real Pi where the probe completes during startup, before any turn. Otherwise
+  // the probe's reachability verdict (unreachable) would settle during
+  // before_agent_start's bounded wait and override the manual recall's
+  // markReachable (#3273 phase 1).
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
   // 2) Manual recall succeeds → markReachable() on the shared client.
   await runCommand("remnic-recall", "manual", ctx);
 
@@ -2497,6 +2548,165 @@ test("a successful /remnic-recall clears a stale circuit breaker (review cursor)
   const recallCallsBeforeAuto = recallCalls;
   await emit("before_agent_start", { prompt: "auto", systemPrompt: "" }, ctx);
   assert.ok(recallCalls > recallCallsBeforeAuto, "automatic recall ran after manual recall cleared the breaker");
+});
+
+test("session_start returns without awaiting a slow startup probe (#3273 phase 1)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let probeResolved = false;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/live")) {
+      // The daemon probe is slow (~150ms, like the QMD backend's per-call health cost).
+      await new Promise((r) => setTimeout(r, 150));
+      probeResolved = true;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, namespace: "default" }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      startupRequestTimeoutMs: 2000,
+    },
+  });
+  await extension(pi);
+
+  const startedAt = Date.now();
+  await emit("session_start", {}, {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]) },
+    sessionManager: { getSessionId: () => "nonblocking-startup-probe" },
+  });
+  const handlerReturnedMs = Date.now() - startedAt;
+
+  // session_start must return promptly, long before the slow probe resolves — it
+  // no longer blocks startup (and every extension reload) on the round trip.
+  assert.ok(handlerReturnedMs < 100, `session_start returned in ${handlerReturnedMs}ms (expected well under the 150ms probe)`);
+  assert.equal(probeResolved, false, "the probe had not yet resolved when session_start returned");
+  assert.equal(statuses.length, 0, "no status is written until the background probe settles");
+
+  // The probe settles in the background and then writes the ready status.
+  await waitFor(() => probeResolved && statuses.length > 0, "background probe settles and sets the status");
+  assert.deepEqual(statuses.at(-1), ["remnic", "Remnic ready"]);
+});
+
+test("before_agent_start awaits the in-flight startup probe before a first-turn recall (#3273 phase 1)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let probeResolvedAt: number | null = null;
+  let recallIssuedAt: number | null = null;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/live")) {
+      // Slow daemon probe: resolves after 40ms (well within the 2000ms startup budget).
+      await new Promise((r) => setTimeout(r, 40));
+      probeResolvedAt = Date.now();
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (url.endsWith("/engram/v1/recall")) {
+      recallIssuedAt = Date.now();
+      return new Response(JSON.stringify({ context: "late recall" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true, namespace: "default" }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      startupRequestTimeoutMs: 2000,
+      turnRequestTimeoutMs: 20000,
+    },
+  });
+  await extension(pi);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "waits-for-inflight-probe" },
+  };
+
+  await emit("session_start", {}, ctx);
+  assert.equal(probeResolvedAt, null, "the startup probe is still in flight right after session_start returns");
+
+  // SAFETY: emit resolves the last handler's return value; the before_agent_start
+  // handler returns the injected { systemPrompt } object (or undefined), so this
+  // is exactly the shape it can produce.
+  const result = await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
+
+  // The first-turn recall must not issue until the in-flight probe has settled, so
+  // the reachability verdict is fresh before we decide to recall.
+  assert.ok(probeResolvedAt !== null, "the startup probe resolved");
+  assert.ok(recallIssuedAt !== null, "the first-turn recall was issued");
+  assert.ok(recallIssuedAt >= probeResolvedAt, "the recall was issued only after the startup probe settled");
+  assert.ok(result?.systemPrompt?.includes("late recall"), "context is injected once the probe has settled");
+});
+
+test("before_agent_start bounds its startup-probe wait to the smaller of the startup and turn budgets (#3273 phase 1)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let recallCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/recall")) recallCalls += 1;
+    // Both the probe and any recall hang until their AbortController fires.
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      // Startup budget (1000ms) far exceeds the turn budget (30ms), so the
+      // probe's wait is capped at the turn budget, not the startup budget.
+      startupRequestTimeoutMs: 1000,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "bounded-probe-wait" },
+  };
+
+  await emit("session_start", {}, ctx);
+  const startedAt = Date.now();
+  await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
+  const elapsed = Date.now() - startedAt;
+
+  // The probe is still in flight (it hangs until the 1000ms startup abort), but
+  // before_agent_start caps its wait at the turn budget (30ms) and then hands off
+  // to the recall, which uses its own 30ms budget — the total is ~60ms, NOT the
+  // 1000ms the full startup budget would cost if the wait were unbounded.
+  assert.ok(elapsed < 500, `before_agent_start took ${elapsed}ms, bounded by the 30ms turn budget (not the 1000ms startup budget)`);
+  assert.ok(recallCalls >= 1, "the recall path still runs once the bounded probe wait elapses");
 });
 
 test("session_start preflight surfaces a loud persistent remnic_state error when the namespace is not writable", async (t) => {
@@ -2535,6 +2745,9 @@ test("session_start preflight surfaces a loud persistent remnic_state error when
     sessionManager: { getSessionId: () => "preflight-bad", getEntries: () => [] },
   });
 
+  // The preflight runs in the background after the probe (#3273 phase 1); wait
+  // for its error entry before asserting on it.
+  await waitFor(() => entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), "persistent not-writable error entry");
   const errorEntry = entries.find((e) => e.type === "remnic_state" && e.data.level === "error");
   assert.ok(errorEntry, "expected a persistent remnic_state error entry");
   assert.equal(errorEntry?.data.code, "NAMESPACE_NOT_WRITABLE");
@@ -2579,6 +2792,10 @@ test("session_start preflight stays silent when the namespace is writable", asyn
     sessionManager: { getSessionId: () => "preflight-ok", getEntries: () => [] },
   });
 
+  // Wait for the background preflight to record its NAMESPACE_OK entry so the
+  // negative assertions below run AFTER the chain completed, not before it
+  // could have written anything (which would pass vacuously).
+  await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_OK"), "NAMESPACE_OK entry after a writable preflight");
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
 });
@@ -2619,6 +2836,10 @@ test("session_start preflight does not cry wolf when the daemon is unreachable",
     sessionManager: { getSessionId: () => "preflight-down", getEntries: () => [] },
   });
 
+  // Preflight returned indeterminate (transport failure) and wrote nothing, so
+  // there is no positive entry to poll for; wait for the background chain to
+  // settle so the no-false-alarm assertion is not vacuous.
+  await flushBackgroundChains();
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
 });
@@ -2656,6 +2877,9 @@ test("session_start preflight is skipped without an auth token", async (t) => {
     sessionManager: { getSessionId: () => "preflight-noauth", getEntries: () => [] },
   });
 
+  // No token → the preflight is skipped, so there is no writable fetch to
+  // observe; wait for the background chain to settle before asserting the skip.
+  await flushBackgroundChains();
   assert.equal(hitWritable, false);
   assert.equal(entries.some((e) => e.type === "remnic_state" && e.data.level === "error"), false);
 });
@@ -2701,6 +2925,7 @@ test("session_start preflight self-heals: emits a resolved signal once the names
 
   // First session: namespace not writable → loud error entry + notification.
   await emit("session_start", {}, ctx);
+  await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), "initial not-writable error entry");
   assert.ok(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), "expected an initial error entry");
   assert.ok(notifications.some((n) => n.level === "error"), "expected an initial error notification");
   const errorNotifsAfterFail = notifications.filter((n) => n.level === "error").length;
@@ -2710,6 +2935,7 @@ test("session_start preflight self-heals: emits a resolved signal once the names
   // and there is no success-notify spam.
   writable = true;
   await emit("session_start", {}, ctx);
+  await waitFor(() => entries.some((e) => e.data.code === "NAMESPACE_OK"), "NAMESPACE_OK entry once the namespace is writable");
   assert.ok(entries.some((e) => e.data.code === "NAMESPACE_OK"), "expected an authoritative resolved entry once writable");
   assert.equal(
     notifications.filter((n) => n.level === "error").length,
@@ -2756,6 +2982,9 @@ test("session_start preflight treats a malformed denial as indeterminate (no fal
     sessionManager: { getSessionId: () => "preflight-malformed", getEntries: () => [] },
   });
 
+  // Malformed denial → indeterminate, nothing recorded; wait for the background
+  // chain to settle so the no-alarm assertions are not vacuous.
+  await flushBackgroundChains();
   assert.equal(entries.some((e) => e.data.code === "NAMESPACE_NOT_WRITABLE"), false);
   assert.equal(notifications.some((n) => n.level === "error"), false);
 });
@@ -2847,6 +3076,8 @@ test("session_start preflight treats a malformed writable answer as indeterminat
   });
 
   // Indeterminate → no state entry recorded at all (neither OK nor error).
+  // Wait for the background chain to settle so the absence is not vacuous.
+  await flushBackgroundChains();
   assert.equal(entries.some((e) => e.type === "remnic_state" && (e.data.code === "NAMESPACE_OK" || e.data.code === "NAMESPACE_NOT_WRITABLE")), false);
 });
 
@@ -2884,6 +3115,8 @@ test("session_start preflight tailors the remediation text for an unsupported (n
     sessionManager: { getSessionId: () => "preflight-unsupported", getEntries: () => [] },
   });
 
+  // The error notification is emitted by the background preflight (#3273 phase 1).
+  await waitFor(() => notifications.some((n) => n.level === "error"), "unsupported-namespace error notification");
   const err = notifications.find((n) => n.level === "error");
   assert.ok(err, "expected an error notification");
   assert.match(err?.message ?? "", /namespaces disabled/);
@@ -2913,6 +3146,9 @@ test("session_start warns once on plugin/daemon version mismatch without blockin
   const ctx = { cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => "version-mismatch" } };
   await emit("session_start", {}, ctx);
   await emit("session_start", {}, ctx);
+  // Both startup chains settle in the background (#3273 phase 1); the version
+  // check runs once (the second is guarded) and warns once.
+  await flushBackgroundChains();
   assert.equal(warnings.length, 1);
   assert.ok(warnings[0].includes(packageVersion));
   assert.match(warnings[0], /0\.0\.1/);
@@ -2944,6 +3180,9 @@ for (const scenario of ["matching", "missing", "invalid", "unavailable"] as cons
     await emit("session_start", {}, {
       cwd: "/tmp/pi-version-test", sessionManager: { getSessionId: () => `version-${scenario}` },
     });
+    // The version check runs in the background (#3273 phase 1); wait for the
+    // single initialize to complete before asserting the toleration.
+    await waitFor(() => initializes >= 1, "daemon version initialize completed");
     assert.equal(initializes, 1);
     assert.deepEqual(warnings, []);
   });

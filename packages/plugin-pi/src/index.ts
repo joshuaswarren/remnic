@@ -19,6 +19,7 @@ import {
   toObserveMessage,
 } from "./messages.js";
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
+import { runStartupProbeChain, settleWithinBudget } from "./startup-probe.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -94,12 +95,19 @@ type PiSessionState = {
   cachedContext: string | null;
   /** True once recall has been attempted (success or failure) for this session. */
   recallCompleted: boolean;
+  /**
+   * In-flight startup probe chain, kicked off in the background by
+   * `session_start` so startup isn't blocked on the daemon round trip
+   * (#3273 phase 1). The first `before_agent_start` awaits it (bounded) to
+   * get the freshest reachability verdict before deciding to recall.
+   */
+  startupProbe: Promise<DaemonProbeResult> | null;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
 type NotifyFn = (message: string, level: NotifyLevel) => void;
 
-type PiContextSnapshot = {
+export type PiContextSnapshot = {
   sessionKey: string;
   cwd: string;
   entries: any[];
@@ -164,17 +172,22 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // daemon is marked unreachable even when the status UI is off; otherwise
       // the namespace preflight and every later hook each burn a full request
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
-      const probe = await probeDaemonHealth(client, config);
-      if (probe !== "unreachable") {
-        await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
-      }
-      if (config.statusEnabled) {
-        session.setStatus(
-          "remnic",
-          recallTimeoutBreaker.isTripped() ? RECALL_DISABLED_STATUS : remnicStatusLabel(probe, config.namespace),
-        );
-      }
-      await runNamespacePreflight(pi, session, client, config);
+      //
+      // Run the chain in the BACKGROUND (#3273 phase 1): the daemon health probe
+      // costs a full round trip per call and session_start re-fires on every
+      // extension reload, so awaiting it blocked each startup/reload. Side
+      // effects are preserved exactly (they just settle async); the promise is
+      // kept on session state so the first before_agent_start can await it.
+      state.startupProbe = runStartupProbeChain(
+        {
+          probeHealth: probeDaemonHealth,
+          statusLabel: remnicStatusLabel,
+          recallDisabledStatus: RECALL_DISABLED_STATUS,
+          runNamespacePreflight,
+          errorText: errorMessage,
+        },
+        { pi, session, client, config, recallTimeoutBreaker },
+      );
     });
 
     pi.on("before_agent_start", async (event, ctx) => {
@@ -186,6 +199,17 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // prompt text so semantic recall produces relevant results.  Once
       // populated, the cached context is appended to the system prompt on
       // every turn for KV cache prefix stability (PR #2208).
+      // Await the in-flight startup probe (if any) before the recall gate,
+      // bounded by min(startup budget, turn budget), so a daemon the probe just
+      // found unreachable is skipped instead of burning the turn budget on a
+      // doomed first-turn recall (#3273 phase 1). A settled probe resolves on
+      // the next microtask, so this costs ~0 in the common case.
+      if (!state.recallCompleted && config.recallEnabled && config.authToken && state.startupProbe) {
+        await settleWithinBudget(
+          state.startupProbe,
+          Math.min(config.startupRequestTimeoutMs, config.turnRequestTimeoutMs),
+        );
+      }
       if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
         const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
         if (promptText) {
@@ -668,6 +692,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       liveObservedReplayKeys: new Map<string, number>(),
       cachedContext: null,
       recallCompleted: false,
+      startupProbe: null,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
@@ -853,7 +878,7 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
 }
 
 /** Result of the session_start daemon probe. */
-type DaemonProbeResult = "ready" | "starting" | "unreachable";
+export type DaemonProbeResult = "ready" | "starting" | "unreachable";
 
 /**
  * Probe the daemon and update the shared circuit breaker. Returns the probe
