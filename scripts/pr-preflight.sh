@@ -104,6 +104,21 @@ package_dependents() {
   '
 }
 
+# Exact membership without pipelines. Under `set -o pipefail`,
+# `printf … | grep -Fxq` can exit 141 (SIGPIPE) on an early match while the
+# producer still has data, so a real member looks absent and lands in both
+# Checked and Skipped.
+array_contains() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    [[ "$item" == "$needle" ]] && return 0
+  done
+  return 1
+}
+
+
 quick_package_scope() {
   local files
   local scope_all=0
@@ -153,7 +168,7 @@ quick_package_scope() {
   # scope so "Checked packages" states exactly what runs.
   for package_name in "${checked_packages[@]}"; do
     [[ -n "$package_name" ]] || continue
-    if printf '%s\n' "${check_type_packages[@]}" | grep -Fxq "$package_name"; then
+    if array_contains "$package_name" "${check_type_packages[@]}"; then
       checkable_packages+=("$package_name")
     fi
   done
@@ -164,7 +179,7 @@ quick_package_scope() {
   fi
 
   for package_name in "${manifest_packages[@]}"; do
-    if printf '%s\n' "${checked_packages[@]}" | grep -Fxq "$package_name"; then
+    if array_contains "$package_name" "${checked_packages[@]}"; then
       continue
     fi
     skipped_packages+=("$package_name")
