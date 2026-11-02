@@ -27,7 +27,7 @@ jobs:
     env:
       # One exclusion policy shared by regeneration and the --check pass so
       # the check can never validate under a different policy than wrote.
-      EXTRA_EXCLUDE: ''
+      EXTRA_EXCLUDE: 'cursoragent'
     steps:
       # Always regenerate against the default branch, even when a maintainer
       # picks another ref in workflow_dispatch (a dispatch against a feature
