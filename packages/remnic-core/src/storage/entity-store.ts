@@ -37,6 +37,9 @@ import type {
 import { isErrnoCode } from "../utils/errno.js";
 import { pathIsInside } from "../utils/path-containment.js";
 import {
+  ENTITY_CANONICAL_ID_MIGRATION_FILE,
+  ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER,
+  ENTITY_CANONICAL_ID_RECONCILE_MARKER,
   entityCanonicalIdMigrationCompleted,
   reconcileIfJournalMovedSync,
   requestEntityCanonicalIdReconcileSync,
@@ -93,14 +96,13 @@ export class EntityStore {
   /** Filename → file identity of the last indexable check. Unchanged files are not reread. */
   private readonly entityIndexableCache = new Map<string, { identity: string; ok: boolean }>();
   /**
-   * Amortized migration-completion verdict, keyed on the entity mutation
-   * version and the entities directory stat. Local writes bump the version;
-   * external adds/removes/renames change the directory stat — both invalidate.
-   * ponytail: external in-place content edits (no membership change, no local
-   * version bump) skip revalidation; drop the cache for a full per-read
-   * fingerprint if that ceiling ever matters.
+   * Amortized migration-completion verdict. Key covers every getFingerprint
+   * input that is cheap to lstat: entity mutation version, entities/ dir,
+   * config/aliases.json, the journal, and reconcile markers. Full fingerprint
+   * (including entity entry enumeration) runs only on key miss.
+   * ponytail: in-place entity *content* edits still skip revalidation.
    */
-  private migrationCompletedCache: { version: number; dirSig: string; completed: boolean } | undefined;
+  private migrationCompletedCache: { version: number; inputSig: string; completed: boolean } | undefined;
 
   constructor(
     private readonly deps: EntityStoreDeps,
@@ -423,40 +425,52 @@ export class EntityStore {
     return null;
   }
 
+  /** lstat identity for one fingerprint input path; nofollow; missing → stable token. */
+  private async migrationInputPathSig(filePath: string): Promise<string> {
+    try {
+      const s = await lstat(filePath);
+      return `${s.dev}:${s.ino}:${s.mtimeMs}:${s.ctimeMs}:${s.size}:${s.isSymbolicLink() ? "L" : s.isDirectory() ? "D" : "F"}`;
+    } catch {
+      return "missing";
+    }
+  }
+
+  /**
+   * Cheap coherence key for migrationCompletedCached. entities/ absence is
+   * uncacheable (random suffix) so we never pin a false complete.
+   */
+  private async migrationInputSig(): Promise<string> {
+    const stateDir = path.join(this.deps.baseDir, "state");
+    const entitiesSig = await this.migrationInputPathSig(this.deps.entitiesDir);
+    if (entitiesSig === "missing") return `entities-missing:${Math.random()}`;
+    const [aliasesSig, journalSig, reconcileSig, consumingSig] = await Promise.all([
+      this.migrationInputPathSig(path.join(this.deps.baseDir, "config", "aliases.json")),
+      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE)),
+      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
+      this.migrationInputPathSig(path.join(stateDir, ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),
+    ]);
+    return [entitiesSig, aliasesSig, journalSig, reconcileSig, consumingSig].join("|");
+  }
+
   /** Amortized entityCanonicalIdMigrationCompleted — see migrationCompletedCache. */
   private async migrationCompletedCached(): Promise<boolean> {
     const version = this.deps.getEntityMutationVersion();
-    let dirSig: string;
-    try {
-      const dirStat = await lstat(this.deps.entitiesDir);
-      dirSig = `${dirStat.ino}:${dirStat.mtimeMs}:${dirStat.ctimeMs}:${dirStat.size}`;
-    } catch {
-      dirSig = `missing:${Math.random()}`; // no directory to key on — never cache
-    }
+    const inputSig = await this.migrationInputSig();
     const cached = this.migrationCompletedCache;
-    if (cached && cached.version === version && cached.dirSig === dirSig) return cached.completed;
+    if (cached && cached.version === version && cached.inputSig === inputSig) return cached.completed;
     const completed = await entityCanonicalIdMigrationCompleted(path.join(this.deps.baseDir, "state"), () =>
       getFingerprint(this.deps.baseDir, this.deps.entitiesDir, () => String(version)));
-    this.migrationCompletedCache = { version, dirSig, completed };
+    this.migrationCompletedCache = { version, inputSig, completed };
     return completed;
   }
 
   async readEntity(name: string): Promise<string> {
     const filePath = this.deps.resolveEntityFilePath(name);
     if (filePath === null) return "";
-    // Batch reads retry renames unconditionally (a listed file that ENOENTs
-    // is definitionally a race), but a DIRECT lookup of a legacy id must stop
-    // resolving once the journal says migration completed and its file is gone.
-    if (this.deps.entityCanonicalMigrationComplete()) {
-      try {
-        return await this.deps.readStorageSecureFile(filePath);
-      } catch (err) {
-        if (err instanceof SecureStoreLockedError) throw err;
-        // ENOENT: gone. ELOOP: a planted symlink the open refused to follow.
-        if (isErrnoCode(err, "ENOENT") || isErrnoCode(err, "ELOOP")) return "";
-        throw err;
-      }
-    }
+    // Physical hit always wins. On miss, skip rename/body-scan only when the
+    // amortized completion verdict attests to live fingerprint inputs (not a
+    // bare journal.complete flag — aliases/reconcile/journal drift must reopen
+    // compatibility). A validated-complete miss is a gone legacy id.
     const readDirect = async (): Promise<string | undefined> => {
       try {
         return await this.deps.readStorageSecureFile(filePath);
@@ -468,11 +482,10 @@ export class EntityStore {
     };
     const direct = await readDirect();
     if (direct !== undefined) return direct;
+    if (await this.migrationCompletedCached()) return "";
     const renamed = await this.readEntityFileResolvingRename(filePath, name);
     if (renamed !== null) return renamed.content;
-    // Skip body scan when amortized completion attests live inputs still match.
-    if (await this.migrationCompletedCached()) return "";
-    // Deferred / no-journal path: match a legacy filename by physical requested id.
+    // Deferred / no-journal / fingerprint-stale path: match legacy filename by body id.
     // ponytail: scan only incomplete-migration misses; index if those become hot.
     let legacy: string | undefined;
     for (const file of await this.readEntityDirectoryNames()) {

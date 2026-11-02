@@ -89,6 +89,44 @@ test("an external entities change invalidates the amortized completion verdict o
   }
 });
 
+test("an external aliases change invalidates the amortized completion verdict on the same reader", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-completed-alias-cache-"));
+  try {
+    const seed = new StorageManager(dir);
+    const previousId = await seed.writeEntity("Café", "project", ["Synthetic legacy fact."]);
+    await seed.ensureDirectories();
+    const journalPath = path.join(dir, "state", "entity-canonical-id-migration-v1.json");
+    const journal = await readFile(journalPath, "utf8");
+    assert.equal(JSON.parse(journal).complete, true);
+
+    const reader = new StorageManager(dir);
+    await reader.ensureDirectories({ waitForEntityMigration: false });
+    // Warm amortized completion (and any same-reader completion memo) on a miss.
+    assert.equal(await reader.readEntity("project-missing"), "");
+
+    // Block migration repair so fingerprint drift stays visible to reads.
+    const lock = path.join(dir, "state", "entity-canonical-id-migration.lock");
+    await writeFile(lock, `${process.pid} test-holder ${new Date().toISOString()}\n`);
+
+    // External aliases.json is a getFingerprint input. It must invalidate a
+    // warm completed verdict without entities membership or mutation-version change.
+    // The entity file stays at previousId; only the alias-derived canonical id moves.
+    await mkdir(path.join(dir, "config"), { recursive: true });
+    await writeFile(path.join(dir, "config", "aliases.json"), JSON.stringify({ café: "coffee" }));
+    await reader.loadAliases();
+    const canonical = reader.normalizeEntityName("Café", "project");
+    assert.notEqual(canonical, previousId);
+
+    assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
+    assert.equal(await readFile(journalPath, "utf8"), journal, "read compatibility must not replay migration");
+    assert.ok(await readFile(lock));
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
 for (const change of ["aliases", "raw legacy write"]) {
   test(`stale completed journals do not hide canonical reads after ${change}`, async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-stale-completion-"));
