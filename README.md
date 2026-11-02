@@ -535,22 +535,6 @@ The website publishes the [guide library](https://remnic.ai/guides) (what is AI 
 
 Engram is now Remnic. Canonical packages live under the `@remnic/*` scope, and OpenClaw installs use [`@remnic/plugin-openclaw`](https://www.npmjs.com/package/@remnic/plugin-openclaw). The legacy `engram` CLI name, the `openclaw engram` command namespace, and the `/engram/v1/...` HTTP paths remain available as a compatibility surface during the rename window. Migrating an existing install? Run `remnic openclaw migrate-engram --yes`, which backs up the legacy extension, installs the new plugin, preserves your `memoryDir`, and switches the memory slot. Full steps: [Engram to Remnic migration guide](docs/guides/openclaw-engram-to-remnic.md).
 
-## Community, 2026-11-02
-
-These counts describe participation in this repository. Joshua is the only verified user represented in these docs.
-
-| Metric | Count | Source |
-|---|---|---|
-| Issues opened by outside accounts, all states | 77 | [Repository issues](https://github.com/joshuaswarren/remnic/issues?q=is%3Aissue) |
-| Pull requests opened by outside accounts, all states | 47 | [Repository pull requests](https://github.com/joshuaswarren/remnic/pulls?q=is%3Apr) |
-| Merged pull requests from those outside accounts | 31 | [Merged pull requests](https://github.com/joshuaswarren/remnic/pulls?q=is%3Apr+is%3Amerged) |
-| Distinct outside author accounts across those issues and pull requests | 35 | [Issues](https://github.com/joshuaswarren/remnic/issues?q=is%3Aissue) and [pull requests](https://github.com/joshuaswarren/remnic/pulls?q=is%3Apr) |
-| Community entries in the maintained contributor list | 9 | [CONTRIBUTORS.md at the counted revision](https://github.com/joshuaswarren/remnic/blob/125d10997c4e24057848de9121dca5cf5f9a915f/CONTRIBUTORS.md) |
-
-Fetched through GitHub's API on 2026-11-02: issues at 01:09:40-01:09:48 UTC, pull requests at 01:09:59-01:10:21 UTC, and the pinned contributor list at 01:15:24 UTC. All issue and pull-request pages were counted, not just open items.
-
-Here, outside excludes `joshuaswarren`, GitHub `Bot` identities, logins ending in `[bot]`, `-bot`, or `_bot`, and missing authors. These are account counts, not verified people or users. Comments and reviews are not counted. Commit history is excluded so upstream history cannot inflate participation. The contributor list is curated; it is a separate count.
-
 Read [Accessibility](ACCESSIBILITY.md) for useful features, privacy limits, and the local-model checks marked Measured or Not measured.
 
 - [Feature roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1) — current priority order, blockers, and next work.
