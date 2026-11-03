@@ -4443,15 +4443,34 @@ test("a repair that fails after the sidecar write does not pile up sidecars (#32
     // and the hash-named sidecar must be reused, not duplicated.
     const original = catalog["rewriteUnchained"].bind(catalog);
     let failures = 0;
+    // Each injected call signals its own completion, so the test awaits the
+    // attempt it scheduled instead of polling the file for a needle that never
+    // appears. The resolver is registered BEFORE the read that schedules the
+    // attempt, so the signal can never be missed.
+    const pendingResolves: Array<() => void> = [];
+    const settlesOnNextAttempt = (): Promise<void> => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      pendingResolves.push(resolve);
+      return promise;
+    };
     catalog["rewriteUnchained"] = async (records: unknown[]) => {
       failures += 1;
-      if (failures <= 2) throw new Error("simulated rewrite failure after the sidecar");
-      return original(records as never);
+      const signal = pendingResolves.shift();
+      try {
+        if (failures <= 2) throw new Error("simulated rewrite failure after the sidecar");
+        // SAFETY: rewriteUnchained's parameter is NamespaceRecord[]; the override's
+        // loose unknown[] only ever forwards what the repair itself passed.
+        return await original(records as never);
+      } finally {
+        signal?.();
+      }
     };
+    let settled = settlesOnNextAttempt();
     await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
-    await settleRewrite(catalogPath, "-never"); // settle the failing attempt
+    await settled; // the first failing attempt
+    settled = settlesOnNextAttempt();
     await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
-    await settleRewrite(catalogPath, "-never"); // settle the second failing attempt
+    await settled; // the second failing attempt
     await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
     await settleRewrite(catalogPath, "this is not json"); // third attempt repairs
     await settleStateDir(path.join(memoryDir, "state"));

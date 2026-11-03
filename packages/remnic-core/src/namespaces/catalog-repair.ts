@@ -4,6 +4,8 @@
  * (issue #1995). Pure scheduling state plus the quarantine-sidecar path helper.
  */
 
+import { createHash } from "node:crypto";
+
 /** After a dropped attempt, wait this long before another read may schedule one. */
 export const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
 
@@ -16,8 +18,6 @@ export const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
  * short — a longer window would delay the legitimate warm-cache retry after
  * contention clears. A fast failure holds no lock budget and does not back off.
  */
-import { createHash } from "node:crypto";
-
 export class MalformedCatalogRepairGate {
   private inFlight: Promise<void> | undefined;
   private nextAttemptAt = 0;
