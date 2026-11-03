@@ -143,7 +143,12 @@ export class LanceDbBackend implements SearchBackend {
   }
 
   async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
-    return this.refreshCollection(this.collection, this.memoryDir, execution);
+    try {
+      return await this.refreshCollection(this.collection, this.memoryDir, execution);
+    } catch (err) {
+      log.debug(`LanceDbBackend update did not complete: ${err}`);
+      return false;
+    }
   }
 
   /** Brings the collection up to date; true only when it ran to completion (false: aborted, unavailable, skipped or failed). */

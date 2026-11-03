@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { NamespaceSearchRouter, normalizeQmdResultPath } from "./search.js";
+import { MaintenanceScheduler } from "../orchestration/maintenance.js";
+import type { NamespaceCatalog } from "./catalog.js";
 import type {
   SearchBackend,
   SearchBackendStatus,
@@ -976,4 +981,120 @@ test("normalizeQmdResultPath strips a real collection prefix but not a category 
   assert.equal(normalizeQmdResultPath("facts/a.md", "facts"), "facts/a.md");
   // A non-category collection prefix on a plain hit is still stripped.
   assert.equal(normalizeQmdResultPath("openclaw-engram/facts/a.md", "openclaw-engram"), "facts/a.md");
+});
+
+/**
+ * Orama, LanceDB, Meilisearch and remote backends have no updateStrict or
+ * updateCollectionStrict; their plain update() is fail-open. They report whether
+ * an update ran through updateCompleted() (issue #3286).
+ */
+class NonQmdBackend extends FakeBackend {
+  completedCalls = 0;
+
+  constructor(completed: boolean) {
+    super(false);
+    // Instance properties shadow the QMD-only strict methods FakeBackend defines.
+    Object.defineProperty(this, "updateStrict", { value: undefined });
+    Object.defineProperty(this, "updateCollectionStrict", { value: undefined });
+    Object.defineProperty(this, "updateCompleted", {
+      value: async (): Promise<boolean> => {
+        this.completedCalls += 1;
+        return completed;
+      },
+    });
+  }
+}
+
+function nonQmdRouter(completed: boolean, created: NonQmdBackend[], cfg: PluginConfig = config()): NamespaceSearchRouter {
+  return new NamespaceSearchRouter(
+    cfg,
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new NonQmdBackend(completed);
+      created.push(backend);
+      return backend;
+    },
+  );
+}
+
+test("strict updateNamespaces fails for a non-QMD backend whose refresh did not complete", async () => {
+  const created: NonQmdBackend[] = [];
+  const router = nonQmdRouter(false, created);
+
+  await assert.rejects(
+    router.updateNamespaces(["main"], undefined, { strict: true }),
+    /did not complete/,
+  );
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 0, "the fail-open update() is not what strict runs");
+});
+
+test("strict updateNamespaces succeeds for a non-QMD backend whose refresh completed", async () => {
+  const created: NonQmdBackend[] = [];
+  const router = nonQmdRouter(true, created);
+
+  assert.equal(await router.updateNamespaces(["main", "shared"], undefined, { strict: true }), 2);
+  assert.equal(created.reduce((sum, backend) => sum + backend.completedCalls, 0), 2);
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 0);
+});
+
+test("non-strict updateNamespaces keeps the fail-open update() for non-QMD backends", async () => {
+  const created: NonQmdBackend[] = [];
+  const router = nonQmdRouter(false, created);
+
+  assert.equal(await router.updateNamespaces(["main"]), 1);
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 1);
+  assert.equal(created.reduce((sum, backend) => sum + backend.completedCalls, 0), 0);
+});
+
+test("strict updateNamespaces falls back to update() for a backend with no strict or completed variant", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false);
+      Object.defineProperty(backend, "updateCollectionStrict", { value: undefined });
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  assert.equal(await router.updateNamespaces(["main"], undefined, { strict: true }), 1);
+  assert.equal(created.reduce((sum, backend) => sum + backend.updates, 0), 1);
+});
+
+test("namespace-mode maintenance is served only when a non-QMD backend's refresh completed", async () => {
+  for (const completed of [true, false]) {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-3286-ns-completion-"));
+    const cfg: PluginConfig = {
+      ...config(),
+      memoryDir,
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdMaintenanceEnabled: true,
+      qmdMaintenanceDebounceMs: 60_000,
+      qmdAutoEmbedEnabled: false,
+    };
+    const created: NonQmdBackend[] = [];
+    const router = nonQmdRouter(completed, created, cfg);
+    const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "main" }];
+      },
+      async markMaintenance() {},
+    });
+    const qmd: SearchBackend = Object.assign(Object.create(null), { isAvailable: () => true });
+    const scheduler = new MaintenanceScheduler({ config: cfg, getQmd: () => qmd, namespaceSearchRouter: router, namespaceCatalog: catalog });
+    try {
+      const served = scheduler.requestQmdMaintenanceCompletion();
+      await scheduler.runQmdMaintenance();
+      assert.equal(await served, completed, completed ? "a completed refresh serves the request" : "an incomplete refresh must keep the marker owed");
+      assert.ok(created.some((backend) => backend.completedCalls > 0), "maintenance asked the backend whether it completed");
+    } finally {
+      await scheduler.dispose();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  }
 });

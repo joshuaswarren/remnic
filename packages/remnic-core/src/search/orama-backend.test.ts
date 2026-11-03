@@ -290,3 +290,19 @@ test("Orama updateCompleted is false for a refresh aborted at any checkpoint, an
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("Orama updateCompleted reports false, not a rejection, when the refresh throws (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-throws-"));
+  try {
+    await writeMemoryFact(root, "fact.md", "---\nid: mem-throws\n---\nA fact.");
+    const backend = await createBackend(root, path.join(root, "orama-db"), undefined, { update: false });
+    Object.defineProperty(backend, "persistDbForCollection", {
+      value: async () => {
+        throw new Error("disk full");
+      },
+    });
+    assert.equal(await backend.updateCompleted(), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

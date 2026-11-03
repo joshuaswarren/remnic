@@ -169,7 +169,12 @@ export class MeilisearchBackend implements SearchBackend {
       // Upsert current docs and wait for the task to complete
       if (isSearchAborted(execution)) return false;
       const addTask = await index.addDocuments(meilDocs, { primaryKey: "id" });
-      await client.waitForTask(addTask.taskUid, { timeOutMs: this.timeoutMs });
+      // waitForTask resolves with a failed or canceled task and rejects only on timeout.
+      const added = await client.waitForTask(addTask.taskUid, { timeOutMs: this.timeoutMs });
+      if (added.status !== "succeeded") {
+        log.debug(`MeilisearchBackend add task finished with status ${added.status}`);
+        return false;
+      }
       if (isSearchAborted(execution)) return false;
 
       // Remove docs that no longer exist on disk (paginated to handle large indexes)
