@@ -123,6 +123,76 @@ remnic openclaw install
 install` step first. Restart the gateway afterward. Full walkthrough and config live
 in [Getting started](../getting-started.md).
 
+## x86 Linux, no Mac
+
+Measured 2026-11-03 on an x86_64 Linux host with no Apple silicon and no GPU in the
+inference path. Everything below ran as written; anything not exercised says **Not
+measured**.
+
+Host: `jarvis` — ASRock Rack ROMED8-2T, AMD EPYC 7443P (48 hardware threads), 251 GiB
+RAM, Proxmox VE (kernel `7.0.14-25-pve`), CPU-only inference. Model: `qwen2.5:0.5b-instruct`
+(380 MB on disk) served by Ollama 0.40.14, user-local, no root install:
+
+```bash
+mkdir -p ~/ollama-bin ~/ollama-models
+curl -fsSL -o /tmp/ollama.tar.zst \
+  https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tar.zst
+tar --zstd -xf /tmp/ollama.tar.zst -C ~/ollama-bin
+OLLAMA_MODELS=$HOME/ollama-models ~/ollama-bin/bin/ollama serve &   # listens on 127.0.0.1:11434
+for i in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1 && break
+  sleep 1
+  [ "$i" = 30 ] && echo "ollama serve did not come up on port 11434" >&2 && exit 1
+done
+OLLAMA_MODELS=$HOME/ollama-models ~/ollama-bin/bin/ollama pull qwen2.5:0.5b-instruct
+```
+
+Remnic needs Node.js 22.12+. Where the system Node is mise-managed, install the CLI
+into a project directory instead of globally (same package as `npm install -g`):
+
+```bash
+mkdir -p ~/remnic-cli && cd ~/remnic-cli && npm install @remnic/cli
+alias remnic="$PWD/node_modules/.bin/remnic"
+```
+
+Point Remnic's local-LLM route at Ollama's OpenAI-compatible endpoint —
+`~/.config/remnic/config.json`:
+
+```json
+{
+  "remnic": {
+    "openaiApiKey": false,
+    "modelSource": "plugin",
+    "localLlmEnabled": true,
+    "localLlmUrl": "http://127.0.0.1:11434/v1",
+    "localLlmModel": "qwen2.5:0.5b-instruct",
+    "memoryDir": "~/remnic-x86-memory",
+    "memoryOsPreset": "balanced",
+    "recallBudgetChars": 64000
+  }
+}
+```
+
+`remnic daemon install` (installs a systemd **user** service, no root) then starts the
+daemon; it logged `Local LLM model detected: qwen2.5:0.5b-instruct` at startup, which is
+the check that the local route is wired. `remnic doctor` shows
+`OPENAI_API_KEY: disabled by config (local LLM enabled)`.
+
+Measured on this host (CPU-only, small model — expect modest quality):
+
+- Storing a memory through the daemon's MCP endpoint (`remnic_memory_store`): **40 ms**.
+- One chat completion, 48 prompt + 40 completion tokens: **2.5 s wall** (16 completion
+  tokens/s on CPU).
+- Recalling it: `remnic query "Which fleet host runs the local model?"` returned the
+  stored memory; 4.1 s wall for the CLI, of which retrieval internals were **83 ms**
+  (the rest is Node startup and daemon round-trips).
+- `remnic curate` and `remnic sync run` index files in ~1 s without a model call.
+
+**Not measured** on this host: model-backed extraction (no activity source — wearables,
+transcripts, or a connected agent session — was connected, so the extraction queue never
+had work), GPU inference (the host's RTX 3090 is not exposed to this path), embeddings,
+and the connector quick-start for any specific tool.
+
 ## Next steps
 
 - [Getting started](../getting-started.md) — every install option, config, and first-run detail
