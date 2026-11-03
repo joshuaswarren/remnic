@@ -29,8 +29,11 @@ const result = await build({
   logLevel: "warning",
 });
 
-const expected = result.outputFiles[0].text;
-const actual = await readFile(outfile, "utf-8").catch(() => "");
+const expected = result.outputFiles[0].text.replace(/\r\n/g, "\n");
+// core.autocrlf=true can check the committed file out with CRLF endings; the
+// generated bundle is LF. Compare normalized, or the build blocks on Windows
+// checkouts even when the worker is in sync.
+const actual = (await readFile(outfile, "utf-8").catch(() => "")).replace(/\r\n/g, "\n");
 if (actual !== expected) {
   console.error("corpus-scan worker entry is out of date — run: npm run sync:corpus-scan-worker");
   process.exit(1);

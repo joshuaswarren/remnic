@@ -197,19 +197,36 @@ test("a corpus scan costs the main thread far less than the inline walk", async 
       const paths = await scan();
       return { activeMs: performance.eventLoopUtilization(before).active, count: paths.length };
     };
+    // Median of several samples: a single pair of runs is noisy, and one short
+    // main-thread stall during either window would fail the ratio below.
+    const median = (values: number[]): number => {
+      const sorted = [...values].sort((a, b) => a - b);
+      return sorted[Math.floor(sorted.length / 2)];
+    };
     await collectContainedMarkdownPaths({ baseDir, startDirs }); // warm the page cache for both runs
-    const inline = await measure(() => collectContainedMarkdownPaths({ baseDir, startDirs }));
-    const viaWorker = await measure(() => corpusScanWorker.request({
-      kind: "walk",
-      baseDir,
-      startDirs,
-      propagateReadErrors: false,
-    }));
-    assert.equal(viaWorker.count, inline.count, "both runs must cover the same corpus");
-    assert.ok(inline.count >= 4_000, "the scan must have covered the corpus");
+    const SAMPLES = 3;
+    const inlineActive: number[] = [];
+    const workerActive: number[] = [];
+    let corpusCount = 0;
+    for (let i = 0; i < SAMPLES; i += 1) {
+      const inline = await measure(() => collectContainedMarkdownPaths({ baseDir, startDirs }));
+      const viaWorker = await measure(() => corpusScanWorker.request({
+        kind: "walk",
+        baseDir,
+        startDirs,
+        propagateReadErrors: false,
+      }));
+      assert.equal(viaWorker.count, inline.count, "both runs must cover the same corpus");
+      corpusCount = inline.count;
+      inlineActive.push(inline.activeMs);
+      workerActive.push(viaWorker.activeMs);
+    }
+    assert.ok(corpusCount >= 4_000, "the scan must have covered the corpus");
+    const inlineMedian = median(inlineActive);
+    const workerMedian = median(workerActive);
     assert.ok(
-      viaWorker.activeMs < inline.activeMs / 2,
-      `the worker scan must cost the main thread well under half the inline scan (worker ${viaWorker.activeMs.toFixed(1)}ms active vs inline ${inline.activeMs.toFixed(1)}ms)`,
+      workerMedian < inlineMedian / 2,
+      `the worker scan must cost the main thread well under half the inline scan (worker ${workerMedian.toFixed(1)}ms active vs inline ${inlineMedian.toFixed(1)}ms, medians of ${SAMPLES})`,
     );
   } finally {
     await rm(baseDir, { recursive: true, force: true });
