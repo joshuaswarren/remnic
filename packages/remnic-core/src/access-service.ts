@@ -136,6 +136,8 @@ import {
   applySupportPassportOfflineSyncChangeset,
   applySupportPassportOfflineSyncFileContent,
 } from "./support-passport/offline-sync-guard.js";
+import { withCaptureWriteLockBackoff } from "./capture-write-lock-scope.js";
+import { resolveConvergeCaptureWriteLockBackoff } from "./converge-config.js";
 import type { WearablesService } from "./wearables/service.js";
 import { exportWorkBoardMarkdown, exportWorkBoardSnapshot, importWorkBoardSnapshot } from "./work/board.js";
 import { wrapWorkLayerContext } from "./work/boundary.js";
@@ -5623,7 +5625,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const resolvedNamespace = this.writableNamespaceFor(options.namespace, undefined, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
-      const result = await applySupportPassportOfflineSyncFileContent(storage, options);
+      const result = await withCaptureWriteLockBackoff(storage, resolveConvergeCaptureWriteLockBackoff(this.orchestrator.config.converge),
+        () => applySupportPassportOfflineSyncFileContent(storage, options));
       return {
         namespace: resolvedNamespace,
         ...result,
@@ -5671,7 +5674,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const resolvedNamespace = this.writableNamespaceFor(options.namespace, undefined, options.principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     try {
-      const result = await applySupportPassportOfflineSyncChangeset(storage, options);
+      const result = await withCaptureWriteLockBackoff(storage, resolveConvergeCaptureWriteLockBackoff(this.orchestrator.config.converge),
+        () => applySupportPassportOfflineSyncChangeset(storage, options));
       return {
         namespace: resolvedNamespace,
         ...result,
