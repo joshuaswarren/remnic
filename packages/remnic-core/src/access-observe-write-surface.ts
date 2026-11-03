@@ -29,7 +29,7 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { buildWithBriefingLocation, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { abortError } from "./abort-error.js";
 import { withBriefingDeadline } from "./briefing-deadline.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
@@ -460,7 +460,7 @@ export class AccessObserveWriteSurface {
     // Storage acquisition and the briefing body share one request budget.
     const result = await withBriefingDeadline(async (signal) => {
       const storage = await this.deps.orchestrator.getStorage(namespace);
-      return applyBriefingLocationContext(await buildBriefing({
+      return buildWithBriefingLocation(request.includeLocation, storage.dir, window.from.toISOString(), config.location, () => buildBriefing({
         storage,
         namespace,
         window,
@@ -477,7 +477,7 @@ export class AccessObserveWriteSurface {
         // existing deployments are unchanged.
         followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
         abortSignal: signal,
-      }), request.includeLocation, storage.dir, window.from.toISOString(), config.location);
+      }));
     }, request.abortSignal);
 
     return {

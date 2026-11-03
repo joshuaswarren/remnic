@@ -4,6 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 import { abortError } from "./abort-error.js";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { AccessObserveWriteSurface } from "./access-observe-write-surface.js";
+import { Orchestrator } from "./orchestrator.js";
 import { buildBriefing, type ParsedBriefingWindow } from "./briefing.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import { StorageManager } from "./storage.js";
@@ -127,4 +131,43 @@ test("buildBriefing returns a non-empty briefing when nothing is cancelled", asy
   assert.equal(result.sections.recentEntities.length, 1);
   assert.ok(result.markdown.length > 0);
   assert.deepEqual(result.window, { from: "2026-04-10T00:00:00.000Z", to: "2026-04-11T00:00:00.000Z" });
+});
+
+test("an HTTP/MCP briefing cancelled during the location read keeps the notification queue", async (t) => {
+  const storage = makeStorage(t);
+  const queueDir = path.join(storage.dir, "state", "corrections");
+  mkdirSync(queueDir, { recursive: true });
+  const queueFile = path.join(queueDir, "notifications.jsonl");
+  writeFileSync(
+    queueFile,
+    `${JSON.stringify({ planId: "synthetic-plan", summary: "synthetic correction", undoCommand: "remnic correct plan synthetic-plan", createdAt: "2026-04-10T04:00:00.000Z" })}\n`
+  );
+  const controller = new AbortController();
+  const read: (file: string, encoding: "utf-8") => Promise<string> = fs.readFile;
+  t.mock.method(fs, "readFile", async (file: string) => {
+    if (file.endsWith(path.join("state", "locations", "sync.json"))) controller.abort(abortError("deadline"));
+    return read(file, "utf-8");
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  // Object.create yields untyped values, so no assertion is needed: briefing() reads only these members.
+  const orchestrator: Orchestrator = Object.assign(Object.create(Orchestrator.prototype), {
+    config: {
+      briefing: { enabled: true, defaultWindow: "24h", defaultFormat: "markdown", maxFollowups: 0, llmFollowups: false },
+      location: { enabled: true, tagging: { enabled: true }, timezone: "UTC" },
+    },
+    getStorage: async () => storage,
+  });
+  const surface = new AccessObserveWriteSurface(
+    Object.assign(Object.create(null), { orchestrator, resolveReadableNamespace: () => "default" }),
+  );
+
+  await assert.rejects(
+    surface.briefing({ includeLocation: true, abortSignal: controller.signal }),
+    { name: "AbortError" },
+  );
+  assert.ok(existsSync(queueFile), "a briefing cancelled during the location read must not consume notifications");
 });

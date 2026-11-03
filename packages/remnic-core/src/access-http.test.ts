@@ -21,6 +21,7 @@ import {
   tokenCapabilityStore,
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
+import { BriefingTimeoutError } from "./briefing-deadline.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import { createChatSession } from "./chat/chat-session.js";
@@ -892,6 +893,27 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
     assert.equal(invalid.status, 400);
     assert.equal(((await invalid.json()) as { code: string }).code, "input_error");
     assert.equal(calls.length, 1);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP briefing endpoint answers 504 briefing_timeout when the request budget is exhausted", async () => {
+  const service: EngramAccessService = Object.assign(Object.create(null), {
+    briefing: async () => {
+      throw new BriefingTimeoutError(30_000);
+    },
+  });
+  const server = new EngramAccessHttpServer({ service, port: 0, authToken: "test-token", adminConsoleEnabled: false });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/briefing`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 504);
+    assert.deepEqual(await response.json(), { error: "briefing timed out after 30000ms", code: "briefing_timeout" });
   } finally {
     await server.stop();
   }

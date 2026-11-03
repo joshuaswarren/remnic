@@ -10,6 +10,7 @@ import { log } from "./logger.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { WriteRateLimiter, type WriteRateLimitReservation } from "./write-rate-limiter.js";
 import { abortError, isAbortError } from "./abort-error.js";
+import { BriefingTimeoutError } from "./briefing-deadline.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import {
   EngramAccessInputError,
@@ -500,6 +501,10 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       res.once("close", abortDisconnectedRequest);
       correlationIdStore.run(correlationId, () => {
         void this.handle(req, res, correlationId, abortController.signal).catch((err) => {
+          if (err instanceof BriefingTimeoutError) {
+            this.respondJson(res, 504, { error: err.message, code: "briefing_timeout" });
+            return;
+          }
           if (isAbortError(err)) {
             if (!res.destroyed && !res.writableEnded) {
               res.end();
