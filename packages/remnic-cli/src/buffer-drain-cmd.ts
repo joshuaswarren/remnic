@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseConfig, resolveRemnicConfigRecord, StorageManager } from "@remnic/core";
+import { z } from "zod";
 import type { BufferEntryState } from "@remnic/core/types.js";
 
 export const BUFFER_DRAIN_USAGE = `Usage: remnic buffer drain [options]
@@ -132,7 +133,12 @@ export interface BufferDrainDeps {
 }
 
 /** The compiled worker entry (or its source twin under tsx). */
-function resolveWorkerEntry(): { file: string; args: string[] } {
+interface DrainWorkerEntry {
+  file: string;
+  args: string[];
+}
+
+function resolveWorkerEntry(): DrainWorkerEntry {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
   const compiled = path.join(moduleDir, "buffer-drain-worker.js");
   if (fs.existsSync(compiled)) return { file: compiled, args: [] };
@@ -140,13 +146,23 @@ function resolveWorkerEntry(): { file: string; args: string[] } {
   return { file: path.join(moduleDir, "buffer-drain-worker.ts"), args: ["--import", "tsx"] };
 }
 
-interface WorkerEvent {
-  type: string;
-  key?: string;
-  turns?: number;
-  outcome?: DrainSessionReport;
-  error?: string;
-}
+const workerEventSchema = z.object({
+  type: z.string(),
+  key: z.string().optional(),
+  turns: z.number().optional(),
+  outcome: z
+    .object({
+      key: z.string(),
+      status: z.string(),
+      turnsAtStart: z.number(),
+      turnsRemaining: z.number(),
+      persistedCount: z.number(),
+      durableOutputCount: z.number(),
+      reason: z.string().optional(),
+    })
+    .optional(),
+  error: z.string().optional(),
+});
 
 /**
  * Run the drain. Returns the process exit code.
@@ -219,19 +235,25 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
         buffered = lines.pop() ?? "";
         for (const line of lines) {
           if (line.trim().length === 0) continue;
-          let event: WorkerEvent;
-          try {
-            event = JSON.parse(line) as WorkerEvent;
-          } catch {
-            continue;
-          }
+          const parsed = workerEventSchema.safeParse(JSON.parse(line));
+          if (!parsed.success) continue;
+          const event = parsed.data;
           if (event.type === "session_started" && event.key) {
             deps.stderr(`draining ${event.key} (${event.turns ?? 0} turn(s))`);
             continue;
           }
           if (event.type === "session_finished" && event.outcome) {
-            reports.push(event.outcome);
-            const outcome = event.outcome;
+            const outcome: DrainSessionReport = {
+              key: event.outcome.key,
+              // SAFETY: the worker reports one of the four known statuses.
+              status: event.outcome.status as DrainSessionReport["status"],
+              turnsAtStart: event.outcome.turnsAtStart,
+              turnsRemaining: event.outcome.turnsRemaining,
+              persistedCount: event.outcome.persistedCount,
+              durableOutputCount: event.outcome.durableOutputCount,
+            };
+            if (event.outcome.reason !== undefined) outcome.reason = event.outcome.reason;
+            reports.push(outcome);
             if (outcome.status === "failed" || outcome.status === "deferred") {
               deps.stderr(
                 `${outcome.key}: ${outcome.status}${outcome.reason ? ` (${outcome.reason})` : ""} — ${outcome.turnsRemaining} turn(s) left`,

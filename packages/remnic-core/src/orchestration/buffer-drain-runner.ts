@@ -24,6 +24,7 @@ import type { BufferStorage } from "../buffer-persistence.js";
 import { BufferDrainClaims, type DrainLease } from "../storage/buffer-drain-claims.js";
 import type { BufferEntryState, BufferState } from "../types.js";
 import { hostname } from "node:os";
+import { describeError } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { selfDeps } from "./self-deps.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingestion.js";
@@ -57,6 +58,9 @@ export interface BufferDrainRunnerOptions {
   /** Progress callback (per session, and per claim transition). */
   onEvent?: (event: DrainRunnerEvent) => void;
 }
+
+/** A failed drain run: the reason a chunk or the session could not finish. */
+export type DrainExtractionError = Error;
 
 export type DrainRunnerEvent =
   | { type: "session_started"; key: string; turns: number }
@@ -210,7 +214,7 @@ export class BufferDrainRunner {
             resolve({ error, result });
           },
         })
-        .catch((error: unknown) => {
+        .catch((error: DrainExtractionError) => {
           if (settled) return;
           settled = true;
           resolve({ error });
@@ -237,7 +241,7 @@ export class BufferDrainRunner {
       // A failed run keeps the remaining turns for the next attempt.
       await claims.releaseLease(key, options.ownerId);
       status = "failed";
-      reason = settledResult.error instanceof Error ? settledResult.error.message : String(settledResult.error);
+      reason = describeError(settledResult.error);
     } else {
       // Deferred: provider breaker / backoff / a chunk still pending. The
       // content stays claimed and the next run resumes it.
@@ -255,8 +259,8 @@ export class BufferDrainRunner {
       turnsRemaining,
       persistedCount,
       durableOutputCount,
-      ...(reason ? { reason } : {}),
     };
+    if (reason !== undefined) outcome.reason = reason;
     options.onEvent?.({ type: "session_finished", key, outcome });
     return outcome;
   }

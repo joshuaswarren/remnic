@@ -93,6 +93,7 @@ async function startFakeLlm(): Promise<FakeLlm> {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  // SAFETY: the server is listening, so address() is an AddressInfo.
   const address = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${address.port}/v1`,
@@ -219,6 +220,8 @@ test("one command drains every buffered session", async () => {
     // resurrecting them.
     const claims = fs.existsSync(claimDir(fixture.memoryDir)) ? fs.readdirSync(claimDir(fixture.memoryDir)) : [];
     for (const name of claims.filter((entry) => entry.endsWith(".json") && !entry.endsWith(".lease.json"))) {
+      // SAFETY: the claim file is written by the drain itself (key, entry,
+      // drained); the shape is checked right below.
       const body = JSON.parse(fs.readFileSync(path.join(claimDir(fixture.memoryDir), name), "utf8")) as {
         entry?: { turns?: unknown[] };
       };

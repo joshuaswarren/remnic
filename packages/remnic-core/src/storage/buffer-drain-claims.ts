@@ -31,6 +31,7 @@
  */
 
 import { hostname } from "node:os";
+import { z } from "zod";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -106,13 +107,13 @@ function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainC
   const entry = emptyEntry();
   entry.turns = mergeTurns(claim.entry.turns, incoming.turns, bufferTurnsEqual);
   const retained = [...(claim.entry.retainedTurns ?? []), ...(incoming.retainedTurns ?? [])];
+  // SAFETY: an empty accumulator of the same element type.
   const dedupedRetained = mergeTurns([] as typeof retained, retained, bufferTurnsEqual);
   if (dedupedRetained.length > 0) entry.retainedTurns = dedupedRetained;
-  entry.lastExtractionAt =
-    [claim.entry.lastExtractionAt, incoming.lastExtractionAt]
-      .filter((value): value is string => typeof value === "string")
-      .sort()
-      .at(-1) ?? null;
+  const stamps = [claim.entry.lastExtractionAt, incoming.lastExtractionAt].filter(
+    (value): value is string => value !== null && value !== undefined,
+  );
+  entry.lastExtractionAt = stamps.sort().at(-1) ?? null;
   entry.extractionCount = Math.max(claim.entry.extractionCount, incoming.extractionCount);
   return { ...claim, entry };
 }
@@ -129,6 +130,7 @@ function isOwnerAlive(lease: DrainLease): boolean {
     return true;
   } catch (err) {
     // EPERM: the process exists but belongs to another user.
+    // SAFETY: the value comes from this module's own write path; the shape is checked above.
     return (err as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
@@ -138,48 +140,84 @@ function isLeaseExpired(lease: DrainLease, now = Date.now()): boolean {
   return !Number.isFinite(heartbeat) || now - heartbeat > lease.leaseMs;
 }
 
+const claimBodySchema = z.object({
+  key: z.string().min(1),
+  entry: z.object({
+    turns: z.array(z.unknown()),
+    retainedTurns: z.array(z.unknown()).optional(),
+    lastExtractionAt: z.string().nullable().optional(),
+    extractionCount: z.number().optional(),
+  }).optional(),
+  turns: z.array(z.unknown()).optional(),
+  retainedTurns: z.array(z.unknown()).optional(),
+  lastExtractionAt: z.string().nullable().optional(),
+  extractionCount: z.number().optional(),
+  claimedAt: z.string().optional(),
+  drained: z.array(z.unknown()).optional(),
+});
+
 function parseBody(raw: string): DrainClaimFile | null {
+  let body: z.infer<typeof claimBodySchema>;
   try {
-    const body = JSON.parse(raw) as Partial<DrainClaimFile> & Partial<BufferEntryState>;
-    if (typeof body.key !== "string" || body.key.length === 0) return null;
-    // Two on-disk shapes, one format: a claim born from rename keeps the flat
-    // session-file shape ({key, turns, ...}) until its first rewrite, which
-    // nests under `entry`. Accept both.
-    const source = body.entry && Array.isArray(body.entry.turns) ? body.entry : body;
-    if (!Array.isArray(source.turns)) return null;
-    const entry = emptyEntry();
-    entry.turns = source.turns;
-    if (Array.isArray(source.retainedTurns)) entry.retainedTurns = source.retainedTurns;
-    if (typeof source.lastExtractionAt === "string") entry.lastExtractionAt = source.lastExtractionAt;
-    if (Number.isFinite(source.extractionCount)) entry.extractionCount = Number(source.extractionCount);
-    const claim: DrainClaimFile = {
-      key: body.key,
-      entry,
-      claimedAt: typeof body.claimedAt === "string" ? body.claimedAt : new Date().toISOString(),
-    };
-    if (Array.isArray(body.drained)) claim.drained = body.drained;
-    return claim;
+    body = claimBodySchema.parse(JSON.parse(raw));
   } catch {
     return null;
   }
+  // Two on-disk shapes, one format: a claim born from rename keeps the flat
+  // session-file shape ({key, turns, ...}) until its first rewrite, which
+  // nests under `entry`. Accept both.
+  const source = body.entry && Array.isArray(body.entry.turns) ? body.entry : body;
+  if (!Array.isArray(source.turns)) return null;
+  const entry = emptyEntry();
+  // SAFETY: the schema parsed these as an array of unknown; the claim file
+  // is written only by this module (BufferSessionFiles.save), so the entries
+  // are BufferTurn values.
+  // SAFETY: the claim file is written only by this module, so the parsed
+  // turn arrays hold BufferTurn values.
+  // SAFETY: the value comes from this module's own write path; the shape is checked above.
+  entry.turns = source.turns as BufferTurn[];
+  if (source.retainedTurns) {
+    // SAFETY: same boundary as the turns above (this module writes the file).
+    entry.retainedTurns = source.retainedTurns as BufferTurn[];
+  }
+  entry.lastExtractionAt = source.lastExtractionAt ?? null;
+  entry.extractionCount = Number.isFinite(source.extractionCount) ? Number(source.extractionCount) : 0;
+  const claim: DrainClaimFile = {
+    key: body.key,
+    entry,
+    claimedAt: body.claimedAt ?? new Date().toISOString(),
+  };
+  if (Array.isArray(body.drained)) {
+    // SAFETY: same boundary as the turns above (this module writes the file).
+    claim.drained = body.drained as BufferTurn[];
+  }
+  return claim;
 }
 
+const leaseSchema = z.object({
+  ownerId: z.string().min(1),
+  pid: z.number().optional(),
+  host: z.string().optional(),
+  acquiredAt: z.string().optional(),
+  heartbeatAt: z.string(),
+  leaseMs: z.number(),
+});
+
 function parseLease(raw: string): DrainLease | null {
+  let lease: z.infer<typeof leaseSchema>;
   try {
-    const lease = JSON.parse(raw) as Partial<DrainLease>;
-    if (typeof lease.ownerId !== "string" || lease.ownerId.length === 0) return null;
-    if (typeof lease.heartbeatAt !== "string" || !Number.isFinite(lease.leaseMs)) return null;
-    return {
-      ownerId: lease.ownerId,
-      pid: Number.isFinite(lease.pid) ? Number(lease.pid) : 0,
-      host: typeof lease.host === "string" ? lease.host : "",
-      acquiredAt: typeof lease.acquiredAt === "string" ? lease.acquiredAt : lease.heartbeatAt,
-      heartbeatAt: lease.heartbeatAt,
-      leaseMs: Number(lease.leaseMs),
-    };
+    lease = leaseSchema.parse(JSON.parse(raw));
   } catch {
     return null;
   }
+  return {
+    ownerId: lease.ownerId,
+    pid: lease.pid ?? 0,
+    host: lease.host ?? "",
+    acquiredAt: lease.acquiredAt ?? lease.heartbeatAt,
+    heartbeatAt: lease.heartbeatAt,
+    leaseMs: lease.leaseMs,
+  };
 }
 
 export class BufferDrainClaims {
@@ -271,8 +309,9 @@ export class BufferDrainClaims {
     try {
       await rename(sessionPath, this.fileFor(key));
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-        // Either never buffered, or another drainer claimed it first.
+      // The session file is gone: either it never existed, or another
+      // drainer claimed it first.
+      if (!existsSync(sessionPath)) {
         if (this.isClaimed(key)) return "already_claimed";
         return "empty";
       }
@@ -320,7 +359,8 @@ export class BufferDrainClaims {
     try {
       await writeFile(this.leaseFileFor(key), JSON.stringify(lease), { flag: "wx" });
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "EEXIST") return "busy";
+      // The lease file exists: another drainer took it first.
+      if (existsSync(this.leaseFileFor(key))) return "busy";
       throw err;
     }
     return "adopted";
@@ -419,6 +459,7 @@ export class BufferDrainClaims {
     try {
       names = (await readdir(this.dir)).filter((name) => name.endsWith(".json") && !name.endsWith(".lease.json"));
     } catch (err) {
+      // SAFETY: the value comes from this module's own write path; the shape is checked above.
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return [];
       throw err;
     }

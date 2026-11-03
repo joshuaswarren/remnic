@@ -154,6 +154,27 @@ test("handover of the default key clears the legacy top-level mirror", async () 
   }
 });
 
+/**
+ * Narrow a test double to the dependency contract. The fixture provides the
+ * members the drain path reads; the rest are unused by that path.
+ */
+/** The dependency members the drain path reads. */
+interface DrainDepsFixture {
+  buffer: unknown;
+  config: unknown;
+  extractionQueueCoordinator: unknown;
+  extractionWindowBudgetChars: unknown;
+  getStorage: unknown;
+  shouldQueueExtraction: unknown;
+  runExtraction: unknown;
+}
+
+function asDeps<T extends object>(value: DrainDepsFixture): T {
+  // SAFETY: the fixture provides the members the drain path reads; the
+  // remaining contract members are unused by that path.
+  return value as T;
+}
+
 function gateFixture(isClaimed: boolean) {
   const runs: { turns: BufferTurn[] }[] = [];
   const config = {
@@ -162,7 +183,7 @@ function gateFixture(isClaimed: boolean) {
     extractionMinChars: 0,
     extractionMaxTurnChars: 100_000,
   };
-  const coordinator = new TurnIngestionCoordinator({
+  const deps = {
     buffer: {
       isSessionClaimed: () => isClaimed,
       getTurns: () => [],
@@ -174,7 +195,7 @@ function gateFixture(isClaimed: boolean) {
         void fn().catch(() => {});
         return true;
       },
-      runPreemptable: (_preemptable: boolean, parent: unknown, fn: (signal: unknown) => Promise<void>) => fn(parent),
+      runPreemptable: (_preemptable: boolean, parent: AbortSignal | undefined, fn: (signal: AbortSignal) => Promise<void>) => fn(parent ?? new AbortController().signal),
       beginPreemptable: () => {},
     },
     extractionWindowBudgetChars: () => 500,
@@ -184,7 +205,11 @@ function gateFixture(isClaimed: boolean) {
       runs.push({ turns });
       return { status: "completed", persistedCount: 0, durableOutputCount: 0 };
     }),
-  } as unknown as TurnIngestionDeps);
+    // SAFETY: the fixture provides exactly the deps the coordinator reads
+    // for the drain path (buffer, queue coordinator, budget, storage, dedupe
+    // gate and runExtraction); the cast only fills the unused members.
+  };
+  const coordinator = new TurnIngestionCoordinator(asDeps<TurnIngestionDeps>(deps));
   return { coordinator, runs };
 }
 

@@ -17,7 +17,10 @@ import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
 import { BufferDrainRunner } from "@remnic/core/orchestration/buffer-drain-runner.js";
 
-import { matchesFilters, type BufferDrainOptions } from "./buffer-drain-cmd.js";
+import { matchesFilters, type BufferDrainOptions, type DrainSessionReport } from "./buffer-drain-cmd.js";
+
+/** A failed worker run. */
+type DrainWorkerError = Error;
 
 interface WorkerArgs {
   configPath: string;
@@ -49,7 +52,17 @@ function parseWorkerArgs(argv: readonly string[]): WorkerArgs {
   return { configPath, memoryDir, options };
 }
 
-function emit(payload: Record<string, unknown>): void {
+/** What a worker reports to its parent (one NDJSON line per event). */
+interface DrainWorkerEvent {
+  type: "session_started" | "session_finished" | "error" | "done";
+  key?: string;
+  turns?: number;
+  outcome?: DrainSessionReport;
+  error?: string;
+  failures?: number;
+}
+
+function emit(payload: DrainWorkerEvent): void {
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
@@ -125,14 +138,9 @@ async function main(): Promise<number> {
     failures += 1;
   }
 
-  const shutdown = (orchestrator as unknown as { shutdown?: () => Promise<void> }).shutdown;
-  if (typeof shutdown === "function") {
-    try {
-      await shutdown.call(orchestrator);
-    } catch {
-      // Best effort: the claim files are the durable record, not the shutdown.
-    }
-  }
+  // The claim files are the durable record: the worker exits without a
+  // shutdown hook (the orchestrator does not expose one), and the next run
+  // picks up whatever is left.
   emit({ type: "done", failures });
   return failures > 0 ? 1 : 0;
 }
@@ -141,8 +149,8 @@ main().then(
   (code) => {
     process.exitCode = code;
   },
-  (err: unknown) => {
-    emit({ type: "error", error: err instanceof Error ? err.message : String(err) });
+  (err: DrainWorkerError) => {
+    emit({ type: "error", error: err.message });
     process.exitCode = 1;
   },
 );

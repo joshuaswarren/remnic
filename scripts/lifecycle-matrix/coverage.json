@@ -330,5 +330,23 @@
     "packages/remnic-core/src/verified-recall.ts",
     "packages/remnic-core/src/maintenance/namespace-planner.ts",
     "packages/remnic-core/src/maintenance/namespace-maintenance-fanout.ts"
-  ]
+  ],
+  "files": [
+    "packages/remnic-core/src/buffer-persistence.ts",
+    "packages/remnic-core/src/buffer-turn-helpers.ts",
+    "packages/remnic-core/src/orchestration/buffer-drain-gate.ts",
+    "packages/remnic-core/src/orchestration/buffer-drain-runner.ts",
+    "packages/remnic-core/src/orchestration/buffer-swap.ts",
+    "packages/remnic-core/src/orchestration/turn-ingestion.ts",
+    "packages/remnic-core/src/storage/buffer-drain-claims.ts"
+  ],
+  "lifecycle": {
+    "packages/remnic-core/src/storage/buffer-drain-claims.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/buffer-drain-runner.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/buffer-drain-gate.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/buffer-swap.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/buffer-persistence.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/buffer-turn-helpers.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/turn-ingestion.ts": "extraction-lifecycle"
+  }
 }
