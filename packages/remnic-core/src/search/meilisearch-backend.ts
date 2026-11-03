@@ -140,6 +140,9 @@ export class MeilisearchBackend implements SearchBackend {
   }
 
   async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
+    // autoIndex is off by default: the Meilisearch server is managed outside Remnic and
+    // nothing is pushed by configuration, so there is no re-index that could be left incomplete.
+    if (!this.autoIndex) return true;
     if (!this.memoryDir) return false;
     return this.refreshCollection(this.collection, this.memoryDir, execution);
   }

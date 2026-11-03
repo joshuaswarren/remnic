@@ -8,11 +8,18 @@ import { MeilisearchBackend } from "./meilisearch-backend.js";
 
 // Issue #3286: update() is fail-open on every backend, so the entity-migration
 // pending marker asks updateCompleted() whether the re-index actually ran.
-test("Meilisearch updateCompleted is false whenever the refresh returned early", async () => {
+test("Meilisearch updateCompleted is false whenever an enabled refresh returned early", async () => {
   const base = { host: "http://127.0.0.1:1", collection: "openclaw-engram", memoryDir: "/nonexistent" };
-  assert.equal(await new MeilisearchBackend({ ...base, autoIndex: false }).updateCompleted(), false, "autoIndex off: nothing is pushed");
   assert.equal(await new MeilisearchBackend({ ...base, autoIndex: true }).updateCompleted(), false, "never probed: unavailable");
   assert.equal(await new MeilisearchBackend({ host: base.host, collection: base.collection, autoIndex: true }).updateCompleted(), false, "no memory dir");
+});
+
+test("Meilisearch updateCompleted is true when autoIndex is off: nothing is pushed by configuration (issue #3286)", async () => {
+  // autoIndex defaults to off (the server is managed outside Remnic). Reporting false would
+  // make every strict namespace update fail and leave the pending marker stuck.
+  const base = { host: "http://127.0.0.1:1", collection: "openclaw-engram", memoryDir: "/nonexistent" };
+  assert.equal(await new MeilisearchBackend({ ...base, autoIndex: false }).updateCompleted(), true);
+  assert.equal(await new MeilisearchBackend({ host: base.host, collection: base.collection }).updateCompleted(), true, "default config, no memory dir, never probed");
 });
 
 /** A Meilisearch client double: waitForTask resolves with the task status, as the real 0.46 SDK does. */
