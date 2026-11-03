@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -75,7 +76,7 @@ describe("ProfilingCollector", () => {
     }
   });
 
-  test("records parallel groups with correct wall time and member durations", async () => {
+  test("records parallel groups with correct wall time and member durations", async (t) => {
     const dir = tempDir();
     try {
       const collector = new ProfilingCollector({
@@ -84,16 +85,26 @@ describe("ProfilingCollector", () => {
         maxTraces: 10,
       });
 
+      // A fake clock: the collector reads Date.now(), so real timers and a real wall clock would
+      // make the measured wall time depend on the machine (issue #3294).
+      t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000 });
+
       collector.startTrace("extraction");
 
       // Start a parallel group with a 5ms and 30ms promise.
       const handle = collector.startParallelGroup("embed+classify");
       const p1 = new Promise<void>((resolve) => setTimeout(resolve, 5));
       const p2 = new Promise<void>((resolve) => setTimeout(resolve, 30));
-      await collector.endParallelGroup(handle, [
+      const ended = collector.endParallelGroup(handle, [
         { name: "embed", promise: p1 },
         { name: "classify", promise: p2 },
       ]);
+      // Two steps with a real event-loop turn between them, so the 5ms member's continuation
+      // reads the clock at 5ms instead of after the whole 30ms has been ticked.
+      t.mock.timers.tick(5);
+      await nextTurn();
+      t.mock.timers.tick(25);
+      await ended;
 
       const trace = collector.endTrace();
 
@@ -103,12 +114,16 @@ describe("ProfilingCollector", () => {
 
       const group = trace!.parallelGroups![0];
       assert.equal(group.name, "embed+classify");
-      // Wall time should be ~30ms (the longest promise).
-      assert.ok(group.wallMs >= 25, `wallMs=${group.wallMs} expected >= 25`);
-      assert.ok(group.wallMs <= 200, `wallMs=${group.wallMs} expected <= 200 (tolerance)`);
+      // Wall time is the longest member (30ms); each member's duration is its own timer.
+      assert.equal(group.wallMs, 30);
+      assert.equal(group.members[0].durationMs, 5);
+      assert.equal(group.members[1].durationMs, 30);
       assert.equal(group.members.length, 2);
       assert.equal(group.members[0].name, "embed");
       assert.equal(group.members[1].name, "classify");
+      // The shorter member resolved first.
+      assert.equal(group.members[0].resolvedIndex, 0);
+      assert.equal(group.members[1].resolvedIndex, 1);
     } finally {
       cleanup(dir);
     }
