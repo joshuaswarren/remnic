@@ -23,6 +23,11 @@ import {
 import type { MemoryFile, PluginConfig } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import { readDurableSemanticFingerprint, readPromotionReceiptStatus, type MergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
+import type { BehaviorSignalEvent, ExtractionResult } from "../types.js";
+import type { HarmonicConstructionInput } from "../harmonic-construction.js";
+import { dedupeBehaviorSignalsByMemoryAndHash } from "../behavior-signals.js";
+import { persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+
 
 export const confidenceTierOrder = [
   "explicit",
@@ -116,26 +121,109 @@ export async function readActiveMemoriesBothTiers(
   return coldMems.length === 0 ? hotMems : [...hotMems, ...coldMems];
 }
 
+
 /**
- * PR #2016: after `writeSealedMemory` has made a fact `.md` durable with its
- * fact-hash flush deferred (#1909 batching), a throw in the fallible post-write
- * work (contradiction resolve, indexing, shared promotion, artifact write)
- * would strand the deferred parent hash — the shared fact-hash index on disk
- * would be missing the parent until the next corpus rebuild, letting a peer
- * re-extract a duplicate. Flush the batch save before the error propagates so
- * the durable-hash invariant holds on every path. No-op when dedup is off
- * (`deferred=false` → the write already flushed and the batch saver is a no-op).
- * Best-effort: a flush failure is logged and never masks the original error.
+ * Batch-end finalization for facts already durable in this persist pass:
+ * content-hash save, behavior signals, harmonic construction, temporal/tag
+ * indexes. Shared by the success tail and every rethrow path so a partial
+ * batch (e.g. fact wrote, entity failed) still lands deferred side effects
+ * before the original error propagates (#3228 / #3231). Best-effort: each
+ * step logs and never masks `originalError` at the call site.
+ *
+ * `scheduleQmd` is failure-only. Success still schedules QMD from
+ * extraction-run after persist returns, so success passes false.
  */
-export async function flushDeferredFactHashOnFailure(
-  saveContentHashIndexes: () => Promise<void>,
-  deferred: boolean,
-): Promise<void> {
-  if (!deferred) return;
-  await saveContentHashIndexes().catch((err) =>
-    log.warn(`content-hash flush after post-write failure failed: ${err}`),
+export async function finalizeExtractionCommittedWrites(options: {
+  saveContentHashIndexes: () => Promise<void>;
+  behaviorSignalsByStorage: Iterable<{
+    storage: StorageManager;
+    events: BehaviorSignalEvent[];
+  }>;
+  harmonic?: {
+    enabled: boolean;
+    entries: Iterable<{
+      storage: StorageManager;
+      facts: HarmonicConstructionInput["persistedFacts"];
+    }>;
+    baseStorageDir: string;
+    abstractionNodeStoreDir?: string;
+    sessionKey?: string;
+    validAt?: string;
+    episodeTitle?: string;
+    anchorsEnabled: boolean;
+    entityMentions: ExtractionResult["entities"];
+  };
+  updateTemporalTagIndexes: (
+    storage: StorageManager,
+    persistedIds: string[],
+  ) => Promise<void>;
+  fallbackStorage: StorageManager;
+  persistedIdsByStorage: Map<string, { storage: StorageManager; ids: string[] }>;
+  requestQmdMaintenance?: () => void;
+  scheduleQmd: boolean;
+}): Promise<void> {
+  await options.saveContentHashIndexes().catch((err) => {
+    log.warn(`content-hash index save failed: ${err}`);
+  });
+
+  // Snapshot once — Map iterators are single-pass.
+  const behaviorEntries = [...options.behaviorSignalsByStorage];
+  for (const { storage: targetStorage, events } of behaviorEntries) {
+    const dedupedSignals = dedupeBehaviorSignalsByMemoryAndHash(events);
+    if (dedupedSignals.length === 0) continue;
+    await targetStorage
+      .appendBehaviorSignals(dedupedSignals)
+      .catch((err) =>
+        log.warn(`appendBehaviorSignals failed (non-fatal): ${err}`),
+      );
+  }
+
+  const harmonic = options.harmonic;
+  let harmonicEntryCount = 0;
+  if (harmonic?.enabled) {
+    const entries = [...harmonic.entries];
+    harmonicEntryCount = entries.length;
+    if (entries.length > 0) {
+      await persistConstructedHarmonicRecords({
+        entries,
+        baseStorageDir: harmonic.baseStorageDir,
+        abstractionNodeStoreDir: harmonic.abstractionNodeStoreDir,
+        sessionKey: harmonic.sessionKey,
+        validAt: harmonic.validAt,
+        episodeTitle: harmonic.episodeTitle,
+        anchorsEnabled: harmonic.anchorsEnabled,
+        entityMentions: harmonic.entityMentions,
+      });
+    }
+  }
+
+  void (async () => {
+    if (options.persistedIdsByStorage.size === 0) {
+      await options.updateTemporalTagIndexes(options.fallbackStorage, []);
+      return;
+    }
+    for (const entry of options.persistedIdsByStorage.values()) {
+      await options.updateTemporalTagIndexes(entry.storage, entry.ids);
+    }
+  })().catch((err) =>
+    log.debug(`temporal-index update error (non-fatal): ${err}`),
   );
+
+  if (!options.scheduleQmd || !options.requestQmdMaintenance) return;
+  const hasCommitted =
+    options.persistedIdsByStorage.size > 0 ||
+    behaviorEntries.length > 0 ||
+    harmonicEntryCount > 0;
+  if (!hasCommitted) return;
+  try {
+    options.requestQmdMaintenance();
+  } catch (err) {
+    log.warn(
+      `QMD maintenance schedule after partial persist failed (non-fatal): ${err}`,
+    );
+  }
 }
+
 
 /**
  * Merged-target promotion scope gate (PR #2771 finding A). A committed
