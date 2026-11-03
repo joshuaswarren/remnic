@@ -34,3 +34,31 @@ test("provider schema omits span in off mode and keeps it in on/shadow (issue #2
   assert.deepEqual(extractionProviderJsonSchema("on"), extractionProviderJsonSchema("shadow"));
   assert.notEqual(extractionProviderJsonSchema("off"), extractionProviderJsonSchema("on"));
 });
+
+// Providers receive this as the extraction response_format. zod 3 advertised
+// additionalProperties:false on every object; the zod 4 port must too.
+type SchemaNode = {
+  type?: string;
+  properties?: Record<string, SchemaNode>;
+  items?: SchemaNode;
+  anyOf?: SchemaNode[];
+  additionalProperties?: boolean | SchemaNode;
+};
+
+function openObjectSchemas(node: SchemaNode, path: string, found: string[]): void {
+  if (node.type === "object" && node.properties && node.additionalProperties !== false) found.push(path);
+  for (const [name, child] of Object.entries(node.properties ?? {})) {
+    openObjectSchemas(child, `${path}.${name}`, found);
+  }
+  if (node.items) openObjectSchemas(node.items, `${path}[]`, found);
+  node.anyOf?.forEach((child, index) => openObjectSchemas(child, `${path}|${index}`, found));
+}
+
+test("provider schema closes every object schema with additionalProperties false", () => {
+  for (const mode of ["off", "on"] as const) {
+    const open: string[] = [];
+    // SAFETY: extractionProviderJsonSchema returns a JSON Schema document; SchemaNode names the keys walked here.
+    openObjectSchemas(extractionProviderJsonSchema(mode) as SchemaNode, "$", open);
+    assert.deepEqual(open, [], `spanMode=${mode}: objects that let a provider emit extra keys`);
+  }
+});

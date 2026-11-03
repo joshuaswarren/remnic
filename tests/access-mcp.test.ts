@@ -648,7 +648,7 @@ test("MCP capsule tools reject invalid arguments before calling service", async 
       arguments: { archivePath: "/tmp/bad.capsule.json.gz", mode: "merge" },
     },
   });
-  assert.match(toolCallErrorMessage(badImport), /mode: Invalid enum value/);
+  assert.match(toolCallErrorMessage(badImport), /mode: Invalid option/);
   assert.equal(importCalls, 0);
 
   const badList = await server.handleRequest({
@@ -660,7 +660,7 @@ test("MCP capsule tools reject invalid arguments before calling service", async 
       arguments: { namespace: 42 },
     },
   });
-  assert.match(toolCallErrorMessage(badList), /namespace: Expected string/);
+  assert.match(toolCallErrorMessage(badList), /namespace: .*expected string/);
   assert.equal(listCalls, 0);
 
   const typoList = await server.handleRequest({
