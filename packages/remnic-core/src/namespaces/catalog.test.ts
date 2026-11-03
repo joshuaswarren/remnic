@@ -3,6 +3,7 @@ import {
   appendFile,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   realpath,
   rm,
@@ -23,6 +24,35 @@ import {
   resolveNamespaceStorageRoot,
 } from "./storage.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
+
+/** Wait until a rewrite settles: the bad row is gone from the file, or 2 s pass. */
+async function settleRewrite(catalogPath: string, badRow: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while ((await readFile(catalogPath, "utf8")).includes(badRow)) {
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  // The rewrite may still be inside its rename/lock window when the last bad row disappears.
+  await new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+/**
+ * Wait until the catalog state directory holds only stable files: no lock, no
+ * lock-release temp, no rewrite temp. withHeldFileLock renames the lock through
+ * a transient `.releasing.` file, and a recursive rm that walks the directory
+ * during that window fails with ENOTEMPTY (#3298).
+ */
+async function settleStateDir(stateDir: string): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  for (;;) {
+    const entries = await readdir(stateDir).catch((): string[] => []);
+    const busy = entries.some(
+      (e) => e.endsWith(".tmp") || e.includes(".releasing.") || e.endsWith(".rebuild.lock"),
+    );
+    if (!busy || Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
 
 function makeConfig(memoryDir: string, overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -518,6 +548,8 @@ test("catalog tolerates corrupt / non-object JSONL lines on read", async () => {
     const list = await catalog.listNamespaces();
     assert.equal(list.length, 1);
     assert.equal(list[0]?.namespace, "alpha");
+    // The read schedules the repair rewrite (#3297); settle it before the finally rm.
+    await settleRewrite(file, "not json at all");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -610,6 +642,9 @@ test("catalog quarantines malformed JSONL record fields at the parse boundary", 
     assert.equal(valid?.lastReadAt, undefined);
     assert.equal(valid?.lastWriteAt, undefined);
     assert.deepEqual(valid?.lastMaintenanceAt, { ok: now });
+    // The read reports quarantined rows as skipped, so the repair rewrite is scheduled (#3297);
+    // let it settle before the finally rm, which would otherwise race its lock release.
+    await settleRewrite(file, '"identityToken":"bad-token"');
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -4012,10 +4047,13 @@ test("listNamespaces reports an incomplete read for a malformed record but still
     assert.equal(reasons.length, 1);
     assert.match(reasons[0], /malformed/);
 
-    // A second read served from the warm cache must still say the catalog was incomplete.
+    // The read schedules a rewrite that drops the malformed line (#3297), so a second read
+    // sees a whole catalog and reports nothing.
+    await new Promise((resolve) => setImmediate(resolve));
+    await readFile(catalogPath, "utf8"); // ensure the rewrite settled before re-reading
     const again: string[] = [];
     await catalog.listNamespaces(undefined, { onIncomplete: (reason) => again.push(reason) });
-    assert.equal(again.length, 1, "the cached result keeps reporting the malformed line");
+    assert.equal(again.length, 0, "the rewrite removed the malformed line, so the catalog is whole");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -4062,20 +4100,465 @@ test("a catalog with malformed rows stays tolerant for callers that do not ask a
     // Valid JSON that is not a catalog record counts as malformed too.
     await appendFile(catalogPath, "{\"not\":\"a record\"}\n", "utf8");
 
-    // No options, or options without a callback: nothing to call, nothing may throw.
+    // The FIRST read (no options) reports nothing to the caller, and its repair rewrite (#3297)
+    // drops the bad row; later reads then see a whole catalog. The reporter must be on read #1.
+    const reasons: string[] = [];
+    const first = await catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });
+    assert.equal(reasons.length, 1, "the non-record row is reported to the first reader");
+    assert.deepEqual(first.map((r) => r.namespace), ["project-origin-abc123"]);
+    await settleRewrite(catalogPath, '"not":"a record"');
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes('"not":"a record"'), "the rewrite dropped the bad row");
+
+    // After the repair: no options, or options without a callback, nothing to call, nothing may throw.
     assert.deepEqual((await catalog.listNamespaces()).map((r) => r.namespace), ["project-origin-abc123"]);
     assert.deepEqual((await catalog.listNamespaces(undefined, {})).map((r) => r.namespace), ["project-origin-abc123"]);
 
-    const reasons: string[] = [];
-    await catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });
-    assert.equal(reasons.length, 1, "the non-record row is reported");
-
-    // The warm cache now remembers the problem; a reader without a reporter must still work.
+    // After the repair, every reader sees a whole catalog.
     assert.equal((await catalog.getNamespaceRecord("project-origin-abc123"))?.namespace, "project-origin-abc123");
-
-    // A cold read of a malformed catalog by a reader without a reporter must work too.
     const cold = new NamespaceCatalog(makeConfig(memoryDir));
     assert.equal((await cold.getNamespaceRecord("project-origin-abc123"))?.namespace, "project-origin-abc123");
+    const reasons2: string[] = [];
+    await cold.listNamespaces(undefined, { onIncomplete: (r) => reasons2.push(r) });
+    assert.deepEqual(reasons2, [], "the rewrite made the catalog whole");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a read that skipped malformed rows schedules a compaction rewrite that drops them (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    const before = await readFile(catalogPath, "utf8");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    assert.ok(before.length > 0, "the valid rows exist on disk");
+
+    // Read with the malformed row: the rewrite must produce a file without it.
+    const reasons: string[] = [];
+    const records = await catalog.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+    assert.equal(reasons.length, 1);
+    await settleRewrite(catalogPath, "this is not json");
+    const after = await readFile(catalogPath, "utf8");
+    assert.ok(after.length > 0, "the valid rows survive the rewrite");
+    assert.ok(!after.includes("this is not json"), "the malformed row is gone after the rewrite");
+    assert.deepEqual(records.map((r) => r.namespace), ["project-origin-abc123"]);
+
+    // The next read is clean: nothing to report, no further rewrite.
+    const quiet: string[] = [];
+    await catalog.listNamespaces(undefined, { onIncomplete: (r) => quiet.push(r) });
+    await settleRewrite(catalogPath, " -no-such-row"); // one settle window for the queued rewrite, if any
+    assert.deepEqual(quiet, []);
+    assert.equal(await readFile(catalogPath, "utf8"), after, "no second rewrite happened");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("no rewrite is scheduled for a clean or missing catalog (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.listNamespaces();
+    const stateDir = path.join(memoryDir, "state");
+    // A fresh install has no state dir at all yet; that is the no-rewrite proof.
+    // SAFETY: readdir of a fresh install fails with ENOENT, which is the proof itself; catch narrows to an empty list.
+    const tmpFiles = await readdir(stateDir).then((entries) => entries.filter((e) => e.endsWith(".tmp"))).catch(() => [] as string[]);
+    assert.deepEqual(tmpFiles, []);
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const before = await readFile(path.join(stateDir, "namespaces.jsonl"), "utf8");
+    await catalog.listNamespaces();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(await readFile(path.join(stateDir, "namespaces.jsonl"), "utf8"), before, "nothing rewrote a clean catalog");
+    assert.equal((await readdir(stateDir)).filter((e) => e.endsWith(".tmp")).length, 0, "no temporary rewrite file is left behind");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a read that skipped malformed rows does not rewrite while another process holds the catalog lock (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    const before = await readFile(catalogPath, "utf8");
+
+    // Another process holds the rebuild lock for the whole read+rewrite window.
+    await withHeldFileLock(path.join(memoryDir, "state", "namespaces.rebuild.lock"), { staleMs: 30_000 }, async () => {
+      const reasons: string[] = [];
+      await catalog.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+      assert.equal(reasons.length, 1, "the read still reports the malformed row");
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(await readFile(catalogPath, "utf8"), before, "no rewrite ran under another process's lock");
+    });
+    // The attempt's bounded lock wait runs inside queueCritical, so the holder above
+    // cannot release until the attempt has settled (dropped): by this point nothing is
+    // in flight and the cleanup below is safe.
+    assert.equal(await readFile(catalogPath, "utf8"), before, "the dropped attempt changed nothing");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a dropped repair backs off before the next attempt (#3298)", { timeout: 30_000 }, async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    const before = await readFile(catalogPath, "utf8");
+    const lockPath = path.join(memoryDir, "state", "namespaces.rebuild.lock");
+
+    // Hold the lock past the repair's 5 s wait, so the first attempt is dropped.
+    const { promise: released, resolve: release } = Promise.withResolvers<void>();
+    // The holder resolves `held` from inside its callback, which runs only once
+    // the on-disk lock is actually owned: awaiting it proves the lock is held
+    // before the first read, so the repair can never slip in first.
+    const { promise: held, resolve: lockHeld } = Promise.withResolvers<void>();
+    const holder = withHeldFileLock(lockPath, { staleMs: 60_000 }, async () => {
+      lockHeld();
+      await released;
+    });
+    // Real delays remain where the platform clock is the thing under test: the
+    // gate's backoff reads Date.now() and the repair's lock wait really polls.
+    await held;
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    // Past the repair's 5 s lock wait (the attempt drops at ~5.05 s) but still
+    // inside the 250 ms backoff window that starts at the drop.
+    { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 5_100); await promise; }
+    assert.equal(catalog.malformedRepairAttemptsForTest, 1, "one attempt was made and dropped");
+
+    // Still inside the 250 ms backoff window that began when the attempt dropped:
+    // this read runs under the still-held lock and must not attempt again.
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    assert.equal(catalog.malformedRepairAttemptsForTest, 1, "the backoff window suppresses a new attempt");
+    release();
+    await holder;
+    assert.equal(await readFile(catalogPath, "utf8"), before, "the dropped attempt changed nothing");
+
+    // Past the window, the next malformed read retries and repairs.
+    { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 300); await promise; }
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "this is not json");
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes("this is not json"), "the retry repaired the catalog");
+    assert.equal(catalog.malformedRepairAttemptsForTest, 2, "exactly one retry after the window");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+class FailingReadCatalog extends NamespaceCatalog {
+  /** Stop injecting read failures. */
+  stopFailing(): void {
+    this.onCatalogReadForTest = undefined;
+  }
+
+  /** The first full read succeeds; every later one throws (the repair's locked re-read fails). */
+  failAfterFirstRead(): void {
+    let reads = 0;
+    this.onCatalogReadForTest = () => {
+      reads += 1;
+      if (reads > 1) throw new Error("EIO: simulated read failure on the second read");
+    };
+  }
+
+  /** Every full read of the catalog file throws, like a persistent EIO/EACCES on the file. */
+  failEveryRead(): void {
+    this.onCatalogReadForTest = () => {
+      throw new Error("EIO: simulated read failure");
+    };
+  }
+}
+
+async function stateEntries(memoryDir: string): Promise<string[]> {
+  return readdir(path.join(memoryDir, "state")).catch((): string[] => []);
+}
+
+test("a read error on a healthy catalog never rewrites it, and leaves no temp file (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const writer = new NamespaceCatalog(makeConfig(memoryDir));
+    await writer.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    await writer.markWrite("project-origin-def456", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    const before = await readFile(catalogPath, "utf8");
+    assert.ok(before.includes("abc123") && before.includes("def456"));
+
+    // A cold instance whose every read of the file fails: the catalog is healthy on disk.
+    const reader = new FailingReadCatalog(makeConfig(memoryDir));
+    reader.failEveryRead();
+    const reasons: string[] = [];
+    const records = await reader.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+    assert.deepEqual(records, [], "the unreadable catalog yields no records");
+    assert.equal(reasons.length, 1);
+    assert.match(reasons[0], /unreadable/);
+
+    await new Promise((resolve) => setTimeout(resolve, 150)); // any scheduled rewrite would land here
+    assert.equal(await readFile(catalogPath, "utf8"), before, "the healthy catalog bytes are untouched");
+    assert.deepEqual((await stateEntries(memoryDir)).filter((e) => e.endsWith(".tmp")), [], "no temp file is left behind");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an unreadable catalog path leaves no temp file and is not rewritten (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    await mkdir(path.join(memoryDir, "state", "namespaces.jsonl"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const reasons: string[] = [];
+    await catalog.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+    assert.equal(reasons.length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual(await stateEntries(memoryDir), ["namespaces.jsonl"], "nothing but the directory is in state");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a catalog with no readable row is not rewritten to an empty file (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await mkdir(path.dirname(catalogPath), { recursive: true });
+    const garbage = "not json at all\n{\"not\":\"a record\"}\n";
+    await writeFile(catalogPath, garbage, "utf8");
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const reasons: string[] = [];
+    await catalog.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+    assert.equal(reasons.length, 1, "the malformed rows are still reported");
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(await readFile(catalogPath, "utf8"), garbage, "nothing readable to keep: the raw rows are left for a rebuild");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a failed rewrite removes its temp file (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    await mkdir(path.join(memoryDir, "state", "namespaces.jsonl"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // The rename onto a directory fails; the temp file written before it must not leak.
+    await assert.rejects(catalog["rewriteUnchained"]([]));
+    assert.deepEqual((await stateEntries(memoryDir)).filter((e) => e.endsWith(".tmp")), []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("concurrent malformed reads schedule a single repair (#3298)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+
+    // Eight reads of the same malformed catalog. Without a single-flight guard each
+    // schedules its own repair, queueing serial lock waits ahead of touch().
+    await Promise.all(
+      Array.from({ length: 8 }, () => catalog.listNamespaces(undefined, { onIncomplete: () => undefined })),
+    );
+    assert.equal(catalog.malformedRepairAttemptsForTest, 1, "one repair attempt, not eight");
+    await settleRewrite(catalogPath, "this is not json");
+    await settleStateDir(path.join(memoryDir, "state"));
+    const after = await readFile(catalogPath, "utf8");
+    assert.ok(!after.includes("this is not json"), "the malformed row is gone after the repair");
+
+    const sidecars = (await readdir(path.join(memoryDir, "state"))).filter((e) =>
+      /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e),
+    );
+    assert.equal(sidecars.length, 1, "exactly one quarantine sidecar");
+    const sidecar = await readFile(path.join(memoryDir, "state", sidecars[0]!), "utf8");
+    assert.ok(sidecar.includes("this is not json"), "the sidecar holds the dropped row");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("malformed reads during a pending repair do not queue another attempt (#3298)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    const before = await readFile(catalogPath, "utf8");
+
+    await withHeldFileLock(path.join(memoryDir, "state", "namespaces.rebuild.lock"), { staleMs: 30_000 }, async () => {
+      await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+      { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
+      assert.equal(catalog.malformedRepairAttemptsForTest, 1, "the first read starts the in-flight repair");
+      // That attempt was dropped (another process holds the lock), so the backoff
+      // window is on: further malformed reads must not queue another attempt.
+      await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+      await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+      { const { promise, resolve } = Promise.withResolvers<void>(); setImmediate(resolve); await promise; }
+      assert.equal(catalog.malformedRepairAttemptsForTest, 1, "the in-flight repair is the reason no second attempt is queued");
+      assert.equal(await readFile(catalogPath, "utf8"), before, "no rewrite ran under another process's lock");
+    });
+    // The attempt's bounded lock wait runs inside queueCritical, so the holder above
+    // cannot release until the attempt has settled (dropped): by this point nothing is
+    // in flight and the cleanup below is safe.
+    assert.equal(await readFile(catalogPath, "utf8"), before, "the dropped attempt changed nothing");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the repair quarantines every dropped row in the sidecar before rewriting (#3298)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{first bad row\nnot json either\n", "utf8");
+
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "first bad row");
+    await settleStateDir(path.join(memoryDir, "state"));
+    const after = await readFile(catalogPath, "utf8");
+    assert.ok(!after.includes("first bad row") && !after.includes("not json either"), "both dropped rows are gone");
+
+    const entries = await readdir(path.join(memoryDir, "state"));
+    const sidecars = entries.filter((e) => /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e));
+    assert.equal(sidecars.length, 1, "one sidecar for the one repair");
+    const sidecar = await readFile(path.join(memoryDir, "state", sidecars[0]!), "utf8");
+    assert.ok(sidecar.includes("first bad row") && sidecar.includes("not json either"), "both dropped rows are kept");
+    assert.ok(!entries.some((e) => e.endsWith(".tmp")), "no temp file is left behind");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a repair that fails after the sidecar write does not pile up sidecars (#3298)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+
+    // The sidecar write succeeds, the rewrite after it fails. A failed attempt
+    // does not back off (it holds no lock budget), so a second read retries —
+    // and the hash-named sidecar must be reused, not duplicated.
+    const original = catalog["rewriteUnchained"].bind(catalog);
+    let failures = 0;
+    // Each injected call signals its own completion, so the test awaits the
+    // attempt it scheduled instead of polling the file for a needle that never
+    // appears. The resolver is registered BEFORE the read that schedules the
+    // attempt, so the signal can never be missed.
+    const pendingResolves: Array<() => void> = [];
+    const settlesOnNextAttempt = (): Promise<void> => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      pendingResolves.push(resolve);
+      return promise;
+    };
+    catalog["rewriteUnchained"] = async (records: unknown[]) => {
+      failures += 1;
+      const signal = pendingResolves.shift();
+      try {
+        if (failures <= 2) throw new Error("simulated rewrite failure after the sidecar");
+        // SAFETY: rewriteUnchained's parameter is NamespaceRecord[]; the override's
+        // loose unknown[] only ever forwards what the repair itself passed.
+        return await original(records as never);
+      } finally {
+        signal?.();
+      }
+    };
+    let settled = settlesOnNextAttempt();
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settled; // the first failing attempt
+    settled = settlesOnNextAttempt();
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settled; // the second failing attempt
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "this is not json"); // third attempt repairs
+    await settleStateDir(path.join(memoryDir, "state"));
+    assert.equal(catalog.malformedRepairAttemptsForTest, 3, "a failed attempt retries on the next read");
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes("this is not json"), "the third attempt repaired the catalog");
+
+    const sidecars = (await readdir(path.join(memoryDir, "state"))).filter((e) =>
+      /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e),
+    );
+    assert.equal(sidecars.length, 1, "the same dropped rows reuse one hash-named sidecar");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a repair whose locked re-read fails leaves the catalog untouched (#3297)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const writer = new NamespaceCatalog(makeConfig(memoryDir));
+    await writer.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    const before = await readFile(catalogPath, "utf8");
+
+    // Read #1 (the caller's) succeeds and reports the malformed row; read #2 (the repair's, under
+    // the lock) throws. An empty fold from the failed read must not replace the catalog.
+    const reader = new FailingReadCatalog(makeConfig(memoryDir));
+    reader.failAfterFirstRead();
+    const reasons: string[] = [];
+    const records = await reader.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+    assert.deepEqual(records.map((r) => r.namespace), ["project-origin-abc123"]);
+    assert.equal(reasons.length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(await readFile(catalogPath, "utf8"), before, "the failed second read did not wipe the catalog");
+    assert.deepEqual((await stateEntries(memoryDir)).filter((e) => e.endsWith(".tmp")), []);
+
+    // The failure is transient: the next incomplete read retries the repair.
+    reader.stopFailing();
+    const again: string[] = [];
+    await reader.listNamespaces(undefined, { onIncomplete: (r) => again.push(r) });
+    assert.equal(again.length, 1, "the next read still reports the malformed row");
+    await settleRewrite(catalogPath, "{this is not json");
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes("{this is not json"), "the retried repair dropped the row");
+    assert.match(await readFile(catalogPath, "utf8"), /project-origin-abc123/, "the readable row survived");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a repair dropped under lock contention is retried by a warm-cache read (#3297)", { timeout: 30_000 }, async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+    const reader = new NamespaceCatalog(makeConfig(memoryDir));
+    const lockPath = path.join(memoryDir, "state", "namespaces.rebuild.lock");
+
+    // Another process holds the catalog lock longer than the repair is willing to wait (5 s), so
+    // the first repair is dropped. The read itself cached the catalog together with its problem.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = withHeldFileLock(lockPath, { staleMs: 60_000 }, async () => released);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const first: string[] = [];
+    await reader.listNamespaces(undefined, { onIncomplete: (r) => first.push(r) });
+    assert.equal(first.length, 1);
+    await new Promise((resolve) => setTimeout(resolve, 5_600)); // past the lock wait: repair dropped
+    assert.ok((await readFile(catalogPath, "utf8")).includes("{this is not json"), "the dropped repair changed nothing");
+    release();
+    await holder;
+
+    // The lock is free now. This read is served from the warm cache, which still carries the
+    // malformed flag, so it schedules the repair again.
+    const again: string[] = [];
+    await reader.listNamespaces(undefined, { onIncomplete: (r) => again.push(r) });
+    assert.equal(again.length, 1);
+    await settleRewrite(catalogPath, "{this is not json");
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes("{this is not json"), "the retry repaired the catalog");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
