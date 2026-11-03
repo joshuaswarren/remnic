@@ -9,7 +9,6 @@
  * listing.
  */
 
-import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
@@ -19,7 +18,6 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { isPopulatedUnnamedEntityRecord } from "../utils/malformed-entity-record.js";
 import { isMacOsReplicationJunkBasename } from "../utils/macos-replication-junk.js";
-import { assertPathInsideRoot } from "../utils/path-containment.js";
 import { isAbortError } from "../abort-error.js";
 import { checkCorpusReadAbort, type CorpusReadOptions } from "../corpus-read-cancellation.js";
 import { isValidTranscriptDate } from "../wearables/day-store.js";
@@ -31,6 +29,7 @@ import {
   StorageManager,
 } from "../storage.js";
 import { rememberRawFrontmatter } from "./memory-frontmatter-metadata.js";
+import { corpusScanWorker } from "./corpus-scan-worker-host.js";
 
 export interface MemoryReadStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
@@ -89,8 +88,7 @@ export interface MemoryReadStoreDeps {
 /**
  * A backend READ failure worth propagating from a strict (census) scan: an
  * errno-coded fs error that is NOT `ENOENT`. `ENOENT` (an absent dir) and
- * code-less rejections (symlink-escape containment failures from
- * assertPathInsideRoot) are expected and skipped; `EACCES`/`EIO`/… mean the
+ * code-less rejections are expected and skipped; `EACCES`/`EIO`/… mean the
  * corpus is unreadable and a divergence census must fail loud rather than
  * silently publish a partial count (issue #2156 round-5). Non-strict (recall)
  * callers ignore this and degrade to a best-effort partial scan.
@@ -233,9 +231,17 @@ export class MemoryReadStore {
   /**
    * Recursively collect `*.md` paths under `startDirs`, hardened against symlink
    * escape: a category dir symlinked outside memoryDir (e.g. decisions/ -> an
-   * external dir) must NOT pull out-of-store files into a scan (info leak). Same
-   * walker-hardening pattern as document-scanner.ts / cli.ts /
-   * consolidation-provenance-check.ts; reuses the shared containment helper.
+   * external dir) must NOT pull out-of-store files into a scan (info leak).
+   *
+   * Containment is established once, not per file: the memory root is resolved
+   * with a single `realpath`, every directory the walk enters is `lstat`ed (a
+   * symlinked or non-directory entry is never followed), and the entry TYPE
+   * comes from `readdir(withFileTypes)` — so a symlinked entry, file or
+   * directory, is skipped without a per-entry `realpath`. The old per-entry
+   * `realpath` cost one syscall per markdown file (hundreds of thousands per
+   * corpus scan) to re-derive a fact the directory-level checks already
+   * establish; reads refuse symlinked files at open time with `O_NOFOLLOW`, so
+   * a path swapped to a symlink mid-scan is refused rather than followed.
    * Paths only — no frontmatter parse.
    */
   private async collectContainedMarkdownPaths(
@@ -243,12 +249,12 @@ export class MemoryReadStore {
     propagateReadErrors = false,
     options?: CorpusReadOptions,
   ): Promise<string[]> {
-    const filePaths: string[] = [];
+        const filePaths: string[] = [];
 
-    // Resolve the memory root once for the containment checks below.
-    let memoryRootReal: string;
+    // Resolve the memory root once: a missing root is an empty corpus and an
+    // unreadable root is a backend failure the strict census must surface.
     try {
-      memoryRootReal = await realpath(this.deps.baseDir);
+      await realpath(this.deps.baseDir);
     } catch (err) {
       // ENOENT: a not-yet-created root ⇒ empty. Any other errno is a backend
       // read failure — propagate for strict census callers (never publish an
@@ -260,8 +266,7 @@ export class MemoryReadStore {
     const collectPaths = async (dir: string): Promise<void> => {
       checkCorpusReadAbort(options);
       // Directory-level guard, isolated from per-entry handling: skip symlinked
-      // or non-directory category dirs and assert the resolved dir stays inside
-      // the memory root before reading. A failure here means the whole subtree
+      // or non-directory category dirs. A failure here means the whole subtree
       // does not exist or escaped the store — fail closed by skipping it.
       let dirStat: Stats;
       try {
@@ -285,19 +290,18 @@ export class MemoryReadStore {
       }
       let entries: Dirent[];
       try {
-        assertPathInsideRoot(memoryRootReal, await realpath(dir), dir);
         entries = await readdir(dir, { withFileTypes: true });
       } catch (err) {
-        // A containment failure carries no errno (skip); a backend read error
-        // (EACCES …) propagates in strict census mode so a partial subtree is
-        // not silently counted.
+        // A backend read error (EACCES …) propagates in strict census mode so a
+        // partial subtree is not silently counted. ENOENT (vanished mid-scan)
+        // and other non-propagatable failures skip the directory.
         if (propagateReadErrors && isPropagatableReadError(err)) throw err;
         return;
       }
 
       const subdirs: string[] = [];
       for (const entry of entries) {
-        // Outside the per-entry try/catch below, which deliberately swallows
+        // Outside the per-entry handling below, which deliberately swallows
         // non-propagatable errors — a cancellation must never be swallowed with
         // them (issue #2307).
         checkCorpusReadAbort(options);
@@ -308,21 +312,7 @@ export class MemoryReadStore {
         if (entry.isDirectory()) {
           subdirs.push(fullPath);
         } else if (entry.name.endsWith(".md")) {
-          // Isolate per-entry failures in their own try/catch: a containment or
-          // realpath failure on ONE .md entry must not drop sibling files or,
-          // crucially, the deferred subdir recursion below (Cursor Bugbot:
-          // "Poisoned md skips sibling subdirs"). Mirrors the per-file try/catch
-          // in search/document-scanner.ts scanDir and
-          // consolidation-provenance-check.ts walkMarkdownFiles.
-          try {
-            assertPathInsideRoot(memoryRootReal, await realpath(fullPath), fullPath);
-            filePaths.push(fullPath);
-          } catch (err) {
-            // ENOENT (vanished mid-scan) or a code-less containment/symlink
-            // rejection ⇒ skip just this file. A backend read error propagates
-            // in strict census mode.
-            if (propagateReadErrors && isPropagatableReadError(err)) throw err;
-          }
+          filePaths.push(fullPath);
         }
       }
       // Recurse into real subdirectories regardless of any single poisoned entry
