@@ -9,6 +9,7 @@
  * listing.
  */
 
+import type { Dirent, Stats } from "node:fs";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
@@ -29,7 +30,6 @@ import {
   StorageManager,
 } from "../storage.js";
 import { rememberRawFrontmatter } from "./memory-frontmatter-metadata.js";
-import { corpusScanWorker } from "./corpus-scan-worker-host.js";
 
 export interface MemoryReadStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
