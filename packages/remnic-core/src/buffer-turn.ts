@@ -7,6 +7,14 @@
 import type { SourceConnectorProvenance } from "./types.js";
 import type { AmbientCaptureProvenance, BufferTurnOwner } from "./buffer-turn-helpers.js";
 
+export interface TurnIngestionOptions extends SourceConnectorProvenance {
+  bufferKey?: string;
+  logicalSessionKey?: string;
+  providerThreadId?: string | null;
+  turnFingerprint?: string;
+}
+
+
 export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
   role: "user" | "assistant";
   content: string;

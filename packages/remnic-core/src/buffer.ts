@@ -2,6 +2,7 @@ import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
 import { BufferSessionPersistence, type BufferStorage } from "./buffer-persistence.js";
+import { drainCaptureSpill, spillCapturedTurn, type CaptureSpillPort } from "./buffer-capture-spill.js";
 import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import type {
   BufferEntryState,
@@ -34,10 +35,8 @@ export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering"
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
-export interface AddTurnOutcome {
-  decision: TriggerDecision;
-  extractionTurns?: BufferTurn[];
-}
+import type { AddTurnOutcome } from "./buffer-capture-spill.js";
+export type { AddTurnOutcome };
 
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
@@ -72,7 +71,7 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 
-interface AddTurnMutationResult {
+export interface AddTurnMutationResult {
   decision: TriggerDecision;
   signalLevel: SignalLevel;
   priorTurns: BufferTurn[];
@@ -188,6 +187,9 @@ export class SmartBuffer {
       lastExtractionAt: entries.default.lastExtractionAt,
       extractionCount: entries.default.extractionCount,
       entries,
+      // The spill queue survives normalization (#3303): it is state-level, not
+      // tied to the "default" entry the rest of this function rebuilds.
+      spillQueue: Array.isArray(state.spillQueue) ? state.spillQueue : undefined,
     };
   }
 
@@ -451,23 +453,52 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
-  /** Admit atomically; refuse at capacity rather than evict accepted work. */
+  /** Admit atomically; at capacity, spill to the durable queue rather than evict accepted work. */
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       if (this.peekEntry(bufferKey) === null) {
         this.makeRoomForEntryUnlocked();
         if (Object.keys(this.state.entries ?? {}).length >= MAX_BUFFER_ENTRY_COUNT) {
-          log.warn(
-            `buffer[${bufferKey}]: durable capture refused at MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}`,
-          );
+          // Signal the caller (outside the mutation) that this capture must be
+          // spilled: the mutation result type is reserved for admitted turns.
           return null;
         }
       }
       return this.recordTurnUnlocked(bufferKey, turn);
     });
-    if (mutation === null) return null;
+    if (mutation === null) {
+      // At the session-entry cap: spill to the durable spill queue rather than
+      // refusing, so live capture is never dropped while the single extraction
+      // worker is busy on a backlog doc (#3303).
+      return spillCapturedTurn(this.captureSpillPort(), bufferKey, turn);
+    }
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
+  }
+
+  /**
+   * Admit spilled turns (FIFO) while capacity allows (#3303); returns the
+   * outcomes of the admitted turns so the caller can queue their extraction.
+   * Implementation lives in buffer-capture-spill.ts (file-size cap).
+   */
+  async drainCaptureSpill(): Promise<Array<{ bufferKey: string; outcome: AddTurnOutcome }>> {
+    return drainCaptureSpill(this.captureSpillPort());
+  }
+
+  /** Everything the capture spill/drain needs from this instance. */
+  private captureSpillPort(): CaptureSpillPort {
+    return {
+      state: this.state,
+      maxEntryCount: MAX_BUFFER_ENTRY_COUNT,
+      enqueueMutation: (op) => this.enqueueMutation(op),
+      loadUnlocked: () => this.loadUnlocked(),
+      makeRoomForEntryUnlocked: () => this.makeRoomForEntryUnlocked(),
+      peekEntry: (key) => this.peekEntry(key),
+      recordTurnUnlocked: (key, turn) => this.recordTurnUnlocked(key, turn),
+      markDirty: (key) => this.persistence.markDirty(key),
+      completeAddTurnOutcome: (key, turn, mutation) => this.completeAddTurnOutcome(key, turn, mutation),
+      saveWholeState: () => this.storage.saveBuffer(this.state),
+    };
   }
 
   /** Prune empty entries only; accepted work must survive capacity pressure. */

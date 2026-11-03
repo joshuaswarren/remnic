@@ -289,3 +289,25 @@ export function probeWithTimeout<T>(inflight: Promise<T>, timeoutMs: number): Pr
     if (timer) clearTimeout(timer);
   });
 }
+
+/**
+ * Flush-plan recovery imports are compacted material the host already
+ * summarized before appending it to the flush-plan file. Feeding those
+ * turns through LCM observation again re-summarizes the same content
+ * (issue #2457). The producer stamps both a dedicated `sourceLabel` and a
+ * `:flush-plan[:chunk]`-shaped `sourceId`, so either marker identifies a
+ * recovery turn; ordinary bulk-import turns never carry either.
+ */
+export function isFlushPlanRecoveryTurn(
+  turn: Pick<BufferTurn, "importProvenance">,
+): turn is Pick<BufferTurn, "importProvenance"> & {
+  importProvenance: { sourceId: string; sourceLabel?: string };
+} {
+  const provenance = turn.importProvenance;
+  if (provenance?.sourceLabel === "OpenClaw flush plan") return true;
+  const sourceId = provenance?.sourceId;
+  // The regex literal prefix is the real discriminator; a non-string sourceId
+  // cannot carry the ":flush-plan" marker, so the coercion is safe here.
+  return sourceId !== undefined && /:flush-plan(:\d+\/\d+)?$/.test(sourceId);
+}
+
