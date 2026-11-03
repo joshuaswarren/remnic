@@ -546,7 +546,8 @@ export class MaintenanceScheduler {
     const settle = this.qmdCompletion.claim();
     let served = false;
     let deferred = false;
-    const ranNamespaces = new Set<string>();
+    // Set only by the namespace-aware branch; absent means the pass outcome applies to every waiter.
+    let ranNamespaces: Set<string> | undefined;
 
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
@@ -627,11 +628,13 @@ export class MaintenanceScheduler {
         // request, so a deployment with more namespaces than the cycle budget still converges.
         // Permanent skip reasons describe namespaces this deployment never re-indexes.
         const covered = this.qmdCoveredNamespaces;
+        const ran = new Set<string>();
+        ranNamespaces = ran;
         const before = covered.size;
         for (const status of summary.statuses) {
           if (status.state !== "ran") continue;
           covered.add(status.namespace);
-          ranNamespaces.add(status.namespace);
+          ran.add(status.namespace);
         }
         const uncovered = summary.statuses.some(
           (status) =>
