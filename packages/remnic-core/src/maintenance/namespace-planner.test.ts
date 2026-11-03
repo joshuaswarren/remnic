@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
+import type { NamespaceCatalog, NamespaceCatalogFilter, NamespaceCatalogReadOptions, NamespaceRecord } from "../namespaces/catalog.js";
 import { namespaceIdentityToken } from "../namespaces/identity.js";
 import type { PluginConfig } from "../types.js";
 import {
@@ -140,6 +140,46 @@ test("planner fans out to live cataloged project and team namespaces while skipp
         (skipped) => skipped.namespace === "project-alpha-branch-main" && skipped.reason === "branch_disabled"
       )
     );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("planner records catalog_read_failed for an incomplete catalog read and still plans what it found (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    await createNamespaceData(memoryDir, "project-alpha");
+    // Object.create(null) yields an untyped value, so no assertion is needed: the planner only
+    // reads enabled and calls listNamespaces.
+    const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+      enabled: true,
+      async listNamespaces(_filter?: NamespaceCatalogFilter, options?: NamespaceCatalogReadOptions) {
+        options?.onIncomplete?.("1 malformed catalog line skipped");
+        return [record(memoryDir, "project-alpha", "project", "2026-06-30T10:00:00.000Z")];
+      },
+    });
+
+    const plan = await planNamespaceMaintenance(makeConfig(memoryDir), { jobName: "qmd", catalog });
+
+    assert.ok(
+      plan.namespaces.some((candidate) => candidate.namespace === "project-alpha"),
+      "the namespaces that were read are still maintained"
+    );
+    const failed = plan.skipped.filter((skipped) => skipped.reason === "catalog_read_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].namespace, "*");
+    assert.match(failed[0].detail ?? "", /malformed/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("planner without a catalog plans the configured namespaces and reports nothing (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const plan = await planNamespaceMaintenance(makeConfig(memoryDir), { jobName: "qmd" });
+    assert.deepEqual(plan.namespaces.map((candidate) => candidate.namespace), ["default", "shared"]);
+    assert.equal(plan.skipped.some((skipped) => skipped.reason === "catalog_read_failed"), false);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
