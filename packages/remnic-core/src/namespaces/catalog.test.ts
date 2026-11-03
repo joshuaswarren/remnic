@@ -4300,7 +4300,7 @@ test("concurrent malformed reads schedule a single repair (#3298)", async () => 
     assert.ok(!after.includes("this is not json"), "the malformed row is gone after the repair");
 
     const sidecars = (await readdir(path.join(memoryDir, "state"))).filter((e) =>
-      /^namespaces\.jsonl\.malformed-\d+$/.test(e),
+      /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e),
     );
     assert.equal(sidecars.length, 1, "exactly one quarantine sidecar");
     const sidecar = await readFile(path.join(memoryDir, "state", sidecars[0]!), "utf8");
@@ -4350,11 +4350,47 @@ test("the repair quarantines every dropped row in the sidecar before rewriting (
     assert.ok(!after.includes("first bad row") && !after.includes("not json either"), "both dropped rows are gone");
 
     const entries = await readdir(path.join(memoryDir, "state"));
-    const sidecars = entries.filter((e) => /^namespaces\.jsonl\.malformed-\d+$/.test(e));
+    const sidecars = entries.filter((e) => /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e));
     assert.equal(sidecars.length, 1, "one sidecar for the one repair");
     const sidecar = await readFile(path.join(memoryDir, "state", sidecars[0]!), "utf8");
     assert.ok(sidecar.includes("first bad row") && sidecar.includes("not json either"), "both dropped rows are kept");
     assert.ok(!entries.some((e) => e.endsWith(".tmp")), "no temp file is left behind");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a repair that fails after the sidecar write does not pile up sidecars (#3298)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+
+    // The sidecar write succeeds, the rewrite after it fails. A failed attempt
+    // does not back off (it holds no lock budget), so a second read retries —
+    // and the hash-named sidecar must be reused, not duplicated.
+    const original = catalog["rewriteUnchained"].bind(catalog);
+    let failures = 0;
+    catalog["rewriteUnchained"] = async (records: unknown[]) => {
+      failures += 1;
+      if (failures <= 2) throw new Error("simulated rewrite failure after the sidecar");
+      return original(records as never);
+    };
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "-never"); // settle the failing attempt
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "-never"); // settle the second failing attempt
+    await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
+    await settleRewrite(catalogPath, "this is not json"); // third attempt repairs
+    assert.equal(catalog.malformedRepairAttemptsForTest, 3, "a failed attempt retries on the next read");
+    assert.ok(!(await readFile(catalogPath, "utf8")).includes("this is not json"), "the third attempt repaired the catalog");
+
+    const sidecars = (await readdir(path.join(memoryDir, "state"))).filter((e) =>
+      /^namespaces\.jsonl\.malformed-[0-9a-f]{16}$/.test(e),
+    );
+    assert.equal(sidecars.length, 1, "the same dropped rows reuse one hash-named sidecar");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }

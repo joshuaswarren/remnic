@@ -29,6 +29,7 @@ import {
   sanitizeRecordForRead,
   type CatalogReadBoundaryPort,
 } from "./catalog-read-boundary.js";
+import { MalformedCatalogRepairGate, malformedSidecarPath } from "./catalog-repair.js";
 
 /**
  * Rebuildable namespace catalog (issue #1499).
@@ -175,12 +176,6 @@ const REBUILD_LOCK_STALE_MS = 30_000;
 // a CLI rebuild forever behind a busy gateway.
 const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
 const REBUILD_LOCK_POLL_MS = 50;
-// #3298 review: after a dropped repair attempt, wait this long before another malformed
-// read may schedule one. Short by design: the single-flight guard already bounds repairs
-// to one at a time, the 5 s lock wait is itself the rate limiter under contention, and a
-// longer window would delay the legitimate retry after contention clears (a warm-cache
-// read retries the repair).
-const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
 // Heartbeat: while a rebuild holds the lock it refreshes the lock file's mtime
 // on this interval so a long (>STALE_MS) scan is NOT mistaken for a crashed
 // holder and broken out from under it (round 5, cursor/codex Medium/P2). Must be
@@ -519,14 +514,12 @@ export class NamespaceCatalog {
   private readonly compactBytesLimit: number;
   private readonly readCoalesceMs: number;
   private readonly writeCoalesceMs: number;
-  // #3298 review: single-flight + backoff state for the malformed-catalog repair.
-  private malformedRepairInFlight: Promise<void> | undefined;
-  private malformedRepairNextAttemptAt = 0;
-  private malformedRepairAttemptCount = 0;
+  // #3298 review: single-flight + backoff gate for the malformed-catalog repair.
+  private readonly malformedRepairGate = new MalformedCatalogRepairGate();
 
-  /** Test-only observability: how many repair attempts actually entered the guard. */
+  /** Test-only observability: how many repair attempts actually entered the gate. */
   get malformedRepairAttemptsForTest(): number {
-    return this.malformedRepairAttemptCount;
+    return this.malformedRepairGate.attemptCount;
   }
 
   // Size after the most recent auto-compaction (0 = none yet). Hysteresis for
@@ -615,7 +608,7 @@ export class NamespaceCatalog {
       // rewritten, so repair it now: fold the readable rows and rewrite the log without the bad
       // ones. Best-effort and fail-open like the size-triggered compaction. Only a read that
       // reached the end of the file may trigger it (see CatalogReadHealth.malformed).
-      void this.repairMalformedCatalog().catch(() => undefined);
+      void this.malformedRepairGate.run(() => this.rewriteAfterIncompleteRead()).catch(() => undefined);
     }
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
@@ -1404,7 +1397,9 @@ export class NamespaceCatalog {
         // leave a stuck malformed catalog unrepaired.
         const dropped = health.malformedLines ?? [];
         if (dropped.length > 0) {
-          const sidecar = `${this.catalogPath}.malformed-${Date.now()}`;
+          // Hash-named (#3298 review): repeated attempts over the same bad rows
+          // reuse one sidecar instead of piling one per failed attempt.
+          const sidecar = malformedSidecarPath(this.catalogPath, dropped);
           await writeFile(sidecar, dropped.join("\n") + "\n", "utf8").catch(() => undefined);
         }
         await this.rewriteUnchained([...folded.values()]);
@@ -1413,32 +1408,6 @@ export class NamespaceCatalog {
     );
   }
 
-  /**
-   * Single-flight wrapper for the malformed-catalog repair (#3298 review): many
-   * concurrent reads of the same malformed catalog must produce ONE repair, and a
-   * dropped attempt must back off for one lock-wait budget, so malformed reads
-   * cannot queue serial 5 s lock waits ahead of touch(). A fast failure (the lock
-   * was acquired but the re-read or rewrite threw, or nothing needed repairing)
-   * holds no lock budget, so the next incomplete read retries it as before.
-   */
-  private async repairMalformedCatalog(): Promise<void> {
-    if (this.malformedRepairInFlight || Date.now() < this.malformedRepairNextAttemptAt) return;
-    this.malformedRepairAttemptCount += 1;
-    this.malformedRepairInFlight = (async () => {
-      let outcome: "repaired" | "dropped" | "failed" = "failed";
-      try {
-        outcome = await this.rewriteAfterIncompleteRead();
-      } catch {
-        outcome = "failed";
-      } finally {
-        this.malformedRepairInFlight = undefined;
-        if (outcome === "dropped") {
-          this.malformedRepairNextAttemptAt = Date.now() + MALFORMED_REPAIR_DROP_BACKOFF_MS;
-        }
-      }
-    })();
-    await this.malformedRepairInFlight;
-  }
 
   /**
    * Fold-and-rewrite the JSONL log when it exceeds `compactBytesLimit`
