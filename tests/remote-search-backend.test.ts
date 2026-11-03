@@ -80,3 +80,8 @@ test("remote search backend still applies timeout when no caller signal is provi
     globalThis.fetch = originalFetch;
   }
 });
+
+test("remote search backend reports updateCompleted: it has no local re-index to leave incomplete (issue #3286)", async () => {
+  const backend = new RemoteSearchBackend({ baseUrl: "http://127.0.0.1:1" });
+  assert.equal(await backend.updateCompleted(), true);
+});

@@ -178,14 +178,23 @@ export class OramaBackend implements SearchBackend {
   }
 
   async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
-    if (isSearchAborted(execution)) return;
+    await this.refreshCollection(collection, memoryDir, execution);
+  }
+
+  async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
+    return this.refreshCollection(this.collection, this.memoryDir, execution);
+  }
+
+  /** Brings the collection up to date; true only when it ran to completion (false: aborted, unavailable, skipped or failed). */
+  private async refreshCollection(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<boolean> {
+    if (isSearchAborted(execution)) return false;
     const db = await this.ensureDbForCollection(collection);
-    if (isSearchAborted(execution)) return;
-    if (!db) return;
+    if (isSearchAborted(execution)) return false;
+    if (!db) return false;
     const { search: oramaSearch, insert, remove, count, getByID } = this.oramaModule;
 
     const docs = await scanMemoryDir(memoryDir);
-    if (isSearchAborted(execution)) return;
+    if (isSearchAborted(execution)) return false;
     const docMap = new Map(docs.map((d) => [d.docid, d]));
     const { update: oramaUpdate } = this.oramaModule;
 
@@ -204,7 +213,7 @@ export class OramaBackend implements SearchBackend {
         limit: existingCount + 100,
       });
       for (const hit of allHits.hits) {
-        if (isSearchAborted(execution)) return;
+        if (isSearchAborted(execution)) return false;
         const storedDocument =
           typeof getByID === "function"
             ? await getByID(db, hit.id)
@@ -227,7 +236,7 @@ export class OramaBackend implements SearchBackend {
 
     // Insert new docs, update existing ones (preserving vectors since update is remove+insert)
     for (const doc of docs) {
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       const existing = existingDocs.get(doc.docid);
       if (existing) {
         const payload: Record<string, unknown> = {
@@ -281,13 +290,14 @@ export class OramaBackend implements SearchBackend {
       }
     }
 
-    if (isSearchAborted(execution)) return;
+    if (isSearchAborted(execution)) return false;
     await this.persistDbForCollection(db, collection);
     this.rememberVectorProviderCompatibility(
       db,
       embeddingProviderIdentity,
       allRowsCompatible,
     );
+    return true;
   }
 
   async embed(): Promise<void> {

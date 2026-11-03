@@ -139,23 +139,33 @@ export class LanceDbBackend implements SearchBackend {
   }
 
   async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
-    if (isSearchAborted(execution)) return;
+    await this.refreshCollection(collection, memoryDir, execution);
+  }
+
+  async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
+    return this.refreshCollection(this.collection, this.memoryDir, execution);
+  }
+
+  /** Brings the collection up to date; true only when it ran to completion (false: aborted, unavailable, skipped or failed). */
+  private async refreshCollection(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<boolean> {
+    if (isSearchAborted(execution)) return false;
     let table = await this.ensureTableForCollection(collection);
-    if (isSearchAborted(execution)) return;
-    if (!table) return;
+    if (isSearchAborted(execution)) return false;
+    if (!table) return false;
 
     const docs = await scanMemoryDir(memoryDir);
-    if (isSearchAborted(execution)) return;
+    if (isSearchAborted(execution)) return false;
     if (docs.length === 0) {
       // Clear stale data when no docs remain
       try {
         const db = await this.ensureDb();
         await db.dropTable(collection).catch(() => {});
         if (collection === this.collection) this.table = null;
+        return true;
       } catch {
         // Best-effort cleanup
       }
-      return;
+      return false;
     }
 
     const embeddingProviderIdentity = this.embedHelper.getProviderIdentity();
@@ -166,13 +176,13 @@ export class LanceDbBackend implements SearchBackend {
     const vectorProviderColumnState = await this.tableVectorProviderColumnState(table);
     if (vectorProviderColumnState === "missing") {
       table = await this.recreateTableForCollection(collection);
-      if (isSearchAborted(execution)) return;
-      if (!table) return;
+      if (isSearchAborted(execution)) return false;
+      if (!table) return false;
     } else if (vectorProviderColumnState === "present") {
       try {
         const existingRows = await table.query().select(["docid", "vector", "vectorProvider"]).toArray();
         for (const row of existingRows ?? []) {
-          if (isSearchAborted(execution)) return;
+          if (isSearchAborted(execution)) return false;
           const docid = row.docid;
           if (typeof docid !== "string") continue;
           const vector = row.vector;
@@ -184,11 +194,11 @@ export class LanceDbBackend implements SearchBackend {
         }
       } catch {
         log.debug("LanceDbBackend skipped refresh after vector preservation failed");
-        return;
+        return false;
       }
     } else {
       log.debug("LanceDbBackend skipped vector preservation after vectorProvider probe failed");
-      return;
+      return false;
     }
 
     const rows = docs.map((d) => {
@@ -213,19 +223,21 @@ export class LanceDbBackend implements SearchBackend {
     });
 
     try {
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       await table.add(rows, { mode: "overwrite" });
       this.rememberVectorProviderCompatibility(
         table,
         embeddingProviderIdentity,
         rows.length > 0 && rows.every((row) => row.vectorProvider === embeddingProviderIdentity),
       );
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       // FTS index on the content column.
       await this.createFtsIndex(table);
       if (collection === this.collection) this.table = table;
+      return true;
     } catch (err) {
       log.debug(`LanceDbBackend update failed: ${err}`);
+      return false;
     }
   }
 

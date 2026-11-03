@@ -621,9 +621,16 @@ export class MaintenanceScheduler {
         served = summary.ran > 0 && summary.failed === 0;
       } else {
         const qmd = this.deps.getQmd();
-        if (qmd.updateStrict) {
-          // Plain update() is fail-open: it resolves when the min-interval gate or failure
-          // backoff suppressed it, and when it errored. Only the strict variant says an update ran.
+        // Plain update() is fail-open on every backend: it resolves when the min-interval gate,
+        // failure backoff or an early exit suppressed it, and when it errored. Only the variants
+        // that report whether an update ran count (updateCompleted, else QMD's updateStrict).
+        if (qmd.updateCompleted) {
+          try {
+            served = await qmd.updateCompleted();
+          } catch (err) {
+            log.debug(`qmd maintenance update did not run: ${err}`);
+          }
+        } else if (qmd.updateStrict) {
           try {
             await qmd.updateStrict();
             served = true;

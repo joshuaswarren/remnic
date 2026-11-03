@@ -182,6 +182,13 @@ export interface SearchBackend {
    * calls remain fail-open for migration/maintenance resilience.
    */
   updateStrict?(execution?: SearchExecutionOptions): Promise<void>;
+  /**
+   * Fail-open like update(), but reports whether the index was actually brought
+   * up to date: false when it returned early (aborted, unavailable, suppressed
+   * or skipped) or failed. For backends with no strict variant, so a caller
+   * that must not lose a re-index (the entity-migration pending marker) can tell.
+   */
+  updateCompleted?(execution?: SearchExecutionOptions): Promise<boolean>;
   updateCollection(collection: string, execution?: SearchExecutionOptions): Promise<void>;
   updateCollectionFromDir?(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void>;
   /**

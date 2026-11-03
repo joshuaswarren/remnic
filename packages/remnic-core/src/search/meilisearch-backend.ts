@@ -136,17 +136,27 @@ export class MeilisearchBackend implements SearchBackend {
   }
 
   async updateCollectionFromDir(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<void> {
-    if (!this.autoIndex) return;
-    if (!this.available) return;
-    if (isSearchAborted(execution)) return;
+    await this.refreshCollection(collection, memoryDir, execution);
+  }
+
+  async updateCompleted(execution?: SearchExecutionOptions): Promise<boolean> {
+    if (!this.memoryDir) return false;
+    return this.refreshCollection(this.collection, this.memoryDir, execution);
+  }
+
+  /** Brings the collection up to date; true only when it ran to completion (false: aborted, unavailable, skipped or failed). */
+  private async refreshCollection(collection: string, memoryDir: string, execution?: SearchExecutionOptions): Promise<boolean> {
+    if (!this.autoIndex) return false;
+    if (!this.available) return false;
+    if (isSearchAborted(execution)) return false;
 
     try {
       const ensured = await this.ensureCollection(memoryDir, collection, execution);
-      if (ensured === "skipped" || ensured === "missing") return;
+      if (ensured === "skipped" || ensured === "missing") return false;
       const client = await this.ensureClient();
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       const docs = await scanMemoryDir(memoryDir);
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       const index = client.index(collection);
 
       const meilDocs = docs.map((d) => ({
@@ -157,10 +167,10 @@ export class MeilisearchBackend implements SearchBackend {
       }));
 
       // Upsert current docs and wait for the task to complete
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
       const addTask = await index.addDocuments(meilDocs, { primaryKey: "id" });
       await client.waitForTask(addTask.taskUid, { timeOutMs: this.timeoutMs });
-      if (isSearchAborted(execution)) return;
+      if (isSearchAborted(execution)) return false;
 
       // Remove docs that no longer exist on disk (paginated to handle large indexes)
       const currentIds = new Set(docs.map((d) => d.docid));
@@ -170,7 +180,7 @@ export class MeilisearchBackend implements SearchBackend {
         let staleIds: string[] = [];
         let hasMore = true;
         while (hasMore) {
-          if (isSearchAborted(execution)) return;
+          if (isSearchAborted(execution)) return false;
           const page = await index.getDocuments({ limit: PAGE_SIZE, offset, fields: ["id"] });
           const results = page.results ?? [];
           for (const doc of results) {
@@ -181,15 +191,17 @@ export class MeilisearchBackend implements SearchBackend {
           hasMore = results.length === PAGE_SIZE;
         }
         if (staleIds.length > 0) {
-          if (isSearchAborted(execution)) return;
+          if (isSearchAborted(execution)) return false;
           const delTask = await index.deleteDocuments(staleIds);
           await client.waitForTask(delTask.taskUid, { timeOutMs: this.timeoutMs });
         }
       } catch {
         // Deletion cleanup is best-effort
       }
+      return true;
     } catch (err) {
       log.debug(`MeilisearchBackend update failed: ${err}`);
+      return false;
     }
   }
 

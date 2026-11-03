@@ -24,6 +24,8 @@ import { execFileSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { MaintenanceScheduler } from "./maintenance.js";
+import { EmbedHelper } from "../search/embed-helper.js";
+import { OramaBackend } from "../search/orama-backend.js";
 import {
   createProjectionRebuildScheduleState,
   maybeRebuildMemoryProjectionScheduled,
@@ -3154,6 +3156,69 @@ test("requestQmdMaintenanceCompletion keeps embedding after a suppressed update,
     assert.equal(embeds, 1, "a suppressed update must not skip a due embed");
   } finally {
     await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion follows updateCompleted for backends with no strict update (Orama, LanceDB, Meilisearch, remote)", async () => {
+  for (const completed of [true, false]) {
+    let updates = 0;
+    const backend: SearchBackend = Object.assign(Object.create(null), {
+      isAvailable: () => true,
+      // Fail-open like every non-QMD backend: resolves even when it returned early or failed.
+      async update() {
+        updates += 1;
+      },
+      async updateCompleted() {
+        return completed;
+      },
+      async embed() {},
+    });
+    const scheduler = new MaintenanceScheduler({
+      config: fixtureConfig({ namespacesEnabled: false, qmdAutoEmbedEnabled: false }),
+      getQmd: () => backend,
+      namespaceSearchRouter: Object.create(null),
+      namespaceCatalog: Object.assign(Object.create(null), { enabled: false }),
+    });
+    try {
+      const served = scheduler.requestQmdMaintenanceCompletion();
+      await scheduler.runQmdMaintenance();
+      assert.equal(await served, completed);
+      assert.equal(updates, 0, "updateCompleted is the update, not an extra call after update()");
+    } finally {
+      await scheduler.dispose();
+    }
+  }
+});
+
+test("requestQmdMaintenanceCompletion is served by a real non-QMD backend (Orama) once its re-index completes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-completion-orama-"));
+  try {
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    await writeFile(path.join(root, "facts", "fact.md"), "---\nid: mem-completion\n---\nA fact the re-index must cover.");
+    const orama = new OramaBackend({
+      dbPath: path.join(root, "orama-db"),
+      collection: "openclaw-engram",
+      embedHelper: new EmbedHelper(fixtureConfig({})),
+      memoryDir: root,
+      embeddingDimension: 4,
+    });
+    assert.equal(await orama.probe(), true);
+    const scheduler = new MaintenanceScheduler({
+      config: fixtureConfig({ namespacesEnabled: false, qmdAutoEmbedEnabled: false }),
+      getQmd: () => orama,
+      namespaceSearchRouter: Object.create(null),
+      namespaceCatalog: Object.assign(Object.create(null), { enabled: false }),
+    });
+    try {
+      const served = scheduler.requestQmdMaintenanceCompletion();
+      await scheduler.runQmdMaintenance();
+      assert.equal(await served, true);
+      assert.equal((await orama.bm25Search("re-index")).some((r) => r.docid === "mem-completion"), true, "the pass indexed the corpus");
+    } finally {
+      await scheduler.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
