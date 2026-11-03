@@ -4215,11 +4215,17 @@ test("a dropped repair backs off before the next attempt (#3298)", { timeout: 30
 
     // Hold the lock past the repair's 5 s wait, so the first attempt is dropped.
     const { promise: released, resolve: release } = Promise.withResolvers<void>();
-    const holder = withHeldFileLock(lockPath, { staleMs: 60_000 }, async () => released);
-    // Real delays throughout: the holder's on-disk lock acquisition and the
-    // gate's backoff both run on the platform clock (Date.now + poll loops),
-    // so deterministic timer control cannot drive this integration path.
-    { const { promise, resolve } = Promise.withResolvers<void>(); setTimeout(resolve, 100); await promise; }
+    // The holder resolves `held` from inside its callback, which runs only once
+    // the on-disk lock is actually owned: awaiting it proves the lock is held
+    // before the first read, so the repair can never slip in first.
+    const { promise: held, resolve: lockHeld } = Promise.withResolvers<void>();
+    const holder = withHeldFileLock(lockPath, { staleMs: 60_000 }, async () => {
+      lockHeld();
+      await released;
+    });
+    // Real delays remain where the platform clock is the thing under test: the
+    // gate's backoff reads Date.now() and the repair's lock wait really polls.
+    await held;
     await catalog.listNamespaces(undefined, { onIncomplete: () => undefined });
     // Past the repair's 5 s lock wait (the attempt drops at ~5.05 s) but still
     // inside the 250 ms backoff window that starts at the drop.
