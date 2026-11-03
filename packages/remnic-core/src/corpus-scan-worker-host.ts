@@ -27,6 +27,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import { abortError } from "./abort-error.js";
+import { log } from "./logger.js";
 import {
   collectContainedMarkdownPaths,
   fingerprintEntityEntries,
@@ -169,10 +170,11 @@ export class CorpusScanWorkerHost {
     let worker: Worker;
     try {
       worker = this.ensureWorker();
-    } catch {
+    } catch (error) {
       // No worker available (missing entry, unsupported runtime): the scan
-      // still happens, on this thread.
-      this.workerUnavailable = true;
+      // still happens, on this thread. Report the fallback once: every later
+      // scan would otherwise run inline silently.
+      this.disableWorker(error);
       return await runInline(payload, this.cancellationCheck(signal));
     }
     const id = this.nextId++;
@@ -254,6 +256,17 @@ export class CorpusScanWorkerHost {
     if (this.pending.size === 0) this.setAttached(false);
   };
 
+  /**
+   * Disable the worker and say why, exactly once: after this, every corpus
+   * scan runs inline on the main thread, which is the starvation this module
+   * exists to avoid. Silence here would hide the regression.
+   */
+  private disableWorker(error: unknown): void {
+    if (this.workerUnavailable) return;
+    this.workerUnavailable = true;
+    log.warn("corpus scan worker unavailable; falling back to inline scans", error);
+  }
+
   private ensureWorker(): Worker {
     if (this.worker) return this.worker;
     const worker = new Worker(resolveWorkerEntryUrl());
@@ -264,7 +277,7 @@ export class CorpusScanWorkerHost {
     worker.on("error", (error: Error) => {
       if (this.worker !== worker) return;
       this.failAll(error);
-      this.workerUnavailable = true;
+      this.disableWorker(error);
     });
     worker.on("exit", () => {
       if (this.worker !== worker) return;

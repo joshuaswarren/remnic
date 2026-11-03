@@ -113,15 +113,18 @@ async function fingerprintEntityEntries(entitiesDir) {
 }
 async function statMtimes(paths) {
   const results = new Array(paths.length).fill(null);
-  await Promise.all(paths.map(async (filePath, index) => {
-    try {
-      const entry = await stat(filePath);
-      results[index] = entry.mtimeMs;
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    }
-  }));
+  const STAT_BATCH_SIZE = 256;
+  for (let start = 0; start < paths.length; start += STAT_BATCH_SIZE) {
+    await Promise.all(paths.slice(start, start + STAT_BATCH_SIZE).map(async (filePath, offset) => {
+      try {
+        const entry = await stat(filePath);
+        results[start + offset] = entry.mtimeMs;
+      } catch (error) {
+        if (isErrnoCode(error, "ENOENT")) return;
+        throw error;
+      }
+    }));
+  }
   return results;
 }
 

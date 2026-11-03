@@ -196,14 +196,20 @@ export async function fingerprintEntityEntries(entitiesDir: string): Promise<str
  */
 export async function statMtimes(paths: readonly string[]): Promise<Array<number | null>> {
   const results: Array<number | null> = new Array(paths.length).fill(null);
-  await Promise.all(paths.map(async (filePath, index) => {
-    try {
-      const entry = await stat(filePath);
-      results[index] = entry.mtimeMs;
-    } catch (error) {
-      if (isErrnoCode(error, "ENOENT")) return;
-      throw error;
-    }
-  }));
+  // Fixed-size batches: an unbounded Promise.all submits one libuv operation
+  // per file at once, and the worker and main thread share that threadpool, so
+  // a large bulk import would delay every other filesystem operation.
+  const STAT_BATCH_SIZE = 256;
+  for (let start = 0; start < paths.length; start += STAT_BATCH_SIZE) {
+    await Promise.all(paths.slice(start, start + STAT_BATCH_SIZE).map(async (filePath, offset) => {
+      try {
+        const entry = await stat(filePath);
+        results[start + offset] = entry.mtimeMs;
+      } catch (error) {
+        if (isErrnoCode(error, "ENOENT")) return;
+        throw error;
+      }
+    }));
+  }
   return results;
 }
