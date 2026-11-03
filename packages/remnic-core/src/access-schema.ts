@@ -369,11 +369,7 @@ export function reapplyCategoryCoercion<T extends object>(
 const categoryWireSchema = z.enum(
   [...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT],
   {
-    errorMap: () => ({
-      message:
-        `category must be one of: ${[...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT].join(", ")}; ` +
-        'for project state/facts use "fact"',
-    }),
+    error: `category must be one of: ${[...MEMORY_CATEGORY_CANONICAL_INPUT, ...MEMORY_CATEGORY_ALIAS_INPUT].join(", ")}; for project state/facts use "fact"`,
   },
 );
 
@@ -454,7 +450,7 @@ export const reviewDispositionRequestSchema = z.object({
 export const trustZonePromoteRequestSchema = z.object({
   recordId: z.string().trim().min(1, "recordId is required"),
   targetZone: z.enum(["working", "trusted"], {
-    errorMap: () => ({ message: "targetZone must be 'working' or 'trusted'" }),
+    error: "targetZone must be 'working' or 'trusted'",
   }),
   promotionReason: z.string().trim().min(1, "promotionReason is required"),
   recordedAt: z.string().trim().optional(),
@@ -662,16 +658,13 @@ export const offlineSyncSnapshotRequestSchema = z.object({
     .optional(),
 });
 
-export const offlineSyncApplyRequestSchema = z
-  .object({
-    namespace: namespaceSchema,
-    changeset: z.unknown(),
-    returnCurrentFiles: z.boolean().optional(),
-  })
-  .refine((value) => value.changeset !== undefined && value.changeset !== null, {
-    message: "changeset is required",
-    path: ["changeset"],
-  });
+export const offlineSyncApplyRequestSchema = z.object({
+  namespace: namespaceSchema,
+  // zod 4: refine messages cannot override its synthesized nonoptional check,
+  // so presence is enforced on the field itself.
+  changeset: z.custom<unknown>((value) => value !== undefined && value !== null, "changeset is required"),
+  returnCurrentFiles: z.boolean().optional(),
+});
 
 export const offlineSyncFilesRequestSchema = z.object({
   namespace: namespaceSchema,
@@ -693,8 +686,11 @@ export const offlineSyncFileContentRequestSchema = z.object({
 // Action confidence
 // ---------------------------------------------------------------------------
 
+// Outer .optional() keeps the inferred property optional: a transform-typed
+// property becomes required-with-undefined under zod 4 inference, breaking
+// object literals that legitimately omit the key.
 const nullableOptional = <T extends z.ZodTypeAny>(schema: T) =>
-  schema.optional().nullable().transform((value) => value ?? undefined);
+  schema.nullable().transform((value) => value ?? undefined).optional();
 
 const actionConfidenceRuleSchema = z
   .object({

@@ -153,6 +153,20 @@ test("formatZodIssues: includes the (root) path for top-level errors", async () 
   assert.ok(message.length > 0);
 });
 
+test("formatZodIssues: a missing required field keeps the zod message, a wrong type says must be a type", async () => {
+  const { z } = await import("zod");
+  const schema = z.object({ memoryId: z.string() });
+  const missing = schema.safeParse({});
+  assert.ok(!missing.success);
+  const missingMessage = formatZodIssues(missing.error);
+  assert.doesNotMatch(missingMessage, /must be a string/, "an absent field is not a type mismatch");
+  assert.match(missingMessage, /memoryId/);
+  assert.match(missingMessage, /received undefined/);
+  const wrong = schema.safeParse({ memoryId: 5 });
+  assert.ok(!wrong.success);
+  assert.match(formatZodIssues(wrong.error), /memoryId must be a string/);
+});
+
 // ---------------------------------------------------------------------------
 // defineOperation / getOperation — registry contract
 // ---------------------------------------------------------------------------

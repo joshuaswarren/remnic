@@ -66,7 +66,7 @@ export function validateOllamaChatEndpoint(endpoint: string | undefined): string
 
 const OllamaFunctionCallSchema = z.object({
   name: z.string(),
-  arguments: z.union([z.record(z.unknown()), z.string()]),
+  arguments: z.union([z.record(z.string(), z.unknown()), z.string()]),
 });
 
 const OllamaToolCallSchema = z.object({

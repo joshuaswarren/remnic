@@ -104,7 +104,7 @@ test("invalidArgsError: names the failing field path", () => {
   assert.equal(parse.success, false);
   const msg = invalidArgsError("engram.memory_get", parse.error, MEMORY_GET_SCHEMA);
   assert.match(msg, /memory_id/);
-  assert.match(msg, /required/i);
+  assert.match(msg, /received undefined/i);
 });
 
 test("invalidArgsError: the shown example actually parses against the schema", () => {
@@ -133,16 +133,28 @@ test("invalidArgsError: the shown example actually parses against the schema", (
 });
 
 test("invalidArgsError: an example that cannot round-trip is withheld, not shown", () => {
-  // A schema whose safeParse always fails must produce no example section
-  // rather than an example the caller cannot use.
-  const alwaysFails = {
-    _def: { typeName: "ZodObject", shape: () => ({ field: { _def: { typeName: "ZodString" } } }) },
-    safeParse: () => ({ success: false }),
-  };
-  const parse = MEMORY_GET_SCHEMA.safeParse({});
+  // Real zod 4 object: exampleFromSchema emits { field: "<string>" }, but the
+  // refine rejects that placeholder so safeParse fails. The round-trip guard
+  // must then withhold the example rather than advertise unusable args.
+  const neverRoundTrips = z
+    .object({
+      field: z.string().refine((value) => value !== "<string>", {
+        message: "placeholder example is rejected",
+      }),
+    })
+    .strict();
+
+  const againstPlaceholder = neverRoundTrips.safeParse({ field: "<string>" });
+  assert.equal(
+    againstPlaceholder.success,
+    false,
+    "the synthetic placeholder must fail the refine so the round-trip guard is reachable",
+  );
+
+  const parse = neverRoundTrips.safeParse({});
   assert.equal(parse.success, false);
   if (parse.success) return;
-  const msg = invalidArgsError("engram.memory_get", parse.error, alwaysFails);
+  const msg = invalidArgsError("engram.memory_get", parse.error, neverRoundTrips);
   assert.doesNotMatch(msg, /Example arguments/, "a non-parsing example must be withheld");
 });
 

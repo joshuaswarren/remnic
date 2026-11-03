@@ -141,53 +141,67 @@ function buildSuggestion(
  * `undefined` instead of a fabricated read.
  */
 function zodTypeName(schema: unknown): string | undefined {
-  if (typeof schema !== "object" || schema === null || !("_def" in schema)) return undefined;
-  const def = schema._def;
-  if (typeof def !== "object" || def === null || !("typeName" in def)) return undefined;
-  return typeof def.typeName === "string" ? def.typeName : undefined;
+  // zod 4: schema internals live on `_zod.def.type` (v3 read `_def.typeName`).
+  if (!(schema instanceof Object) || !("_zod" in schema)) return undefined;
+  // SAFETY: the guard above established `_zod` exists; its `.def` carries the
+  // discriminator string under `type`.
+  const def = (schema as { _zod?: { def?: { type?: unknown } } })._zod?.def;
+  // SAFETY: zod's `_zod.def.type` discriminator is always a string literal.
+  const discriminator = def?.type;
+  return discriminator === undefined ? undefined : String(discriminator);
 }
 
-/** Read `_def.<key>` with the same narrowing discipline. */
-function zodDefField(schema: unknown, key: string): unknown {
-  if (typeof schema !== "object" || schema === null || !("_def" in schema)) return undefined;
-  const def = schema._def;
-  if (typeof def !== "object" || def === null) return undefined;
-  return Object.hasOwn(def, key) ? (def as Record<string, unknown>)[key] : undefined;
-}
+/**
+ * A zod schema node this module reflects over — any object the library
+ * exposes as a schema (v4 marks them with `_zod`).
+ */
+/** Structural marker: every zod schema carries `_zod`. */
+type ZodSchemaLike = { _zod?: unknown };
+
+/**
+ * A synthetic example value derived from a schema: a placeholder the SAME
+ * schema accepts, so the error message can show a valid argument shape.
+ */
+type SchemaExample = string | number | boolean | null | readonly SchemaExample[] | { [key: string]: SchemaExample };
 
 /**
  * Reverse-engineer ONE synthetic example value from a Zod schema type.
  * Returns a deterministic placeholder intended to round-trip through parse().
  */
-function exampleFromSchema(schema: unknown): unknown {
+function exampleFromSchema(schema: ZodSchemaLike): SchemaExample | undefined {
   switch (zodTypeName(schema)) {
-    case "ZodString":
+    case "string":
       return "<string>";
-    case "ZodNumber":
+    case "number":
       return 42;
-    case "ZodBoolean":
+    case "boolean":
       return true;
-    case "ZodNullable":
+    case "nullable":
       return null;
-    case "ZodArray":
+    case "array":
       return [];
-    case "ZodOptional":
+    case "optional":
       // Optional fields are omitted from the example rather than sent as null.
       return undefined;
-    case "ZodEnum": {
-      const values = zodDefField(schema, "values");
-      return Array.isArray(values) && values.length > 0 ? values[0] : "<value>";
+    case "enum": {
+      // v4 exposes accepted values as the public `.enum` record.
+      if (!(schema instanceof Object) || !("enum" in schema)) return "<value>";
+      // SAFETY: the guard established `.enum`; zod types it as a value record.
+      const values = Object.values((schema as { enum: Record<string, string> }).enum);
+      return values.length > 0 ? values[0] : "<value>";
     }
-    case "ZodObject": {
-      const shapeFn = zodDefField(schema, "shape");
-      const shape = typeof shapeFn === "function" ? shapeFn() : undefined;
-      if (typeof shape !== "object" || shape === null) return {};
-      const result: Record<string, unknown> = {};
-      for (const key of Object.getOwnPropertyNames(shape)) {
-        if (!Object.hasOwn(shape, key)) continue;
-        const field = (shape as Record<string, unknown>)[key];
-        const value = exampleFromSchema(field);
-        if (value !== undefined) result[key] = value;
+    case "object": {
+      // v4 exposes `.shape` as a plain property on the object schema.
+      if (!(schema instanceof Object) || !("shape" in schema)) return {};
+      // SAFETY: object schemas expose their field schemas keyed by name.
+      const fieldsByName = (schema as { shape: { [field: string]: ZodSchemaLike } }).shape;
+      if (!(fieldsByName instanceof Object)) return {};
+      const result: { [key: string]: SchemaExample } = {};
+      for (const field of Object.getOwnPropertyNames(fieldsByName)) {
+        if (!Object.hasOwn(fieldsByName, field)) continue;
+        const schemaNode = fieldsByName[field];
+        const value = exampleFromSchema(schemaNode);
+        if (value !== undefined) result[field] = value;
       }
       return result;
     }
