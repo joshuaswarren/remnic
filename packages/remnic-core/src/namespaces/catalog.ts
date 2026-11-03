@@ -102,6 +102,11 @@ interface CatalogReadHealth {
    * content, so nothing may be rewritten from it.
    */
   malformed?: boolean;
+  /**
+   * The raw malformed lines the read skipped, in file order. Only filled when `malformed` is
+   * set; the repair quarantines exactly these into its sidecar before rewriting.
+   */
+  malformedLines?: string[];
 }
 
 export interface NamespaceCatalogReadOptions {
@@ -170,6 +175,12 @@ const REBUILD_LOCK_STALE_MS = 30_000;
 // a CLI rebuild forever behind a busy gateway.
 const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
 const REBUILD_LOCK_POLL_MS = 50;
+// #3298 review: after a dropped repair attempt, wait this long before another malformed
+// read may schedule one. Short by design: the single-flight guard already bounds repairs
+// to one at a time, the 5 s lock wait is itself the rate limiter under contention, and a
+// longer window would delay the legitimate retry after contention clears (a warm-cache
+// read retries the repair).
+const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
 // Heartbeat: while a rebuild holds the lock it refreshes the lock file's mtime
 // on this interval so a long (>STALE_MS) scan is NOT mistaken for a crashed
 // holder and broken out from under it (round 5, cursor/codex Medium/P2). Must be
@@ -508,6 +519,16 @@ export class NamespaceCatalog {
   private readonly compactBytesLimit: number;
   private readonly readCoalesceMs: number;
   private readonly writeCoalesceMs: number;
+  // #3298 review: single-flight + backoff state for the malformed-catalog repair.
+  private malformedRepairInFlight: Promise<void> | undefined;
+  private malformedRepairNextAttemptAt = 0;
+  private malformedRepairAttemptCount = 0;
+
+  /** Test-only observability: how many repair attempts actually entered the guard. */
+  get malformedRepairAttemptsForTest(): number {
+    return this.malformedRepairAttemptCount;
+  }
+
   // Size after the most recent auto-compaction (0 = none yet). Hysteresis for
   // maybeAutoCompact: a folded catalog that is itself above the limit (many
   // distinct namespaces) would otherwise be re-folded + re-rewritten on every
@@ -594,7 +615,7 @@ export class NamespaceCatalog {
       // rewritten, so repair it now: fold the readable rows and rewrite the log without the bad
       // ones. Best-effort and fail-open like the size-triggered compaction. Only a read that
       // reached the end of the file may trigger it (see CatalogReadHealth.malformed).
-      void this.rewriteAfterIncompleteRead().catch(() => undefined);
+      void this.repairMalformedCatalog().catch(() => undefined);
     }
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
@@ -1371,16 +1392,52 @@ export class NamespaceCatalog {
    * map, and a catalog with nothing readable is left for `rebuildFromDisk`: rewriting either
    * would replace a healthy or recoverable catalog with an empty file.
    */
-  private async rewriteAfterIncompleteRead(): Promise<void> {
-    await this.queueCritical(async () =>
+  private async rewriteAfterIncompleteRead(): Promise<"repaired" | "dropped" | "failed"> {
+    return this.queueCritical(async () =>
       this.withHeldCatalogLock(async (acquired) => {
-        if (!acquired) return;
-        const health: CatalogReadHealth = {};
+        if (!acquired) return "dropped";
+        const health: CatalogReadHealth = { malformedLines: [] };
         const folded = await this.loadCompacted(true, health);
-        if (health.malformed !== true || folded.size === 0) return;
+        if (health.malformed !== true || folded.size === 0) return "failed";
+        // Quarantine the rows the rewrite drops before the rename, so nothing is lost
+        // silently. Best-effort like the repair itself: a failed sidecar write must not
+        // leave a stuck malformed catalog unrepaired.
+        const dropped = health.malformedLines ?? [];
+        if (dropped.length > 0) {
+          const sidecar = `${this.catalogPath}.malformed-${Date.now()}`;
+          await writeFile(sidecar, dropped.join("\n") + "\n", "utf8").catch(() => undefined);
+        }
         await this.rewriteUnchained([...folded.values()]);
+        return "repaired";
       }),
     );
+  }
+
+  /**
+   * Single-flight wrapper for the malformed-catalog repair (#3298 review): many
+   * concurrent reads of the same malformed catalog must produce ONE repair, and a
+   * dropped attempt must back off for one lock-wait budget, so malformed reads
+   * cannot queue serial 5 s lock waits ahead of touch(). A fast failure (the lock
+   * was acquired but the re-read or rewrite threw, or nothing needed repairing)
+   * holds no lock budget, so the next incomplete read retries it as before.
+   */
+  private async repairMalformedCatalog(): Promise<void> {
+    if (this.malformedRepairInFlight || Date.now() < this.malformedRepairNextAttemptAt) return;
+    this.malformedRepairAttemptCount += 1;
+    this.malformedRepairInFlight = (async () => {
+      let outcome: "repaired" | "dropped" | "failed" = "failed";
+      try {
+        outcome = await this.rewriteAfterIncompleteRead();
+      } catch {
+        outcome = "failed";
+      } finally {
+        this.malformedRepairInFlight = undefined;
+        if (outcome === "dropped") {
+          this.malformedRepairNextAttemptAt = Date.now() + MALFORMED_REPAIR_DROP_BACKOFF_MS;
+        }
+      }
+    })();
+    await this.malformedRepairInFlight;
   }
 
   /**
@@ -2093,6 +2150,8 @@ export class NamespaceCatalog {
         await handle.close().catch(() => undefined);
         if (health && this.compactedCache.incomplete) {
           health.incomplete = this.compactedCache.incomplete;
+          // Invariant: cache.incomplete is set ONLY by the malformed branch below, so
+          // deriving `malformed` here cannot misfire for an unreadable catalog.
           health.malformed = true;
         }
         return this.cloneCompactedRecords(this.compactedCache.records);
@@ -2129,11 +2188,13 @@ export class NamespaceCatalog {
           // Skip corrupt lines (CLAUDE.md rule #18 robustness), but count them so a caller that
           // needs the whole catalog can tell the read was incomplete (issue #3293).
           malformed += 1;
+          health?.malformedLines?.push(trimmed);
           return;
         }
         const record = coerceRecord(parsed);
         if (!record) {
           malformed += 1;
+          health?.malformedLines?.push(trimmed);
           return;
         }
         const prior = records.get(record.namespace);
