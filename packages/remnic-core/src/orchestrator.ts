@@ -1515,7 +1515,7 @@ export class Orchestrator {
       storage.onEntityMigrationComplete = () => {
         if (!this.acceptingEntityMigrationMaintenance) return false;
         // Settles once a QMD pass covering this request ran; the migration keeps its pending marker until then.
-        const served = this.maintenanceScheduler.requestQmdMaintenanceCompletion();
+        const served = this.maintenanceScheduler.requestQmdMaintenanceCompletion(namespace);
         // Same side effects as before: projection rebuild and ledger-compaction checks, independent of QMD.
         this.requestQmdMaintenance();
         return served;
