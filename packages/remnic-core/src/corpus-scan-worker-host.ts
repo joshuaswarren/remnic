@@ -174,7 +174,7 @@ export class CorpusScanWorkerHost {
       // No worker available (missing entry, unsupported runtime): the scan
       // still happens, on this thread. Report the fallback once: every later
       // scan would otherwise run inline silently.
-      this.disableWorker(error);
+      this.disableWorker(error instanceof Error ? error : new Error(String(error)));
       return await runInline(payload, this.cancellationCheck(signal));
     }
     const id = this.nextId++;
@@ -261,7 +261,7 @@ export class CorpusScanWorkerHost {
    * scan runs inline on the main thread, which is the starvation this module
    * exists to avoid. Silence here would hide the regression.
    */
-  private disableWorker(error: unknown): void {
+  private disableWorker(error: Error): void {
     if (this.workerUnavailable) return;
     this.workerUnavailable = true;
     log.warn("corpus scan worker unavailable; falling back to inline scans", error);
