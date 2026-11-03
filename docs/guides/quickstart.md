@@ -139,7 +139,11 @@ curl -fsSL -o /tmp/ollama.tar.zst \
   https://github.com/ollama/ollama/releases/download/v0.40.14/ollama-linux-amd64.tar.zst
 tar --zstd -xf /tmp/ollama.tar.zst -C ~/ollama-bin
 OLLAMA_MODELS=$HOME/ollama-models ~/ollama-bin/bin/ollama serve &   # listens on 127.0.0.1:11434
-until curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1; do sleep 1; done
+for i in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:11434/api/version >/dev/null 2>&1 && break
+  sleep 1
+  [ "$i" = 30 ] && echo "ollama serve did not come up on port 11434" >&2 && exit 1
+done
 OLLAMA_MODELS=$HOME/ollama-models ~/ollama-bin/bin/ollama pull qwen2.5:0.5b-instruct
 ```
 
