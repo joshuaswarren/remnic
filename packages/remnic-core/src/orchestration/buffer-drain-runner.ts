@@ -187,9 +187,15 @@ export class BufferDrainRunner {
     const abort = new AbortController();
     const signal = options.signal ? AbortSignal.any([options.signal, abort.signal]) : abort.signal;
     const heartbeat = setInterval(() => {
-      void claims.heartbeat(key, options.ownerId, leaseMs).then((state) => {
-        if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
-      });
+      void claims
+        .heartbeat(key, options.ownerId, leaseMs)
+        .then((state) => {
+          if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
+        })
+        .catch((err: Error) => {
+          // A failed heartbeat must not reject unhandled; the next tick retries.
+          log.debug(`buffer drain: heartbeat failed for session ${key}: ${describeError(err)}`);
+        });
     }, Math.max(1_000, Math.floor(leaseMs / 3)));
     heartbeat.unref?.();
 

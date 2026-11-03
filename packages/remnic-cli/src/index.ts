@@ -13190,7 +13190,9 @@ Other:
       // `remnic buffer drain` — drain the extraction buffer out of process.
       const subAction = rest[0] ?? "help";
       if (subAction !== "drain") {
-        console.log(BUFFER_DRAIN_USAGE);
+        console.error(subAction === "help" ? BUFFER_DRAIN_USAGE : `remnic buffer: unknown subcommand: ${subAction}`);
+        if (subAction !== "help") console.error(BUFFER_DRAIN_USAGE);
+        if (subAction !== "help") process.exit(2);
         break;
       }
       const exitCode = await runBufferDrain(rest.slice(1), {

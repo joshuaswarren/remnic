@@ -142,9 +142,13 @@ async function main(): Promise<number> {
     failures += 1;
   }
 
-  // The claim files are the durable record: the worker exits without a
-  // shutdown hook (the orchestrator does not expose one), and the next run
-  // picks up whatever is left.
+  // The claim files are the durable record: teardown is best effort and the
+  // next run picks up whatever is left.
+  try {
+    await orchestrator.destroy();
+  } catch {
+    // Teardown must not mask the drain result on a short-lived CLI run.
+  }
   emit({ type: "done", failures });
   return failures > 0 ? 1 : 0;
 }
