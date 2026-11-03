@@ -165,12 +165,12 @@ test("writeEntry replaces the claim content; ack keeps a tombstone the owner con
   try {
     s.seedSession("sess-1", entry([turn("a"), turn("b")]));
     await s.claims.claimFromSessionFile("sess-1", makeLease());
-    await s.claims.writeEntry("sess-1", entry([turn("b")]));
+    await s.claims.writeEntry("sess-1", "worker-1", entry([turn("b")]));
     assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["b"]);
     assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["a"], "extracted turns are recorded");
     assert.equal(await s.claims.ack("sess-1", "not-the-owner"), "busy");
     assert.equal(await s.claims.ack("sess-1", "worker-1"), "not_empty");
-    await s.claims.writeEntry("sess-1", entry([]));
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]));
     assert.equal(await s.claims.ack("sess-1", "worker-1"), "acked");
     // The claim file stays as a tombstone: a live owner with a stale copy
     // subtracts the drained turns instead of writing them back.
@@ -315,7 +315,7 @@ test("writeEntry keeps turns merged into the claim after the drainer loaded it",
     // The daemon appends t2 while the drainer works; the drainer then reports
     // its snapshot fully extracted.
     await s.claims.mergeIntoClaim("sess-1", entry([turn("t2")]));
-    await s.claims.writeEntry("sess-1", entry([]), loaded.entry);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
     const claim = await s.claims.load("sess-1");
     assert.ok(claim);
     assert.deepEqual(
@@ -340,7 +340,7 @@ test("mergeIntoClaim does not resurrect turns the drain already extracted", asyn
     assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
     const loaded = await s.claims.load("sess-1");
     assert.ok(loaded);
-    await s.claims.writeEntry("sess-1", entry([]), loaded.entry); // t1 extracted
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry); // t1 extracted
     // The owner still holds a stale in-memory copy of t1 plus a genuinely new
     // t2: merging must keep t1 out of the pending entry.
     await s.claims.mergeIntoClaim("sess-1", entry([turn("t1"), turn("t2")]));
@@ -365,14 +365,83 @@ test("a claim counts as drained only when the acked tombstone is complete", asyn
     const loaded = await s.claims.load("sess-1");
     assert.ok(loaded);
     // Mid-drain: t2 extracted, t1 pending, lease alive.
-    await s.claims.writeEntry("sess-1", entry([turn("t1")]), loaded.entry);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([turn("t1")]), loaded.entry);
     assert.equal(await s.claims.isDrained("sess-1"), false, "partial drained is not finished");
     // Everything extracted but the drainer still holds the lease.
-    await s.claims.writeEntry("sess-1", entry([]), loaded.entry);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
     assert.equal(await s.claims.isDrained("sess-1"), false, "an unacked claim is not finished");
     // Ack: the drainer drops its lease and leaves the tombstone.
     await s.claims.releaseLease("sess-1", makeLease().ownerId);
     assert.equal(await s.claims.isDrained("sess-1"), true, "the acked tombstone is finished");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("writeEntry rejects progress from a drainer that lost the lease", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("worker-old")), "claimed");
+    // Expire worker-old's lease and let worker-two adopt the claim.
+    const expired = { ...makeLease("worker-old"), heartbeatAt: new Date(Date.now() - 10 * makeLease().leaseMs).toISOString() };
+    writeFileSync(s.claims.leasePathForTest("sess-1"), JSON.stringify(expired));
+    assert.equal(await s.claims.adopt("sess-1", makeLease("worker-two")), "adopted");
+    // The superseded drainer must not write progress: it could restore turns
+    // the new owner already extracted.
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await assert.rejects(
+      () => s.claims.writeEntry("sess-1", "worker-old", entry([]), loaded.entry),
+      /no longer owned/,
+    );
+    await s.claims.writeEntry("sess-1", "worker-two", entry([]), loaded.entry);
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["t1"], "the new owner's progress lands");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a retained turn the drainer extracted is tombstoned, not dropped", async () => {
+  const s = setup();
+  try {
+    const claimEntry: BufferEntryState = { turns: [turn("t1")], retainedTurns: [turn("r1")], lastExtractionAt: null, extractionCount: 0 };
+    s.seedSession("sess-1", claimEntry);
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    // The drainer extracts everything, including the retained copy.
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual((claim.drainedRetained ?? []).map((t) => t.content), ["r1"], "the extracted retained copy is recorded");
+    // A live owner still holding a stale retained copy cannot resurrect it.
+    await s.claims.mergeIntoClaim("sess-1", { turns: [], retainedTurns: [turn("r1")], lastExtractionAt: null, extractionCount: 0 });
+    const after = await s.claims.load("sess-1");
+    assert.ok(after);
+    assert.deepEqual(after.entry.retainedTurns ?? [], [], "the stale retained copy never re-enters the claim");
+    // A retained-only tombstone counts as a finished drain.
+    await s.claims.releaseLease("sess-1", "worker-1");
+    assert.equal(await s.claims.isDrained("sess-1"), true, "a claim with only extracted retained turns is finished");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a turn the drainer retained for retry is not recorded as drained", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    // The drainer moved t1 into its retained list (deferred retry): it is
+    // still pending, not extracted.
+    await s.claims.writeEntry("sess-1", "worker-1", { turns: [], retainedTurns: [turn("t1")], lastExtractionAt: null, extractionCount: 0 }, loaded.entry);
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual((claim.drained ?? []).map((t) => t.content), [], "a retained-for-retry turn stays out of drained");
+    assert.deepEqual((claim.entry.retainedTurns ?? []).map((t) => t.content), ["t1"], "the retained copy stays pending in the claim");
   } finally {
     s.cleanup();
   }

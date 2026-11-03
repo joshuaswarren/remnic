@@ -72,6 +72,8 @@ export interface DrainClaimFile {
    * drained turns can never be resurrected.
    */
   drained?: BufferTurn[];
+  /** Same tombstone for turns the drain extracted from `retainedTurns`. */
+  drainedRetained?: BufferTurn[];
 }
 
 export type ClaimFromSessionOutcome = "claimed" | "empty" | "already_claimed";
@@ -107,16 +109,17 @@ function mergeTurns<T>(existing: T[], incoming: readonly T[], isEqual: (a: T, b:
 function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainClaimFile {
   const entry = emptyEntry();
   // Turns already extracted stay out of the pending entry even when the
-  // owner's incoming copy is stale and still carries them.
-  const drained = claim.drained ?? [];
+  // owner's incoming copy is stale and still carries them (either tombstone
+  // list counts — a turn in either one left the claim for good).
+  const gone = [...(claim.drained ?? []), ...(claim.drainedRetained ?? [])];
   entry.turns = mergeTurns(
-    subtractBufferTurns(claim.entry.turns, drained),
-    subtractBufferTurns(incoming.turns, drained),
+    subtractBufferTurns(claim.entry.turns, gone),
+    subtractBufferTurns(incoming.turns, gone),
     bufferTurnsEqual,
   );
   const retained = [
-    ...subtractBufferTurns(claim.entry.retainedTurns ?? [], drained),
-    ...subtractBufferTurns(incoming.retainedTurns ?? [], drained),
+    ...subtractBufferTurns(claim.entry.retainedTurns ?? [], gone),
+    ...subtractBufferTurns(incoming.retainedTurns ?? [], gone),
   ];
   // SAFETY: an empty accumulator of the same element type.
   const dedupedRetained = mergeTurns([] as typeof retained, retained, bufferTurnsEqual);
@@ -165,6 +168,7 @@ const claimBodySchema = z.object({
   extractionCount: z.number().optional(),
   claimedAt: z.string().optional(),
   drained: z.array(z.unknown()).optional(),
+  drainedRetained: z.array(z.unknown()).optional(),
 });
 
 function parseBody(raw: string): DrainClaimFile | null {
@@ -201,6 +205,10 @@ function parseBody(raw: string): DrainClaimFile | null {
   if (Array.isArray(body.drained)) {
     // SAFETY: same boundary as the turns above (this module writes the file).
     claim.drained = body.drained as BufferTurn[];
+  }
+  if (Array.isArray(body.drainedRetained)) {
+    // SAFETY: same boundary as the turns above (this module writes the file).
+    claim.drainedRetained = body.drainedRetained as BufferTurn[];
   }
   return claim;
 }
@@ -422,44 +430,63 @@ export class BufferDrainClaims {
 
   /** Drainer progress: replace the claim content with what is left to do.
    *
+   * Fenced: `ownerId` must still match the claim's lease (checked under the
+   * same lock), so a drainer that lost its lease cannot write progress that
+   * would restore turns the new owner already extracted.
+   *
    * `seen` is the entry the drainer LOADED (its snapshot of the claim). Only
-   * turns that were in that snapshot and vanished from `entry` were actually
-   * extracted; turns a live owner merged into the claim afterwards must stay
+   * turns that were in that snapshot and are absent from BOTH of the
+   * drainer's lists were actually extracted and move to the tombstones — a
+   * turn the drainer moved into `entry.retainedTurns` is retained for retry,
+   * not extracted. Turns a live owner merged into the claim afterwards stay
    * pending. Without `seen` the pre-existing behavior is kept (every claim
    * turn missing from `entry` counts as extracted).
    */
-  async writeEntry(key: string, entry: BufferEntryState, seen?: BufferEntryState): Promise<void> {
+  async writeEntry(key: string, ownerId: string, entry: BufferEntryState, seen?: BufferEntryState): Promise<void> {
     await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
       if (!acquired) throw new Error(`buffer drain claim for ${key} is busy; progress write skipped`);
+      const lease = await this.readLease(key);
+      if (!lease || lease.ownerId !== ownerId) {
+        throw new Error(`buffer drain claim for ${key} is no longer owned by ${ownerId}; progress write skipped`);
+      }
       const claim = await this.readClaimBody(key);
       if (!claim) return;
       const seenTurns = seen?.turns ?? claim.entry.turns;
+      const seenRetained = seen?.retainedTurns ?? claim.entry.retainedTurns ?? [];
+      const entryRetained = entry.retainedTurns ?? [];
+      // Still held by the drainer: in its remaining turns OR retained for retry.
+      const kept = (turn: BufferTurn): boolean =>
+        entry.turns.some((held) => bufferTurnsEqual(held, turn)) || entryRetained.some((held) => bufferTurnsEqual(held, turn));
       // Progress: the snapshot turns that vanished from the entry were extracted.
       const drained = [...(claim.drained ?? [])];
       for (const turn of claim.entry.turns) {
         const extracted =
-          seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
-          !entry.turns.some((kept) => bufferTurnsEqual(kept, turn));
+          seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) && !kept(turn);
         if (!extracted) continue;
         if (drained.some((gone) => bufferTurnsEqual(gone, turn))) continue;
         drained.push(turn);
+      }
+      const drainedRetained = [...(claim.drainedRetained ?? [])];
+      for (const turn of claim.entry.retainedTurns ?? []) {
+        const extracted =
+          seenRetained.some((snapshot) => bufferTurnsEqual(snapshot, turn)) && !kept(turn);
+        if (!extracted) continue;
+        if (drained.some((gone) => bufferTurnsEqual(gone, turn)) || drainedRetained.some((gone) => bufferTurnsEqual(gone, turn))) continue;
+        drainedRetained.push(turn);
       }
       // Turns merged in after the drainer loaded stay pending, in extraction
       // order behind the drainer's own remainder.
       const late = claim.entry.turns.filter(
         (turn) =>
-          !seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
-          !entry.turns.some((kept) => bufferTurnsEqual(kept, turn)),
+          !seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) && !kept(turn),
       );
       const next: BufferEntryState = { ...entry, turns: [...entry.turns, ...late] };
-      const seenRetained = seen?.retainedTurns ?? claim.entry.retainedTurns ?? [];
       const lateRetained = (claim.entry.retainedTurns ?? []).filter(
         (turn) =>
-          !seenRetained.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
-          !(entry.retainedTurns ?? []).some((kept) => bufferTurnsEqual(kept, turn)),
+          !seenRetained.some((snapshot) => bufferTurnsEqual(snapshot, turn)) && !kept(turn),
       );
-      if (lateRetained.length > 0) next.retainedTurns = mergeTurns(entry.retainedTurns ?? [], lateRetained, bufferTurnsEqual);
-      await this.writeClaimBody(key, { ...claim, entry: next, drained });
+      if (lateRetained.length > 0) next.retainedTurns = mergeTurns(entryRetained, lateRetained, bufferTurnsEqual);
+      await this.writeClaimBody(key, { ...claim, entry: next, drained, drainedRetained });
     });
   }
 
@@ -519,7 +546,7 @@ export class BufferDrainClaims {
   async isDrained(key: string): Promise<boolean> {
     const claim = await this.readClaimBody(key);
     if (!claim) return false;
-    if ((claim.drained?.length ?? 0) === 0) return false;
+    if ((claim.drained?.length ?? 0) === 0 && (claim.drainedRetained?.length ?? 0) === 0) return false;
     if (claim.entry.turns.length > 0 || (claim.entry.retainedTurns?.length ?? 0) > 0) return false;
     return (await this.readLease(key)) === null;
   }

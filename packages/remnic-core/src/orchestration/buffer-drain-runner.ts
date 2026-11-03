@@ -77,6 +77,7 @@ class ClaimBufferStorage implements BufferStorage {
   constructor(
     private readonly claims: BufferDrainClaims,
     private readonly key: string,
+    private readonly ownerId: string,
     private readonly entry: BufferEntryState,
   ) {}
 
@@ -99,11 +100,11 @@ class ClaimBufferStorage implements BufferStorage {
   async saveBuffer(state: BufferState): Promise<void> {
     // Whole-state fallback (the claim covers one session): persist the entry.
     const entry = state.entries?.[this.key];
-    await this.claims.writeEntry(this.key, entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }, this.entry);
+    await this.claims.writeEntry(this.key, this.ownerId, entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }, this.entry);
   }
 
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
-    await this.claims.writeEntry(key, entry, key === this.key ? this.entry : undefined);
+    await this.claims.writeEntry(key, this.ownerId, entry, key === this.key ? this.entry : undefined);
   }
 
   async deleteBufferSession(): Promise<void> {
@@ -162,7 +163,7 @@ export class BufferDrainRunner {
     // removed from it, so a kill leaves exactly the un-extracted turns.
     // The swap covers the whole extraction (its clear path reads the live
     // buffer), so progress lands in the claim, not in a session file.
-    const claimStorage = new ClaimBufferStorage(claims, key, claim.entry);
+    const claimStorage = new ClaimBufferStorage(claims, key, options.ownerId, claim.entry);
     const coordinator = new TurnIngestionCoordinator(selfDeps<TurnIngestionDeps>(this.orchestrator));
 
     // The claim's turns (retained first, like the live buffer's order).

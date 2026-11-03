@@ -271,7 +271,7 @@ test("the owner keeps the claim while a drain is still running on it", async () 
     // old-2 is still pending, and the drainer holds the lease.
     const loaded = await h.claims.load("sess-1");
     assert.ok(loaded);
-    await h.claims.writeEntry("sess-1", entry([turn("old-2")]), loaded.entry);
+    await h.claims.writeEntry("sess-1", h.lease.ownerId, entry([turn("old-2")]), loaded.entry);
 
     // The owner saves while the drain is mid-flight: this must hand over into
     // the claim (keeping the claim AND the lease), not consume the tombstone.
@@ -292,7 +292,7 @@ test("the owner keeps the claim while a drain is still running on it", async () 
     // lease, leaving the tombstone). Only now does the owner's save consume it.
     const current = await h.claims.load("sess-1");
     assert.ok(current);
-    await h.claims.writeEntry("sess-1", entry([]), current.entry);
+    await h.claims.writeEntry("sess-1", h.lease.ownerId, entry([]), current.entry);
     await h.claims.releaseLease("sess-1", h.lease.ownerId);
     const finalOutcome = await saveSession("sess-1", {
       turns: [turn("old-1"), turn("old-2"), turn("new-3")],
