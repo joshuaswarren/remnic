@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import path from "node:path";
+import { throwIfAborted } from "../abort-error.js";
 import { getCachedMemories } from "../memory-cache.js";
 import { readRawMemoryDocument } from "./memory-frontmatter-metadata.js";
 import type { MemoryFile } from "../types.js";
@@ -11,6 +12,12 @@ export interface WindowedMemoryReadOptions {
   updatedAfter?: Date;
   /** Require candidate paths so malformed files can be reported by governance. */
   includeMalformedPaths?: boolean;
+  /**
+   * Caller cancellation. The windowed scan stops at its next batch boundary
+   * when this aborts, so a cancelled read leaves no work running behind it
+   * (issue #3139).
+   */
+  abortSignal?: AbortSignal;
 }
 
 export interface WindowedMemoryReadResult {
@@ -62,6 +69,7 @@ export async function readWindowedMemories(
           })
         )
       ).filter((memory): memory is MemoryFile => memory !== null);
+      throwIfAborted(options.abortSignal, "windowed memory read aborted");
       const memories = orderWindowMemories(selected, hotCache.baseDir);
       return { memories: rememberMemorySnapshots(memories), filePaths: memories.map((memory) => memory.path) };
     }

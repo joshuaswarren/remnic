@@ -1,11 +1,12 @@
 import { log } from "./logger.js";
-import type { MemoryFile } from "./types.js";
+import type { EntityFile, MemoryFile } from "./types.js";
 import { isAbortError } from "./abort-error.js";
 import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
 import type { ParsedBriefingWindow } from "./briefing.js";
+import type { WindowedMemoryReadOptions } from "./storage/windowed-memory-read.js";
 
 type BriefingMemoryReader = {
-  readMemoriesWindow?: (options: { updatedAfter?: Date }) => Promise<{ memories: MemoryFile[] }>;
+  readMemoriesWindow?: (options: WindowedMemoryReadOptions) => Promise<{ memories: MemoryFile[] }>;
   readAllMemories: ((options?: CorpusReadOptions) => Promise<MemoryFile[]>) & {
     supportsAbortSignal?: boolean;
   };
@@ -30,6 +31,12 @@ export const BRIEFING_FULL_READ_FALLBACK_MS = 30_000;
 export interface SafeReadMemoriesOptions {
   /** Test seam overriding {@link BRIEFING_FULL_READ_FALLBACK_MS}. */
   fallbackDeadlineMs?: number;
+  /**
+   * Caller cancellation. The signal reaches the storage read so it stops at
+   * its next boundary, and a cancelled read is rethrown rather than degraded
+   * into an empty corpus (issue #3139).
+   */
+  signal?: AbortSignal;
 }
 
 type BriefingReadMode = "windowed" | "full-read-fallback";
@@ -138,6 +145,12 @@ export async function safeReadMemories(
     resultCount = memories.length;
     return memories;
   } catch (err) {
+    if (isAbortError(err) && options.signal?.aborted) {
+      // Caller cancellation is not a read failure: rethrow it so the briefing
+      // rejects instead of degrading into an empty corpus (issue #3139). The
+      // own fallback deadline is reported as BriefingReadTimedOut below.
+      throw err;
+    }
     if (err instanceof BriefingReadTimedOut) {
       outcome = "timeout";
       bestEffortLog(
@@ -174,7 +187,9 @@ async function readBriefingMemories(
   // the full corpus on cache misses; keep the full-read fallback for custom
   // StorageManager-compatible callers that predate readMemoriesWindow().
   if (mode === "windowed") {
-    const result = await storage.readMemoriesWindow!({ updatedAfter: window.from });
+    const readOptions: WindowedMemoryReadOptions = { updatedAfter: window.from };
+    if (options.signal) readOptions.abortSignal = options.signal;
+    const result = await storage.readMemoriesWindow!(readOptions);
     return result.memories;
   }
   // Refuse legacy adapters that do not explicitly declare cancellation support (#2827).
@@ -195,12 +210,13 @@ async function readBriefingMemories(
     deadlineFired = true;
     controller.abort();
   }, deadlineMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, controller.signal]) : controller.signal;
   try {
     // Direct await, no Promise.race: the signal IS the deadline. A
     // signal-aware read settles on abort (AbortError at its next scan
     // boundary, #2307), so nothing is left scanning in the background once
     // this function returns.
-    const memories = await storage.readAllMemories({ abortSignal: controller.signal });
+    const memories = await storage.readAllMemories({ abortSignal: signal });
     if (deadlineFired) {
       // A double that resolves partial rows instead of rejecting on abort
       // must not have them served as a complete corpus.
@@ -212,5 +228,18 @@ async function readBriefingMemories(
     throw err;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+export async function safeReadEntities(
+  storage: { readAllEntityFiles(options?: CorpusReadOptions): Promise<EntityFile[]> },
+  signal: AbortSignal,
+): Promise<EntityFile[]> {
+  try {
+    return await storage.readAllEntityFiles({ abortSignal: signal });
+  } catch (err) {
+    if (isAbortError(err) && signal.aborted) throw err;
+    log.warn(`briefing: readAllEntityFiles failed: ${err}`);
+    return [];
   }
 }
