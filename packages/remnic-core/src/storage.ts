@@ -144,6 +144,7 @@ import {
 } from "./lifecycle/tombstones.js";
 import { supersessionKeysForFact } from "./temporal-supersession.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
+import { BufferDrainClaims, type BufferSessionSaveOutcome } from "./storage/buffer-drain-claims.js";
 import { runSupersessionSideEffects, type SupersessionAuditOptions } from "./storage/supersession-side-effects.js";
 import { saveDroppedExtractionChunk as saveDroppedChunk } from "./storage/dropped-extraction-chunk.js";
 import type {
@@ -5144,18 +5145,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
             );
           } catch (err) {
             if (priorDest === null) {
-              await recordArchiveDelete(this.baseDir, destPath, () =>
-                unlink(destPath).then(
-                  () => true,
-                  () => false
-                )
-              );
+              await recordArchiveDelete(this.baseDir, destPath, () => unlink(destPath).then(() => true, () => false));
             } else {
               await recordArchiveDelete(this.baseDir, destPath, () =>
-                this.writeStorageSecureFile(destPath, priorDest).then(
-                  () => true,
-                  () => false
-                )
+                this.writeStorageSecureFile(destPath, priorDest).then(() => true, () => false)
               );
             }
             throw err;
@@ -5524,8 +5517,12 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
   async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }
   async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
-  async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> { await this.bufferSessionFiles().save(key, entry); }
+  async saveBufferSession(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome> { return await this.bufferSessionFiles().save(key, entry); }
   async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
+  /** Sync gate check for the extraction queue: is this session claimed by a buffer drain? */
+  isBufferSessionClaimed(key: string): boolean { return this.bufferSessionFiles().isClaimed(key); }
+  /** The drain-claim store for this memory root (CLI drain + worker). */
+  bufferDrainClaims(): BufferDrainClaims { return this.bufferSessionFiles().claims; }
   saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly import("./types.js").BufferTurn[]): Promise<string> { // storage/dropped-extraction-chunk.ts
     return saveDroppedChunk(this.stateDir, (file, content) => this.writeStorageSecureFile(file, content), bufferKey, reason, turns);
   }

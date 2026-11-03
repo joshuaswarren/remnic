@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- `remnic buffer drain`: one command empties the extraction buffer out of process. The extraction runs in worker processes (not on the daemon's event loop), so a live daemon keeps serving while its backlog drains, and no daemon is needed at all. Each session is claimed into a durable claim file first, so a kill loses nothing, the next run resumes, a live buffer owner hands its turns into the claim instead of resurrecting them, and two drains at once are safe.
+
 ## [v10.0.47] — 2026-11-02
 
 ### Fixes

@@ -1,4 +1,5 @@
-import type { BufferEntryState, BufferState, BufferSurpriseEvent } from "./types.js";
+import type { BufferEntryState, BufferState, BufferSurpriseEvent, BufferTurn } from "./types.js";
+import type { BufferSessionSaveOutcome } from "./storage/buffer-drain-claims.js";
 
 /**
  * The buffer persistence surface SmartBuffer depends on.
@@ -12,10 +13,21 @@ import type { BufferEntryState, BufferState, BufferSurpriseEvent } from "./types
 export interface BufferStorage {
   loadBuffer(): Promise<BufferState>;
   saveBuffer(state: BufferState): Promise<void>;
-  saveBufferSession?(key: string, entry: BufferEntryState): Promise<void>;
+  /** Reports "handed_over" when the session is claimed by `remnic buffer drain` and the entry moved into the claim instead of a session file. Legacy doubles may return void (treated as "saved"). */
+  saveBufferSession?(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome | void>;
   deleteBufferSession?(key: string): Promise<void>;
+  /** Sync claim check for the extraction gate; omitted when the backend has no drain-claim store. */
+  isBufferSessionClaimed?(key: string): boolean;
   /** Optional surprise-telemetry sink; older storage and test doubles omit it. */
   appendBufferSurpriseEvents?(events: BufferSurpriseEvent[]): Promise<number>;
+}
+
+/** What one persist pass changed beyond plain writes. */
+export interface BufferPersistOutcome {
+  /** Sessions whose in-memory entry moved into a drain claim: the caller must evict them (a claimed session no longer lives in this process). */
+  handedOver: string[];
+  /** Per session, the turns a drain already extracted: the caller subtracts them from its in-memory copy. */
+  drainedTurns: Map<string, BufferTurn[]>;
 }
 
 /**
@@ -61,15 +73,17 @@ export class BufferSessionPersistence {
     storage: BufferStorage,
     state: BufferState,
     peekEntry: (key: string) => BufferEntryState | undefined,
-  ): Promise<void> {
+  ): Promise<BufferPersistOutcome> {
     const saveSession = storage.saveBufferSession?.bind(storage);
     const deleteSession = storage.deleteBufferSession?.bind(storage);
     if (!saveSession || !deleteSession) {
       await storage.saveBuffer(state);
       this.dirty.clear();
       this.deleted.clear();
-      return;
+      return { handedOver: [], drainedTurns: new Map() };
     }
+    const handedOver: string[] = [];
+    const drainedTurns = new Map<string, BufferTurn[]>();
     for (const key of [...this.deleted]) {
       await deleteSession(key);
       this.deleted.delete(key);
@@ -82,8 +96,16 @@ export class BufferSessionPersistence {
         this.markDeleted(key);
         continue;
       }
-      await saveSession(key, entry);
+      const outcome = await saveSession(key, entry);
       this.dirty.delete(key);
+      // "handed_over": the entry moved into a drain claim. Content is durable
+      // in the claim, so this key's pending state is settled — the caller
+      // evicts the in-memory entry on its side.
+      if (outcome?.status === "handed_over") handedOver.push(key);
+      // A drain tombstone: the turns it extracted must leave this process's
+      // copy too, or the owner would extract them a second time.
+      if (outcome?.drainedTurns && outcome.drainedTurns.length > 0) drainedTurns.set(key, outcome.drainedTurns);
     }
+    return { handedOver, drainedTurns };
   }
 }
