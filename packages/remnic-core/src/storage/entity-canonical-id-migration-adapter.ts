@@ -42,6 +42,9 @@ export async function runLegacyEntityCanonicalIdMigration(
 ): Promise<string | undefined> {
   const readMigrationFingerprint = () =>
     getFingerprint(host.baseDir, host.entitiesDir, () => String(host.getEntityMutationVersion()));
+  // The migration bumps the status version only after a pass that rewrote
+  // references; a no-op replay must not ask search maintenance to run.
+  let rewroteReferences = false;
   const completionFingerprint = await migrateLegacyEntityCanonicalIds({
     stateDir: host.stateDir,
     entitiesDir: host.entitiesDir,
@@ -67,10 +70,13 @@ export async function runLegacyEntityCanonicalIdMigration(
     invalidateKnowledgeIndexCache: host.invalidateKnowledgeIndexCache.bind(host),
     invalidateAllMemoriesCache: host.invalidateAllMemoriesCache.bind(host),
     invalidateColdMemoriesCache: host.invalidateColdMemoriesCache.bind(host),
-    bumpMemoryStatusVersion: host.bumpMemoryStatusVersion.bind(host),
+    bumpMemoryStatusVersion: () => {
+      rewroteReferences = true;
+      host.bumpMemoryStatusVersion();
+    },
     readMigrationFingerprint,
   } satisfies EntityCanonicalIdMigrationDependencies);
-  if (completionFingerprint !== undefined) {
+  if (completionFingerprint !== undefined && rewroteReferences) {
     try {
       host.onEntityMigrationComplete?.();
     } catch {

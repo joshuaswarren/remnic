@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,13 +9,24 @@ import { Orchestrator } from "./orchestrator.js";
 import { StorageManager } from "./storage.js";
 
 // #3240 follow-up: the host's onEntityMigrationComplete slot must fire once
-// per actual migration pass (never on ensure() no-ops), fail open on a
+// per migration pass that rewrote entities (never on no-op replays or ensure() no-ops), fail open on a
 // throwing hook, reach router-created storages independent of auto-embed, and
 // be inert after Orchestrator.destroy(). No direct QMD calls; the re-arm is
 // observed through a requestQmdMaintenance spy.
 
-test("real storage fires the completion slot once per actual pass and fails open on a throwing hook", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-migration-complete-"));
+async function legacyEntityStore(prefix: string): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const seed = new StorageManager(dir);
+  const id = await seed.writeEntity("Legacy Person", "person", ["Keeps a synthetic task."]);
+  await rename(path.join(dir, "entities", `${id}.md`), path.join(dir, "entities", "legacy-person.md"));
+  await rm(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), { force: true });
+  return dir;
+}
+
+test("real storage fires the completion slot only for a pass that rewrote entities, and fails open on a throwing hook", async () => {
+  const dir = await legacyEntityStore("remnic-migration-complete-");
+  const emptyDir = await mkdtemp(path.join(os.tmpdir(), "remnic-migration-noop-"));
+  const throwingDir = await legacyEntityStore("remnic-migration-throwing-");
   try {
     const storage = new StorageManager(dir);
     let completions = 0;
@@ -23,11 +34,19 @@ test("real storage fires the completion slot once per actual pass and fails open
       completions += 1;
     };
     await storage.ensureDirectories();
-    assert.equal(completions, 1, "the first real migration pass must fire the completion slot");
+    assert.equal(completions, 1, "a migration pass that renamed a legacy entity must fire the completion slot");
     await storage.ensureDirectories();
     assert.equal(completions, 1, "a second ensureDirectories must not re-fire the slot");
 
-    const throwing = new StorageManager(path.join(dir, "throwing-hook"));
+    const noop = new StorageManager(emptyDir);
+    let noopCompletions = 0;
+    noop.onEntityMigrationComplete = () => {
+      noopCompletions += 1;
+    };
+    await noop.ensureDirectories();
+    assert.equal(noopCompletions, 0, "a no-op replay must not ask search maintenance to run");
+
+    const throwing = new StorageManager(throwingDir);
     let hookCalls = 0;
     throwing.onEntityMigrationComplete = () => {
       hookCalls += 1;
@@ -38,6 +57,8 @@ test("real storage fires the completion slot once per actual pass and fails open
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(dir, { recursive: true, force: true });
+    await rm(emptyDir, { recursive: true, force: true });
+    await rm(throwingDir, { recursive: true, force: true });
   }
 });
 

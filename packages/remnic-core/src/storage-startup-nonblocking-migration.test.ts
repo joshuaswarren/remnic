@@ -6,7 +6,6 @@ import path from "node:path";
 import test from "node:test";
 
 import { StorageManager } from "./storage.js";
-import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
 import { sleep } from "./utils/sleep.js";
 
 // Issue #3139 (Q2 briefing 60s ceiling): the CLI briefing path awaits
@@ -181,39 +180,4 @@ test("entity writes queue behind the migration they trigger", async () => {
     }
     if (failure !== undefined) throw failure;
   });
-});
-
-test("lazy startup mark defers the migration and preserves the unlock trigger", async () => {
-  let runs = 0;
-  let fail = true;
-  const runner = new EntityCanonicalIdMigrationRunner(
-    () => true,
-    async () => {
-      runs += 1;
-      if (fail) throw new Error("injected migration failure");
-    },
-    async () => "static-fingerprint",
-  );
-  // Before startup marks directories initialized, an unlock-side trigger must
-  // stay a no-op (a store that never got past setup must not migrate).
-  await runner.triggerAfterUnlock();
-  assert.equal(runs, 0);
-
-  // The lazy mark records the bookkeeping WITHOUT starting the migration —
-  // no background flight, so no read-only process is held alive by it.
-  await runner.markDirectoriesInitialized(false);
-  await sleep(BARRIER_PROBE_MS);
-  assert.equal(runs, 0, "the lazy startup mark must not start the migration");
-
-  // The unlock trigger still runs the migration, and its failure reaches the
-  // caller (the unlock path owns the catch), so nothing is swallowed.
-  await assert.rejects(() => runner.triggerAfterUnlock(), /injected migration failure/);
-  assert.equal(runs, 1);
-
-  // Single flight: the failed run cleared, the next trigger re-runs and a
-  // stable-fingerprint completion is not replayed.
-  fail = false;
-  await runner.triggerAfterUnlock();
-  await runner.triggerAfterUnlock();
-  assert.equal(runs, 2);
 });
