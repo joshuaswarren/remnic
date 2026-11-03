@@ -77,9 +77,16 @@ export async function plainFileDigest(filePath: string): Promise<string> {
   return hash.digest("hex");
 }
 
-import { lstat, utimes } from "node:fs/promises";
+import { lstat, realpath, utimes } from "node:fs/promises";
 import { isCensusMtimeMs } from "./census-validation.js";
-import { resolveSafeArchiveTarget, type SafeArchiveRoot } from "./transfer/fs-utils.js";
+import path from "node:path";
+import {
+  fromPosixRelPath,
+  isPathInsideRoot,
+  resolveSafeArchiveTarget,
+  type SafeArchiveRoot,
+  validateArchiveRelativePath,
+} from "./transfer/fs-utils.js";
 
 /** Sync-internal directory spooling partial uploads and coordination state. */
 export const SYNC_INTERNAL_DIR = ".offline-sync";
@@ -123,4 +130,56 @@ export async function setSafeFileMtime(
   const mtime = new Date(targetMtimeMs);
   await utimes(target, mtime, mtime);
   return true;
+}
+
+/**
+ * True when a regular (non-symlink) file exists at the archive-relative path.
+ * A symlink is not a regular local file and reads as absent, so callers treat
+ * it like any other missing path instead of failing the whole push.
+ */
+export async function offlineSyncRegularFilePresent(
+  root: SafeArchiveRoot,
+  relPath: string,
+): Promise<boolean> {
+  const target = path.resolve(root.abs, fromPosixRelPath(validateArchiveRelativePath(relPath, root.errorPrefix)));
+  if (!isPathInsideRoot(root.abs, target)) {
+    throw new Error(`${root.errorPrefix}: record path escapes target root: ${relPath}`);
+  }
+  const st = await lstat(target).catch((error: NodeJS.ErrnoException) => {
+    // SAFETY: Node fs errors carry `code`; only ENOENT means absent, all other
+    // errno codes must propagate so census uncertainty fails closed.
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (!st || st.isSymbolicLink() || !st.isFile()) return false;
+  // A regular file still has to resolve inside the root (a symlinked parent directory escapes it).
+  await resolveSafeArchiveTarget(root, relPath);
+  // The census skips a symlinked directory, so a file reached only through one is absent here too.
+  return (await realpath(target)) === path.join(root.real, path.relative(root.abs, target));
+}
+
+/** A path the census observed vanished before its digest was read: a retryable race, never a confirmed delete. */
+export class OfflineSyncCensusRaceError extends Error {
+  constructor(readonly relPath: string, cause?: unknown) {
+    super(
+      `offline sync census race: ${relPath} vanished during digest; retry the snapshot`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = "OfflineSyncCensusRaceError";
+  }
+}
+
+/** The message the CLI push retry loop matches: it defers the path and rebuilds the census. */
+export function changedWhileBuildingChangesetError(relPath: string, cause?: unknown): Error {
+  return new Error(
+    `offline sync file changed while building changeset: ${relPath}`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/** A `.catch` handler: a census race while building a changeset upsert stays retryable. */
+export function censusRaceAsChangedWhileBuilding(relPath: string): (error: Error) => never {
+  return (error) => {
+    throw error instanceof OfflineSyncCensusRaceError ? changedWhileBuildingChangesetError(relPath, error) : error;
+  };
 }
