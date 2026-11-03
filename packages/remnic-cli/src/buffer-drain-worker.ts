@@ -158,7 +158,9 @@ main().then(
     process.exitCode = code;
   },
   (err: DrainWorkerError) => {
-    emit({ type: "error", error: err.message });
+    // A rejection may carry a non-Error value; report it without masking the
+    // original failure.
+    emit({ type: "error", error: err instanceof Error ? err.message : String(err) });
     process.exitCode = 1;
   },
 );
