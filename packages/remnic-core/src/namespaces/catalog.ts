@@ -87,6 +87,20 @@ export interface NamespaceCatalogFilter {
   writtenSince?: Date;
 }
 
+/** Out-parameter a catalog read fills in when it could not see the whole catalog. */
+interface CatalogReadHealth {
+  incomplete?: string;
+}
+
+export interface NamespaceCatalogReadOptions {
+  /**
+   * Called when the read could not see the whole catalog (an unreadable file, or malformed rows
+   * that were skipped). The records that were readable are still returned. A catalog that was
+   * never written is normal and does not call this.
+   */
+  onIncomplete?: (reason: string) => void;
+}
+
 export interface NamespaceTouchMetadata {
   discoveredBy?: NamespaceDiscoverySource;
   kind?: NamespaceKind;
@@ -412,6 +426,8 @@ interface CatalogFileIdentity {
 interface CompactedCatalogCache {
   identity: CatalogFileIdentity;
   records: Map<string, NamespaceRecord>;
+  /** Why the read was incomplete (malformed rows), kept so a cache hit reports it too. */
+  incomplete?: string;
 }
 
 export class NamespaceCatalog {
@@ -626,9 +642,9 @@ export class NamespaceCatalog {
     }
     return [...byStorageDir.values()];
   }
-  private loadSanitizedRecords(): Promise<NamespaceRecord[]> {
+  private loadSanitizedRecords(health?: CatalogReadHealth): Promise<NamespaceRecord[]> {
     return this.queueCritical(async () => {
-      const records = await this.loadCompacted();
+      const records = await this.loadCompacted(false, health);
       const sanitized = await Promise.all(
         [...records.values()].map((r) => this.sanitizeRecordForRead(r)),
       );
@@ -642,9 +658,14 @@ export class NamespaceCatalog {
     });
   }
 
-  async listNamespaces(filter?: NamespaceCatalogFilter): Promise<NamespaceRecord[]> {
+  async listNamespaces(
+    filter?: NamespaceCatalogFilter,
+    options?: NamespaceCatalogReadOptions,
+  ): Promise<NamespaceRecord[]> {
     if (!this.enabled) return [];
-    let out = await this.loadSanitizedRecords();
+    const health: CatalogReadHealth = {};
+    let out = await this.loadSanitizedRecords(health);
+    if (health.incomplete !== undefined) options?.onIncomplete?.(health.incomplete);
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
     if (filter?.writtenSince) {
@@ -2078,13 +2099,18 @@ export class NamespaceCatalog {
   // ── Persistence ──────────────────────────────────────────────────────────
 
   /** Load the JSONL log and fold it into current state (last-record-wins). */
-  private async loadCompacted(forceFresh = false): Promise<Map<string, NamespaceRecord>> {
+  private async loadCompacted(
+    forceFresh = false,
+    health?: CatalogReadHealth,
+  ): Promise<Map<string, NamespaceRecord>> {
     const records = new Map<string, NamespaceRecord>();
     let handle;
     try {
       handle = await open(this.catalogPath, "r");
-    } catch {
+    } catch (error) {
       this.compactedCache = undefined;
+      // A catalog that was never written is normal; any other open failure hid the whole catalog.
+      if (health && !isNotFoundError(error)) health.incomplete = `catalog unreadable: ${String(error)}`;
       return records;
     }
 
@@ -2106,6 +2132,7 @@ export class NamespaceCatalog {
         this.compactedCache.identity.ino === identity.ino
       ) {
         await handle.close().catch(() => undefined);
+        if (health && this.compactedCache.incomplete) health.incomplete = this.compactedCache.incomplete;
         return this.cloneCompactedRecords(this.compactedCache.records);
       }
     } catch {
@@ -2113,6 +2140,7 @@ export class NamespaceCatalog {
       // do not cache the result without a trustworthy identity.
     }
 
+    let malformed = 0;
     try {
       this.onCatalogReadForTest?.();
       // Streaming chunked parse (issue #1903): the log can reach 100+ MB in
@@ -2136,11 +2164,16 @@ export class NamespaceCatalog {
         try {
           parsed = JSON.parse(trimmed);
         } catch {
-          // Skip corrupt lines (CLAUDE.md rule #18 robustness).
+          // Skip corrupt lines (CLAUDE.md rule #18 robustness), but count them so a caller that
+          // needs the whole catalog can tell the read was incomplete (issue #3293).
+          malformed += 1;
           return;
         }
         const record = coerceRecord(parsed);
-        if (!record) return;
+        if (!record) {
+          malformed += 1;
+          return;
+        }
         const prior = records.get(record.namespace);
         records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
       };
@@ -2161,14 +2194,17 @@ export class NamespaceCatalog {
       }
       leftover += decoder.end();
       foldLine(leftover);
-    } catch {
+    } catch (error) {
       this.compactedCache = undefined;
+      if (health) health.incomplete = `catalog unreadable: ${String(error)}`;
       return new Map();
     } finally {
       await handle.close().catch(() => undefined);
     }
 
-    this.compactedCache = identity ? { identity, records } : undefined;
+    const incomplete = malformed > 0 ? `${malformed} malformed catalog line(s) skipped` : undefined;
+    if (health && incomplete) health.incomplete = incomplete;
+    this.compactedCache = identity ? { identity, records, incomplete } : undefined;
     return this.cloneCompactedRecords(records);
   }
 

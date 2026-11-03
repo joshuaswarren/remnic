@@ -43,7 +43,7 @@ import type {
   NamespaceSearchRouter,
   NamespaceUpdateResult,
 } from "../namespaces/search.js";
-import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
+import { NamespaceCatalog, type NamespaceRecord } from "../namespaces/catalog.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken } from "../namespaces/identity.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { readNamespaceMaintenanceStatuses } from "../maintenance/namespace-planner.js";
@@ -3387,6 +3387,38 @@ test("requestQmdMaintenanceCompletion over namespaces: a failed catalog read lea
     async embedNamespaces(): Promise<void> {},
   });
   const scheduler = buildScheduler({ config, catalog, router });
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, false);
+  } finally {
+    await scheduler.dispose();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("requestQmdMaintenanceCompletion over namespaces: a malformed catalog record leaves the request owed (#3293)", async () => {
+  // A real catalog: the malformed row is skipped (the rest is still maintained), but the pass did
+  // not see the whole catalog, so the migration must keep its marker.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-malformed-"));
+  const config = fixtureConfig({
+    memoryDir,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    maintenanceNamespaceLockStaleMs: 100,
+    qmdAutoEmbedEnabled: false,
+  });
+  await mkdir(path.join(memoryDir, "state"), { recursive: true });
+  await writeFile(path.join(memoryDir, "state", "namespaces.jsonl"), "{this is not json\n", "utf8");
+  const router: NamespaceSearchRouter = Object.assign(Object.create(null), {
+    async updateNamespacesDetailed(ns: string[]): Promise<NamespaceUpdateResult> {
+      return { backendCount: ns.length, eligibleNamespaces: ns };
+    },
+    async embedNamespaces(): Promise<void> {},
+  });
+  const scheduler = buildScheduler({ config, catalog: new NamespaceCatalog(config), router });
   try {
     const served = scheduler.requestQmdMaintenanceCompletion();
     await scheduler.runQmdMaintenance();
