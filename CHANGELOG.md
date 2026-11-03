@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Performance
 
+- The daemon's corpus maintenance scans — the recall-corpus path walk, the entity-entry fingerprint the canonical-id migration reads on every entity unlock, and the corpus watermark's freshness stat — now run in a worker thread instead of on the main event loop, so a corpus-sized scan no longer starves observe, recall or the extraction queue. The worker entry is plain JavaScript generated from the TypeScript source (`npm run sync:corpus-scan-worker`), the same implementation runs inline if no worker can start, and results are identical either way. On a 134k-file corpus the walk's main-thread time drops from 210 ms to 15 ms and the migration ensure cycle's from 129 ms to 3 ms; the watermark census yields to the event loop so its longest single block drops from 420 ms to 81 ms.
+
+### Performance
+
 - The corpus path walk no longer resolves every directory and every markdown file with a separate `realpath`. Containment is established once — the memory root is resolved with a single `realpath` and entry types come from the directory listing — so a symlinked category directory, symlinked entry or symlinked file is still skipped, while a corpus-wide scan spends one syscall per file instead of two. Measured on a 134k-file corpus, the walk's wall time drops from 5.9 s to 0.34 s and the corpus read and watermark improve by the same walk cost; the collected path set is unchanged.
 
 ## [v10.0.47] — 2026-11-02

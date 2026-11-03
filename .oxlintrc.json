@@ -15,7 +15,8 @@
     ".pi/**",
     ".roo/**",
     ".windsurf/**",
-    "tools/oxlint/anti-slop/**"
+    "tools/oxlint/anti-slop/**",
+    "packages/remnic-core/src/corpus-scan-worker.entry.mjs"
   ],
   "jsPlugins": [
     {
