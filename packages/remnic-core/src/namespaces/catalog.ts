@@ -9,6 +9,7 @@ import {
   readdir,
   realpath,
   rename,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -95,6 +96,12 @@ export interface NamespaceCatalogFilter {
 /** Out-parameter a catalog read fills in when it could not see the whole catalog. */
 interface CatalogReadHealth {
   incomplete?: string;
+  /**
+   * Set ONLY when the file was read to the end and malformed rows were skipped. An unreadable
+   * catalog also sets `incomplete` but never `malformed`: its empty result is not the catalog's
+   * content, so nothing may be rewritten from it.
+   */
+  malformed?: boolean;
 }
 
 export interface NamespaceCatalogReadOptions {
@@ -581,9 +588,12 @@ export class NamespaceCatalog {
     let out = await this.loadSanitizedRecords(health);
     if (health.incomplete !== undefined) {
       options?.onIncomplete?.(health.incomplete);
+    }
+    if (health.malformed === true) {
       // A permanently malformed row keeps every completion request owed until the catalog is
       // rewritten, so repair it now: fold the readable rows and rewrite the log without the bad
-      // ones. Best-effort and fail-open like the size-triggered compaction.
+      // ones. Best-effort and fail-open like the size-triggered compaction. Only a read that
+      // reached the end of the file may trigger it (see CatalogReadHealth.malformed).
       void this.rewriteAfterIncompleteRead().catch(() => undefined);
     }
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
@@ -1355,12 +1365,19 @@ export class NamespaceCatalog {
    * never interleave with another process's touch append or rebuild. If another process already
    * holds the lock, the rewrite is dropped (not queued): that process's own rewrite or rebuild is
    * the likeliest repair, and the next incomplete read retries anyway.
+   *
+   * Data safety: the locked re-read must itself reach the end of the file and still find
+   * malformed rows, and must leave at least one readable row. A failed re-read folds to an empty
+   * map, and a catalog with nothing readable is left for `rebuildFromDisk`: rewriting either
+   * would replace a healthy or recoverable catalog with an empty file.
    */
   private async rewriteAfterIncompleteRead(): Promise<void> {
     await this.queueCritical(async () =>
       this.withHeldCatalogLock(async (acquired) => {
         if (!acquired) return;
-        const folded = await this.loadCompacted(true);
+        const health: CatalogReadHealth = {};
+        const folded = await this.loadCompacted(true, health);
+        if (health.malformed !== true || folded.size === 0) return;
         await this.rewriteUnchained([...folded.values()]);
       }),
     );
@@ -2074,7 +2091,10 @@ export class NamespaceCatalog {
         this.compactedCache.identity.ino === identity.ino
       ) {
         await handle.close().catch(() => undefined);
-        if (health && this.compactedCache.incomplete) health.incomplete = this.compactedCache.incomplete;
+        if (health && this.compactedCache.incomplete) {
+          health.incomplete = this.compactedCache.incomplete;
+          health.malformed = true;
+        }
         return this.cloneCompactedRecords(this.compactedCache.records);
       }
     } catch {
@@ -2145,7 +2165,10 @@ export class NamespaceCatalog {
     }
 
     const incomplete = malformed > 0 ? `${malformed} malformed catalog line(s) skipped` : undefined;
-    if (health && incomplete) health.incomplete = incomplete;
+    if (health && incomplete) {
+      health.incomplete = incomplete;
+      health.malformed = true;
+    }
     this.compactedCache = identity ? { identity, records, incomplete } : undefined;
     return this.cloneCompactedRecords(records);
   }
@@ -2211,8 +2234,15 @@ export class NamespaceCatalog {
     const body = records.map((r) => serializeRecord(r)).join("\n") + (records.length > 0 ? "\n" : "");
     await mkdir(this.stateDir, { recursive: true });
     const tmp = `${this.catalogPath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, body, "utf8");
-    await rename(tmp, this.catalogPath);
+    try {
+      await writeFile(tmp, body, "utf8");
+      await rename(tmp, this.catalogPath);
+    } catch (error) {
+      // A failed write or rename (for example the catalog path is a directory) must not leave
+      // the temp file behind; the original error still surfaces to the caller.
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw error;
+    }
     await this.refreshCacheIdentity(new Map(records.map((record) => [record.namespace, record])));
   }
 
