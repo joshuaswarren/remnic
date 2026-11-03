@@ -18,6 +18,7 @@ interface CompletionCacheState {
   warmMiss: string;
   afterAlias?: string;
   afterRestart?: string;
+  restarted?: StorageManager;
 }
 
 const subject: LifecycleSubject<CompletionCacheState> = {
@@ -49,6 +50,7 @@ const subject: LifecycleSubject<CompletionCacheState> = {
 
     if (row.dimensions.restart) {
       const restarted = new StorageManager(state.dir);
+      state.restarted = restarted;
       await restarted.ensureDirectories({ waitForEntityMigration: false });
       await restarted.loadAliases();
       state.afterRestart = await restarted.readEntity(restarted.normalizeEntityName("Café", "project"));
@@ -77,6 +79,9 @@ const subject: LifecycleSubject<CompletionCacheState> = {
   },
 
   async teardown(state: CompletionCacheState): Promise<void> {
+    // The deferred startup replay runs in the background; let it finish before the directory goes.
+    await state.reader.drainEntityCanonicalIdMigration();
+    await state.restarted?.drainEntityCanonicalIdMigration();
     StorageManager.clearAllStaticCaches();
     await rm(state.dir, { recursive: true, force: true });
   },
