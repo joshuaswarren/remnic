@@ -18,6 +18,13 @@ import { randomUUID } from "node:crypto";
 import { constants as bufferConstants } from "node:buffer";
 import { lstat, mkdir, mkdtemp, realpath, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
+import {
+  GENERATION_MARKER_IN_FLIGHT,
+  beginGenerationMarker as writeGenerationMarkerInFlight,
+  completeGenerationMarker as writeGenerationMarkerComplete,
+  generationMarkerPath,
+  writeGenerationMarkerRaw,
+} from "./embedding-generation-marker.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { EmbeddingGenerationFence } from "./embedding-generation-lock.js";
 
@@ -165,21 +172,6 @@ function shardFileName(shardIndex: number): string {
 function replacementBackupPath(shardDir: string): string {
   return path.join(path.dirname(shardDir), "embeddings.pre-replace.tmp");
 }
-
-/**
- * Warm-cache generation marker (`<stateDir>/embeddings.generation`).
- * Two-phase publication barrier: in-flight before a publication's first
- * destructive write, fresh unique value after its last write. A stamp is
- * therefore stable only for a completed generation — readers can never
- * cache a stamp that stays stable while generation bytes change, and an
- * in-flight stamp never repeats, so probes cached during a failed
- * completion keep revalidating (PR #3176 codex P2). Plain fs like the
- * status file.
- */
-const GENERATION_MARKER_BASENAME = "embeddings.generation";
-
-/** Reserved in-flight marker value; never equals a completion marker. */
-const GENERATION_MARKER_IN_FLIGHT = "in-flight";
 
 /**
  * Stable FNV-1a shard assignment: an entry always hashes to the same shard,
@@ -535,34 +527,26 @@ export class EmbeddingIndexFileStore {
 
   /** Barrier first half: strict, so bytes can never change under a stable stamp. */
   private async beginGenerationMarker(): Promise<void> {
-    await this.writeGenerationMarker(GENERATION_MARKER_IN_FLIGHT);
+    await writeGenerationMarkerInFlight(generationMarkerPath(path.dirname(this.shardDir)));
   }
 
   /**
-   * Barrier second half: written after the last content write. Best-effort:
-   * a failure leaves the in-flight marker, whose stamp identityStamp()
-   * never repeats, so cached probes revalidate on every search until a
-   * publication completes.
+   * Barrier second half: written after the last content write. Best-effort;
+   * the in-flight fallback semantics live in the shared marker module.
    */
   private async completeGenerationMarker(): Promise<void> {
-    await this.writeGenerationMarker(randomUUID()).catch((err) => {
-      log.warn(`embedding index: could not write generation completion marker: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    await writeGenerationMarkerComplete(generationMarkerPath(path.dirname(this.shardDir)));
   }
 
   private async writeGenerationMarker(value: string): Promise<void> {
-    await this.writeAtomicFile(
-      path.join(path.dirname(this.shardDir), GENERATION_MARKER_BASENAME),
-      value,
-      { bypassSecureIo: true },
-    );
+    await writeGenerationMarkerRaw(generationMarkerPath(path.dirname(this.shardDir)), value);
   }
 
   /** Marker value, or null when absent/unreadable (pre-marker stores keep the stat stamp). */
   private async readGenerationMarker(): Promise<string | null> {
     try {
       const raw = await readFile(
-        path.join(path.dirname(this.shardDir), GENERATION_MARKER_BASENAME),
+        generationMarkerPath(path.dirname(this.shardDir)),
         "utf-8",
       );
       const value = raw.trim();
