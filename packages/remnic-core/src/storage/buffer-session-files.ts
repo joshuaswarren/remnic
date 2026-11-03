@@ -137,8 +137,13 @@ export class BufferSessionFiles {
    * A drain-claimed session is handed over instead (see class doc). */
   async save(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome> {
     if (this.isClaimed(key)) {
-      const drained = await this.claimsStore.drainedTurns(key);
-      if (drained.length > 0) {
+      // Consume the tombstone ONLY when the drain finished (acked: extracted
+      // turns recorded, nothing pending, no lease). Partial `drained` just
+      // means chunks completed — the drainer may still be running, and
+      // releasing here would unlink its claim and turn its later writes into
+      // no-ops.
+      if (await this.claimsStore.isDrained(key)) {
+        const drained = await this.claimsStore.drainedTurns(key);
         // The drain finished this session: the claim is a tombstone. Write
         // the owner's fresh remainder back as a session file (the drained
         // turns are subtracted here too, so a caller that did not subtract

@@ -99,11 +99,11 @@ class ClaimBufferStorage implements BufferStorage {
   async saveBuffer(state: BufferState): Promise<void> {
     // Whole-state fallback (the claim covers one session): persist the entry.
     const entry = state.entries?.[this.key];
-    await this.claims.writeEntry(this.key, entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
+    await this.claims.writeEntry(this.key, entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }, this.entry);
   }
 
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
-    await this.claims.writeEntry(key, entry);
+    await this.claims.writeEntry(key, entry, key === this.key ? this.entry : undefined);
   }
 
   async deleteBufferSession(): Promise<void> {
@@ -193,8 +193,10 @@ export class BufferDrainRunner {
           if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
         })
         .catch((err: Error) => {
-          // A failed heartbeat must not reject unhandled; the next tick retries.
-          log.debug(`buffer drain: heartbeat failed for session ${key}: ${describeError(err)}`);
+          // A heartbeat that cannot be renewed is a lease that cannot be
+          // held: another drainer may adopt the claim, so stop this run
+          // cleanly at the next chunk boundary (the next run resumes it).
+          abort.abort(new Error(`buffer drain: lease heartbeat failed for session ${key}: ${describeError(err)}`));
         });
     }, Math.max(1_000, Math.floor(leaseMs / 3)));
     heartbeat.unref?.();

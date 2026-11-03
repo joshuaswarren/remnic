@@ -27,7 +27,7 @@ import type { AddressInfo } from "node:net";
 
 import { StorageManager } from "@remnic/core";
 import type { BufferEntryState, BufferTurn } from "@remnic/core/types.js";
-import { runBufferDrain } from "../packages/remnic-cli/src/buffer-drain-cmd.js";
+import { loadDrainConfig, runBufferDrain, sessionNamespaceResolver } from "../packages/remnic-cli/src/buffer-drain-cmd.js";
 
 interface FakeLlm {
   url: string;
@@ -255,19 +255,31 @@ test("a killed drain loses nothing: the next run resumes and finishes", async ()
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-    await new Promise<void>((resolve) => {
-      // Wait for the worker's real "session_started" signal; the timer is only
-      // a hang guard (the worker must not spin forever before it starts).
-      const timer = setTimeout(resolve, 15_000);
-      worker.stdout.on("data", (chunk: string) => {
-        if (chunk.toString().includes("session_started")) {
-          clearTimeout(timer);
-          resolve();
-        }
-      });
+    // Attach the exit listener BEFORE waiting for startup, and reuse it for
+    // the kill below: a worker that dies before its first report must fail
+    // the test instead of hanging it, and an already-fired exit must not be
+    // missed.
+    const exited = once(worker, "exit");
+    // Real-timer hang guard on a spawned child process: a deterministic clock
+    // cannot drive the child, and an unstarted worker must fail the test, not
+    // hang it.
+    const startupTimeout = setTimeout(() => {
+      worker.kill("SIGKILL");
+    }, 15_000);
+    const startedControl = Promise.withResolvers<void>();
+    worker.stdout.on("data", (chunk: string) => {
+      if (chunk.toString().includes("session_started")) startedControl.resolve();
     });
+    const diedEarly = exited.then(() => {
+      throw new Error("drain worker exited before reporting session_started");
+    });
+    try {
+      await Promise.race([startedControl.promise, diedEarly]);
+    } finally {
+      clearTimeout(startupTimeout);
+    }
     worker.kill("SIGKILL");
-    await once(worker, "exit");
+    await exited;
 
     const claimFiles = fs.existsSync(claimDir(fixture.memoryDir))
       ? fs.readdirSync(claimDir(fixture.memoryDir)).filter((name) => name.endsWith(".json") && !name.endsWith(".lease.json"))
@@ -312,6 +324,51 @@ test("a live buffer owner hands its turns to the drain instead of resurrecting t
     const after = await fixture.storage().loadBuffer();
     const resurrected = after.entries?.["sess-live"]?.turns ?? [];
     assert.equal(resurrected.length, 0, "drained turns are not resurrected by the owner's later save");
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("--namespace ignores other namespaces' claims when counting what remains", async () => {
+  const fixture = await makeFixture();
+  try {
+    const storage = fixture.storage();
+    await seedSessions(storage, [{ key: "sess-ns", turns: 4 }]);
+    const resolveNamespace = sessionNamespaceResolver(loadDrainConfig(fixture.configPath));
+    const namespace = resolveNamespace("sess-ns");
+
+    // A claim-only session from another namespace: an earlier run claimed it
+    // and the live buffer state no longer lists it. `--namespace` must leave
+    // it out of the plan AND out of the remaining count.
+    const other: BufferEntryState = {
+      turns: Array.from({ length: 3 }, (_, index) => ({
+        ...turn("sess-other content " + index, "sess-other", index),
+        writeNamespaceOverride: namespace + "-elsewhere",
+      })),
+      lastExtractionAt: null,
+      extractionCount: 0,
+    };
+    await storage.saveBufferSession("sess-other", other);
+    const claims = storage.bufferDrainClaims();
+    const claimed = await claims.claimFromSessionFile("sess-other", {
+      ownerId: "worker-old",
+      pid: process.pid,
+      host: os.hostname(),
+      acquiredAt: new Date().toISOString(),
+      heartbeatAt: new Date().toISOString(),
+      leaseMs: 60_000,
+    });
+    assert.equal(claimed, "claimed", "the other-namespace session is claim-only");
+
+    const result = await runDrain(fixture, ["--namespace", namespace]);
+    assert.equal(result.code, 0, "the namespace drain finished cleanly: " + result.err);
+    assert.ok(
+      result.out.includes("Remaining: 0 turn(s)"),
+      "other namespaces' claims are not counted as remaining: " + result.out,
+    );
+    const listed = await claims.list();
+    const untouched = listed.find((claim) => claim.key === "sess-other");
+    assert.equal(untouched?.turnCount, 3, "the other namespace's claim is untouched");
   } finally {
     await fixture.cleanup();
   }

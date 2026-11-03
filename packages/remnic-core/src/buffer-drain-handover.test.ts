@@ -40,6 +40,10 @@ function turn(content: string, sessionKey = "sess-1", timestamp = "2026-11-01T00
   return { role: "user", content, timestamp, sessionKey };
 }
 
+function entry(turns: ReturnType<typeof turn>[]): BufferEntryState {
+  return { turns, lastExtractionAt: null, extractionCount: 0 };
+}
+
 function makeConfig(): PluginConfig {
   return parseConfig({
     bufferSaveDebounceMs: 0,
@@ -252,4 +256,52 @@ test("an unclaimed session still extracts normally (gate is claim-only)", async 
     },
   });
   await promise;
+});
+
+test("the owner keeps the claim while a drain is still running on it", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    await h.buffer.addTurn("sess-1", turn("old-1"));
+    await h.buffer.addTurn("sess-1", turn("old-2"));
+    const claimOutcome = await h.claims.claimFromSessionFile("sess-1", h.lease);
+    assert.equal(claimOutcome, "claimed");
+
+    // The drainer extracts old-1 (progress write moves it to `drained`) but
+    // old-2 is still pending, and the drainer holds the lease.
+    const loaded = await h.claims.load("sess-1");
+    assert.ok(loaded);
+    await h.claims.writeEntry("sess-1", entry([turn("old-2")]), loaded.entry);
+
+    // The owner saves while the drain is mid-flight: this must hand over into
+    // the claim (keeping the claim AND the lease), not consume the tombstone.
+    await h.buffer.addTurn("sess-1", turn("new-3"));
+    await h.buffer.save();
+    const saveSession = h.storage.saveBufferSession;
+    assert.ok(saveSession, "the harness wires saveBufferSession");
+    const saveOutcome = await saveSession("sess-1", {
+      turns: [turn("old-1"), turn("old-2"), turn("new-3")],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    assert.equal(saveOutcome?.status, "handed_over", "a running drain keeps its claim");
+    assert.equal(await h.claims.load("sess-1") !== null, true, "the claim survives the owner's mid-drain save");
+    assert.equal(existsSync(h.claims.leasePathForTest("sess-1")), true, "the lease survives the owner's mid-drain save");
+
+    // The drain finishes: everything extracted, the drainer acks (drops its
+    // lease, leaving the tombstone). Only now does the owner's save consume it.
+    const current = await h.claims.load("sess-1");
+    assert.ok(current);
+    await h.claims.writeEntry("sess-1", entry([]), current.entry);
+    await h.claims.releaseLease("sess-1", h.lease.ownerId);
+    const finalOutcome = await saveSession("sess-1", {
+      turns: [turn("old-1"), turn("old-2"), turn("new-3")],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    assert.equal(finalOutcome?.status, "saved", "the acked tombstone is consumed");
+    assert.equal(await h.claims.load("sess-1"), null, "the tombstone is gone after the consume");
+  } finally {
+    h.cleanup();
+  }
 });

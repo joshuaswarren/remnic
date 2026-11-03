@@ -19,13 +19,14 @@ export interface ClaimAwareBuffer {
 /**
  * Settle the extraction as skipped when `bufferKey` is claimed by a drain.
  * Returns true when the caller must stop (the window stays in the claim).
+ * A missing buffer (deps without one) is never claimed.
  */
 export function skipClaimedSession(
-  buffer: ClaimAwareBuffer,
+  buffer: ClaimAwareBuffer | undefined,
   bufferKey: string,
   settle: (result: ExtractionRunResult) => void,
 ): boolean {
-  if (!buffer.isSessionClaimed?.(bufferKey)) return false;
+  if (!buffer?.isSessionClaimed?.(bufferKey)) return false;
   log.debug(`extraction skip: session claimed by buffer drain (${bufferKey})`);
   settle({
     status: "skipped",

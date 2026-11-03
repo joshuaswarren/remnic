@@ -267,7 +267,9 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (chunk: string) => deps.stderr(chunk.trimEnd()));
       await new Promise<void>((resolve) => {
-        child.on("exit", () => resolve());
+        // close, not exit: exit can fire before the stdout pipe is fully
+        // read, losing a late session_finished report from the summary.
+        child.on("close", () => resolve());
         child.on("error", (err) => {
           errors.push(err.message);
           resolve();
@@ -341,6 +343,11 @@ async function remainingTurns(
     if (listed.turnCount === 0 || counted.has(listed.key)) continue;
     if (state.entries && listed.key in state.entries) continue;
     if (options.sessions.length > 0 && !options.sessions.includes(listed.key)) continue;
+    // Same filter planDrain applies: a claim outside the requested namespace
+    // (or session set) is not part of this run's remaining work.
+    const claim = await claims.load(listed.key);
+    const entry = claim?.entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 };
+    if (!matchesFilters(listed.key, entry, options, resolveNamespace)) continue;
     turns += listed.turnCount;
     sessions += 1;
   }

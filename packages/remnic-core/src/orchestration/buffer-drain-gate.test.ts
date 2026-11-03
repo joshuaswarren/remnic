@@ -31,3 +31,10 @@ test("a claimed session settles as skipped without extracting", () => {
   assert.equal(settled[0].status, "skipped");
   assert.equal(settled[0].reason, "claimed_by_buffer_drain");
 });
+
+test("a buffer-less deps bundle (older host or test double) is never claimed", () => {
+  const settled: ExtractionRunResult[] = [];
+  const result = skipClaimedSession(undefined, "sess-1", (r) => settled.push(r));
+  assert.equal(result, false);
+  assert.deepEqual(settled, []);
+});

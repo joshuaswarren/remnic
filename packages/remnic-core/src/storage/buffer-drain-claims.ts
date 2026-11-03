@@ -23,7 +23,8 @@
  *     in-memory entry INTO the claim (merge, identity-deduped) instead of
  *     writing a session file — it can never resurrect claimed turns.
  *   - Claims are idempotent: re-claiming, double-draining, and two
- *     concurrent drainers are all safe (atomic rename + exclusive lease).
+ *     concurrent drainers are all safe (per-key mutation lock + exclusive
+ *     lease; the lock also fences lease takeover and progress writes).
  *
  * All content reads/writes go through the storage's secure file I/O
  * (`BufferFileIo`); only lease/existence checks touch raw paths, and claim
@@ -37,7 +38,7 @@ import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { bufferSessionFileName, type BufferFileIo } from "./buffer-session-files.js";
-import { bufferTurnsEqual } from "../buffer-turn-helpers.js";
+import { bufferTurnsEqual, subtractBufferTurns } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { BufferEntryState, BufferTurn } from "../types.js";
@@ -105,8 +106,18 @@ function mergeTurns<T>(existing: T[], incoming: readonly T[], isEqual: (a: T, b:
 
 function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainClaimFile {
   const entry = emptyEntry();
-  entry.turns = mergeTurns(claim.entry.turns, incoming.turns, bufferTurnsEqual);
-  const retained = [...(claim.entry.retainedTurns ?? []), ...(incoming.retainedTurns ?? [])];
+  // Turns already extracted stay out of the pending entry even when the
+  // owner's incoming copy is stale and still carries them.
+  const drained = claim.drained ?? [];
+  entry.turns = mergeTurns(
+    subtractBufferTurns(claim.entry.turns, drained),
+    subtractBufferTurns(incoming.turns, drained),
+    bufferTurnsEqual,
+  );
+  const retained = [
+    ...subtractBufferTurns(claim.entry.retainedTurns ?? [], drained),
+    ...subtractBufferTurns(incoming.retainedTurns ?? [], drained),
+  ];
   // SAFETY: an empty accumulator of the same element type.
   const dedupedRetained = mergeTurns([] as typeof retained, retained, bufferTurnsEqual);
   if (dedupedRetained.length > 0) entry.retainedTurns = dedupedRetained;
@@ -288,6 +299,10 @@ export class BufferDrainClaims {
    * the handover: after it settles the turns exist ONLY as a claim, so no
    * crash window can lose them or leave them in both places. Callers that
    * lose the race (`already_claimed`) simply skip the key.
+   *
+   * The whole handover runs under the claim's mutation lock, so a claim
+   * create can never land on top of an existing claim (POSIX rename would
+   * silently replace it) and the lease write cannot race an adopter.
    */
   async claimFromSessionFile(key: string, lease: DrainLease): Promise<ClaimFromSessionOutcome> {
     await mkdir(this.dir, { recursive: true });
@@ -306,64 +321,80 @@ export class BufferDrainClaims {
         // path report it loudly, like the loader skips corrupt files.
       }
     }
-    try {
-      await rename(sessionPath, this.fileFor(key));
-    } catch (err) {
-      // The session file is gone: either it never existed, or another
-      // drainer claimed it first.
-      if (!existsSync(sessionPath)) {
+    return await withHeldFileLock(
+      this.lockFileFor(key),
+      { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) return "already_claimed";
+        // Under the lock the claim check is authoritative: an existing claim
+        // keeps its content and its lease; the session file stays with its
+        // owner (their next save merges into the claim).
         if (this.isClaimed(key)) return "already_claimed";
-        return "empty";
-      }
-      throw err;
-    }
-    if (this.isClaimed(key) && (await this.readLease(key)) !== null) {
-      // A claim file already existed before this rename landed (a stale
-      // session file reappeared beside an orphan claim): never stack a second
-      // owner's lease on a claim another process may be draining.
-      return "already_claimed";
-    }
-    const claim = await this.readClaimBody(key);
-    if (!claim || claim.entry.turns.length === 0 && (claim.entry.retainedTurns?.length ?? 0) === 0) {
-      // Empty content: nothing to drain. Delete the moved file so the empty
-      // entry keeps living with its owner, not as a stale claim.
-      await unlink(this.fileFor(key)).catch(() => {});
-      return "empty";
-    }
-    await this.writeLease(key, lease);
-    return "claimed";
+        try {
+          await rename(sessionPath, this.fileFor(key));
+        } catch (err) {
+          // The session file is gone: either it never existed, or another
+          // drainer claimed it first.
+          if (!existsSync(sessionPath)) {
+            if (this.isClaimed(key)) return "already_claimed";
+            return "empty";
+          }
+          throw err;
+        }
+        const claim = await this.readClaimBody(key);
+        if (!claim || (claim.entry.turns.length === 0 && (claim.entry.retainedTurns?.length ?? 0) === 0)) {
+          // Empty content: nothing to drain. Delete the moved file so the
+          // empty entry keeps living with its owner, not as a stale claim.
+          await unlink(this.fileFor(key)).catch(() => {});
+          return "empty";
+        }
+        await this.writeLease(key, lease);
+        return "claimed";
+      },
+    );
   }
 
   /**
-   * Take over a claim whose lease is missing or expired. The takeover is an
-   * exclusive-create lease write, so concurrent adopters resolve atomically.
+   * Take over a claim whose lease is missing, expired, or whose owner died.
+   * The whole judgement runs under the claim's mutation lock and re-reads
+   * the lease inside it, so exactly one concurrent adopter wins: the loser
+   * re-reads the winner's fresh lease and reports "busy" instead of
+   * unlinking it. A lease whose owner died is taken over in the same call.
    */
   async adopt(key: string, lease: DrainLease): Promise<AdoptOutcome> {
     if (!this.isClaimed(key)) return "busy";
-    const existing = await this.readLease(key);
-    if (existing && !isLeaseExpired(existing) && !isOwnerAlive(existing)) {
-      // The owner died without releasing the claim (killed worker): take it
-      // over now instead of waiting for the lease to expire.
-      await unlink(this.leaseFileFor(key)).catch(() => {});
-    } else if (existing && existing.ownerId === lease.ownerId) {
-      // The same drainer already holds it: renew the lease.
-      await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
-      return "adopted";
-    }
-    if (existing && !isLeaseExpired(existing)) return "busy";
-    if (existing) {
-      // Expired lease: clear it, then exclusive-create decides the race
-      // between concurrent adopters of the same stale claim.
-      await unlink(this.leaseFileFor(key)).catch(() => {});
-    }
-    try {
-      await writeFile(this.leaseFileFor(key), JSON.stringify(lease), { flag: "wx" });
-    } catch (err) {
-      // The lease file exists: another drainer took it first.
-      if (existsSync(this.leaseFileFor(key))) return "busy";
-      throw err;
-    }
-    return "adopted";
+    return await withHeldFileLock(
+      this.lockFileFor(key),
+      { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) return "busy";
+        const existing = await this.readLease(key);
+        if (existing && !isLeaseExpired(existing)) {
+          if (existing.ownerId === lease.ownerId) {
+            // The same drainer already holds it: renew the lease.
+            await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
+            return "adopted";
+          }
+          if (isOwnerAlive(existing)) return "busy";
+          // The owner died without releasing the claim (killed worker):
+          // take it over now instead of waiting for the lease to expire.
+          await unlink(this.leaseFileFor(key)).catch(() => {});
+        } else if (existing) {
+          // Expired lease: clear it before the exclusive create. We hold the
+          // lock, so no concurrent adopter can interleave its own
+          // unlink/create between these steps.
+          await unlink(this.leaseFileFor(key)).catch(() => {});
+        }
+        try {
+          await writeFile(this.leaseFileFor(key), JSON.stringify(lease), { flag: "wx" });
+        } catch (err) {
+          // The lease file exists: another drainer took it first.
+          if (existsSync(this.leaseFileFor(key))) return "busy";
+          throw err;
+        }
+        return "adopted";
+      },
+    );
   }
 
   /**
@@ -389,29 +420,61 @@ export class BufferDrainClaims {
     });
   }
 
-  /** Drainer progress: replace the claim content with what is left to do. */
-  async writeEntry(key: string, entry: BufferEntryState): Promise<void> {
+  /** Drainer progress: replace the claim content with what is left to do.
+   *
+   * `seen` is the entry the drainer LOADED (its snapshot of the claim). Only
+   * turns that were in that snapshot and vanished from `entry` were actually
+   * extracted; turns a live owner merged into the claim afterwards must stay
+   * pending. Without `seen` the pre-existing behavior is kept (every claim
+   * turn missing from `entry` counts as extracted).
+   */
+  async writeEntry(key: string, entry: BufferEntryState, seen?: BufferEntryState): Promise<void> {
     await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
       if (!acquired) throw new Error(`buffer drain claim for ${key} is busy; progress write skipped`);
       const claim = await this.readClaimBody(key);
       if (!claim) return;
-      // Progress: the turns that vanished from the entry were extracted.
+      const seenTurns = seen?.turns ?? claim.entry.turns;
+      // Progress: the snapshot turns that vanished from the entry were extracted.
       const drained = [...(claim.drained ?? [])];
       for (const turn of claim.entry.turns) {
-        if (entry.turns.some((kept) => bufferTurnsEqual(kept, turn))) continue;
+        const extracted =
+          seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
+          !entry.turns.some((kept) => bufferTurnsEqual(kept, turn));
+        if (!extracted) continue;
         if (drained.some((gone) => bufferTurnsEqual(gone, turn))) continue;
         drained.push(turn);
       }
-      await this.writeClaimBody(key, { ...claim, entry, drained });
+      // Turns merged in after the drainer loaded stay pending, in extraction
+      // order behind the drainer's own remainder.
+      const late = claim.entry.turns.filter(
+        (turn) =>
+          !seenTurns.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
+          !entry.turns.some((kept) => bufferTurnsEqual(kept, turn)),
+      );
+      const next: BufferEntryState = { ...entry, turns: [...entry.turns, ...late] };
+      const seenRetained = seen?.retainedTurns ?? claim.entry.retainedTurns ?? [];
+      const lateRetained = (claim.entry.retainedTurns ?? []).filter(
+        (turn) =>
+          !seenRetained.some((snapshot) => bufferTurnsEqual(snapshot, turn)) &&
+          !(entry.retainedTurns ?? []).some((kept) => bufferTurnsEqual(kept, turn)),
+      );
+      if (lateRetained.length > 0) next.retainedTurns = mergeTurns(entry.retainedTurns ?? [], lateRetained, bufferTurnsEqual);
+      await this.writeClaimBody(key, { ...claim, entry: next, drained });
     });
   }
 
-  /** Extend the lease. "lost" means another drainer took the claim over. */
+  /** Extend the lease. "lost" means another drainer took the claim over.
+   * Serialized on the claim lock so a stale heartbeat can never overwrite a
+   * new owner's lease mid-takeover; a contended lock just skips this tick
+   * (usually the drainer's own progress write holds it). */
   async heartbeat(key: string, ownerId: string, leaseMs: number): Promise<"ok" | "lost"> {
-    const lease = await this.readLease(key);
-    if (!lease || lease.ownerId !== ownerId) return "lost";
-    await this.writeLease(key, { ...lease, heartbeatAt: new Date().toISOString(), leaseMs });
-    return "ok";
+    return await withHeldFileLock(this.lockFileFor(key), { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS }, async (acquired) => {
+      if (!acquired) return "ok";
+      const lease = await this.readLease(key);
+      if (!lease || lease.ownerId !== ownerId) return "lost";
+      await this.writeLease(key, { ...lease, heartbeatAt: new Date().toISOString(), leaseMs });
+      return "ok";
+    });
   }
 
   /** Give the key back (content stays; the next run resumes it). */
@@ -445,6 +508,20 @@ export class BufferDrainClaims {
   async drainedTurns(key: string): Promise<BufferTurn[]> {
     const claim = await this.readClaimBody(key);
     return claim?.drained ?? [];
+  }
+
+  /**
+   * Is the drain for `key` FINISHED (acked): the claim holds extracted turns
+   * and nothing pending, and the drainer dropped its lease. A claim with
+   * partial progress or a live lease is still being drained — its owner must
+   * merge into it, never release it.
+   */
+  async isDrained(key: string): Promise<boolean> {
+    const claim = await this.readClaimBody(key);
+    if (!claim) return false;
+    if ((claim.drained?.length ?? 0) === 0) return false;
+    if (claim.entry.turns.length > 0 || (claim.entry.retainedTurns?.length ?? 0) > 0) return false;
+    return (await this.readLease(key)) === null;
   }
 
   /** Drop the claim file entirely (its owner consumed the tombstone). */

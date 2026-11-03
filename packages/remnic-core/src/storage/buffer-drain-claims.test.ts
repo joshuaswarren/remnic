@@ -237,3 +237,143 @@ test("claims live in their own directory and never collide with session files", 
     s.cleanup();
   }
 });
+
+test("claimFromSessionFile never replaces an existing claim", async () => {
+  const s = setup();
+  try {
+    // First drainer claims the session; then a session file reappears beside
+    // the claim (an owner TOCTOU write, or a crash between the tombstone
+    // consume and its release). The next claim attempt must keep the claim
+    // and its lease exactly as they are.
+    s.seedSession("sess-1", entry([turn("claim content")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("worker-original")), "claimed");
+    s.seedSession("sess-1", entry([turn("fresh owner copy")]));
+    const outcome = await s.claims.claimFromSessionFile("sess-1", makeLease("worker-two"));
+    assert.equal(outcome, "already_claimed");
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual(
+      claim.entry.turns.map((t) => t.content),
+      ["claim content"],
+      "the existing claim content survives the second claim attempt",
+    );
+        // SAFETY: the lease body is written by this test / the claims module with an ownerId field.
+const lease = JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")) as { ownerId: string };
+    assert.equal(lease.ownerId, "worker-original", "the original lease is untouched");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("adopt takes over a dead owner's claim in one call and keeps a lease", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("hello")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("worker-dead")), "claimed");
+    // Simulate the killed worker: its lease is unexpired but its pid is gone.
+    const deadLease = { ...makeLease("worker-dead"), pid: 4_500_000 };
+    writeFileSync(s.claims.leasePathForTest("sess-1"), JSON.stringify(deadLease));
+    const outcome = await s.claims.adopt("sess-1", makeLease("worker-new"));
+    assert.equal(outcome, "adopted", "a dead owner's claim is adoptable without waiting for expiry");
+        // SAFETY: the lease body is written by this test / the claims module with an ownerId field.
+const lease = JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")) as { ownerId: string };
+    assert.equal(lease.ownerId, "worker-new", "the takeover leaves a lease behind");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("concurrent adopters of an expired lease resolve to exactly one winner", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("hello")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("worker-first")), "claimed");
+    const expired = { ...makeLease("worker-first"), heartbeatAt: new Date(Date.now() - 10 * makeLease().leaseMs).toISOString() };
+    writeFileSync(s.claims.leasePathForTest("sess-1"), JSON.stringify(expired));
+    const outcomes = await Promise.all([
+      s.claims.adopt("sess-1", makeLease("worker-a")),
+      s.claims.adopt("sess-1", makeLease("worker-b")),
+      s.claims.adopt("sess-1", makeLease("worker-c")),
+    ]);
+    assert.equal(outcomes.filter((o) => o === "adopted").length, 1, "exactly one adopter wins");
+        // SAFETY: the lease body is written by this test / the claims module with an ownerId field.
+const lease = JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")) as { ownerId: string };
+    const winner = ["worker-a", "worker-b", "worker-c"][outcomes.indexOf("adopted")];
+    assert.equal(lease.ownerId, winner, "the surviving lease belongs to the winner");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("writeEntry keeps turns merged into the claim after the drainer loaded it", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded, "the drainer loaded the claim");
+    // The daemon appends t2 while the drainer works; the drainer then reports
+    // its snapshot fully extracted.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t2")]));
+    await s.claims.writeEntry("sess-1", entry([]), loaded.entry);
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual(
+      claim.entry.turns.map((t) => t.content),
+      ["t2"],
+      "the late-merged turn stays pending instead of being marked drained",
+    );
+    assert.deepEqual(
+      (claim.drained ?? []).map((t) => t.content),
+      ["t1"],
+      "only the turn the drainer actually saw is recorded as drained",
+    );
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("mergeIntoClaim does not resurrect turns the drain already extracted", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", entry([]), loaded.entry); // t1 extracted
+    // The owner still holds a stale in-memory copy of t1 plus a genuinely new
+    // t2: merging must keep t1 out of the pending entry.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t1"), turn("t2")]));
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual(
+      claim.entry.turns.map((t) => t.content),
+      ["t2"],
+      "the extracted turn never re-enters the pending entry",
+    );
+    assert.deepEqual((claim.drained ?? []).map((t) => t.content), ["t1"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a claim counts as drained only when the acked tombstone is complete", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1"), turn("t2")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    // Mid-drain: t2 extracted, t1 pending, lease alive.
+    await s.claims.writeEntry("sess-1", entry([turn("t1")]), loaded.entry);
+    assert.equal(await s.claims.isDrained("sess-1"), false, "partial drained is not finished");
+    // Everything extracted but the drainer still holds the lease.
+    await s.claims.writeEntry("sess-1", entry([]), loaded.entry);
+    assert.equal(await s.claims.isDrained("sess-1"), false, "an unacked claim is not finished");
+    // Ack: the drainer drops its lease and leaves the tombstone.
+    await s.claims.releaseLease("sess-1", makeLease().ownerId);
+    assert.equal(await s.claims.isDrained("sess-1"), true, "the acked tombstone is finished");
+  } finally {
+    s.cleanup();
+  }
+});
