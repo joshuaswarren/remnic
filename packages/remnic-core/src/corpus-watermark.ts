@@ -37,10 +37,11 @@
  */
 
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
 import path from "node:path";
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { capabilityAllowsNamespace, type TokenCapabilities } from "./access-token-capabilities.js";
 import { listNamespaces } from "./namespaces/migrate.js";
+import { corpusScanWorker } from "./corpus-scan-worker-host.js";
 import type { PluginConfig } from "./types.js";
 
 export interface CorpusWatermark {
@@ -66,6 +67,9 @@ export const UNPARTITIONED_BUCKET = "unpartitioned";
 
 /** Storage tier a memory file lives in. */
 export type CorpusTier = "hot" | "cold";
+
+/** Paths parsed between event-loop yields while building a census. */
+const CENSUS_YIELD_EVERY = 4_096;
 
 const DAY_PARTITION_RE = /^\d{4}-\d{2}-\d{2}$/;
 /** Cold-tier root segment (relative to a namespace base dir): `<baseDir>/cold/...`. */
@@ -155,7 +159,17 @@ export async function computeCorpusWatermark(input: {
   const census = new Map<string, number>();
   let newestPartition: string | null = null;
   const parsedByPath: ParsedPath[] = [];
+  let sinceYield = 0;
   for (const filePath of paths) {
+    // Parsing one path is cheap, but a census covers the whole corpus (100k+
+    // paths): one uninterrupted pass holds the main thread for hundreds of
+    // milliseconds. Yield to the event loop every CENSUS_YIELD_EVERY paths so
+    // observe/recall interleave; the result is order-independent and identical.
+    if (sinceYield >= CENSUS_YIELD_EVERY) {
+      sinceYield = 0;
+      await yieldToEventLoop();
+    }
+    sinceYield += 1;
     const parsed = parsePartition(baseDir, filePath);
     parsedByPath.push(parsed);
     census.set(parsed.bucket, (census.get(parsed.bucket) ?? 0) + 1);
@@ -171,19 +185,21 @@ export async function computeCorpusWatermark(input: {
 
   let newestWriteAt: string | null = null;
   if (newestPartition !== null) {
-    let maxMtimeMs = Number.NEGATIVE_INFINITY;
+    const newestPaths: string[] = [];
     for (let i = 0; i < paths.length; i += 1) {
       if (parsedByPath[i].tier !== "hot" || parsedByPath[i].date !== newestPartition) continue;
-      try {
-        const st = await stat(paths[i]);
-        if (st.mtimeMs > maxMtimeMs) maxMtimeMs = st.mtimeMs;
-      } catch (err) {
-        // A file vanishing between scan and stat (ENOENT) is an expected race —
-        // skip it. A backend read failure (EACCES/EIO/…) means the corpus is
-        // unreadable: propagate so the namespace is omitted, not published with
-        // a stale/null freshness (issue #2156 round-6).
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-      }
+      newestPaths.push(paths[i]);
+    }
+    // The freshness sweep is one stat per file in the newest hot partition; it
+    // runs in the corpus-scan worker so the periodic census does not spend
+    // main-thread time on a per-file syscall sweep. A file that vanished
+    // (ENOENT) reports null; a backend read failure (EACCES/EIO/…) propagates
+    // with its errno code so the namespace is omitted, not published with a
+    // stale/null freshness (issue #2156 round-6).
+    const mtimes = await corpusScanWorker.request({ kind: "stat-mtimes", paths: newestPaths });
+    let maxMtimeMs = Number.NEGATIVE_INFINITY;
+    for (const mtimeMs of mtimes) {
+      if (mtimeMs !== null && mtimeMs > maxMtimeMs) maxMtimeMs = mtimeMs;
     }
     if (maxMtimeMs > Number.NEGATIVE_INFINITY) {
       newestWriteAt = new Date(maxMtimeMs).toISOString();

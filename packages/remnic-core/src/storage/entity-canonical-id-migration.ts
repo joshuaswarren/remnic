@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
 import { z } from "zod";
+import { corpusScanWorker } from "../corpus-scan-worker-host.js";
 import { computeSupersessionKey, normalizeSupersessionKey } from "../temporal-supersession.js";
 import type { EntityFile, MemoryFile } from "../types.js";
 import { log } from "../logger.js";
@@ -102,31 +103,6 @@ async function fingerprintPath(filePath: string): Promise<string> {
     : "missing";
 }
 
-async function fingerprintEntityEntries(entitiesDir: string): Promise<string> {
-  let names: string[];
-  try {
-    names = (await readdir(entitiesDir))
-      .filter((name) => path.extname(name) === ".md" && !isMacOsReplicationJunkBasename(name))
-      .sort();
-  } catch (error) {
-    if (isErrnoCode(error, "ENOENT")) return "missing";
-    throw error;
-  }
-  const hash = createHash("sha256");
-  for (const name of names) {
-    hash.update(`${name.length}:${name}:`);
-    try {
-      const entry = await lstat(path.join(entitiesDir, name), { bigint: true });
-      hash.update(`${entry.dev}:${entry.ino}:${entry.size}:${entry.mtimeNs}:${entry.ctimeNs}`);
-    } catch (error) {
-      if (!isErrnoCode(error, "ENOENT")) throw error;
-      hash.update("missing");
-    }
-    hash.update("\n");
-  }
-  return hash.digest("hex");
-}
-
 /**
  * Completion fingerprint for migration inputs only. Entity entry identities
  * catch same-path edits that do not change the directory inode; the cooperative
@@ -146,7 +122,9 @@ export async function getFingerprint(
     consumingFingerprint,
   ] = await Promise.all([
     fingerprintPath(entitiesDir),
-    fingerprintEntityEntries(entitiesDir),
+    // The entry enumeration is one lstat per entity file — a corpus-sized
+    // syscall storm on the main thread. It runs in the corpus-scan worker.
+    corpusScanWorker.request({ kind: "entity-entries-fingerprint", entitiesDir }),
     fingerprintPath(path.join(baseDir, "config", "aliases.json")),
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_MARKER)),
     fingerprintPath(path.join(baseDir, "state", ENTITY_CANONICAL_ID_RECONCILE_CONSUMING_MARKER)),

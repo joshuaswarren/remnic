@@ -35,6 +35,47 @@ path set is unchanged; `tests/corpus-walk-cost.test.ts` pins it over a corpus
 with nested partitions, Finder junk and symlinked-out entries, and the
 existing symlink-containment tests are unchanged.
 
+## The scans run in a worker
+
+The corpus-sized scans — the recall-corpus path walk, the entity-entry
+fingerprint the canonical-id migration reads on every entity unlock, and the
+watermark freshness stat — run in one `worker_threads` worker
+(`src/corpus-scan-worker-host.ts`), so a scan no longer holds the main event
+loop.
+
+- **One implementation, two sites.** The scans are plain functions
+  (`src/corpus-scan.ts`). The worker runs them; when no worker can start (entry
+  missing, unsupported runtime) the host runs the same functions inline, so the
+  result is identical and the scan still happens.
+- **Plain-JavaScript worker entry.** A worker thread does not inherit the
+  TypeScript loader the source tree runs under, so the worker loads
+  `src/corpus-scan-worker.entry.mjs`, generated from
+  `src/corpus-scan-worker.entry.ts` by `npm run sync:corpus-scan-worker`
+  (esbuild bundle, no runtime loader hooks). The generated file is committed;
+  `npm run check:corpus-scan-worker-sync` (part of `npm run build`) fails when it
+  drifts from its source. The package build copies it next to the bundled host.
+- **Cancellation.** An aborted scan rejects on the main thread immediately with
+  an `AbortError`, and the worker abandons the walk at its next
+  directory/entry boundary; a late reply is discarded and a cancelled read never
+  publishes a partial corpus.
+- **Errors.** A scan error keeps its errno code across the thread boundary, so
+  the strict census still tells `EACCES` (unreadable corpus, namespace omitted)
+  from `ENOENT` (absent path).
+- **No lingering handles.** The worker is `unref()`ed and its `message` listener
+  is attached only while a job is in flight (a worker with a `message` listener
+  keeps the parent's event loop alive), so an idle worker never stops the
+  process from exiting. `close()` terminates the worker, rejects in-flight jobs,
+  and the next request spawns a fresh one; events from a worker that is no longer
+  current never touch its successor's jobs.
+- **Census yields.** Building the watermark census over 128k collected paths is
+  main-thread CPU that a worker cannot take without cloning every path back and
+  forth, so the census loop yields to the event loop every 4096 paths instead.
+
+The entity-migration completion check still re-reads every entity entry's
+identity (a cheap-signature cache would miss an in-place entity edit, which is
+pinned by "an external in-place entity edit reopens a completed migration");
+the read now happens in the worker.
+
 ## Measuring it
 
 `scripts/bench-corpus-scans.ts` builds a synthetic corpus and reports, per
@@ -46,35 +87,19 @@ node_modules/.bin/tsx scripts/bench-corpus-scans.ts --scale quick
 node_modules/.bin/tsx scripts/bench-corpus-scans.ts --scale deployment
 ```
 
-Measured on a synthetic 134k-file corpus (120k hot across day partitions,
-8k cold, 6k entity files), same machine, minutes apart:
+Measured on a synthetic 134k-file corpus (120k hot across day partitions, 8k
+cold, 6k entity files), same machine, in three states (wall / main-thread
+active; the watermark row also gives the longest single event-loop block):
 
-| job | before: wall / main-thread active | after: wall / main-thread active |
-| --- | --- | --- |
-| corpus path walk | 5894 ms / 2326 ms | 340 ms / 210 ms |
-| corpus read (`readAllMemories`: walk + parse) | 20591 ms / 16893 ms | 10330 ms / 10236 ms |
-| corpus watermark (hot+cold walk + freshness stat) | 8822 ms / 4452 ms | 664 ms / 562 ms |
-| entity migration ensure cycle | 708 ms / 267 ms | 298 ms / 129 ms (same code path; run variance) |
+| job | per-file `realpath` (before #3301) | containment once (#3301) | + worker (this change) |
+| --- | --- | --- | --- |
+| corpus path walk | 5894 / 2326 ms | 340 / 210 ms | 437 / **15 ms** |
+| entity migration ensure cycle | 708 / 267 ms | 298 / 129 ms | 398 / **3 ms** |
+| corpus watermark | 8822 / 4452 ms; longest block 660 ms | 664 / 562 ms; longest block 420 ms | 870 / 566 ms; longest block **81 ms** |
+| corpus read (`readAllMemories`: walk + parse) | 20591 / 16893 ms | 10330 / 10236 ms | 10693 / 10394 ms |
 
-The per-file `realpath` was the walk's dominant cost: each one resolves the
-full ancestor chain (~7 path components per memory file), so removing 120k of
-them removes seconds of main-thread time per scan. The corpus read and the
-watermark improve by the same amount because each one performs the walk; the
-frontmatter parse and the census bookkeeping stay on the main thread.
-
-## Next step: the scans belong off the main thread
-
-The walk, the entity-entry fingerprint and the watermark stat are pure,
-read-only, self-contained jobs — the shape a `worker_threads` worker exists
-for. A prototype that moved them off the main thread was measured on this
-same corpus and harness: the walk's main-thread active time fell from
-2326 ms to 8 ms, the watermark's from 4452 ms to 386 ms, and the per-entity-
-unlock migration fingerprint read from 267 ms to 2 ms, with the worker and
-the inline walk producing identical path lists, fingerprints and stat sweeps.
-
-It does not ship here because the worker's entry has to load in a worker
-thread, and a worker does not inherit the TypeScript loader the source tree
-runs under: the entry must be plain JavaScript, and the CI Node runtime
-cannot load the TypeScript scan sources it needs. Shipping it means moving
-the scan implementations into a plain-JavaScript worker entry (built from the
-same sources) and proving parity between the worker and the inline path.
+The corpus read keeps its frontmatter parse on the main thread (it needs the
+store's schemas and is not a scan), so its main-thread time is unchanged by
+the worker. Wall time of a scan rises slightly with the worker (the path list
+crosses a thread boundary); the point is that the main thread is free for that
+time.
