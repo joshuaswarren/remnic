@@ -10,9 +10,10 @@
 import { log } from "../logger.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 
-/** The claim check a buffer owner exposes. */
+/** The claim check a buffer owner exposes. Optional: buffers without a claim
+ * registry (older hosts, test doubles) simply never report a claim. */
 export interface ClaimAwareBuffer {
-  isSessionClaimed(key: string): boolean;
+  isSessionClaimed?(key: string): boolean;
 }
 
 /**
@@ -24,7 +25,7 @@ export function skipClaimedSession(
   bufferKey: string,
   settle: (result: ExtractionRunResult) => void,
 ): boolean {
-  if (!buffer.isSessionClaimed(bufferKey)) return false;
+  if (!buffer.isSessionClaimed?.(bufferKey)) return false;
   log.debug(`extraction skip: session claimed by buffer drain (${bufferKey})`);
   settle({
     status: "skipped",
