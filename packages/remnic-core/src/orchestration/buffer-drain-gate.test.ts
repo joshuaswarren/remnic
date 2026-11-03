@@ -5,12 +5,13 @@
  */
 import assert from "node:assert/strict";
 import test from "node:test";
-import { skipClaimedSession } from "./buffer-drain-gate.js";
+import { skipClaimedSession, type ClaimAwareBuffer } from "./buffer-drain-gate.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 
 test("a buffer without isSessionClaimed is never treated as claimed", () => {
   const settled: ExtractionRunResult[] = [];
-  const result = skipClaimedSession({} as Parameters<typeof skipClaimedSession>[0], "sess-1", (r) => settled.push(r));
+  const buffer: ClaimAwareBuffer = {};
+  const result = skipClaimedSession(buffer, "sess-1", (r) => settled.push(r));
   assert.equal(result, false);
   assert.deepEqual(settled, []);
 });
