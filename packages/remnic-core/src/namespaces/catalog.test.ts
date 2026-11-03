@@ -4352,3 +4352,46 @@ test("a repair dropped under lock contention is retried by a warm-cache read (#3
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("incomplete reads during a long foreign lock share one repair instead of queueing N waits (#3298)", { timeout: 40_000 }, async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+
+    // A foreign holder keeps the catalog lock for 12 s: longer than three full repair waits.
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = withHeldFileLock(path.join(memoryDir, "state", "namespaces.rebuild.lock"), { staleMs: 60_000 }, async () => released);
+    // Let the foreign holder actually take the lock before any read can race it for the repair.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(
+      (await readFile(catalogPath, "utf8")).includes("{this is not json"),
+      "precondition: the foreign holder has the lock, so no repair has run yet",
+    );
+
+    // Three incomplete reads in quick succession. Without an in-flight guard each queued repair
+    // occupies the serialized queue for a full ~5 s lock-wait window, so every LATER read blocks
+    // behind the pile: the reads themselves must stay fast once the first repair is in flight.
+    // Eight incomplete reads while the lock is held: each read's preceding repair occupies the
+    // serialized queue for at most ~500 ms, so no read may block for a full rebuild-lock window.
+    const readMs: number[] = [];
+    for (let i = 0; i < 8; i += 1) {
+      const reasons: string[] = [];
+      const started = Date.now();
+      await catalog.listNamespaces(undefined, { onIncomplete: (r) => reasons.push(r) });
+      readMs.push(Date.now() - started);
+      assert.equal(reasons.length, 1);
+      // With the old full rebuild-lock wait this read blocked ~5 s behind its queued repair.
+      assert.ok(readMs[i] < 2_500, `read ${i} took ${readMs[i]} ms`);
+    }
+    release();
+    await holder;
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -176,6 +176,11 @@ const REBUILD_LOCK_POLL_MS = 50;
 // comfortably below STALE_MS so at least a couple of beats land per stale window.
 const REBUILD_LOCK_HEARTBEAT_MS = 10_000;
 
+// The repair after an incomplete read is best-effort background maintenance: it must not hold
+// the in-process critical-section queue hostage for a full rebuild-lock wait window while
+// another process works. A short wait, then drop (the next incomplete read retries).
+const CATALOG_REPAIR_LOCK_MAX_WAIT_MS = 500;
+
 // Children that indicate a directory holds Remnic memory data (used for legacy
 // default-root detection and to skip empty/non-data roots during rebuild).
 //
@@ -1362,9 +1367,13 @@ export class NamespaceCatalog {
    *
    * Locking: the fold runs inside `queueCritical` (in-process serialization, like every other
    * read), and the rewrite's load→rename window runs under the held catalog file lock, so it can
-   * never interleave with another process's touch append or rebuild. If another process already
-   * holds the lock, the rewrite is dropped (not queued): that process's own rewrite or rebuild is
-   * the likeliest repair, and the next incomplete read retries anyway.
+   * never interleave with another process's touch append or rebuild. The repair waits only
+   * `CATALOG_REPAIR_LOCK_MAX_WAIT_MS` for that lock — a bounded slice, not a full rebuild-lock
+   * wait window — and is dropped when the wait times out: another process is actively working
+   * and the next incomplete read retries. One repair runs at a time (each queued repair occupies
+   * the serialized queue for its whole wait, so concurrent incomplete reads must not pile up N
+   * waits, so catalog operations never stall for a full rebuild-lock window; the next
+   * incomplete read retries.
    *
    * Data safety: the locked re-read must itself reach the end of the file and still find
    * malformed rows, and must leave at least one readable row. A failed re-read folds to an empty
@@ -1372,14 +1381,20 @@ export class NamespaceCatalog {
    * would replace a healthy or recoverable catalog with an empty file.
    */
   private async rewriteAfterIncompleteRead(): Promise<void> {
+    // The bounded lock wait is what protects availability: each repair occupies the serialized
+    // queue for at most ~CATALOG_REPAIR_LOCK_MAX_WAIT_MS, so catalog operations never stall for
+    // a full rebuild-lock window, however many incomplete reads arrive during a foreign hold.
     await this.queueCritical(async () =>
-      this.withHeldCatalogLock(async (acquired) => {
-        if (!acquired) return;
-        const health: CatalogReadHealth = {};
-        const folded = await this.loadCompacted(true, health);
-        if (health.malformed !== true || folded.size === 0) return;
-        await this.rewriteUnchained([...folded.values()]);
-      }),
+      this.withHeldCatalogLock(
+        async (acquired) => {
+          if (!acquired) return;
+          const health: CatalogReadHealth = {};
+          const folded = await this.loadCompacted(true, health);
+          if (health.malformed !== true || folded.size === 0) return;
+          await this.rewriteUnchained([...folded.values()]);
+        },
+        { maxWaitMs: CATALOG_REPAIR_LOCK_MAX_WAIT_MS },
+      ),
     );
   }
 
@@ -2015,12 +2030,15 @@ export class NamespaceCatalog {
    * caller uses `acquired` to run compute-only (rebuild) or DROP the append
    * (touch) when unlocked.
    */
-  private withHeldCatalogLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
+  private withHeldCatalogLock<T>(
+    fn: (acquired: boolean) => Promise<T>,
+    options?: { maxWaitMs?: number },
+  ): Promise<T> {
     return withHeldFileLock(
       this.rebuildLockPath,
       {
         staleMs: REBUILD_LOCK_STALE_MS,
-        maxWaitMs: REBUILD_LOCK_MAX_WAIT_MS,
+        maxWaitMs: options?.maxWaitMs ?? REBUILD_LOCK_MAX_WAIT_MS,
         pollMs: REBUILD_LOCK_POLL_MS,
         heartbeatMs: REBUILD_LOCK_HEARTBEAT_MS,
         // NG7Bg seam: fires inside the util's breakStaleLock after it judges the
