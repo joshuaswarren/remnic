@@ -23,6 +23,11 @@ import { namespaceIdentityFromToken, namespaceIdentityLegacyToken, namespaceIden
 import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { isNotFoundError } from "../utils/errno.js";
+import {
+  dropDuplicateStorageRootAliases,
+  sanitizeRecordForRead,
+  type CatalogReadBoundaryPort,
+} from "./catalog-read-boundary.js";
 
 /**
  * Rebuildable namespace catalog (issue #1499).
@@ -346,7 +351,7 @@ function laterIso(a: string | undefined, b: string | undefined): string | undefi
  * rebuilt record and left untouched — we only recover touch recency that a
  * concurrent (possibly cross-process) writer recorded after our initial load.
  */
-function mergeNewerTouchFields(base: NamespaceRecord, fresh: NamespaceRecord): NamespaceRecord {
+export function mergeNewerTouchFields(base: NamespaceRecord, fresh: NamespaceRecord): NamespaceRecord {
   const merged: NamespaceRecord = { ...base };
   const lr = laterIso(base.lastReadAt, fresh.lastReadAt);
   if (lr) merged.lastReadAt = lr;
@@ -538,122 +543,31 @@ export class NamespaceCatalog {
 
   // ── Public enumeration API ──────────────────────────────────────────────
 
-  /**
-   * Sanitize a record at the enumeration boundary (round 5, cursor Medium + codex
-   * P2; round 6 — NDXHe). Reads return whatever is in `namespaces.jsonl` after
-   * schema checks only, so a tampered or pre-fix row could surface unsafe data to
-   * maintenance/QMD until a rewrite occurs. Two distinct defenses:
-   *
-   *  1. UNSAFE NAMESPACE NAME (NGZqr, codex P2): an unsafe non-default namespace
-   *     (e.g. `../evil`, a name with separators, or >64 chars) is REJECTED outright
-   *     — return `null` so the caller drops it. The disk SCAN and the hot touch
-   *     path both reject such names with the SAME default-exempt `isSafeRouteNamespace`
-   *     gate, so the read boundary MUST agree, or `listNamespaces()`/`getNamespaceRecord()`
-   *     would expose a namespace those paths reject (note `isStorageDirForNamespace`
-   *     can still build a tokenized root even for `../evil`, so storageDir sanitation
-   *     alone does not catch it). The default namespace is exempt (it may be a
-   *     non-route literal), matching every other validation site.
-   *
-   *  2. UNSAFE storageDir: for an otherwise-valid namespace, apply the SAME contract
-   *     as the write path — full containment (`isContainedStorageDir`: lexical +
-   *     symlink/realpath) AND namespace ownership (`isStorageDirForNamespace`). When
-   *     a record fails EITHER check we substitute the trusted resolved-and-safe root
-   *     for that namespace (rule 42: read and write stay symmetric).
-   */
-  private async sanitizeRecordForRead(record: NamespaceRecord): Promise<NamespaceRecord | null> {
-    // Defense 1: drop an unsafe non-default namespace name entirely. Compare
-    // against the NORMALIZED default identity — record keys are trimmed, so a raw
-    // whitespace-padded config default would never match the default row (NH-FH).
-    if (record.namespace !== this.defaultNamespaceIdentity && !isSafeRouteNamespace(record.namespace)) {
-      return null;
-    }
-    // Defense 2: keep the record but substitute a safe storageDir when needed.
-    if (
-      (await this.isContainedStorageDir(record.storageDir)) &&
-      (await this.isStorageDirForNamespace(record.namespace, record.storageDir))
-    ) {
-      return record;
-    }
-    const safe = await this.resolveSafeStorageDir(record.namespace);
-    return { ...record, storageDir: safe };
+  private catalogReadBoundaryPort(): CatalogReadBoundaryPort {
+    return {
+      defaultNamespaceIdentity: this.defaultNamespaceIdentity,
+      memoryDir: this.memoryDir,
+      isContainedStorageDir: (candidate) => this.isContainedStorageDir(candidate),
+      isStorageDirForNamespace: (namespace, candidate) => this.isStorageDirForNamespace(namespace, candidate),
+      resolveSafeStorageDir: (namespace) => this.resolveSafeStorageDir(namespace),
+    };
   }
 
-  private storageRootOwnershipRank(
-    record: NamespaceRecord,
-    resolvedStorageDir: string,
-    configured: Set<string>,
-  ): number {
-    if (resolvedStorageDir === path.resolve(this.memoryDir)) {
-      return record.namespace === this.defaultNamespaceIdentity ? 0 : 3;
-    }
-
-    const leaf = path.basename(resolvedStorageDir);
-    const tokenOwnsRoot = namespaceIdentityToken(record.namespace) === leaf;
-    if (tokenOwnsRoot && configured.has(record.namespace)) {
-      return 0;
-    }
-    if (record.namespace === leaf) return 1;
-    if (tokenOwnsRoot) return 2;
-    return 3;
-  }
-
-  private configuredNamespaceIdentities(): Set<string> {
-    return new Set(
-      [
-        this.config.defaultNamespace,
-        this.config.sharedNamespace,
-        ...this.config.namespacePolicies.map((p) => p.name),
-      ]
-        .map((n) => normalizeNamespaceIdentity(n))
-        .filter((n) => n.length > 0),
-    );
-  }
-
-  private preferStorageRootOwner(
-    current: NamespaceRecord,
-    candidate: NamespaceRecord,
-    resolvedStorageDir: string,
-    configured: Set<string>,
-  ): NamespaceRecord {
-    const currentRank = this.storageRootOwnershipRank(current, resolvedStorageDir, configured);
-    const candidateRank = this.storageRootOwnershipRank(candidate, resolvedStorageDir, configured);
-    if (candidateRank < currentRank) return candidate;
-    if (candidateRank > currentRank) return current;
-
-    const byName = candidate.namespace.localeCompare(current.namespace);
-    if (byName < 0) return candidate;
-    if (byName > 0) return current;
-    return candidate.identityToken.localeCompare(current.identityToken) < 0 ? candidate : current;
-  }
-
-  private dropDuplicateStorageRootAliases(records: NamespaceRecord[]): NamespaceRecord[] {
-    const byStorageDir = new Map<string, NamespaceRecord>();
-    const configured = this.configuredNamespaceIdentities();
-    for (const record of records) {
-      const resolvedStorageDir = path.resolve(record.storageDir);
-      const current = byStorageDir.get(resolvedStorageDir);
-      if (!current) {
-        byStorageDir.set(resolvedStorageDir, record);
-        continue;
-      }
-      const owner = this.preferStorageRootOwner(current, record, resolvedStorageDir, configured);
-      const alias = owner === current ? record : current;
-      byStorageDir.set(resolvedStorageDir, mergeNewerTouchFields(owner, alias));
-    }
-    return [...byStorageDir.values()];
-  }
   private loadSanitizedRecords(health?: CatalogReadHealth): Promise<NamespaceRecord[]> {
     return this.queueCritical(async () => {
       const records = await this.loadCompacted(false, health);
+      const port = this.catalogReadBoundaryPort();
       const sanitized = await Promise.all(
-        [...records.values()].map((r) => this.sanitizeRecordForRead(r)),
+        [...records.values()].map((r) => sanitizeRecordForRead(port, r)),
       );
       // Drop unsafe-namespace rows (sanitizer returned null) at the read boundary.
       // Then collapse duplicate root aliases so maintenance/QMD see exactly one
       // namespace owner for a physical storage root, matching rebuild ownership,
       // while preserving touch recency from every alias row.
-      return this.dropDuplicateStorageRootAliases(
+      return dropDuplicateStorageRootAliases(
+        port,
         sanitized.filter((r): r is NamespaceRecord => r !== null),
+        this.config,
       );
     });
   }
@@ -665,7 +579,13 @@ export class NamespaceCatalog {
     if (!this.enabled) return [];
     const health: CatalogReadHealth = {};
     let out = await this.loadSanitizedRecords(health);
-    if (health.incomplete !== undefined) options?.onIncomplete?.(health.incomplete);
+    if (health.incomplete !== undefined) {
+      options?.onIncomplete?.(health.incomplete);
+      // A permanently malformed row keeps every completion request owed until the catalog is
+      // rewritten, so repair it now: fold the readable rows and rewrite the log without the bad
+      // ones. Best-effort and fail-open like the size-triggered compaction.
+      void this.rewriteAfterIncompleteRead().catch(() => undefined);
+    }
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
     if (filter?.writtenSince) {
@@ -1420,6 +1340,28 @@ export class NamespaceCatalog {
         // against concurrent touches and cross-process rebuilds.
         await this.maybeAutoCompact();
         return true;
+      }),
+    );
+  }
+
+  /**
+   * Rewrite the catalog after a read skipped malformed rows (#3297). Same fold-and-rewrite as the
+   * size-triggered compaction — the readable rows survive, the malformed ones do not — so a stuck
+   * bad row stops keeping every completion request owed. Best-effort and fail-open (rule #40): a
+   * failed rewrite leaves the catalog unchanged and the next read reports and retries.
+   *
+   * Locking: the fold runs inside `queueCritical` (in-process serialization, like every other
+   * read), and the rewrite's load→rename window runs under the held catalog file lock, so it can
+   * never interleave with another process's touch append or rebuild. If another process already
+   * holds the lock, the rewrite is dropped (not queued): that process's own rewrite or rebuild is
+   * the likeliest repair, and the next incomplete read retries anyway.
+   */
+  private async rewriteAfterIncompleteRead(): Promise<void> {
+    await this.queueCritical(async () =>
+      this.withHeldCatalogLock(async (acquired) => {
+        if (!acquired) return;
+        const folded = await this.loadCompacted(true);
+        await this.rewriteUnchained([...folded.values()]);
       }),
     );
   }
