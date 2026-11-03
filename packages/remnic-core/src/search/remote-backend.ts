@@ -84,6 +84,10 @@ export class RemoteSearchBackend implements SearchBackend {
   }
 
   async update(_execution?: SearchExecutionOptions): Promise<void> {}
+  /** The remote service owns its own indexing, so there is no local re-index that could be left incomplete. */
+  async updateCompleted(_execution?: SearchExecutionOptions): Promise<boolean> {
+    return true;
+  }
   async updateCollection(_collection: string, _execution?: SearchExecutionOptions): Promise<void> {}
   async embed(): Promise<void> {}
   async embedCollection(_collection: string): Promise<void> {}

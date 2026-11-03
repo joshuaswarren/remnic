@@ -1923,8 +1923,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   onCatalogWrite?: () => void;
   /** Post-write embedding hook (#2019). Installed by the orchestrator; fire-and-forget. */
   onMemoryWrite?: (filePath: string) => void;
-  /** Request search maintenance after a completed entity replay. */
-  onEntityMigrationComplete?: () => void;
+  /** Request search maintenance after an entity replay. false = refused; a Promise settles true once a pass served it. The pending marker stays until then. */
+  onEntityMigrationComplete?: () => boolean | Promise<boolean> | void;
   private notifyMemoryWrite(filePath: string): void {
     try {
       this.onMemoryWrite?.(filePath);

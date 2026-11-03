@@ -596,6 +596,14 @@ async function updateBackendRecord(
       await record.backend.updateCollectionStrict(record.collection, execution);
       return;
     }
+    // Backends with no strict variant (Orama, LanceDB, Meilisearch, remote) have a fail-open
+    // update(): it resolves when it returned early or failed. Their updateCompleted() says
+    // whether the refresh ran, so strict callers get a failure instead of a fake success.
+    const completed = await record.backend.updateCompleted?.(execution);
+    if (completed !== undefined) {
+      if (!completed) throw new Error("search backend update did not complete");
+      return;
+    }
   }
   await record.backend.update(execution);
 }

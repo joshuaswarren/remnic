@@ -22,7 +22,7 @@
 import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { existsSync, type Dirent } from "node:fs";
-import { appendFile, lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import type { PluginConfig } from "../types.js";
@@ -57,11 +57,8 @@ import {
   maybeRebuildMemoryProjectionScheduled,
   terminateScheduledProjectionRebuilds,
 } from "./projection-rebuild-schedule.js";
-import {
-  drainPendingLifecycleLedgerIfAny,
-  pendingLifecycleLedgerDir,
-  type LifecyclePendingIo,
-} from "../storage/memory-lifecycle-ledger-access.js";
+import { drainPendingLifecycleAppendsForPath } from "./lifecycle-pending-fallback-drain.js";
+import { QmdMaintenanceCompletion } from "./qmd-maintenance-completion.js";
 import { STATE_FILE_MAX_DECRYPT_BYTES } from "../storage/secure-line-reader.js";
 import { createCompoundingWeeklyCron, type CompoundingWeeklySchedulerHandle } from "../compounding/weekly-scheduler.js";
 import { startLocationAutoSync, type LocationAutoSyncHandle } from "../location/scheduler.js";
@@ -70,7 +67,7 @@ import type { ActivitySyncRunSummary } from "../activity/runner.js";
 import { resolveHomeDir } from "../runtime/env.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
-import { assertPathInsideRoot, listContainedSpillFiles } from "../utils/path-containment.js";
+import { assertPathInsideRoot } from "../utils/path-containment.js";
 import {
   probeEncryptedRegularFileHeader,
   SECURE_STORE_ENVELOPE_OVERHEAD_BYTES,
@@ -137,6 +134,9 @@ export class MaintenanceScheduler {
   private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
+  private readonly qmdCompletion = new QmdMaintenanceCompletion();
+  /** Namespaces that ran in passes of the request still waiting for full coverage. */
+  private readonly qmdCoveredNamespaces = new Set<string>();
   private lastQmdEmbedAtMs = 0;
   private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
 
@@ -476,13 +476,13 @@ export class MaintenanceScheduler {
   // QMD maintenance scheduling (debounced + singleflight)
   // ───────────────────────────────────────────────────────────────────────
 
-  /** Internal: queue a debounced QMD maintenance pass. */
-  private requestQmdMaintenance(): void {
-    if (!this.deps.getQmd().isAvailable()) return;
-    if (!resolveQmdCapabilities(this.deps.config).qmdMaintenance) return;
+  /** Internal: queue a debounced QMD maintenance pass; false when nothing could be armed. */
+  private requestQmdMaintenance(): boolean {
+    if (!this.deps.getQmd().isAvailable()) return false;
+    if (!resolveQmdCapabilities(this.deps.config).qmdMaintenance) return false;
 
     this.qmdMaintenancePending = true;
-    if (this.qmdMaintenanceTimer) return;
+    if (this.qmdMaintenanceTimer) return true;
 
     this.qmdMaintenanceTimer = setTimeout(() => {
       this.qmdMaintenanceTimer = null;
@@ -490,6 +490,18 @@ export class MaintenanceScheduler {
         log.debug(`background qmd maintenance failed: ${err}`),
       );
     }, this.deps.config.qmdMaintenanceDebounceMs);
+    return true;
+  }
+
+  /**
+   * Like a maintenance request, but resolves true only once a pass that started
+   * after it completed successfully. False when nothing could be armed (QMD
+   * unavailable or maintenance off), the pass failed, or dispose() abandoned it,
+   * so a caller that must not lose the re-index keeps owing it.
+   */
+  requestQmdMaintenanceCompletion(): Promise<boolean> {
+    if (this.disposed || !this.requestQmdMaintenance()) return Promise.resolve(false);
+    return this.qmdCompletion.wait();
   }
 
   /**
@@ -530,6 +542,10 @@ export class MaintenanceScheduler {
     if (!this.qmdMaintenancePending) return;
     this.qmdMaintenanceInFlight = true;
     this.qmdMaintenancePending = false;
+    // Waiters claimed here are served by THIS pass; later requests wait for the next.
+    const settle = this.qmdCompletion.claim();
+    let served = false;
+    let deferred = false;
 
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
@@ -555,7 +571,7 @@ export class MaintenanceScheduler {
           }
           this.lastQmdEmbedAtMs = now;
         };
-        await runNamespaceMaintenanceBatchPlan(
+        const summary = await runNamespaceMaintenanceBatchPlan(
           this.deps.config,
           plan,
           async (candidates) => {
@@ -605,8 +621,46 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
+        // Namespaces skipped for a TRANSIENT reason (budget_exhausted, lock_held) were not covered
+        // by this pass. They are covered once they ran in this or an earlier pass of the same
+        // request, so a deployment with more namespaces than the cycle budget still converges.
+        // Permanent skip reasons describe namespaces this deployment never re-indexes.
+        const covered = this.qmdCoveredNamespaces;
+        const before = covered.size;
+        for (const status of summary.statuses) {
+          if (status.state === "ran") covered.add(status.namespace);
+        }
+        const uncovered = summary.statuses.some(
+          (status) =>
+            status.state === "skipped" &&
+            (status.reason === "budget_exhausted" || status.reason === "lock_held") &&
+            !covered.has(status.namespace),
+        );
+        served = summary.ran > 0 && summary.failed === 0 && !uncovered;
+        // Partial progress keeps the waiters for another pass; no progress (or a failure) ends the
+        // request unserved so a stuck namespace cannot re-arm passes forever.
+        deferred = !served && summary.failed === 0 && covered.size > before && !this.disposed;
       } else {
-        await this.deps.getQmd().update();
+        const qmd = this.deps.getQmd();
+        // Plain update() is fail-open on every backend: it resolves when the min-interval gate,
+        // failure backoff or an early exit suppressed it, and when it errored. Only the variants
+        // that report whether an update ran count (updateCompleted, else QMD's updateStrict).
+        if (qmd.updateCompleted) {
+          try {
+            served = await qmd.updateCompleted();
+          } catch (err) {
+            log.debug(`qmd maintenance update did not run: ${err}`);
+          }
+        } else if (qmd.updateStrict) {
+          try {
+            await qmd.updateStrict();
+            served = true;
+          } catch (err) {
+            log.debug(`qmd maintenance update did not run: ${err}`);
+          }
+        } else {
+          await qmd.update();
+        }
         const now = Date.now();
         if (
           resolveQmdCapabilities(this.deps.config).qmdAutoEmbed &&
@@ -624,7 +678,10 @@ export class MaintenanceScheduler {
       // backoff) does not advance lastUpdateRanAtMs, so it leaves caches warm
       // (#1904, Codex/Cursor).
     } finally {
+      settle(served, deferred);
+      if (!deferred) this.qmdCoveredNamespaces.clear();
       this.qmdMaintenanceInFlight = false;
+      if (deferred) this.qmdMaintenancePending = true;
       if (this.qmdMaintenancePending) {
         this.requestQmdMaintenance();
       }
@@ -772,7 +829,7 @@ export class MaintenanceScheduler {
     if (target.storage) {
       await this.drainPendingLifecycleAppends(target.storage);
     } else {
-      await this.drainPendingLifecycleAppendsForPath(target.memoryDir);
+      await drainPendingLifecycleAppendsForPath(target.memoryDir);
     }
   }
 
@@ -784,86 +841,6 @@ export class MaintenanceScheduler {
       await storage.drainPendingMemoryLifecycleEvents();
     } catch (err) {
       log.debug(`lifecycle pending drain failed (non-fatal): ${err}`);
-    }
-  }
-
-  /**
-   * Drain a filesystem-fallback target's pending lifecycle-append spill when no
-   * secure StorageManager is available (catalog-disabled namespace; issue
-   * #2033). Uses the safe path-scoped PLAINTEXT context this fallback already
-   * operates in: a keyless drain can only fold plaintext spills into a plaintext
-   * ledger, so it refuses when the ledger or ANY spill is encrypted at rest,
-   * leaving those pending for a keyed (catalog-path) drain — exactly mirroring
-   * the fallback compaction's encrypted-ledger deferral. Non-fatal; a fast
-   * no-op when nothing is pending. The shared spill lister enforces the symlink/
-   * containment guard on every spill file it reads or deletes.
-   */
-  private async drainPendingLifecycleAppendsForPath(memoryDir: string): Promise<void> {
-    const ledgerPath = path.join(memoryDir, "state", "memory-lifecycle-ledger.jsonl");
-    const spillDir = pendingLifecycleLedgerDir(ledgerPath);
-    // Enumerate spills through the SAME guarded lister the actual drain uses
-    // (listContainedSpillFiles): it rejects a symlinked/non-directory spill dir
-    // and skips any symlink/FIFO/device/escaping entry, returning only regular
-    // files contained in the dir. Never raw-readdir + open() an untrusted name:
-    // opening a FIFO would block until a writer appears and a symlink would
-    // redirect the probe outside the dir (#2033). Enumerate BOTH live `*.jsonl`
-    // spills and crash-orphaned `*.jsonl.claimed` files: a drain that died
-    // between claiming a spill (rename to `.claimed`) and committing it leaves
-    // the ONLY copy of those rows as a claimed orphan. Gating solely on live
-    // spills would early-return here whenever the pending dir holds nothing but
-    // orphans, stranding those rows forever; proceeding lets
-    // drainPendingLifecycleLedgerIfAny -> recoverOrphanedClaims restore and
-    // re-commit them under the ledger lock (#2033).
-    let spillFiles: string[];
-    let claimedOrphans: string[];
-    try {
-      spillFiles = await listContainedSpillFiles(spillDir);
-      claimedOrphans = await listContainedSpillFiles(spillDir, ".jsonl.claimed");
-    } catch (err) {
-      log.debug(`fallback lifecycle pending scan failed (non-fatal) for ${memoryDir}: ${err}`);
-      return;
-    }
-    if (spillFiles.length === 0 && claimedOrphans.length === 0) return;
-    // The pending encryption state is authoritative only UNDER the ledger lock:
-    // drainPendingLifecycleLedgerIfAny waits for the lock and re-enumerates the
-    // pending dir, so a secure-store writer that spills an encrypted file — or a
-    // keyed compaction that rewrites the ledger encrypted — while this fallback
-    // waits would defeat any pre-lock probe (#2033). Probe each file at the
-    // moment of use inside the held lock instead: readSecure refuses an
-    // encrypted spill (the fold reads each spill lazily and propagates the throw
-    // BEFORE claiming that spill, leaving it intact) and the append refuses a
-    // ledger that became encrypted (the fold rolls the claims back). Either way
-    // the plaintext IO
-    // never reads or writes ciphertext; the keyed catalog-path drain handles the
-    // deferred rows.
-    const io: LifecyclePendingIo = {
-      writeSecure: async (filePath, payload) => {
-        await mkdir(path.dirname(filePath), { recursive: true });
-        await writeFile(filePath, payload, "utf-8");
-      },
-      readSecure: async (filePath) => {
-        if (await probeEncryptedRegularFileHeader(filePath)) {
-          throw new Error(`fallback lifecycle drain deferred: encrypted spill at ${filePath}`);
-        }
-        return readFile(filePath, "utf-8");
-      },
-    };
-    try {
-      await drainPendingLifecycleLedgerIfAny(
-        ledgerPath,
-        io,
-        async (payload) => {
-          if (await probeEncryptedRegularFileHeader(ledgerPath)) {
-            throw new Error(`fallback lifecycle drain deferred: ledger became encrypted at ${ledgerPath}`);
-          }
-          await appendFile(ledgerPath, payload, "utf-8");
-        },
-        async () => {
-          await mkdir(path.dirname(ledgerPath), { recursive: true });
-        },
-      );
-    } catch (err) {
-      log.debug(`fallback lifecycle pending drain failed (non-fatal) for ${memoryDir}: ${err}`);
     }
   }
 
@@ -1186,6 +1163,7 @@ export class MaintenanceScheduler {
       this.qmdMaintenanceTimer = null;
     }
     this.qmdMaintenancePending = false;
+    this.qmdCompletion.abandon();
     await activityDrain;
     await locationDrain; await weeklyDrain;
     // Belt-and-suspenders: clear anything a late tick armed before the latch.
