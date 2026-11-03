@@ -2982,3 +2982,175 @@ test("maintenance tool request invokes the scheduled projection rebuild wiring (
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// requestQmdMaintenanceCompletion — #3287 review: a caller that must know the
+// re-index actually ran (the entity-migration pending marker) cannot rely on
+// requestQmdMaintenanceForTool, which only arms a debounced timer.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Non-namespace scheduler over a scriptable QMD backend. */
+function completionScheduler(
+  backend: { available?: boolean; update?: () => Promise<void> },
+  overrides: Record<string, boolean> = {},
+): MaintenanceScheduler {
+  // Object.create yields an untyped value, so no assertion is needed: the scheduler reads only these members.
+  const qmd: SearchBackend = Object.assign(Object.create(null), {
+    isAvailable: () => backend.available ?? true,
+    update: backend.update ?? (async () => undefined),
+    async embed() {},
+  });
+  const router: NamespaceSearchRouter = Object.create(null);
+  const catalog: NamespaceCatalog = Object.assign(Object.create(null), { enabled: false });
+  return new MaintenanceScheduler({
+    config: fixtureConfig({ namespacesEnabled: false, qmdAutoEmbedEnabled: false, ...overrides }),
+    getQmd: () => qmd,
+    namespaceSearchRouter: router,
+    namespaceCatalog: catalog,
+  });
+}
+
+test("requestQmdMaintenanceCompletion resolves true once the pass that covers it has run", async () => {
+  const scheduler = completionScheduler({});
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    assert.equal(scheduler.isQmdMaintenancePending(), true, "the request arms the debounced pass");
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, true);
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion serves every request that was waiting when the pass started", async () => {
+  const scheduler = completionScheduler({});
+  try {
+    const waiting = [scheduler.requestQmdMaintenanceCompletion(), scheduler.requestQmdMaintenanceCompletion()];
+    await scheduler.runQmdMaintenance();
+    assert.deepEqual(await Promise.all(waiting), [true, true]);
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion resolves false when the covering pass fails", async () => {
+  const scheduler = completionScheduler({
+    update: async () => {
+      throw new Error("qmd update failed");
+    },
+  });
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    await assert.rejects(scheduler.runQmdMaintenance(), /qmd update failed/);
+    assert.equal(await served, false);
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion resolves false when dispose() clears the armed timer", async () => {
+  const scheduler = completionScheduler({});
+  const served = scheduler.requestQmdMaintenanceCompletion();
+  assert.equal(scheduler.isQmdMaintenancePending(), true);
+  await scheduler.dispose();
+  assert.equal(await served, false, "a destroy inside the debounce window must leave the re-index owed");
+});
+
+test("requestQmdMaintenanceCompletion resolves false without arming anything when QMD is unavailable or disposed", async () => {
+  const unavailable = completionScheduler({ available: false });
+  try {
+    assert.equal(await unavailable.requestQmdMaintenanceCompletion(), false);
+    assert.equal(unavailable.isQmdMaintenancePending(), false, "no timer may be armed for a refused request");
+  } finally {
+    await unavailable.dispose();
+  }
+  const off = completionScheduler({}, { qmdMaintenanceEnabled: false });
+  try {
+    assert.equal(await off.requestQmdMaintenanceCompletion(), false, "maintenance switched off: nothing will ever serve it");
+    assert.equal(off.isQmdMaintenancePending(), false);
+  } finally {
+    await off.dispose();
+  }
+  const disposed = completionScheduler({});
+  await disposed.dispose();
+  assert.equal(await disposed.requestQmdMaintenanceCompletion(), false);
+  assert.equal(disposed.isQmdMaintenancePending(), false);
+});
+
+test("requestQmdMaintenanceCompletion resolves false when the backend became unavailable before the armed pass ran", async () => {
+  const backend = { available: true };
+  const scheduler = completionScheduler(backend);
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    // The orchestrator swaps to a no-op backend when the collection goes missing;
+    // that pass resolves without indexing anything, so it must not count as served.
+    backend.available = false;
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, false);
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion is served by the next pass when requested during an in-flight one", async () => {
+  const release = Promise.withResolvers<void>();
+  let updates = 0;
+  const scheduler = completionScheduler({
+    update: async () => {
+      updates += 1;
+      if (updates === 1) await release.promise;
+    },
+  });
+  try {
+    scheduler.requestQmdMaintenanceForTool("first");
+    const firstPass = scheduler.runQmdMaintenance();
+    // Requested while pass 1 is mid-flight: pass 1 started before this request's
+    // rewrite landed, so only the NEXT pass may serve it.
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    release.resolve();
+    await firstPass;
+    assert.equal(updates, 1);
+    await scheduler.runQmdMaintenance();
+    assert.equal(updates, 2, "the follow-up pass ran");
+    assert.equal(await served, true);
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion over namespaces: true only when a namespace ran and none failed", async () => {
+  for (const outcome of [{ eligible: true, expected: true }, { eligible: false, expected: false }]) {
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-ns-"));
+    const config = fixtureConfig({
+      memoryDir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      maintenanceNamespaceLockStaleMs: 100,
+      qmdAutoEmbedEnabled: false,
+    });
+    const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+      enabled: true,
+      async listNamespaces() {
+        return [{ namespace: "default" }];
+      },
+      async markMaintenance() {},
+    });
+    const router: NamespaceSearchRouter = Object.assign(Object.create(null), {
+      async updateNamespacesDetailed(ns: string[]): Promise<NamespaceUpdateResult> {
+        return outcome.eligible ? { backendCount: ns.length, eligibleNamespaces: ns } : { backendCount: 0, eligibleNamespaces: [] };
+      },
+      async embedNamespaces(): Promise<void> {},
+    });
+    const scheduler = buildScheduler({ config, catalog, router });
+    try {
+      const served = scheduler.requestQmdMaintenanceCompletion();
+      await scheduler.runQmdMaintenance();
+      assert.equal(await served, outcome.expected);
+    } finally {
+      await scheduler.dispose();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  }
+});

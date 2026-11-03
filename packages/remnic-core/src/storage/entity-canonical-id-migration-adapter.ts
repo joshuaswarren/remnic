@@ -11,8 +11,9 @@ import {
   rewriteProjectedMemoryEntityReference,
 } from "../memory-projection-mutations.js";
 import {
-  clearMaintenancePending,
-  maintenancePendingExists,
+  listMaintenancePending,
+  settleMaintenancePending,
+  trackMaintenanceSettlement,
   writeMaintenancePending,
 } from "./entity-migration-maintenance-pending.js";
 
@@ -37,11 +38,12 @@ export interface EntityCanonicalIdMigrationHost {
   bumpMemoryStatusVersion(): void;
   getEntityMutationVersion(): number;
   /**
-   * Ask search maintenance to re-index. Returns false when the request was NOT
-   * accepted (e.g. the host is shutting down): the pending marker then stays so
-   * the next start retries. Any other return value counts as accepted.
+   * Ask search maintenance to re-index. `false` means the request was refused
+   * (e.g. the host is shutting down) and a promise settling to `false` means no
+   * pass served it: the pending markers stay so the next start retries. A
+   * promise is awaited off the startup path; `true` or nothing clears them.
    */
-  onEntityMigrationComplete?: () => boolean | void;
+  onEntityMigrationComplete?: () => boolean | Promise<boolean> | void;
 }
 
 export async function runLegacyEntityCanonicalIdMigration(
@@ -56,11 +58,13 @@ export async function runLegacyEntityCanonicalIdMigration(
   // references; a no-op replay must not ask search maintenance to run unless a
   // previous run died owing it (issue #3286 pending marker).
   let rewroteReferences = false;
-  const owedFromEarlierRun = await maintenancePendingExists(host.stateDir);
+  // Markers an earlier run left behind: this run owes (and may clear) exactly
+  // these plus its own, never a marker a concurrent run arms meanwhile.
+  const owed = await listMaintenancePending(host.stateDir);
   // Arm the marker before this run rewrites anything, so a crash between the
   // rewrite and the hook leaves it behind. Idempotent per run.
-  let armed: Promise<void> | undefined;
-  const armPending = (): Promise<void> => (armed ??= writeMaintenancePending(host.stateDir));
+  let armed: Promise<string> | undefined;
+  const armPending = (): Promise<string> => (armed ??= writeMaintenancePending(host.stateDir));
   const completionFingerprint = await migrateLegacyEntityCanonicalIds({
     stateDir: host.stateDir,
     entitiesDir: host.entitiesDir,
@@ -99,11 +103,17 @@ export async function runLegacyEntityCanonicalIdMigration(
     },
     readMigrationFingerprint,
   } satisfies EntityCanonicalIdMigrationDependencies);
-  if (completionFingerprint !== undefined && (rewroteReferences || owedFromEarlierRun) && host.onEntityMigrationComplete) {
+  if (completionFingerprint !== undefined && (rewroteReferences || owed.length > 0) && host.onEntityMigrationComplete) {
+    // No hook wired (e.g. a CLI-only process) skips this block, keeping the markers too.
+    const held = armed ? [...owed, await armed] : owed;
     try {
-      // A refused request keeps the marker; the clear happens only on acceptance.
-      // No hook wired (e.g. a CLI-only process) skips this block, keeping it too.
-      if (host.onEntityMigrationComplete() !== false) await clearMaintenancePending(host.stateDir);
+      const outcome = host.onEntityMigrationComplete();
+      const settling = settleMaintenancePending(host.stateDir, held, outcome).catch(() => {
+        log.warn("entity migration: search maintenance scheduling failed");
+      });
+      // An async hook is served after a debounce: never hold startup for it.
+      if (outcome instanceof Promise) trackMaintenanceSettlement(host.stateDir, settling);
+      else await settling;
     } catch {
       log.warn("entity migration: search maintenance scheduling failed");
     }

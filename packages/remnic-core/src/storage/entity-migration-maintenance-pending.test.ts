@@ -1,21 +1,22 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import { StorageManager, normalizeEntityName } from "../storage.js";
-import {
-  clearMaintenancePending,
-  maintenancePendingExists,
-  writeMaintenancePending,
-} from "./entity-migration-maintenance-pending.js";
+import { drainMaintenanceSettlements, writeMaintenancePending } from "./entity-migration-maintenance-pending.js";
 
 // Issue #3286: a crash between the reference rewrite and the completion hook
 // must not leave the QMD index stale. A "maintenance pending" marker beside the
 // migration journal makes the next startup's no-op replay fire the hook once.
-const MAINTENANCE_PENDING_FILE = path.join("state", "entity-canonical-id-maintenance.pending");
+const MAINTENANCE_PENDING_PREFIX = "entity-canonical-id-maintenance.pending";
+
+/** Pending-marker files currently on disk (temp files excluded). */
+async function pendingMarkers(dir: string): Promise<string[]> {
+  return (await readdir(path.join(dir, "state")))
+    .filter((name) => name.startsWith(MAINTENANCE_PENDING_PREFIX) && !name.endsWith(".tmp"));
+}
 
 interface SeededCorpus {
   dir: string;
@@ -98,7 +99,7 @@ test("a crash after the rewrite but before the hook fires the hook once on the n
     await second.ensureDirectories();
     await second.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 2, "the no-op replay must fire the hook once via the pending marker");
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), false, "the marker must clear after the hook");
+    assert.equal((await pendingMarkers(dir)).length, 0, "the marker must clear after the hook");
 
     // Pass 3: ordinary no-op startup stays quiet.
     const third = new StorageManager(dir);
@@ -121,7 +122,7 @@ test("a rewriting pass with a healthy hook leaves no pending marker", async () =
     await storage.ensureDirectories();
     await storage.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 1);
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), false);
+    assert.equal((await pendingMarkers(dir)).length, 0);
     const journal = JSON.parse(
       await readFile(path.join(dir, "state", "entity-canonical-id-migration-v1.json"), "utf8"),
     );
@@ -141,14 +142,14 @@ test("a process with no hook wired keeps the marker so a later wired start fires
     const bare = new StorageManager(dir);
     await bare.ensureDirectories();
     await bare.drainEntityCanonicalIdMigration();
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), true, "no hook: the owed re-index must persist");
+    assert.equal((await pendingMarkers(dir)).length, 1, "no hook: the owed re-index must persist");
 
     const wired = new StorageManager(dir);
     countHook(wired, hook);
     await wired.ensureDirectories();
     await wired.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 1);
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), false);
+    assert.equal((await pendingMarkers(dir)).length, 0);
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(dir, { recursive: true, force: true });
@@ -167,31 +168,73 @@ test("a hook that refuses the request (shutdown) keeps the marker for the next s
     await stopping.ensureDirectories();
     await stopping.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 1);
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), true, "a refused request must stay owed");
+    assert.equal((await pendingMarkers(dir)).length, 1, "a refused request must stay owed");
 
     const next = new StorageManager(dir);
     countHook(next, hook);
     await next.ensureDirectories();
     await next.drainEntityCanonicalIdMigration();
     assert.equal(hook.calls, 2);
-    assert.equal(existsSync(path.join(dir, MAINTENANCE_PENDING_FILE)), false);
+    assert.equal((await pendingMarkers(dir)).length, 0);
   } finally {
     StorageManager.clearAllStaticCaches();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-test("the marker helpers tolerate an absent marker and round-trip a present one", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-3286-marker-unit-"));
+test("an async hook keeps the marker until its maintenance pass is served, and keeps it when that fails", async () => {
+  const { dir } = await seedLegacyCorpus();
   try {
-    assert.equal(await maintenancePendingExists(dir), false);
-    // A pass that rewrote nothing never armed the marker, yet its hook still clears.
-    await clearMaintenancePending(dir);
-    await writeMaintenancePending(dir);
-    assert.equal(await maintenancePendingExists(dir), true);
-    await clearMaintenancePending(dir);
-    assert.equal(await maintenancePendingExists(dir), false);
+    // The real hook only ARMS a debounced timer; its promise settles when the
+    // pass has run. Clearing at request time would lose the re-index to a crash
+    // or destroy() inside the debounce window (review finding on #3287).
+    const served = Promise.withResolvers<boolean>();
+    const first = new StorageManager(dir);
+    first.onEntityMigrationComplete = () => served.promise;
+    await first.ensureDirectories();
+    await first.drainEntityCanonicalIdMigration();
+    assert.equal((await pendingMarkers(dir)).length, 1, "the marker must outlive the unserved request");
+
+    served.resolve(false);
+    await drainMaintenanceSettlements(path.join(dir, "state"));
+    assert.equal((await pendingMarkers(dir)).length, 1, "a pass that did not serve the request keeps the marker");
+
+    // A later start still owes it; this time the pass is served.
+    const retry = Promise.withResolvers<boolean>();
+    const second = new StorageManager(dir);
+    second.onEntityMigrationComplete = () => retry.promise;
+    await second.ensureDirectories();
+    await second.drainEntityCanonicalIdMigration();
+    assert.equal((await pendingMarkers(dir)).length, 1);
+    retry.resolve(true);
+    await drainMaintenanceSettlements(path.join(dir, "state"));
+    assert.equal((await pendingMarkers(dir)).length, 0, "a served pass clears the marker");
   } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("clearing one run's marker never deletes a marker a concurrent run armed meanwhile", async () => {
+  const { dir } = await seedLegacyCorpus();
+  try {
+    const stateDir = path.join(dir, "state");
+    const first = new StorageManager(dir);
+    // Another process takes the migration lock after this run released it and
+    // arms its own marker before this run's hook returns and its clear starts.
+    first.onEntityMigrationComplete = () => {
+      void writeMaintenancePending(stateDir);
+    };
+    await first.ensureDirectories();
+    await first.drainEntityCanonicalIdMigration();
+    await drainMaintenanceSettlements(stateDir);
+    assert.equal(
+      (await pendingMarkers(dir)).length,
+      1,
+      "the concurrent run's marker must survive this run's clear (it is the only owed re-index if that run crashes)",
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
     await rm(dir, { recursive: true, force: true });
   }
 });
