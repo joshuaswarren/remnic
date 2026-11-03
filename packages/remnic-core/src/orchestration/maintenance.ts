@@ -636,10 +636,13 @@ export class MaintenanceScheduler {
             (status.reason === "budget_exhausted" || status.reason === "lock_held") &&
             !covered.has(status.namespace),
         );
-        served = summary.ran > 0 && summary.failed === 0 && !uncovered;
-        // Partial progress keeps the waiters for another pass; no progress (or a failure) ends the
-        // request unserved so a stuck namespace cannot re-arm passes forever.
-        deferred = !served && summary.failed === 0 && covered.size > before && !this.disposed;
+        // The batch runner drops namespace "*" skips from the statuses, so a failed catalog read
+        // is only visible on the plan: cataloged namespaces were never discovered this pass.
+        const catalogReadFailed = plan.skipped.some((skip) => skip.reason === "catalog_read_failed");
+        served = summary.ran > 0 && summary.failed === 0 && !uncovered && !catalogReadFailed;
+        // Partial progress keeps the waiters for another pass; no progress, a failure or a failed
+        // catalog read ends the request unserved so the next start asks again.
+        deferred = !served && summary.failed === 0 && !catalogReadFailed && covered.size > before && !this.disposed;
       } else {
         const qmd = this.deps.getQmd();
         // Plain update() is fail-open on every backend: it resolves when the min-interval gate,
