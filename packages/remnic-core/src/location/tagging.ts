@@ -21,7 +21,7 @@
 
 import type { StorageManager } from "../index.js";
 import { log } from "../logger.js";
-import type { MemoryFile } from "../types.js";
+import type { BriefingResult, MemoryFile } from "../types.js";
 import type { WearableConversation } from "../wearables/types.js";
 import { localDayKey, placeDurations } from "./intervals.js";
 import {
@@ -294,17 +294,26 @@ export async function briefingLocationSection(
   );
 }
 
-export async function applyBriefingLocationContext<
-  T extends { markdown: string; json: Record<string, unknown> },
->(
-  result: T,
+/**
+ * The opt-in location section for a briefing, or null when the request, the
+ * config or the data says there is none. Read it BEFORE building the briefing:
+ * the build drains correction notifications at most once, so a failure or
+ * deadline during this read must not come after the drain.
+ */
+export async function readBriefingLocationSection(
   includeLocation: boolean | undefined,
   memoryDir: string,
   windowStartUtc: string,
   location: LocationConfig,
-): Promise<T> {
-  if (includeLocation !== true || !locationTaggingEnabled(location)) return result;
-  const section = await briefingLocationSection(memoryDir, windowStartUtc, location);
+): Promise<string | null> {
+  if (includeLocation !== true || !locationTaggingEnabled(location)) return null;
+  return briefingLocationSection(memoryDir, windowStartUtc, location);
+}
+
+/** Append a section read by {@link readBriefingLocationSection}; null keeps the result byte-identical. */
+export function withBriefingLocationSection<
+  T extends Pick<BriefingResult, "markdown" | "json">,
+>(result: T, section: string | null): T {
   if (!section) return result;
   return {
     ...result,

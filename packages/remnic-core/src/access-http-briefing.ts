@@ -1,4 +1,5 @@
 import { getOperation } from "./access-boundary.js";
+import { BriefingTimeoutError } from "./briefing-deadline.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 
 type JsonResponder = (status: number, payload: unknown) => void;
@@ -29,11 +30,17 @@ export async function respondBriefingHttp(options: BriefingHttpOptions): Promise
   if (!op) {
     throw new EngramAccessInputError("access-boundary: operation not registered: briefing");
   }
-  // SAFETY: the built-in briefing operation returns { result }; this adapter passes it through unchanged.
-  const output = (await op.run(options.gatedBody, {
-    service: options.service,
-    authenticatedPrincipal: options.principal,
-    abortSignal: options.abortSignal,
-  })) as { result: unknown };
-  options.respondJson(200, output.result);
+  try {
+    // SAFETY: the built-in briefing operation returns { result }; this adapter passes it through unchanged.
+    const output = (await op.run(options.gatedBody, {
+      service: options.service,
+      authenticatedPrincipal: options.principal,
+      abortSignal: options.abortSignal,
+    })) as { result: unknown };
+    options.respondJson(200, output.result);
+  } catch (err) {
+    // An exhausted budget is a gateway timeout the client can tell from a crash.
+    if (!(err instanceof BriefingTimeoutError)) throw err;
+    options.respondJson(504, { error: err.message, code: "briefing_timeout" });
+  }
 }
