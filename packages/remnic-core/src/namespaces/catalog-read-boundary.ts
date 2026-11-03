@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { PluginConfig } from "../types.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
-import { mergeNewerTouchFields } from "./catalog.js";
+import { mergeNewerTouchFields } from "./catalog-record.js";
 import type { NamespaceRecord } from "./catalog.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 

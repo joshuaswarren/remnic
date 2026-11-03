@@ -25,6 +25,11 @@ import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./stor
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { isNotFoundError } from "../utils/errno.js";
 import {
+  repairMalformedCatalog,
+  type CatalogRepairPort,
+  type CatalogRepairState,
+} from "./catalog-malformed-repair.js";
+import {
   dropDuplicateStorageRootAliases,
   sanitizeRecordForRead,
   type CatalogReadBoundaryPort,
@@ -94,7 +99,7 @@ export interface NamespaceCatalogFilter {
 }
 
 /** Out-parameter a catalog read fills in when it could not see the whole catalog. */
-interface CatalogReadHealth {
+export interface CatalogReadHealth {
   incomplete?: string;
   /**
    * Set ONLY when the file was read to the end and malformed rows were skipped. An unreadable
@@ -173,14 +178,8 @@ const REBUILD_LOCK_FILE = "namespaces.rebuild.lock";
 const REBUILD_LOCK_STALE_MS = 30_000;
 // Bounded acquisition: poll briefly, then proceed best-effort rather than block
 // a CLI rebuild forever behind a busy gateway.
-const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
+export const REBUILD_LOCK_MAX_WAIT_MS = 5_000;
 const REBUILD_LOCK_POLL_MS = 50;
-// #3298 review: after a dropped repair attempt, wait this long before another malformed
-// read may schedule one. Short by design: the single-flight guard already bounds repairs
-// to one at a time, the 5 s lock wait is itself the rate limiter under contention, and a
-// longer window would delay the legitimate retry after contention clears (a warm-cache
-// read retries the repair).
-const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
 // Heartbeat: while a rebuild holds the lock it refreshes the lock file's mtime
 // on this interval so a long (>STALE_MS) scan is NOT mistaken for a crashed
 // holder and broken out from under it (round 5, cursor/codex Medium/P2). Must be
@@ -519,14 +518,17 @@ export class NamespaceCatalog {
   private readonly compactBytesLimit: number;
   private readonly readCoalesceMs: number;
   private readonly writeCoalesceMs: number;
-  // #3298 review: single-flight + backoff state for the malformed-catalog repair.
-  private malformedRepairInFlight: Promise<void> | undefined;
-  private malformedRepairNextAttemptAt = 0;
-  private malformedRepairAttemptCount = 0;
+  // #3298 review: single-flight + backoff state for the malformed-catalog repair, with the
+  // repair machinery itself in catalog-malformed-repair.ts (file-size ratchet).
+  private readonly malformedRepairState: CatalogRepairState = {
+    inFlight: undefined,
+    nextAttemptAt: 0,
+    attemptCount: 0,
+  };
 
   /** Test-only observability: how many repair attempts actually entered the guard. */
   get malformedRepairAttemptsForTest(): number {
-    return this.malformedRepairAttemptCount;
+    return this.malformedRepairState.attemptCount;
   }
 
   // Size after the most recent auto-compaction (0 = none yet). Hysteresis for
@@ -615,7 +617,7 @@ export class NamespaceCatalog {
       // rewritten, so repair it now: fold the readable rows and rewrite the log without the bad
       // ones. Best-effort and fail-open like the size-triggered compaction. Only a read that
       // reached the end of the file may trigger it (see CatalogReadHealth.malformed).
-      void this.repairMalformedCatalog().catch(() => undefined);
+      void repairMalformedCatalog(this.malformedRepairPort(), this.malformedRepairState).catch(() => undefined);
     }
     if (filter?.kind) out = out.filter((r) => r.kind === filter.kind);
     if (filter?.discoveredBy) out = out.filter((r) => r.discoveredBy === filter.discoveredBy);
@@ -1375,69 +1377,17 @@ export class NamespaceCatalog {
     );
   }
 
-  /**
-   * Rewrite the catalog after a read skipped malformed rows (#3297). Same fold-and-rewrite as the
-   * size-triggered compaction — the readable rows survive, the malformed ones do not — so a stuck
-   * bad row stops keeping every completion request owed. Best-effort and fail-open (rule #40): a
-   * failed rewrite leaves the catalog unchanged and the next read reports and retries.
-   *
-   * Locking: the fold runs inside `queueCritical` (in-process serialization, like every other
-   * read), and the rewrite's load→rename window runs under the held catalog file lock, so it can
-   * never interleave with another process's touch append or rebuild. If another process already
-   * holds the lock, the rewrite is dropped (not queued): that process's own rewrite or rebuild is
-   * the likeliest repair, and the next incomplete read retries anyway.
-   *
-   * Data safety: the locked re-read must itself reach the end of the file and still find
-   * malformed rows, and must leave at least one readable row. A failed re-read folds to an empty
-   * map, and a catalog with nothing readable is left for `rebuildFromDisk`: rewriting either
-   * would replace a healthy or recoverable catalog with an empty file.
-   */
-  private async rewriteAfterIncompleteRead(): Promise<"repaired" | "dropped" | "failed"> {
-    return this.queueCritical(async () =>
-      this.withHeldCatalogLock(async (acquired) => {
-        if (!acquired) return "dropped";
-        const health: CatalogReadHealth = { malformedLines: [] };
-        const folded = await this.loadCompacted(true, health);
-        if (health.malformed !== true || folded.size === 0) return "failed";
-        // Quarantine the rows the rewrite drops before the rename, so nothing is lost
-        // silently. Best-effort like the repair itself: a failed sidecar write must not
-        // leave a stuck malformed catalog unrepaired.
-        const dropped = health.malformedLines ?? [];
-        if (dropped.length > 0) {
-          const sidecar = `${this.catalogPath}.malformed-${Date.now()}`;
-          await writeFile(sidecar, dropped.join("\n") + "\n", "utf8").catch(() => undefined);
-        }
-        await this.rewriteUnchained([...folded.values()]);
-        return "repaired";
-      }),
-    );
-  }
-
-  /**
-   * Single-flight wrapper for the malformed-catalog repair (#3298 review): many
-   * concurrent reads of the same malformed catalog must produce ONE repair, and a
-   * dropped attempt must back off for one lock-wait budget, so malformed reads
-   * cannot queue serial 5 s lock waits ahead of touch(). A fast failure (the lock
-   * was acquired but the re-read or rewrite threw, or nothing needed repairing)
-   * holds no lock budget, so the next incomplete read retries it as before.
-   */
-  private async repairMalformedCatalog(): Promise<void> {
-    if (this.malformedRepairInFlight || Date.now() < this.malformedRepairNextAttemptAt) return;
-    this.malformedRepairAttemptCount += 1;
-    this.malformedRepairInFlight = (async () => {
-      let outcome: "repaired" | "dropped" | "failed" = "failed";
-      try {
-        outcome = await this.rewriteAfterIncompleteRead();
-      } catch {
-        outcome = "failed";
-      } finally {
-        this.malformedRepairInFlight = undefined;
-        if (outcome === "dropped") {
-          this.malformedRepairNextAttemptAt = Date.now() + MALFORMED_REPAIR_DROP_BACKOFF_MS;
-        }
-      }
-    })();
-    await this.malformedRepairInFlight;
+  /** Everything the malformed-catalog repair needs from this instance. */
+  private malformedRepairPort(): CatalogRepairPort {
+    return {
+      catalogPath: this.catalogPath,
+      queueCritical: <T,>(task: () => Promise<T>) => this.queueCritical(task),
+      withHeldCatalogLock: <T,>(fn: (acquired: boolean) => Promise<T>) => this.withHeldCatalogLock(fn),
+      loadCompacted: (forceFresh: boolean, health: CatalogReadHealth) =>
+        this.loadCompacted(forceFresh, health),
+      rewriteUnchained: (records: NamespaceRecord[]) => this.rewriteUnchained(records),
+      writeFile: (path: string, body: string) => writeFile(path, body, "utf8"),
+    };
   }
 
   /**
