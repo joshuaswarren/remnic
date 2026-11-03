@@ -10,7 +10,7 @@
  */
 
 import type { Dirent, Stats } from "node:fs";
-import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { lstat, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { toMemoryPathRel } from "../memory-lifecycle-ledger-utils.js";
 import { SecureStoreLockedError, readMaybeEncryptedFile } from "../secure-store/secure-fs.js";
@@ -30,6 +30,7 @@ import {
   StorageManager,
 } from "../storage.js";
 import { rememberRawFrontmatter } from "./memory-frontmatter-metadata.js";
+import { corpusScanWorker } from "../corpus-scan-worker-host.js";
 
 export interface MemoryReadStoreDeps {
   /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
@@ -83,19 +84,6 @@ export interface MemoryReadStoreDeps {
   readonly reasoningTracesDir: string;
   resolveTierRootDir(tier: "hot" | "cold"): string;
   readonly wearablesDir: string;
-}
-
-/**
- * A backend READ failure worth propagating from a strict (census) scan: an
- * errno-coded fs error that is NOT `ENOENT`. `ENOENT` (an absent dir) and
- * code-less rejections are expected and skipped; `EACCES`/`EIO`/… mean the
- * corpus is unreadable and a divergence census must fail loud rather than
- * silently publish a partial count (issue #2156 round-5). Non-strict (recall)
- * callers ignore this and degrade to a best-effort partial scan.
- */
-function isPropagatableReadError(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException).code;
-  return typeof code === "string" && code !== "ENOENT";
 }
 
 /**
@@ -233,15 +221,11 @@ export class MemoryReadStore {
    * escape: a category dir symlinked outside memoryDir (e.g. decisions/ -> an
    * external dir) must NOT pull out-of-store files into a scan (info leak).
    *
-   * Containment is established once, not per file: the memory root is resolved
-   * with a single `realpath`, every directory the walk enters is `lstat`ed (a
-   * symlinked or non-directory entry is never followed), and the entry TYPE
-   * comes from `readdir(withFileTypes)` — so a symlinked entry, file or
-   * directory, is skipped without a per-entry `realpath`. The old per-entry
-   * `realpath` cost one syscall per markdown file (hundreds of thousands per
-   * corpus scan) to re-derive a fact the directory-level checks already
-   * establish; reads refuse symlinked files at open time with `O_NOFOLLOW`, so
-   * a path swapped to a symlink mid-scan is refused rather than followed.
+   * The walk runs in the corpus-scan worker: it is one `readdir` + `lstat` per
+   * directory over the whole corpus, and on the main event loop that starves
+   * observe, recall and the extraction queue behind it. The implementation is
+   * shared (src/corpus-scan.ts) and the host runs it inline when no worker
+   * can start, so the collected path set is the same either way.
    * Paths only — no frontmatter parse.
    */
   private async collectContainedMarkdownPaths(
@@ -249,82 +233,16 @@ export class MemoryReadStore {
     propagateReadErrors = false,
     options?: CorpusReadOptions,
   ): Promise<string[]> {
-        const filePaths: string[] = [];
-
-    // Resolve the memory root once: a missing root is an empty corpus and an
-    // unreadable root is a backend failure the strict census must surface.
-    try {
-      await realpath(this.deps.baseDir);
-    } catch (err) {
-      // ENOENT: a not-yet-created root ⇒ empty. Any other errno is a backend
-      // read failure — propagate for strict census callers (never publish an
-      // unreadable corpus as empty); non-strict (recall) callers degrade.
-      if (propagateReadErrors && isPropagatableReadError(err)) throw err;
-      return filePaths;
-    }
-
-    const collectPaths = async (dir: string): Promise<void> => {
-      checkCorpusReadAbort(options);
-      // Directory-level guard, isolated from per-entry handling: skip symlinked
-      // or non-directory category dirs. A failure here means the whole subtree
-      // does not exist or escaped the store — fail closed by skipping it.
-      let dirStat: Stats;
-      try {
-        dirStat = await lstat(dir);
-      } catch (err) {
-        // ENOENT (absent category dir) is expected; a backend read error
-        // (EACCES/EIO/…) propagates in strict census mode.
-        if (propagateReadErrors && isPropagatableReadError(err)) throw err;
-        return;
-      }
-      if (dirStat.isSymbolicLink()) return; // never follow symlinks out of the store (both modes)
-      if (!dirStat.isDirectory()) {
-        // A category root that EXISTS but is not a directory (e.g. `facts/`
-        // replaced by a regular file) is a layout/backend failure: a strict
-        // census must not silently publish the remaining categories as healthy.
-        // Non-strict (recall) stays best-effort and skips it (issue #2156 round-10).
-        if (propagateReadErrors) {
-          throw new Error(`corpus scan: expected a directory but found a non-directory at ${dir}`);
-        }
-        return;
-      }
-      let entries: Dirent[];
-      try {
-        entries = await readdir(dir, { withFileTypes: true });
-      } catch (err) {
-        // A backend read error (EACCES …) propagates in strict census mode so a
-        // partial subtree is not silently counted. ENOENT (vanished mid-scan)
-        // and other non-propagatable failures skip the directory.
-        if (propagateReadErrors && isPropagatableReadError(err)) throw err;
-        return;
-      }
-
-      const subdirs: string[] = [];
-      for (const entry of entries) {
-        // Outside the per-entry handling below, which deliberately swallows
-        // non-propagatable errors — a cancellation must never be swallowed with
-        // them (issue #2307).
-        checkCorpusReadAbort(options);
-        // Never follow symlinked entries out of the store.
-        if (entry.isSymbolicLink()) continue;
-        if (isMacOsReplicationJunkBasename(entry.name)) continue;
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          subdirs.push(fullPath);
-        } else if (entry.name.endsWith(".md")) {
-          filePaths.push(fullPath);
-        }
-      }
-      // Recurse into real subdirectories regardless of any single poisoned entry
-      // above, so valid nested in-store memories are never dropped.
-      for (const subdir of subdirs) {
-        await collectPaths(subdir);
-      }
-    };
-
-    for (const dir of startDirs) {
-      await collectPaths(dir);
-    }
+    checkCorpusReadAbort(options);
+    const filePaths = await corpusScanWorker.request(
+      {
+        kind: "walk",
+        baseDir: this.deps.baseDir,
+        startDirs: [...startDirs],
+        propagateReadErrors,
+      },
+      options?.abortSignal,
+    );
     // A signal that fired during the last directory read would otherwise return a
     // truncated path list as if it were the whole corpus (issue #2307 review).
     checkCorpusReadAbort(options);
