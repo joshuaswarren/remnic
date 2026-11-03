@@ -3300,6 +3300,43 @@ test("requestQmdMaintenanceCompletion over namespaces: true only when a namespac
   }
 });
 
+test("requestQmdMaintenanceCompletion over namespaces: a failed catalog read leaves the request owed (#3289)", async () => {
+  // The configured namespaces still run, but cataloged (dynamic) namespaces were never discovered,
+  // so the re-index is incomplete and the migration must keep its marker.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-catalog-"));
+  const config = fixtureConfig({
+    memoryDir,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    maintenanceNamespaceLockStaleMs: 100,
+    qmdAutoEmbedEnabled: false,
+  });
+  const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+    enabled: true,
+    async listNamespaces(): Promise<never> {
+      throw new Error("catalog unavailable");
+    },
+    async markMaintenance() {},
+  });
+  const router: NamespaceSearchRouter = Object.assign(Object.create(null), {
+    async updateNamespacesDetailed(ns: string[]): Promise<NamespaceUpdateResult> {
+      return { backendCount: ns.length, eligibleNamespaces: ns };
+    },
+    async embedNamespaces(): Promise<void> {},
+  });
+  const scheduler = buildScheduler({ config, catalog, router });
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, false);
+  } finally {
+    await scheduler.dispose();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("requestQmdMaintenanceCompletion over namespaces: a permanent skip (branch_disabled) does not block serving", async () => {
   // A cataloged branch namespace is never maintained by default; that is a standing configuration,
   // not an unfinished pass, so the ran namespace must still serve the request.
