@@ -77,7 +77,7 @@ export async function plainFileDigest(filePath: string): Promise<string> {
   return hash.digest("hex");
 }
 
-import { lstat, utimes } from "node:fs/promises";
+import { lstat, realpath, utimes } from "node:fs/promises";
 import { isCensusMtimeMs } from "./census-validation.js";
 import path from "node:path";
 import {
@@ -154,7 +154,8 @@ export async function offlineSyncRegularFilePresent(
   if (!st || st.isSymbolicLink() || !st.isFile()) return false;
   // A regular file still has to resolve inside the root (a symlinked parent directory escapes it).
   await resolveSafeArchiveTarget(root, relPath);
-  return true;
+  // The census skips a symlinked directory, so a file reached only through one is absent here too.
+  return (await realpath(target)) === path.join(root.real, path.relative(root.abs, target));
 }
 
 /** A path the census observed vanished before its digest was read: a retryable race, never a confirmed delete. */
@@ -166,4 +167,19 @@ export class OfflineSyncCensusRaceError extends Error {
     );
     this.name = "OfflineSyncCensusRaceError";
   }
+}
+
+/** The message the CLI push retry loop matches: it defers the path and rebuilds the census. */
+export function changedWhileBuildingChangesetError(relPath: string, cause?: unknown): Error {
+  return new Error(
+    `offline sync file changed while building changeset: ${relPath}`,
+    cause === undefined ? undefined : { cause },
+  );
+}
+
+/** A `.catch` handler: a census race while building a changeset upsert stays retryable. */
+export function censusRaceAsChangedWhileBuilding(relPath: string): (error: Error) => never {
+  return (error) => {
+    throw error instanceof OfflineSyncCensusRaceError ? changedWhileBuildingChangesetError(relPath, error) : error;
+  };
 }

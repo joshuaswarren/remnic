@@ -4084,3 +4084,34 @@ test("a tracked file replaced by a symlink is a local delete, not a push-blockin
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+test("a tracked file under a directory replaced by an in-root symlink is a local delete", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-symlink-parent-"));
+  try {
+    const rel = "facts/tracked.md";
+    const bytes = Buffer.from("tracked bytes\n");
+    await mkdir(path.join(root, "elsewhere"), { recursive: true });
+    await writeFile(path.join(root, "elsewhere", "tracked.md"), bytes);
+    // The census skips a symlinked directory, so facts/tracked.md is not in it.
+    await symlink(path.join(root, "elsewhere"), path.join(root, "facts"));
+    const baseFile = {
+      path: rel,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.byteLength,
+      mtimeMs: 1,
+    };
+    const changeset = await buildOfflineSyncChangesetFromSnapshot({
+      root,
+      sourceId: "laptop",
+      baseFiles: [baseFile],
+      currentFiles: [],
+    });
+    assert.deepEqual(
+      changeset.changes.map((change) => [change.type, change.path]),
+      [["delete", rel]],
+      "a path reached only through a symlinked parent is absent, as the census sees it",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

@@ -72,6 +72,8 @@ import {
   assertOfflineSyncMtimeMs,
   offlineSyncRegularFilePresent,
   OfflineSyncCensusRaceError,
+  censusRaceAsChangedWhileBuilding,
+  changedWhileBuildingChangesetError,
   OFFLINE_SYNC_FAST_BASE_MTIME_TOLERANCE_MS,
 } from "./offline-sync-file-io.js";
 import { CENSUS_MAX_MTIME_MS, isSha256Hex } from "./census-validation.js";
@@ -1465,16 +1467,10 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
         now: options.now,
         userExcludeRegexps: options.userExcludeRegexps,
         readFile: options.readFile,
-      }).catch((error: Error) => {
-        // Keep the message the CLI retry loop matches: it defers this path and rebuilds the census.
-        if (error instanceof OfflineSyncCensusRaceError) {
-          throw new Error(`offline sync file changed while building changeset: ${relPath}`, { cause: error });
-        }
-        throw error;
-      });
+      }).catch(censusRaceAsChangedWhileBuilding(relPath));
       const record = file.files[0];
       if (!record || typeof record.contentBase64 !== "string" || record.sha256 !== currentEntry.sha256) {
-        throw new Error(`offline sync file changed while building changeset: ${relPath}`);
+        throw changedWhileBuildingChangesetError(relPath);
       }
       changes.push({
         type: "upsert",
