@@ -16,6 +16,7 @@ import { statSync } from "node:fs";
  *   reconciliation pass instead ({@link requestEntityCanonicalIdReconcile}).
  */
 import path from "node:path";
+import { z } from "zod";
 import {
   closeSync,
   constants,
@@ -109,6 +110,29 @@ function readJournalFileNoFollow(statePath: string): JournalRead {
     return { kind: "error" };
   } finally {
     closeSync(fd);
+  }
+}
+
+/** The journal fields completion attestation needs; extra journal fields are ignored. */
+const CompletedJournalAttestationSchema = z.object({
+  version: z.literal(1),
+  complete: z.literal(true),
+  completionFingerprint: z.string(),
+});
+
+/** Skip compatibility scans only when journal completion attests to the live inputs. */
+export async function entityCanonicalIdMigrationCompleted(
+  stateDir: string,
+  readFingerprint: () => Promise<string>,
+): Promise<boolean> {
+  const result = readJournalFileNoFollow(path.join(stateDir, ENTITY_CANONICAL_ID_MIGRATION_FILE));
+  if (result.kind !== "ok") return false;
+  try {
+    const parsed = CompletedJournalAttestationSchema.safeParse(JSON.parse(result.raw));
+    if (!parsed.success) return false;
+    return parsed.data.completionFingerprint === await readFingerprint();
+  } catch {
+    return false;
   }
 }
 

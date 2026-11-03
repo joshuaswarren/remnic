@@ -715,7 +715,7 @@ test("a .consuming marker left by a crashed run still triggers the reconcile pas
   }
 });
 
-test("addEntityRelationship falls back to the legacy file while its rename is in flight", async () => {
+test("addEntityRelationship migrates a pending legacy file before applying a legacy-ID mutation", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-entity-midflight-"));
   try {
     const storage = new StorageManager(dir);
@@ -736,13 +736,14 @@ test("addEntityRelationship falls back to the legacy file while its rename is in
       "utf8",
     );
 
-    // Resolving only the canonical path (whose file does not exist yet) would
-    // silently drop the edge; the fallback must land it on the legacy file.
+    // The public mutation barrier finishes this pending rename first. The
+    // caller's legacy id must still resolve, and the edge must not be dropped.
     await storage.addEntityRelationship(legacy, { target: "automation-cron-job-backup-sync", label: "precedes" });
     assert.match(
-      await readFile(path.join(dir, "entities", `${legacy}.md`), "utf8"),
+      await readFile(path.join(dir, "entities", `${canonical}.md`), "utf8"),
       /\[\[automation-cron-job-backup-sync\]\] — precedes/,
     );
+    await assert.rejects(() => readFile(path.join(dir, "entities", `${legacy}.md`)), { code: "ENOENT" });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
