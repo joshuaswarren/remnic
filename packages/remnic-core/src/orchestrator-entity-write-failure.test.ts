@@ -265,3 +265,106 @@ test("#3231: entity failure after a committed fact still runs deferred post-writ
   }
 });
 
+test("#3231 P2: a post-write contradiction-resolve failure still finalizes the durable fact", async () => {
+  // The fact is durable (writeSealedMemory returned) when
+  // applyDeferredContradictionResolve rejects. Its behavior signal, harmonic
+  // node, temporal/tag index entry and QMD request must not depend on code
+  // that runs after that catch; retry exact-dedupes the fact.
+  const memoryDir = await mkTempMemoryDir("contradiction-resolve-failure-maintenance");
+  const preference = "Prefers terse queue names for background jobs in Project Beta.";
+  const config = makeHarmonicLifecycleConfig(memoryDir, {
+    chunkingEnabled: false,
+    multiGraphMemoryEnabled: false,
+    factDeduplicationEnabled: true,
+    extractionMinImportanceLevel: "trivial",
+    entityActivityLogEnabled: false,
+    queryAwareIndexingEnabled: true,
+  });
+  const orchestrator = new Orchestrator(config);
+  const storage = await orchestrator.getStorageForNamespace();
+  const temporalIdBatches: string[][] = [];
+  const originalTemporal = orchestrator["updateTemporalTagIndexes"].bind(orchestrator);
+  orchestrator["updateTemporalTagIndexes"] = async (target, persistedIds) => {
+    temporalIdBatches.push([...persistedIds]);
+    return originalTemporal(target, persistedIds);
+  };
+  let qmdMaintenanceCalls = 0;
+  const originalQmd = orchestrator.requestQmdMaintenance.bind(orchestrator);
+  orchestrator.requestQmdMaintenance = () => {
+    qmdMaintenanceCalls += 1;
+    originalQmd();
+  };
+  const originalResolve = orchestrator["applyDeferredContradictionResolve"].bind(orchestrator);
+  const resolveFailure = new Error("synthetic contradiction resolve failure");
+  orchestrator["applyDeferredContradictionResolve"] = async () => {
+    throw resolveFailure;
+  };
+  try {
+    await storage.ensureDirectories();
+    await orchestrator.buffer.load();
+    const bufferKey = "contradiction-resolve-failure-maintenance";
+    await orchestrator.buffer.addTurn(bufferKey, {
+      role: "user",
+      content: preference,
+      sessionKey: bufferKey,
+      timestamp: "2026-10-01T12:00:00.000Z",
+      sourceValidAt: "2026-10-01T12:00:00.000Z",
+      persistProcessedFingerprint: true,
+    });
+    await orchestrator.buffer.flushPendingSave({ throwOnFailure: true });
+    const turns = orchestrator.buffer.getTurns(bufferKey);
+    stubExtraction(orchestrator, (): ExtractionResult => ({
+      facts: [
+        {
+          content: preference,
+          category: "preference",
+          confidence: 0.95,
+          tags: ["queue-naming"],
+        },
+      ],
+      entities: [],
+      questions: [],
+      profileUpdates: [],
+    }));
+
+    await assert.rejects(
+      orchestrator.runExtraction(turns, { bufferKey }),
+      (error: Error) => error === resolveFailure,
+      "the post-write failure must still reach the caller",
+    );
+
+    const facts = (await storage.readAllMemories()).filter(
+      (m) => m.frontmatter.category === "preference",
+    );
+    assert.equal(facts.length, 1, "the preference fact must remain durable");
+    const factId = facts[0]!.frontmatter.id;
+    assert.ok(
+      (await storage.readBehaviorSignals(50)).some(
+        (s) => s.memoryId === factId && s.signalType === "preference_affinity",
+      ),
+      "the durable fact's behavior signal must land before the rethrow",
+    );
+    assert.ok(
+      ((await harmonicNodeStoreStatus(memoryDir)).latestNode?.sourceMemoryIds ?? []).includes(factId),
+      "the durable fact's harmonic node must land before the rethrow",
+    );
+    assert.ok(
+      temporalIdBatches.some((ids) => ids.includes(factId)),
+      "the durable fact's temporal/tag index update must run before the rethrow",
+    );
+    assert.ok(
+      qmdMaintenanceCalls > 0,
+      "a durable fact that is the only write must still schedule QMD reindex",
+    );
+  } finally {
+    orchestrator["applyDeferredContradictionResolve"] = originalResolve;
+    orchestrator.requestQmdMaintenance = originalQmd;
+    orchestrator["updateTemporalTagIndexes"] = originalTemporal;
+    try {
+      await orchestrator.destroy();
+    } finally {
+      resetExtractionLlmHealthForTests();
+      await cleanupDir(memoryDir);
+    }
+  }
+});

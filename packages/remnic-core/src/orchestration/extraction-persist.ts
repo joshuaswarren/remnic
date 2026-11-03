@@ -2607,6 +2607,25 @@ export class ExtractionPersistCoordinator {
       // so a blocked fact creates no active shared copy / supersession / graph entry.
       const tombstoneBlocked = factWrite.tombstoneBlocked;
       const postWriteGuard = faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+      // #3231: the fact is durable now. Track it before any post-write step
+      // that can throw, so the batch-end finalization on a failure path still
+      // covers it (a retry exact-dedupes the fact and would not re-queue it).
+      trackBehaviorSignals(
+        targetStorage,
+        buildBehaviorSignalsForMemory({
+          memoryId,
+          category: writeCategory,
+          content: fact.content,
+          namespace: this.deps.storageDirNamespace(targetStorage.dir),
+          confidence: fact.confidence,
+          source: "extraction",
+        }),
+      );
+      trackPersistedId(targetStorage, memoryId, {
+        pendingReview: postWriteGuard,
+        category: writeCategory,
+        harmonicFact,
+      });
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
       try {
@@ -2658,22 +2677,6 @@ export class ExtractionPersistCoordinator {
         }
       }
       try {
-        trackBehaviorSignals(
-          targetStorage,
-          buildBehaviorSignalsForMemory({
-            memoryId,
-            category: writeCategory,
-            content: fact.content,
-            namespace: this.deps.storageDirNamespace(targetStorage.dir),
-            confidence: fact.confidence,
-            source: "extraction",
-          }),
-        );
-        trackPersistedId(targetStorage, memoryId, {
-          pendingReview: postWriteGuard,
-          category: writeCategory,
-          harmonicFact,
-        });
         await anchorSnapshots.replace(targetStorage, memoryId, writeCategory, memoryPathById);
         if (
           !postWriteGuard &&
