@@ -1511,7 +1511,7 @@ export class Orchestrator {
       onActivitySynced: (summary) => { if (!this.config.meetings.enabled) return; void this.getMeetingsService().then((s) => s.requestBuildForActivitySync(summary.ranAt, this.config.activity.timezone, summary.touchedDates)).catch((err) => log.warn(`meetings: activity tail-step build failed to schedule: ${err instanceof Error ? err.message : String(err)}`)); },
     });
     const bindStorage = (storage: StorageManager, namespace: string) => {
-      storage.onEntityMigrationComplete = () => { if (this.acceptingEntityMigrationMaintenance) this.requestQmdMaintenance(); };
+      storage.onEntityMigrationComplete = () => { if (!this.acceptingEntityMigrationMaintenance) return false; this.requestQmdMaintenance(); return true; };
       if (this.prioritizedEmbedding) storage.onMemoryWrite = (filePath) => this.prioritizedEmbedding?.enqueue(filePath, namespace);
     };
     bindStorage(this.storage, this.config.defaultNamespace);
