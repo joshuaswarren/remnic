@@ -135,6 +135,8 @@ export class MaintenanceScheduler {
   private qmdMaintenancePending = false;
   private qmdMaintenanceInFlight = false;
   private readonly qmdCompletion = new QmdMaintenanceCompletion();
+  /** Namespaces that ran in passes of the request still waiting for full coverage. */
+  private readonly qmdCoveredNamespaces = new Set<string>();
   private lastQmdEmbedAtMs = 0;
   private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
 
@@ -543,6 +545,7 @@ export class MaintenanceScheduler {
     // Waiters claimed here are served by THIS pass; later requests wait for the next.
     const settle = this.qmdCompletion.claim();
     let served = false;
+    let deferred = false;
 
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
@@ -618,17 +621,25 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
-        // A skipped namespace with a TRANSIENT reason (budget_exhausted, lock_held) means this
-        // pass did not cover the selection, so it must not serve a completion request. Permanent
-        // skip reasons describe namespaces this deployment never re-indexes; they don't block.
-        served =
-          summary.ran > 0 &&
-          summary.failed === 0 &&
-          !summary.statuses.some(
-            (status) =>
-              status.state === "skipped" &&
-              (status.reason === "budget_exhausted" || status.reason === "lock_held"),
-          );
+        // Namespaces skipped for a TRANSIENT reason (budget_exhausted, lock_held) were not covered
+        // by this pass. They are covered once they ran in this or an earlier pass of the same
+        // request, so a deployment with more namespaces than the cycle budget still converges.
+        // Permanent skip reasons describe namespaces this deployment never re-indexes.
+        const covered = this.qmdCoveredNamespaces;
+        const before = covered.size;
+        for (const status of summary.statuses) {
+          if (status.state === "ran") covered.add(status.namespace);
+        }
+        const uncovered = summary.statuses.some(
+          (status) =>
+            status.state === "skipped" &&
+            (status.reason === "budget_exhausted" || status.reason === "lock_held") &&
+            !covered.has(status.namespace),
+        );
+        served = summary.ran > 0 && summary.failed === 0 && !uncovered;
+        // Partial progress keeps the waiters for another pass; no progress (or a failure) ends the
+        // request unserved so a stuck namespace cannot re-arm passes forever.
+        deferred = !served && summary.failed === 0 && covered.size > before && !this.disposed;
       } else {
         const qmd = this.deps.getQmd();
         // Plain update() is fail-open on every backend: it resolves when the min-interval gate,
@@ -667,8 +678,10 @@ export class MaintenanceScheduler {
       // backoff) does not advance lastUpdateRanAtMs, so it leaves caches warm
       // (#1904, Codex/Cursor).
     } finally {
-      settle(served);
+      settle(served, deferred);
+      if (!deferred) this.qmdCoveredNamespaces.clear();
       this.qmdMaintenanceInFlight = false;
+      if (deferred) this.qmdMaintenancePending = true;
       if (this.qmdMaintenancePending) {
         this.requestQmdMaintenance();
       }

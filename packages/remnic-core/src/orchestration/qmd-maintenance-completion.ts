@@ -13,10 +13,16 @@ export class QmdMaintenanceCompletion {
     return new Promise((resolve) => this.waiters.push(resolve));
   }
 
-  /** A pass is starting: take every waiter it will serve and return their settle function. */
-  claim(): (served: boolean) => void {
+  /**
+   * A pass is starting: take every waiter it will serve and return their settle function.
+   * `defer` keeps them waiting for a later pass (a pass that covered only part of the selection).
+   */
+  claim(): (served: boolean, defer?: boolean) => void {
     const claimed = this.waiters.splice(0);
-    return (served) => claimed.forEach((resolve) => resolve(served));
+    return (served, defer = false) => {
+      if (defer) this.waiters.unshift(...claimed);
+      else claimed.forEach((resolve) => resolve(served));
+    };
   }
 
   /** The scheduler stopped: nothing will serve the waiters. */

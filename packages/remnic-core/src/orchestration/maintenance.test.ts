@@ -21,7 +21,7 @@ import path from "node:path";
 import { readProjectionRebuiltAt } from "../maintenance/projection-support.js";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
+import { setImmediate, setTimeout as delay } from "node:timers/promises";
 
 import { MaintenanceScheduler } from "./maintenance.js";
 import { EmbedHelper } from "../search/embed-helper.js";
@@ -3337,10 +3337,55 @@ test("requestQmdMaintenanceCompletion over namespaces: a permanent skip (branch_
   }
 });
 
-test("requestQmdMaintenanceCompletion over namespaces: a budget_exhausted or lock_held skip leaves the request owed", async () => {
-  // Two namespaces, a one-namespace cycle budget: one runs, the other is skipped
+test("requestQmdMaintenanceCompletion over namespaces: more namespaces than the cycle budget: a later pass serves once all have run", async () => {
+  // Four configured namespaces, a three-namespace cycle budget: three run, one is skipped
   // as budget_exhausted. That pass did not cover the whole selection, so it must not serve.
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-budget-"));
+  const config = fixtureConfig({
+    memoryDir,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [{ name: "project-a" }, { name: "project-b" }],
+    maintenanceNamespaceLockStaleMs: 100,
+    qmdAutoEmbedEnabled: false,
+    maintenanceMaxNamespacesPerCycle: 3,
+  });
+  const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+    enabled: true,
+    async listNamespaces() {
+      return [{ namespace: "default" }];
+    },
+    async markMaintenance() {},
+  });
+  const router: NamespaceSearchRouter = Object.assign(Object.create(null), {
+    async updateNamespacesDetailed(ns: string[]): Promise<NamespaceUpdateResult> {
+      return { backendCount: ns.length, eligibleNamespaces: ns };
+    },
+    async embedNamespaces(): Promise<void> {},
+  });
+  const scheduler = buildScheduler({ config, catalog, router });
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    let settled = false;
+    void served.then(() => {
+      settled = true;
+    });
+    await scheduler.runQmdMaintenance();
+    await setImmediate();
+    assert.equal(settled, false, "three ran, project-b was skipped as budget_exhausted: still owed");
+    // The deferred request re-arms a pass; the planner rotates to the namespace that was skipped.
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, true, "every namespace has now run since the request");
+  } finally {
+    await scheduler.dispose();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("requestQmdMaintenanceCompletion over namespaces: a pass that adds no coverage ends the request unserved instead of re-arming forever", async () => {
+  // Budget 1 with default and shared: default always ranks first, so shared never gets a turn.
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-budget-"));
   const config = fixtureConfig({
     memoryDir,
     namespacesEnabled: true,
@@ -3368,12 +3413,12 @@ test("requestQmdMaintenanceCompletion over namespaces: a budget_exhausted or loc
   try {
     const served = scheduler.requestQmdMaintenanceCompletion();
     await scheduler.runQmdMaintenance();
-    assert.equal(await served, false, "a namespace skipped as budget_exhausted was not re-indexed this pass");
-    // With the budget raised to cover both namespaces, the next pass serves it.
-    config.maintenanceMaxNamespacesPerCycle = 2;
-    const retry = scheduler.requestQmdMaintenanceCompletion();
+    // Pass 1 covered default: progress, so the request stays waiting for another pass.
+    assert.equal(scheduler.isQmdMaintenancePending(), true);
     await scheduler.runQmdMaintenance();
-    assert.equal(await retry, true);
+    // Pass 2 ran default again and added nothing: the request ends unserved and no pass is re-armed.
+    assert.equal(await served, false);
+    assert.equal(scheduler.isQmdMaintenancePending(), false);
   } finally {
     await scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
