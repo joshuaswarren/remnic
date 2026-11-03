@@ -3997,3 +3997,86 @@ test("#2469 persisted self/legacy kinds coerce to explicit and drop unused hints
   }
 });
 
+
+test("listNamespaces reports an incomplete read for a malformed record but still returns the valid ones (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    await appendFile(catalogPath, "{this is not json\n", "utf8");
+
+    const reasons: string[] = [];
+    const records = await catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });
+    assert.deepEqual(records.map((r) => r.namespace), ["project-origin-abc123"], "valid records are still returned");
+    assert.equal(reasons.length, 1);
+    assert.match(reasons[0], /malformed/);
+
+    // A second read served from the warm cache must still say the catalog was incomplete.
+    const again: string[] = [];
+    await catalog.listNamespaces(undefined, { onIncomplete: (reason) => again.push(reason) });
+    assert.equal(again.length, 1, "the cached result keeps reporting the malformed line");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("listNamespaces reports an incomplete read for an unreadable catalog (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    // A directory where the catalog file should be: open succeeds, reading it fails.
+    await mkdir(path.join(memoryDir, "state", "namespaces.jsonl"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const reasons: string[] = [];
+    const records = await catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });
+    assert.deepEqual(records, []);
+    assert.equal(reasons.length, 1);
+    assert.match(reasons[0], /unreadable/);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("listNamespaces does not report a clean or missing catalog as incomplete (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    const reasons: string[] = [];
+    const onIncomplete = (reason: string) => reasons.push(reason);
+    await catalog.listNamespaces(undefined, { onIncomplete });
+    assert.deepEqual(reasons, [], "a catalog that was never written is normal on a fresh install");
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    await catalog.listNamespaces(undefined, { onIncomplete });
+    assert.deepEqual(reasons, []);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a catalog with malformed rows stays tolerant for callers that do not ask about completeness (#3293)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("project-origin-abc123", { discoveredBy: "write" });
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    // Valid JSON that is not a catalog record counts as malformed too.
+    await appendFile(catalogPath, "{\"not\":\"a record\"}\n", "utf8");
+
+    // No options, or options without a callback: nothing to call, nothing may throw.
+    assert.deepEqual((await catalog.listNamespaces()).map((r) => r.namespace), ["project-origin-abc123"]);
+    assert.deepEqual((await catalog.listNamespaces(undefined, {})).map((r) => r.namespace), ["project-origin-abc123"]);
+
+    const reasons: string[] = [];
+    await catalog.listNamespaces(undefined, { onIncomplete: (reason) => reasons.push(reason) });
+    assert.equal(reasons.length, 1, "the non-record row is reported");
+
+    // The warm cache now remembers the problem; a reader without a reporter must still work.
+    assert.equal((await catalog.getNamespaceRecord("project-origin-abc123"))?.namespace, "project-origin-abc123");
+
+    // A cold read of a malformed catalog by a reader without a reporter must work too.
+    const cold = new NamespaceCatalog(makeConfig(memoryDir));
+    assert.equal((await cold.getNamespaceRecord("project-origin-abc123"))?.namespace, "project-origin-abc123");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

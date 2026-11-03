@@ -229,7 +229,14 @@ export async function planNamespaceMaintenance(
   if (resolveNamespaceCapabilities(config).namespaces && resolveConversationContextCapabilities(config).maintenanceNamespaceFanout !== false) {
     const configuredSet = new Set(configured);
     try {
-      const records = options.catalog?.enabled ? await options.catalog.listNamespaces() : [];
+      // An incomplete read (unreadable file, malformed rows) still returns the readable records,
+      // so they are planned as before; the callback records that the catalog was not whole.
+      const records = options.catalog?.enabled
+        ? await options.catalog.listNamespaces(undefined, {
+            onIncomplete: (reason) =>
+              skipped.push({ namespace: "*", reason: "catalog_read_failed", detail: reason }),
+          })
+        : [];
       for (const record of records) {
         const namespace = record.namespace.trim();
         if (!namespace) continue;
