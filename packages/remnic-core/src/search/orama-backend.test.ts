@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -228,6 +228,80 @@ test("Orama rebuild gate inspects every indexed string field, not only content (
       true,
       "non-Latin text in the path field must gate the rebuild",
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Orama updateCompleted reports a finished refresh, and false for an aborted one (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-completed-"));
+  try {
+    await writeMemoryFact(root, "fact.md", "---\nid: mem-completed\n---\nAn indexed fact about completion.");
+    const backend = await createBackend(root, path.join(root, "orama-db"), undefined, { update: false });
+
+    assert.equal(await backend.updateCompleted({ signal: AbortSignal.abort() }), false, "an aborted refresh did not finish");
+    assert.equal((await backend.bm25Search("completion")).length, 0, "precondition: nothing was indexed");
+
+    assert.equal(await backend.updateCompleted(), true);
+    assert.equal((await backend.bm25Search("completion")).some((r) => r.docid === "mem-completed"), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/** A signal that reports aborted from its Nth read on: lets a test abort a refresh at each of its checkpoints. */
+function abortingFromRead(read: number): AbortSignal {
+  const signal = new AbortController().signal;
+  let reads = 0;
+  Object.defineProperty(signal, "aborted", { get: () => ++reads >= read });
+  return signal;
+}
+
+test("Orama updateCompleted is false for a refresh aborted at any checkpoint, and true only once it persisted (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-abort-sweep-"));
+  try {
+    await writeMemoryFact(root, "kept.md", "---\nid: mem-kept\n---\nA fact that stays indexed.");
+    await writeMemoryFact(root, "second.md", "---\nid: mem-second\n---\nA second fact so the diff loops iterate.");
+    const dbPath = path.join(root, "orama-db");
+    // An existing, persisted index makes the refresh walk the stored hits as well as the corpus.
+    await createBackend(root, dbPath);
+    const persistedFile = resolveOramaCollectionDbFilePath(dbPath, "openclaw-engram");
+    const before = await readFile(persistedFile);
+    await rm(path.join(root, "facts", "second.md"));
+
+    // Every abort checkpoint must report false and leave the persisted index alone;
+    // the first run that reports true must be the one that persisted the change.
+    let completedAt = 0;
+    for (let read = 1; read < 200 && completedAt === 0; read += 1) {
+      // A fresh backend per attempt: an aborted refresh leaves its in-memory edits behind,
+      // which would shift the checkpoints of the next attempt.
+      const backend = await createBackend(root, dbPath, undefined, { update: false });
+      const completed = await backend.updateCompleted({ signal: abortingFromRead(read) });
+      const persisted = await readFile(persistedFile);
+      if (completed) {
+        completedAt = read;
+        assert.notDeepEqual(persisted, before, "a refresh reporting completion persisted the index");
+      } else {
+        assert.deepEqual(persisted, before, `aborted at read ${read}: nothing may be persisted`);
+      }
+    }
+    assert.ok(completedAt > 4, `the refresh checks for abort at several points (completed only at read ${completedAt})`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Orama updateCompleted reports false, not a rejection, when the refresh throws (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-orama-throws-"));
+  try {
+    await writeMemoryFact(root, "fact.md", "---\nid: mem-throws\n---\nA fact.");
+    const backend = await createBackend(root, path.join(root, "orama-db"), undefined, { update: false });
+    Object.defineProperty(backend, "persistDbForCollection", {
+      value: async () => {
+        throw new Error("disk full");
+      },
+    });
+    assert.equal(await backend.updateCompleted(), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
