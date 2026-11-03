@@ -22,7 +22,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseConfig, resolveRemnicConfigRecord, StorageManager } from "@remnic/core";
+import { defaultNamespaceForPrincipal, parseConfig, resolvePrincipal, resolveRemnicConfigRecord, StorageManager } from "@remnic/core";
 import { z } from "zod";
 import type { BufferEntryState } from "@remnic/core/types.js";
 
@@ -192,7 +192,7 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
   }
 
   if (options.dryRun) {
-    const plan = await planDrain(storage, options);
+    const plan = await planDrain(storage, options, sessionNamespaceResolver(loadDrainConfig(deps.configPath)));
     if (options.json) {
       deps.stdout(JSON.stringify(plan, null, 2));
       return 0;
@@ -276,7 +276,7 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
     }),
   );
 
-  const summary = summarize(reports, await remainingTurns(storage));
+  const summary = summarize(reports, await remainingTurns(storage, options, sessionNamespaceResolver(loadDrainConfig(deps.configPath))));
   if (options.json) {
     deps.stdout(JSON.stringify(summary, null, 2));
   } else {
@@ -296,6 +296,7 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
 export async function planDrain(
   storage: StorageManager,
   options: BufferDrainOptions,
+  resolveNamespace: (sessionKey: string) => string,
 ): Promise<{ sessions: { key: string; turns: number; claimed: boolean }[]; totalTurns: number }> {
   const state = await storage.loadBuffer();
   const claims = storage.bufferDrainClaims();
@@ -303,35 +304,43 @@ export async function planDrain(
   for (const [key, entry] of Object.entries(state.entries ?? {})) {
     const turns = entry.turns.length + (entry.retainedTurns?.length ?? 0);
     if (turns === 0) continue;
-    if (!matchesFilters(key, entry, options)) continue;
+    if (!matchesFilters(key, entry, options, resolveNamespace)) continue;
     sessions.push({ key, turns, claimed: claims.isClaimed(key) });
   }
   for (const listed of await claims.list()) {
     if (sessions.some((session) => session.key === listed.key)) continue;
     if (options.sessions.length > 0 && !options.sessions.includes(listed.key)) continue;
+    const claim = await claims.load(listed.key);
+    const entry = claim?.entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 };
+    if (!matchesFilters(listed.key, entry, options, resolveNamespace)) continue;
     sessions.push({ key: listed.key, turns: listed.turnCount, claimed: true });
   }
   return { sessions, totalTurns: sessions.reduce((total, session) => total + session.turns, 0) };
 }
 
-/** Turns still buffered after the run (claimed or not). */
-async function remainingTurns(storage: StorageManager): Promise<{ turns: number; sessions: number }> {
+/** Turns still buffered after the run, within the requested filters. */
+async function remainingTurns(
+  storage: StorageManager,
+  options: BufferDrainOptions,
+  resolveNamespace: (sessionKey: string) => string,
+): Promise<{ turns: number; sessions: number }> {
   const state = await storage.loadBuffer();
   const claims = storage.bufferDrainClaims();
   let turns = 0;
   let sessions = 0;
+  const counted = new Set<string>();
   for (const [key, entry] of Object.entries(state.entries ?? {})) {
-    const claim = claims.isClaimed(key) ? await claims.load(key) : null;
-    const remaining = claim
-      ? claim.entry.turns.length + (claim.entry.retainedTurns?.length ?? 0)
-      : entry.turns.length + (entry.retainedTurns?.length ?? 0);
+    const remaining = entry.turns.length + (entry.retainedTurns?.length ?? 0);
     if (remaining === 0) continue;
+    if (!matchesFilters(key, entry, options, resolveNamespace)) continue;
+    counted.add(key);
     turns += remaining;
     sessions += 1;
   }
   for (const listed of await claims.list()) {
-    if (listed.turnCount === 0) continue;
+    if (listed.turnCount === 0 || counted.has(listed.key)) continue;
     if (state.entries && listed.key in state.entries) continue;
+    if (options.sessions.length > 0 && !options.sessions.includes(listed.key)) continue;
     turns += listed.turnCount;
     sessions += 1;
   }
@@ -367,11 +376,18 @@ function summarize(reports: readonly DrainSessionReport[], remaining: { turns: n
   return summary;
 }
 
-/** Session filter: the requested keys, or the requested namespace. */
+/**
+ * Session filter: the requested keys, or the requested namespace.
+ *
+ * `resolveNamespace` maps a session key to the namespace its unpinned turns
+ * extract into, so `--namespace` also filters native (unpinned) sessions
+ * instead of only pinned captures.
+ */
 export function matchesFilters(
   key: string,
   entry: BufferEntryState,
   options: Pick<BufferDrainOptions, "sessions" | "namespace">,
+  resolveNamespace: (sessionKey: string) => string,
 ): boolean {
   if (options.sessions.length > 0) {
     const matches = options.sessions.some(
@@ -381,11 +397,20 @@ export function matchesFilters(
   }
   if (options.namespace !== undefined) {
     // A session captured for another namespace stays with its namespace: the
-    // drain must not move pinned content across namespaces.
-    const pinned = entry.turns.filter((turn) => turn.writeNamespaceOverride !== undefined);
-    if (pinned.some((turn) => turn.writeNamespaceOverride !== options.namespace)) return false;
+    // drain must not move content across namespaces.
+    const inNamespace = entry.turns.every((turn) =>
+      turn.writeNamespaceOverride !== undefined
+        ? turn.writeNamespaceOverride === options.namespace
+        : resolveNamespace(turn.sessionKey ?? key) === options.namespace,
+    );
+    if (!inNamespace) return false;
   }
   return true;
+}
+
+/** The namespace a session's unpinned turns extract into. */
+export function sessionNamespaceResolver(config: ReturnType<typeof loadDrainConfig>): (sessionKey: string) => string {
+  return (sessionKey: string) => defaultNamespaceForPrincipal(resolvePrincipal(sessionKey, config), config);
 }
 
 /** The config the workers use (the same record the rest of the CLI reads). */

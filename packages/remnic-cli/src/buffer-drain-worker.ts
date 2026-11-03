@@ -17,7 +17,7 @@ import fs from "node:fs";
 import { Orchestrator, parseConfig, resolveRemnicConfigRecord } from "@remnic/core";
 import { BufferDrainRunner } from "@remnic/core/orchestration/buffer-drain-runner.js";
 
-import { matchesFilters, type BufferDrainOptions, type DrainSessionReport } from "./buffer-drain-cmd.js";
+import { matchesFilters, sessionNamespaceResolver, type BufferDrainOptions, type DrainSessionReport } from "./buffer-drain-cmd.js";
 
 /** A failed worker run. */
 type DrainWorkerError = Error;
@@ -101,16 +101,20 @@ async function main(): Promise<number> {
       const state = await orchestrator.storage.loadBuffer();
       const entries = state.entries ?? {};
       const claimed = await runner.claims.list();
+      const resolveNamespace = sessionNamespaceResolver(config);
       const candidates: { key: string; turns: number }[] = [];
       for (const [key, entry] of Object.entries(entries)) {
         const turns = entry.turns.length + (entry.retainedTurns?.length ?? 0);
         if (turns === 0) continue;
-        if (!matchesFilters(key, entry, args.options)) continue;
+        if (!matchesFilters(key, entry, args.options, resolveNamespace)) continue;
         candidates.push({ key, turns });
       }
       for (const listed of claimed) {
         if (candidates.some((candidate) => candidate.key === listed.key)) continue;
         if (args.options.sessions.length > 0 && !args.options.sessions.includes(listed.key)) continue;
+        const claim = await runner.claims.load(listed.key);
+        const entry = claim?.entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 };
+        if (!matchesFilters(listed.key, entry, args.options, resolveNamespace)) continue;
         candidates.push({ key: listed.key, turns: listed.turnCount });
       }
       const next = candidates.find((candidate) => !attempted.has(candidate.key) && candidate.turns > 0);
