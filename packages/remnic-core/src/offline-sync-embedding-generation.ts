@@ -45,7 +45,12 @@ import type {
   OfflineSyncFileStagingWriteTarget,
   OfflineSyncFileState,
 } from "./offline-sync.js";
-import { type SafeArchiveRoot, resolveSafeArchiveTarget } from "./transfer/fs-utils.js";
+import { type SafeArchiveRoot, prepareSafeArchiveRoot, resolveSafeArchiveTarget } from "./transfer/fs-utils.js";
+import {
+  GENERATION_MARKER_BASENAME,
+  beginGenerationMarker,
+  completeGenerationMarker,
+} from "./embedding-generation-marker.js";
 
 const EMBEDDING_MARKER_BASENAME = "embeddings.json";
 export const EMBEDDING_SHARD_DIR_BASENAME = "embeddings";
@@ -95,12 +100,52 @@ export function embeddingMarkerDirOf(relPath: string): string | null {
  * `.../embeddings` directory, the legacy marker belongs to the sibling
  * `.../embeddings` directory of its state dir.
  */
-export function embeddingGenerationMembership(relPath: string): { kind: "shard" | "marker"; shardDir: string } | null {
+export interface EmbeddingGenerationMembership {
+  kind: "shard" | "marker";
+  shardDir: string;
+}
+
+export function embeddingGenerationMembership(relPath: string): EmbeddingGenerationMembership | null {
   const shardDir = embeddingShardDirOf(relPath);
   if (shardDir) return { kind: "shard", shardDir };
   const markerDir = embeddingMarkerDirOf(relPath);
   if (markerDir) return { kind: "marker", shardDir: `${markerDir}/${EMBEDDING_SHARD_DIR_BASENAME}` };
   return null;
+}
+
+/**
+ * Advance the node-local generation marker around one out-of-band destructive
+ * write or delete of a generation member (issue #3182); the fence reasserts
+ * lock ownership so a stale-broken lock never publishes a stable marker over
+ * a peer's write. Callers must not already hold the generation lock — the
+ * snapshot removal deletes members under it, which is why converge hooks its
+ * own call sites, not the shared IO adapter.
+ */
+export async function advanceEmbeddingGenerationMarker<T>(
+  rootAbs: string,
+  membership: EmbeddingGenerationMembership | null,
+  write: () => Promise<T>,
+  validate?: () => Promise<void>,
+): Promise<T> {
+  if (!membership) {
+    await validate?.();
+    return write();
+  }
+  const root = await prepareSafeArchiveRoot(rootAbs, "advanceEmbeddingGenerationMarker", "root");
+  const stateDirRel = membership.shardDir.slice(0, -`/${EMBEDDING_SHARD_DIR_BASENAME}`.length);
+  const stateDirAbs = await resolveSafeArchiveTarget(root, stateDirRel);
+  const lockPath = embeddingGenerationLockPath(stateDirAbs);
+  return await withEmbeddingGenerationLock(stateDirAbs, async (section) => {
+    const markerAbs = await resolveSafeArchiveTarget(root, `${stateDirRel}/${GENERATION_MARKER_BASENAME}`);
+    await validate?.();
+    await assertEmbeddingGenerationLockHeld(lockPath, section);
+    await beginGenerationMarker(markerAbs);
+    await assertEmbeddingGenerationLockHeld(lockPath, section);
+    const result = await write();
+    await assertEmbeddingGenerationLockHeld(lockPath, section);
+    await completeGenerationMarker(markerAbs);
+    return result;
+  });
 }
 
 export interface IncomingEmbeddingGenerations {
