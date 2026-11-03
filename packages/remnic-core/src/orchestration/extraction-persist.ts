@@ -68,10 +68,7 @@ import {
 } from "../source-attribution.js";
 import { classifyMemoryKind } from "../himem.js";
 import { shouldPromoteGlobalFactToShared, withholdToolScopedFromSharedNamespace } from "../tool-scoped-memory.js";
-import {
-  buildBehaviorSignalsForMemory,
-  dedupeBehaviorSignalsByMemoryAndHash,
-} from "../behavior-signals.js";
+import { buildBehaviorSignalsForMemory } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import { resolveWriteSubject } from "../memory-subject.js";
@@ -103,7 +100,7 @@ import type {
 } from "../types.js";
 import {
   createBatchPromotedCopyProbe,
-  flushDeferredFactHashOnFailure,
+  finalizeExtractionCommittedWrites,
   makeSubjectGuardAllows,
   profileAutoPromotionAllows,
   readActiveMemoriesBothTiers,
@@ -120,7 +117,7 @@ import {
   resolvePersistedMemoryRelativePath,
 } from "../orchestrator.js";
 import type { HarmonicConstructionInput } from "../harmonic-construction.js";
-import { enqueueMergedTargetForHarmonicConstruction, persistConstructedHarmonicRecords } from "./harmonic-construction-persist.js";
+import { enqueueMergedTargetForHarmonicConstruction } from "./harmonic-construction-persist.js";
 import { applySemanticMergeAtPersist, runMergedTargetPostEffects, writeMergedVerbatimArtifact } from "./semantic-merge-persist.js";
 import { buildMergedTargetPromotionPayload } from "./semantic-merge-promotion-payload.js";
 import { persistMergedTargetThreadEpisode } from "./semantic-merge-commit-effects.js";
@@ -291,6 +288,7 @@ export class ExtractionPersistCoordinator {
         events: [...events],
       });
     };
+
     const sharedProfileLayer = scopeProfileWritePlan?.layers.find(
       (layer) =>
         layer.id === "serverShared" &&
@@ -1106,6 +1104,32 @@ export class ExtractionPersistCoordinator {
       0,
       this.deps.config.extractionMaxProfileUpdatesPerRun,
     );
+    const finalizeCommittedWrites = async (scheduleQmd: boolean): Promise<void> => {
+      await finalizeExtractionCommittedWrites({
+        saveContentHashIndexes: () => this.deps.saveContentHashIndexes(),
+        behaviorSignalsByStorage: behaviorSignalsByStorage.values(),
+        harmonic: {
+          enabled: harmonicConstructionEnabled,
+          entries: harmonicFactsByStorage.values(),
+          baseStorageDir: storage.dir,
+          abstractionNodeStoreDir:
+            !scopeProfileWritePlan && harmonicBaseNamespace === this.deps.config.defaultNamespace
+              ? this.deps.config.abstractionNodeStoreDir
+              : undefined,
+          sessionKey: sourceContext?.sessionKey,
+          validAt: sourceContext?.validAt,
+          episodeTitle: result.episodeTitle,
+          anchorsEnabled: harmonicAnchorsEnabled,
+          entityMentions: entities,
+        },
+        updateTemporalTagIndexes: (target, ids) =>
+          this.deps.updateTemporalTagIndexes(target, ids),
+        fallbackStorage: storage,
+        persistedIdsByStorage,
+        requestQmdMaintenance: () => this.deps.requestQmdMaintenance(),
+        scheduleQmd,
+      });
+    };
 
     if (
       facts.length < result.facts.length ||
@@ -2583,6 +2607,25 @@ export class ExtractionPersistCoordinator {
       // so a blocked fact creates no active shared copy / supersession / graph entry.
       const tombstoneBlocked = factWrite.tombstoneBlocked;
       const postWriteGuard = faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+      // #3231: the fact is durable now. Track it before any post-write step
+      // that can throw, so the batch-end finalization on a failure path still
+      // covers it (a retry exact-dedupes the fact and would not re-queue it).
+      trackBehaviorSignals(
+        targetStorage,
+        buildBehaviorSignalsForMemory({
+          memoryId,
+          category: writeCategory,
+          content: fact.content,
+          namespace: this.deps.storageDirNamespace(targetStorage.dir),
+          confidence: fact.confidence,
+          source: "extraction",
+        }),
+      );
+      trackPersistedId(targetStorage, memoryId, {
+        pendingReview: postWriteGuard,
+        category: writeCategory,
+        harmonicFact,
+      });
       // #1645: defer contradiction auto-resolve until tombstone status is
       // known (see applyDeferredContradictionResolve).
       try {
@@ -2596,7 +2639,9 @@ export class ExtractionPersistCoordinator {
           await anchorSnapshots.remove(targetStorage, contradiction!.supersededId);
         }
       } catch (err) {
-        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        await finalizeCommittedWrites(true).catch((finalizeErr) =>
+          log.warn(`committed-write finalization after post-write failure failed: ${finalizeErr}`),
+        );
         throw err;
       }
       if (routedRuleId) {
@@ -2632,22 +2677,6 @@ export class ExtractionPersistCoordinator {
         }
       }
       try {
-        trackBehaviorSignals(
-          targetStorage,
-          buildBehaviorSignalsForMemory({
-            memoryId,
-            category: writeCategory,
-            content: fact.content,
-            namespace: this.deps.storageDirNamespace(targetStorage.dir),
-            confidence: fact.confidence,
-            source: "extraction",
-          }),
-        );
-        trackPersistedId(targetStorage, memoryId, {
-          pendingReview: postWriteGuard,
-          category: writeCategory,
-          harmonicFact,
-        });
         await anchorSnapshots.replace(targetStorage, memoryId, writeCategory, memoryPathById);
         if (
           !postWriteGuard &&
@@ -2782,9 +2811,12 @@ export class ExtractionPersistCoordinator {
           );
         }
       } catch (err) {
-        // PR #2016: flush the deferred fact-hash before propagating so a durable
-        // .md never outlives a missing shared fact-hash index entry.
-        await flushDeferredFactHashOnFailure(() => this.deps.saveContentHashIndexes(), factDedupEnabled);
+        // PR #2016 / #3231: finalize deferred side effects for facts already
+        // durable before propagating so hash/behavior/harmonic/temporal/QMD
+        // still land on a partial batch.
+        await finalizeCommittedWrites(true).catch((finalizeErr) =>
+          log.warn(`committed-write finalization after post-write failure failed: ${finalizeErr}`),
+        );
         throw err;
       }
     }
@@ -2807,7 +2839,6 @@ export class ExtractionPersistCoordinator {
       durableNonFactTouchRecorded = true;
       touchBaseNonFactNamespace();
     };
-    // #1955 review: entity fields are screened before entering the index (screenEntityForIndex).
     const entityScreenOn = resolveSecurityCapabilities(this.deps.config).injectionScreen;
     const entityScreenProfile = resolveSecurityCapabilities(this.deps.config).injectionScreenProfile;
     for (const entity of entities) {
@@ -2829,7 +2860,10 @@ export class ExtractionPersistCoordinator {
           recordDurableNonFactWrite();
         }
       } catch (err) {
-        log.warn(`persistExtraction: entity write failed: ${err}`);
+        await finalizeCommittedWrites(true).catch((finalizeErr) =>
+          log.warn(`committed-write finalization after entity failure failed: ${finalizeErr}`),
+        );
+        throw err;
       }
     }
     // Persist entity relationships (v7.0). #1955 review: source/label/target are screened.
@@ -2929,28 +2963,9 @@ export class ExtractionPersistCoordinator {
       touchBaseNonFactNamespace();
     }
 
-    // Save any content-hash indexes touched during the batch via the removal-
-    // aware, lock-held reconciling save (issue #1909). Round 11: the fact-hash
-    // index is rebuilt from the corpus on every restart (no ready marker), so
-    // this on-disk write is the in-process persisted view — never a cross-restart
-    // trust anchor. A deferred write whose addContentHashDedup threw is still
-    // safe: the fact .md is durable and the next restart's rebuild includes it.
-    await this.deps.saveContentHashIndexes().catch((err) => {
-      log.warn(`content-hash index save failed: ${err}`);
-    });
-
-    for (const {
-      storage: targetStorage,
-      events,
-    } of behaviorSignalsByStorage.values()) {
-      const dedupedSignals = dedupeBehaviorSignalsByMemoryAndHash(events);
-      if (dedupedSignals.length === 0) continue;
-      await targetStorage
-        .appendBehaviorSignals(dedupedSignals)
-        .catch((err) =>
-          log.warn(`appendBehaviorSignals failed (non-fatal): ${err}`),
-        );
-    }
+    // Shared batch-end finalization (hash, behavior, harmonic, temporal).
+    // Failure paths call the same helper with scheduleQmd=true (#3231).
+    await finalizeCommittedWrites(false);
 
     const dedupSuffix = `${dedupedCount > 0 ? ` (${dedupedCount} deduped)` : ""}${semanticMergedCount > 0 ? ` (${semanticMergedCount} merged)` : ""}`;
     const gatedSuffix =
@@ -2962,33 +2977,7 @@ export class ExtractionPersistCoordinator {
     log.info(
       `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount - semanticMergedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
-    if (harmonicConstructionEnabled && harmonicFactsByStorage.size > 0) {
-      await persistConstructedHarmonicRecords({
-        entries: harmonicFactsByStorage.values(),
-        baseStorageDir: storage.dir,
-        abstractionNodeStoreDir:
-          !scopeProfileWritePlan && harmonicBaseNamespace === this.deps.config.defaultNamespace
-            ? this.deps.config.abstractionNodeStoreDir
-            : undefined,
-        sessionKey: sourceContext?.sessionKey,
-        validAt: sourceContext?.validAt,
-        episodeTitle: result.episodeTitle,
-        anchorsEnabled: harmonicAnchorsEnabled,
-        entityMentions: entities,
-      });
-    }
-    // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open
-    void (async () => {
-      if (persistedIdsByStorage.size === 0) {
-        await this.deps.updateTemporalTagIndexes(storage, []);
-        return;
-      }
-      for (const entry of persistedIdsByStorage.values()) {
-        await this.deps.updateTemporalTagIndexes(entry.storage, entry.ids);
-      }
-    })().catch((err) =>
-      log.debug(`temporal-index update error (non-fatal): ${err}`),
-    );
+
     // #1635: surface pending_review ids so the thread episode set excludes them.
     this.deps.setLastPersistExtractionPendingReviewIds(pendingReviewPersistedIds);
     // Return the persisted fact IDs for threading
