@@ -499,9 +499,9 @@ export class MaintenanceScheduler {
    * unavailable or maintenance off), the pass failed, or dispose() abandoned it,
    * so a caller that must not lose the re-index keeps owing it.
    */
-  requestQmdMaintenanceCompletion(): Promise<boolean> {
+  requestQmdMaintenanceCompletion(namespace?: string): Promise<boolean> {
     if (this.disposed || !this.requestQmdMaintenance()) return Promise.resolve(false);
-    return this.qmdCompletion.wait();
+    return this.qmdCompletion.wait(namespace);
   }
 
   /**
@@ -546,6 +546,7 @@ export class MaintenanceScheduler {
     const settle = this.qmdCompletion.claim();
     let served = false;
     let deferred = false;
+    const ranNamespaces = new Set<string>();
 
     try {
       if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
@@ -628,7 +629,9 @@ export class MaintenanceScheduler {
         const covered = this.qmdCoveredNamespaces;
         const before = covered.size;
         for (const status of summary.statuses) {
-          if (status.state === "ran") covered.add(status.namespace);
+          if (status.state !== "ran") continue;
+          covered.add(status.namespace);
+          ranNamespaces.add(status.namespace);
         }
         const uncovered = summary.statuses.some(
           (status) =>
@@ -678,7 +681,7 @@ export class MaintenanceScheduler {
       // backoff) does not advance lastUpdateRanAtMs, so it leaves caches warm
       // (#1904, Codex/Cursor).
     } finally {
-      settle(served, deferred);
+      settle(served, deferred, ranNamespaces);
       if (!deferred) this.qmdCoveredNamespaces.clear();
       this.qmdMaintenanceInFlight = false;
       if (deferred) this.qmdMaintenancePending = true;

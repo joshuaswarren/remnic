@@ -3077,6 +3077,13 @@ test("requestQmdMaintenanceCompletion resolves false when dispose() clears the a
   assert.equal(await served, false, "a destroy inside the debounce window must leave the re-index owed");
 });
 
+test("requestQmdMaintenanceCompletion resolves false for a namespace-scoped request when dispose() abandons it", async () => {
+  const scheduler = completionScheduler({});
+  const served = scheduler.requestQmdMaintenanceCompletion("default");
+  await scheduler.dispose();
+  assert.equal(await served, false, "no pass ran the namespace, so the re-index stays owed");
+});
+
 test("requestQmdMaintenanceCompletion resolves false without arming anything when QMD is unavailable or disposed", async () => {
   const unavailable = completionScheduler({ available: false });
   try {
@@ -3418,6 +3425,48 @@ test("requestQmdMaintenanceCompletion over namespaces: a pass that adds no cover
     await scheduler.runQmdMaintenance();
     // Pass 2 ran default again and added nothing: the request ends unserved and no pass is re-armed.
     assert.equal(await served, false);
+    assert.equal(scheduler.isQmdMaintenancePending(), false);
+  } finally {
+    await scheduler.dispose();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("requestQmdMaintenanceCompletion over namespaces: a request scoped to a namespace is served once that namespace ran, however the budget ranks the rest", async () => {
+      const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-qmd-completion-budget-"));
+  const config = fixtureConfig({
+    memoryDir,
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    maintenanceNamespaceLockStaleMs: 100,
+    qmdAutoEmbedEnabled: false,
+    maintenanceMaxNamespacesPerCycle: 1,
+  });
+  const catalog: NamespaceCatalog = Object.assign(Object.create(null), {
+    enabled: true,
+    async listNamespaces() {
+      return [{ namespace: "default" }];
+    },
+    async markMaintenance() {},
+  });
+  const router: NamespaceSearchRouter = Object.assign(Object.create(null), {
+    async updateNamespacesDetailed(ns: string[]): Promise<NamespaceUpdateResult> {
+      return { backendCount: ns.length, eligibleNamespaces: ns };
+    },
+    async embedNamespaces(): Promise<void> {},
+  });
+  const scheduler = buildScheduler({ config, catalog, router });
+  try {
+    // Budget 1 with default and shared: default always ranks first and shared is never selected.
+    const forDefault = scheduler.requestQmdMaintenanceCompletion("default");
+    const forShared = scheduler.requestQmdMaintenanceCompletion("shared");
+    await scheduler.runQmdMaintenance();
+    assert.equal(await forDefault, true, "the namespace the migration rewrote ran this pass");
+    // shared starved: the pass added coverage once, then a pass adds none and the request ends unserved.
+    await scheduler.runQmdMaintenance();
+    assert.equal(await forShared, false);
     assert.equal(scheduler.isQmdMaintenancePending(), false);
   } finally {
     await scheduler.dispose();

@@ -38,3 +38,39 @@ test("the entity-migration hook does not report served when QMD cannot maintain,
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("the entity-migration hook scopes its request to the namespace its storage is bound to", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-3287-scope-"));
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "remnic-3287-scope-ws-"));
+  try {
+    const orchestrator = new Orchestrator(
+      parseConfig({
+        openaiApiKey: "sk-test",
+        memoryDir,
+        workspaceDir,
+        qmdEnabled: false,
+        topicExtractionEnabled: false,
+        summarizationEnabled: false,
+        identityEnabled: false,
+        entitySummaryEnabled: false,
+      }),
+    );
+    const requested: Array<string | undefined> = [];
+    // SAFETY: maintenanceScheduler is a private MaintenanceScheduler field; this narrows it to the one method the hook calls.
+    const scheduler = Object.getOwnPropertyDescriptor(orchestrator, "maintenanceScheduler")?.value as {
+      requestQmdMaintenanceCompletion(namespace?: string): Promise<boolean>;
+    };
+    scheduler.requestQmdMaintenanceCompletion = async (namespace) => {
+      requested.push(namespace);
+      return false;
+    };
+    const hook = orchestrator.storage.onEntityMigrationComplete;
+    assert.ok(hook);
+    await hook();
+    assert.deepEqual(requested, ["default"], "the default storage is bound to the default namespace");
+    await orchestrator.destroy();
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(workspaceDir, { recursive: true, force: true });
+  }
+});

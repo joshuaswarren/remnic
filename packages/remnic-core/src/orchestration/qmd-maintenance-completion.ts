@@ -6,22 +6,31 @@
  * settles them with the pass outcome, and abandons them on dispose().
  */
 export class QmdMaintenanceCompletion {
-  private waiters: Array<(served: boolean) => void> = [];
+  private waiters: Array<{ resolve: (served: boolean) => void; namespace?: string }> = [];
 
-  /** Resolves true when a pass that started after this call completed successfully. */
-  wait(): Promise<boolean> {
-    return new Promise((resolve) => this.waiters.push(resolve));
+  /**
+   * Resolves true when a pass that started after this call completed successfully. With a
+   * `namespace` the request is served as soon as a pass ran that namespace, whatever else it skipped.
+   */
+  wait(namespace?: string): Promise<boolean> {
+    return new Promise((resolve) => this.waiters.push({ resolve, namespace }));
   }
 
   /**
    * A pass is starting: take every waiter it will serve and return their settle function.
-   * `defer` keeps them waiting for a later pass (a pass that covered only part of the selection).
+   * `ran` lists the namespaces the pass ran; `defer` keeps the waiters it did not serve waiting
+   * for a later pass (a pass that covered only part of the selection).
    */
-  claim(): (served: boolean, defer?: boolean) => void {
+  claim(): (served: boolean, defer?: boolean, ran?: ReadonlySet<string>) => void {
     const claimed = this.waiters.splice(0);
-    return (served, defer = false) => {
-      if (defer) this.waiters.unshift(...claimed);
-      else claimed.forEach((resolve) => resolve(served));
+    return (served, defer = false, ran) => {
+      const requeue: typeof claimed = [];
+      for (const waiter of claimed) {
+        if (served || (waiter.namespace !== undefined && ran?.has(waiter.namespace))) waiter.resolve(true);
+        else if (defer) requeue.push(waiter);
+        else waiter.resolve(false);
+      }
+      this.waiters.unshift(...requeue);
     };
   }
 
