@@ -181,7 +181,7 @@ the check that the local route is wired. `remnic doctor` shows
 Measured on this host (CPU-only, small model — expect modest quality):
 
 - Storing a memory through the daemon's MCP endpoint (`remnic_memory_store`): **40 ms**.
-- One chat completion, 48 prompt + 40 completion tokens: **2.5 s wall** (~17 completion
+- One chat completion, 48 prompt + 40 completion tokens: **2.5 s wall** (16 completion
   tokens/s on CPU).
 - Recalling it: `remnic query "Which fleet host runs the local model?"` returned the
   stored memory; 4.1 s wall for the CLI, of which retrieval internals were **83 ms**
