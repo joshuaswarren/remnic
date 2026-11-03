@@ -453,10 +453,9 @@ function enumOptionsFromIssue(issue: z.core.$ZodIssue): readonly string[] | unde
 function humanReadableIssueMessage(issue: z.core.$ZodIssue, pathLabel: string, hasNumericPath: boolean): string {
   if (issue.code !== "invalid_type") return issue.message;
   const expected = issue.expected;
-  // SAFETY: v4 invalid_type issues carry `received` at runtime; the public
-  // $ZodIssueInvalidType typing omits the field.
-  const received = (issue as { received?: string }).received;
-  if (received === "undefined") return issue.message;
+  // zod 4 issues carry no `received` field; its message ends "received undefined"
+  // for an absent value, which is a missing field, not a type mismatch.
+  if (issue.message.endsWith("received undefined")) return issue.message;
   if (hasNumericPath && expected) {
     return `${pathLabel} must be an array of ${expected}s`;
   }
