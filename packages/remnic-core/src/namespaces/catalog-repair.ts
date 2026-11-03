@@ -16,6 +16,8 @@ export const MALFORMED_REPAIR_DROP_BACKOFF_MS = 250;
  * short — a longer window would delay the legitimate warm-cache retry after
  * contention clears. A fast failure holds no lock budget and does not back off.
  */
+import { createHash } from "node:crypto";
+
 export class MalformedCatalogRepairGate {
   private inFlight: Promise<void> | undefined;
   private nextAttemptAt = 0;
@@ -33,7 +35,9 @@ export class MalformedCatalogRepairGate {
   run(attempt: () => Promise<"repaired" | "dropped" | "failed">): Promise<void> {
     if (this.inFlight || Date.now() < this.nextAttemptAt) return Promise.resolve();
     this.attempts += 1;
-    this.inFlight = (async () => {
+    // Start the attempt as a microtask so run() returns before any of its work
+    // begins, keeping the guard decision synchronous for every caller.
+    this.inFlight = Promise.resolve().then(async () => {
       let outcome: "repaired" | "dropped" | "failed" = "failed";
       try {
         outcome = await attempt();
@@ -45,7 +49,7 @@ export class MalformedCatalogRepairGate {
           this.nextAttemptAt = Date.now() + MALFORMED_REPAIR_DROP_BACKOFF_MS;
         }
       }
-    })();
+    });
     return this.inFlight;
   }
 }
@@ -59,13 +63,7 @@ export function malformedSidecarPath(catalogPath: string, dropped: string[]): st
   return `${catalogPath}.malformed-${contentHash(dropped.join("\n"))}`;
 }
 
-// FNV-1a over the UTF-8 bytes; stable across processes, no dependency, and only
-// used to name a file (not to authenticate content).
+// sha256 of the dropped lines, truncated for a filename; stable across processes.
 function contentHash(input: string): string {
-  let hash = 0x811c9dc5;
-  for (const byte of Buffer.from(input, "utf8")) {
-    hash ^= byte;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0") + Buffer.byteLength(input, "utf8").toString(16).padStart(8, "0");
+  return createHash("sha256").update(input, "utf8").digest("hex").slice(0, 16);
 }
