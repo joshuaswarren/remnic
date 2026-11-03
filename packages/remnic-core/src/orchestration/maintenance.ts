@@ -620,7 +620,19 @@ export class MaintenanceScheduler {
         );
         served = summary.ran > 0 && summary.failed === 0;
       } else {
-        await this.deps.getQmd().update();
+        const qmd = this.deps.getQmd();
+        if (qmd.updateStrict) {
+          // Plain update() is fail-open: it resolves when the min-interval gate or failure
+          // backoff suppressed it, and when it errored. Only the strict variant says an update ran.
+          try {
+            await qmd.updateStrict();
+            served = true;
+          } catch (err) {
+            log.debug(`qmd maintenance update did not run: ${err}`);
+          }
+        } else {
+          await qmd.update();
+        }
         const now = Date.now();
         if (
           resolveQmdCapabilities(this.deps.config).qmdAutoEmbed &&
@@ -629,7 +641,6 @@ export class MaintenanceScheduler {
           await this.deps.getQmd().embed();
           this.lastQmdEmbedAtMs = now;
         }
-        served = this.deps.getQmd().isAvailable();
       }
       // Note: a successful QMD update/embed clears the global QMD result caches
       // itself (QmdClient.runUpdateForCollection / runEmbedForCollection), so

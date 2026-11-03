@@ -2989,16 +2989,35 @@ test("maintenance tool request invokes the scheduled projection rebuild wiring (
 // requestQmdMaintenanceForTool, which only arms a debounced timer.
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Non-namespace scheduler over a scriptable QMD backend. */
+/**
+ * Non-namespace scheduler over a scriptable QMD backend. Like QmdClient, plain
+ * `update()` is fail-open: it resolves even when the min-interval gate or the
+ * failure backoff suppressed it or it errored, so only `updateStrict()` says
+ * whether an update actually ran.
+ */
 function completionScheduler(
-  backend: { available?: boolean; update?: () => Promise<void> },
+  backend: {
+    available?: boolean;
+    /** What a plain, fail-open update() does (default: resolve). */
+    update?: () => Promise<void>;
+    /** What a strict update does; `false` omits the method (a backend that cannot confirm an update). */
+    updateStrict?: (() => Promise<void>) | false;
+  },
   overrides: Record<string, boolean> = {},
 ): MaintenanceScheduler {
+  const runStrict = backend.updateStrict || (async () => undefined);
+  const strict = backend.updateStrict === false ? {} : {
+    async updateStrict() {
+      if (!(backend.available ?? true)) throw new Error("QMD unavailable");
+      await runStrict();
+    },
+  };
   // Object.create yields an untyped value, so no assertion is needed: the scheduler reads only these members.
   const qmd: SearchBackend = Object.assign(Object.create(null), {
     isAvailable: () => backend.available ?? true,
     update: backend.update ?? (async () => undefined),
     async embed() {},
+    ...strict,
   });
   const router: NamespaceSearchRouter = Object.create(null);
   const catalog: NamespaceCatalog = Object.assign(Object.create(null), { enabled: false });
@@ -3035,14 +3054,14 @@ test("requestQmdMaintenanceCompletion serves every request that was waiting when
 
 test("requestQmdMaintenanceCompletion resolves false when the covering pass fails", async () => {
   const scheduler = completionScheduler({
-    update: async () => {
+    updateStrict: async () => {
       throw new Error("qmd update failed");
     },
   });
   try {
     const served = scheduler.requestQmdMaintenanceCompletion();
-    await assert.rejects(scheduler.runQmdMaintenance(), /qmd update failed/);
-    assert.equal(await served, false);
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, false, "a failed update left the index stale: the request stays owed");
   } finally {
     await scheduler.dispose();
   }
@@ -3077,6 +3096,67 @@ test("requestQmdMaintenanceCompletion resolves false without arming anything whe
   assert.equal(disposed.isQmdMaintenancePending(), false);
 });
 
+test("requestQmdMaintenanceCompletion resolves false when the update was suppressed or errored but plain update() still returned normally", async () => {
+  // QmdClient.update() is fail-open: a min-interval gate or failure backoff
+  // suppression resolves it silently, and so does an error. Reading that as
+  // served cleared the marker with no re-index (default non-namespace config).
+  for (const reason of ["QMD update skipped by min-interval gate", "QMD update skipped by recent failure backoff", "spawn qmd ENOENT"]) {
+    const scheduler = completionScheduler({
+      update: async () => undefined,
+      updateStrict: async () => {
+        throw new Error(reason);
+      },
+    });
+    try {
+      const served = scheduler.requestQmdMaintenanceCompletion();
+      await scheduler.runQmdMaintenance();
+      assert.equal(await served, false, reason);
+    } finally {
+      await scheduler.dispose();
+    }
+  }
+});
+
+test("requestQmdMaintenanceCompletion resolves false for a backend that cannot confirm an update", async () => {
+  const scheduler = completionScheduler({ updateStrict: false });
+  try {
+    const served = scheduler.requestQmdMaintenanceCompletion();
+    await scheduler.runQmdMaintenance();
+    assert.equal(await served, false, "plain update() says nothing about whether it indexed");
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
+test("requestQmdMaintenanceCompletion keeps embedding after a suppressed update, as before", async () => {
+  let embeds = 0;
+  const qmd: SearchBackend = Object.assign(Object.create(null), {
+    isAvailable: () => true,
+    async update() {},
+    async updateStrict() {
+      throw new Error("QMD update skipped by min-interval gate");
+    },
+    async embed() {
+      embeds += 1;
+    },
+  });
+  const router: NamespaceSearchRouter = Object.create(null);
+  const catalog: NamespaceCatalog = Object.assign(Object.create(null), { enabled: false });
+  const scheduler = new MaintenanceScheduler({
+    config: fixtureConfig({ namespacesEnabled: false, qmdAutoEmbedEnabled: true, qmdEmbedMinIntervalMs: 0 }),
+    getQmd: () => qmd,
+    namespaceSearchRouter: router,
+    namespaceCatalog: catalog,
+  });
+  try {
+    scheduler.requestQmdMaintenanceForTool("test");
+    await scheduler.runQmdMaintenance();
+    assert.equal(embeds, 1, "a suppressed update must not skip a due embed");
+  } finally {
+    await scheduler.dispose();
+  }
+});
+
 test("requestQmdMaintenanceCompletion resolves false when the backend became unavailable before the armed pass ran", async () => {
   const backend = { available: true };
   const scheduler = completionScheduler(backend);
@@ -3096,7 +3176,7 @@ test("requestQmdMaintenanceCompletion is served by the next pass when requested 
   const release = Promise.withResolvers<void>();
   let updates = 0;
   const scheduler = completionScheduler({
-    update: async () => {
+    updateStrict: async () => {
       updates += 1;
       if (updates === 1) await release.promise;
     },
