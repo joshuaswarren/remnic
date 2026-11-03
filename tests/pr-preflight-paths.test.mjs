@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { checkTypePackageDirs, noCheckTypePackageDirs } from "../scripts/check-type-packages.mjs";
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const preflightScript = resolve(rootDir, "scripts/pr-preflight.sh");
+const checkTypePackagesScript = resolve(rootDir, "scripts/check-type-packages.mjs");
 const coveredPackages = checkTypePackageDirs();
 const noCheckTypePackages = noCheckTypePackageDirs();
 
@@ -17,6 +19,72 @@ function scopeList(stdout, label) {
   if (!line) return null;
   return line.slice(prefix.length).trim().split(/\s+/).filter(Boolean);
 }
+
+/** Checked and skipped must be a partition — never both. */
+function assertExclusivePackageScope(stdout, context) {
+  const checked = scopeList(stdout, "Checked") ?? [];
+  const skipped = scopeList(stdout, "Skipped") ?? [];
+  const overlap = checked.filter((name) => skipped.includes(name));
+  assert.deepEqual(
+    overlap,
+    [],
+    `${context}: packages must not appear in both Checked and Skipped (overlap: ${overlap.join(", ")})`,
+  );
+}
+
+/**
+ * Isolated workspace large enough that old `printf|grep -Fxq` membership under
+ * `set -o pipefail` dual-lists early covered names into Skipped. Copies the
+ * production preflight + check-type-packages scripts (no new prod seam).
+ * ~1200+ covered names is the observed SIGPIPE threshold on Linux; 2000 is
+ * the stable pin.
+ */
+const PIPEFAIL_COVERED_COUNT = 2000;
+const PIPEFAIL_EARLY_COVERED = "connector-droid";
+const PIPEFAIL_NOCHECK = ["nocheck-alpha", "nocheck-zeta"];
+
+function writeFixturePackage(packagesDir, name, { checkTypes }) {
+  const dir = join(packagesDir, name);
+  mkdirSync(dir, { recursive: true });
+  const manifest = {
+    name: `@fixture/${name}`,
+    private: true,
+  };
+  if (checkTypes) {
+    manifest.scripts = { "check-types": "tsc -p tsconfig.json --noEmit" };
+  }
+  writeFileSync(join(dir, "package.json"), `${JSON.stringify(manifest)}\n`);
+}
+
+function buildPipefailMembershipFixture(fixtureRoot) {
+  const packagesDir = join(fixtureRoot, "packages");
+  const scriptsDir = join(fixtureRoot, "scripts");
+  mkdirSync(packagesDir, { recursive: true });
+  mkdirSync(scriptsDir, { recursive: true });
+  writeFileSync(join(fixtureRoot, "tsconfig.json"), "{}\n");
+  cpSync(preflightScript, join(scriptsDir, "pr-preflight.sh"));
+  cpSync(checkTypePackagesScript, join(scriptsDir, "check-type-packages.mjs"));
+
+  writeFixturePackage(packagesDir, PIPEFAIL_EARLY_COVERED, { checkTypes: true });
+  for (let i = 1; i <= PIPEFAIL_COVERED_COUNT; i += 1) {
+    writeFixturePackage(packagesDir, `pkg-${String(i).padStart(4, "0")}`, { checkTypes: true });
+  }
+  for (const name of PIPEFAIL_NOCHECK) {
+    writeFixturePackage(packagesDir, name, { checkTypes: false });
+  }
+
+  return join(scriptsDir, "pr-preflight.sh");
+}
+
+function packageScopeAt(scriptPath, cwd, files) {
+  return spawnSync("bash", [scriptPath, "--print-quick-package-scope"], {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, PREFLIGHT_CHANGED_FILES: files },
+  });
+}
+
+
 
 const guardedPaths = [
   "src/orchestrator.ts",
@@ -76,6 +144,21 @@ const coreScope = packageScope("packages/remnic-core/src/index.ts");
 assert.equal(coreScope.status, 0, coreScope.stderr);
 assert.match(coreScope.stdout, /Checked packages:.*plugin-openclaw/);
 assert.match(coreScope.stdout, /Checked packages:.*bench-ui/);
+assertExclusivePackageScope(coreScope.stdout, "remnic-core dependents");
+{
+  const coreChecked = scopeList(coreScope.stdout, "Checked") ?? [];
+  const coreSkipped = scopeList(coreScope.stdout, "Skipped") ?? [];
+  assert.ok(
+    coreChecked.includes("connector-droid"),
+    "connector-droid declares check-types and is in the remnic-core dependent set",
+  );
+  assert.equal(
+    coreSkipped.includes("connector-droid"),
+    false,
+    "connector-droid must not also land in Skipped (pipefail false-negative membership)",
+  );
+}
+
 
 const pythonPluginScope = packageScope("packages/plugin-hermes/remnic_hermes/hermes_llm_bridge.py");
 assert.equal(pythonPluginScope.status, 0, pythonPluginScope.stderr);
@@ -94,6 +177,9 @@ assert.ok(
   coveredPackages.includes("import-weclone"),
   "import-weclone declares scripts.check-types and must always be checked"
 );
+assertExclusivePackageScope(rootConfigScope.stdout, "all-packages scope");
+assertExclusivePackageScope(affectedScope.stdout, "remnic-cli affected scope");
+
 
 // Clean CI vs hydrated local (#2851): node_modules and package build output
 // must not change the quick package scope. Only simulate hydration with
@@ -108,10 +194,53 @@ try {
   const hydratedScope = packageScope("tsconfig.json");
   assert.equal(hydratedScope.status, 0, hydratedScope.stderr);
   assert.equal(hydratedScope.stdout, rootConfigScope.stdout);
+  assertExclusivePackageScope(hydratedScope.stdout, "hydrated all-packages scope");
+  assertExclusivePackageScope(rootConfigScope.stdout, "pre-hydration baseline");
+
 } finally {
   if (!hadNodeModules) rmSync(nodeModulesDir, { recursive: true, force: true });
   if (!hadDist) rmSync(importWecloneDistDir, { recursive: true, force: true });
 }
+
+// Pipefail membership (#3231 prerequisite): real --print-quick-package-scope on
+// an isolated workspace with enough covered manifests that the old
+// printf|grep -Fxq path dual-lists early members. Fixture copies the production
+// scripts from this checkout (parent restores the old script to observe RED).
+{
+  const fixtureRoot = mkdtempSync(join(tmpdir(), "remnic-preflight-memb-"));
+  try {
+    const fixtureScript = buildPipefailMembershipFixture(fixtureRoot);
+    const largeScope = packageScopeAt(fixtureScript, fixtureRoot, "tsconfig.json");
+    assert.equal(largeScope.status, 0, largeScope.stderr || largeScope.stdout);
+    assert.match(largeScope.stdout, /Quick package scope: all packages/);
+
+    const expectedChecked = [
+      PIPEFAIL_EARLY_COVERED,
+      ...Array.from({ length: PIPEFAIL_COVERED_COUNT }, (_, i) => `pkg-${String(i + 1).padStart(4, "0")}`),
+    ].sort();
+    const expectedSkipped = [...PIPEFAIL_NOCHECK].sort();
+
+    assert.deepEqual(
+      scopeList(largeScope.stdout, "Checked"),
+      expectedChecked,
+      "large fixture: every check-types package must be checked exactly once",
+    );
+    assert.deepEqual(
+      scopeList(largeScope.stdout, "Skipped"),
+      expectedSkipped,
+      "large fixture: only no-check-types packages may skip",
+    );
+    assertExclusivePackageScope(largeScope.stdout, "large fixture all-packages scope");
+    assert.equal(
+      (scopeList(largeScope.stdout, "Skipped") ?? []).includes(PIPEFAIL_EARLY_COVERED),
+      false,
+      `${PIPEFAIL_EARLY_COVERED} must not dual-list into Skipped under pipefail membership`,
+    );
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
 
 const workspaceConfigScope = packageScope("pnpm-workspace.yaml");
 assert.equal(workspaceConfigScope.status, 0, workspaceConfigScope.stderr);
