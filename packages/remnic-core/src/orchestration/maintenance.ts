@@ -618,7 +618,17 @@ export class MaintenanceScheduler {
             skipReasonForError: qmdMaintenanceSkipReasonForError,
           },
         );
-        served = summary.ran > 0 && summary.failed === 0;
+        // A skipped namespace with a TRANSIENT reason (budget_exhausted, lock_held) means this
+        // pass did not cover the selection, so it must not serve a completion request. Permanent
+        // skip reasons describe namespaces this deployment never re-indexes; they don't block.
+        served =
+          summary.ran > 0 &&
+          summary.failed === 0 &&
+          !summary.statuses.some(
+            (status) =>
+              status.state === "skipped" &&
+              (status.reason === "budget_exhausted" || status.reason === "lock_held"),
+          );
       } else {
         const qmd = this.deps.getQmd();
         // Plain update() is fail-open on every backend: it resolves when the min-interval gate,

@@ -201,10 +201,17 @@ export class MeilisearchBackend implements SearchBackend {
         if (staleIds.length > 0) {
           if (isSearchAborted(execution)) return false;
           const delTask = await index.deleteDocuments(staleIds);
-          await client.waitForTask(delTask.taskUid, { timeOutMs: this.timeoutMs });
+          // The deletion is part of completion: a stale document left searchable is not an
+          // up-to-date index, and waitForTask resolves failed/canceled tasks without throwing.
+          const deleted = await client.waitForTask(delTask.taskUid, { timeOutMs: this.timeoutMs });
+          if (deleted.status !== "succeeded") {
+            log.debug(`MeilisearchBackend stale-document deletion finished with status ${deleted.status}`);
+            return false;
+          }
         }
-      } catch {
-        // Deletion cleanup is best-effort
+      } catch (err) {
+        log.debug(`MeilisearchBackend stale-document deletion failed: ${err}`);
+        return false;
       }
       return true;
     } catch (err) {

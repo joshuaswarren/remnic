@@ -222,12 +222,14 @@ test("clearing one run's marker never deletes a marker a concurrent run armed me
     const first = new StorageManager(dir);
     // Another process takes the migration lock after this run released it and
     // arms its own marker before this run's hook returns and its clear starts.
+    let concurrentArm: Promise<string> | undefined;
     first.onEntityMigrationComplete = () => {
-      void writeMaintenancePending(stateDir);
+      concurrentArm = writeMaintenancePending(stateDir);
     };
     await first.ensureDirectories();
     await first.drainEntityCanonicalIdMigration();
     await drainMaintenanceSettlements(stateDir);
+    await concurrentArm;
     assert.equal(
       (await pendingMarkers(dir)).length,
       1,

@@ -72,3 +72,77 @@ test("Meilisearch updateCompleted is false for a reachable backend with no memor
   Object.defineProperty(backend, "client", { value: stubClient("succeeded") });
   assert.equal(await backend.updateCompleted(), false);
 });
+
+test("Meilisearch updateCompleted is false when a stale-document deletion fails (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-meili-deletion-"));
+  try {
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    // One live fact plus one stale server-side doc: the add succeeds, the deletion must too.
+    await writeFile(path.join(root, "facts", "fact.md"), "---\nid: mem-meili\n---\nA fact to index.");
+    const backend = new MeilisearchBackend({ host: "http://127.0.0.1:1", collection: "openclaw-engram", autoIndex: true, memoryDir: root });
+    Object.defineProperty(backend, "available", { value: true });
+    let waitForTaskCalls = 0;
+    Object.defineProperty(backend, "client", {
+      value: {
+        async health() {},
+        async getIndex() {},
+        index: () => ({
+          async addDocuments() {
+            return { taskUid: 1 };
+          },
+          async getDocuments() {
+            return { results: [{ id: "mem-meili" }, { id: "mem-stale" }] };
+          },
+          async deleteDocuments() {
+            return { taskUid: 2 };
+          },
+        }),
+        // First wait is the add (succeeded); second is the stale-doc deletion.
+        async waitForTask() {
+          waitForTaskCalls += 1;
+          return { status: waitForTaskCalls === 1 ? "succeeded" : "failed" };
+        },
+      },
+    });
+    assert.equal(await backend.updateCompleted(), false, "a failed deletion leaves a stale document searchable");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Meilisearch updateCompleted is false when waiting on the stale-document deletion throws (issue #3286)", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-meili-deletion-throw-"));
+  try {
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    await writeFile(path.join(root, "facts", "fact.md"), "---\nid: mem-meili\n---\nA fact to index.");
+    const backend = new MeilisearchBackend({ host: "http://127.0.0.1:1", collection: "openclaw-engram", autoIndex: true, memoryDir: root });
+    Object.defineProperty(backend, "available", { value: true });
+    let waitForTaskCalls = 0;
+    Object.defineProperty(backend, "client", {
+      value: {
+        async health() {},
+        async getIndex() {},
+        index: () => ({
+          async addDocuments() {
+            return { taskUid: 1 };
+          },
+          async getDocuments() {
+            return { results: [{ id: "mem-meili" }, { id: "mem-stale" }] };
+          },
+          async deleteDocuments() {
+            return { taskUid: 2 };
+          },
+        }),
+        // The add succeeds; waiting on the deletion rejects (a timeout in the real SDK).
+        async waitForTask() {
+          waitForTaskCalls += 1;
+          if (waitForTaskCalls > 1) throw new Error("timed out waiting for the deletion task");
+          return { status: "succeeded" };
+        },
+      },
+    });
+    assert.equal(await backend.updateCompleted(), false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
