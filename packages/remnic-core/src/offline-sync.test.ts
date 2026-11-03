@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -4050,5 +4050,37 @@ test("a file vanishing during the changeset upsert read keeps the retryable chan
     );
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a tracked file replaced by a symlink is a local delete, not a push-blocking error", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-symlink-replaced-"));
+  const outside = await mkdtemp(path.join(os.tmpdir(), "remnic-offline-symlink-target-"));
+  try {
+    const rel = "facts/tracked.md";
+    const bytes = Buffer.from("tracked bytes\n");
+    await mkdir(path.join(root, "facts"), { recursive: true });
+    await writeFile(path.join(outside, "target.md"), "outside\n");
+    await symlink(path.join(outside, "target.md"), path.join(root, rel));
+    const baseFile = {
+      path: rel,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      bytes: bytes.byteLength,
+      mtimeMs: 1,
+    };
+    const changeset = await buildOfflineSyncChangesetFromSnapshot({
+      root,
+      sourceId: "laptop",
+      baseFiles: [baseFile],
+      currentFiles: [],
+    });
+    assert.deepEqual(
+      changeset.changes.map((change) => [change.type, change.path]),
+      [["delete", rel]],
+      "a symlink is not a regular local file: it reads as a delete, as before the census change",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
   }
 });

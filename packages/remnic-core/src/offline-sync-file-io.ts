@@ -79,7 +79,14 @@ export async function plainFileDigest(filePath: string): Promise<string> {
 
 import { lstat, utimes } from "node:fs/promises";
 import { isCensusMtimeMs } from "./census-validation.js";
-import { resolveSafeArchiveTarget, type SafeArchiveRoot } from "./transfer/fs-utils.js";
+import path from "node:path";
+import {
+  fromPosixRelPath,
+  isPathInsideRoot,
+  resolveSafeArchiveTarget,
+  type SafeArchiveRoot,
+  validateArchiveRelativePath,
+} from "./transfer/fs-utils.js";
 
 /** Sync-internal directory spooling partial uploads and coordination state. */
 export const SYNC_INTERNAL_DIR = ".offline-sync";
@@ -125,19 +132,29 @@ export async function setSafeFileMtime(
   return true;
 }
 
-/** True when a regular (non-symlink) file exists at the archive-relative path. */
+/**
+ * True when a regular (non-symlink) file exists at the archive-relative path.
+ * A symlink is not a regular local file and reads as absent, so callers treat
+ * it like any other missing path instead of failing the whole push.
+ */
 export async function offlineSyncRegularFilePresent(
   root: SafeArchiveRoot,
   relPath: string,
 ): Promise<boolean> {
-  const filePath = await resolveSafeArchiveTarget(root, relPath);
-  const st = await lstat(filePath).catch((error: NodeJS.ErrnoException) => {
+  const target = path.resolve(root.abs, fromPosixRelPath(validateArchiveRelativePath(relPath, root.errorPrefix)));
+  if (!isPathInsideRoot(root.abs, target)) {
+    throw new Error(`${root.errorPrefix}: record path escapes target root: ${relPath}`);
+  }
+  const st = await lstat(target).catch((error: NodeJS.ErrnoException) => {
     // SAFETY: Node fs errors carry `code`; only ENOENT means absent, all other
     // errno codes must propagate so census uncertainty fails closed.
     if (error.code === "ENOENT") return null;
     throw error;
   });
-  return Boolean(st && !st.isSymbolicLink() && st.isFile());
+  if (!st || st.isSymbolicLink() || !st.isFile()) return false;
+  // A regular file still has to resolve inside the root (a symlinked parent directory escapes it).
+  await resolveSafeArchiveTarget(root, relPath);
+  return true;
 }
 
 /** A path the census observed vanished before its digest was read: a retryable race, never a confirmed delete. */
