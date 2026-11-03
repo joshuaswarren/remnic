@@ -84,6 +84,7 @@ import {
   migrateFromEngram,
   rollbackFromEngramMigration,
   buildBriefing,
+  withBriefingDeadline,
   parseBriefingWindow,
   parseBriefingFocus,
   validateBriefingFormat,
@@ -5715,7 +5716,7 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
   }
 }
 
-async function cmdBriefing(rest: string[]): Promise<void> {
+async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<void> {
   initLogger();
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
@@ -5797,14 +5798,25 @@ async function cmdBriefing(rest: string[]): Promise<void> {
 
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
+  abortSignal.throwIfAborted();
   const storage = await orchestrator.getStorage(config.defaultNamespace);
 
   const calendarSource = config.briefing.calendarSource
     ? new FileCalendarSource(config.briefing.calendarSource)
     : undefined;
 
+  // Read before buildBriefing: it drains correction notifications at most
+  // once, so a deadline during this read must not lose them.
+  // Opt-in matched place names (issue #2925): same gate + section the
+  // access service appends, so CLI and server briefings stay identical.
+  const locationSection =
+    includeLocation && locationTaggingEnabled(config.location)
+      ? await briefingLocationSection(storage.dir, window.from.toISOString(), config.location)
+      : undefined;
+
   const result = await buildBriefing({
     storage,
+    abortSignal,
     window,
     focus,
     namespace: config.defaultNamespace,
@@ -5822,19 +5834,12 @@ async function cmdBriefing(rest: string[]): Promise<void> {
       : orchestrator.briefingChainFollowupGenerator,
   });
 
-  // Opt-in matched place names (issue #2925): same gate + section the
-  // access service appends, so CLI and server briefings stay identical.
-  if (includeLocation && locationTaggingEnabled(config.location)) {
-    const section = await briefingLocationSection(
-      storage.dir,
-      window.from.toISOString(),
-      config.location,
-    );
-    if (section) {
-      result.markdown += `\n\n${section}\n`;
-      result.json = { ...result.json, locationContext: section };
-    }
+  abortSignal.throwIfAborted();
+  if (locationSection) {
+    result.markdown += `\n\n${locationSection}\n`;
+    result.json = { ...result.json, locationContext: locationSection };
   }
+  abortSignal.throwIfAborted();
 
   const payload = format === "json" ? JSON.stringify(result.json, null, 2) : result.markdown;
   console.log(payload);
@@ -12968,7 +12973,7 @@ Options:
     }
 
     case "briefing": {
-      await cmdBriefing(rest);
+      await withBriefingDeadline((signal) => cmdBriefing(rest, signal));
       break;
     }
 

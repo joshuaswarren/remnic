@@ -29,8 +29,9 @@ import {
   type MemoryScopePlan,
   NamespaceNotWritableError,
 } from "./access-service.js";
-import { applyBriefingLocationContext, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
+import { buildWithBriefingLocation, reapplyCategoryCoercion, splitCanonicalWriteRequest } from "./access-observe-write-category.js";
 import { abortError } from "./abort-error.js";
+import { withBriefingDeadline } from "./briefing-deadline.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
@@ -410,7 +411,6 @@ export class AccessObserveWriteSurface {
     }
 
     const namespace = this.deps.resolveReadableNamespace(request.namespace, request.principal);
-    const storage = await this.deps.orchestrator.getStorage(namespace);
 
     const token =
       typeof request.since === "string" && request.since.trim().length > 0
@@ -457,23 +457,28 @@ export class AccessObserveWriteSurface {
       ? new FileCalendarSource(config.briefing.calendarSource)
       : undefined;
 
-    const result = await applyBriefingLocationContext(await buildBriefing({
-      storage,
-      namespace,
-      window,
-      focus,
-      calendarSource,
-      maxFollowups,
-      allowLlm: config.briefing.llmFollowups,
-      openaiApiKey: config.openaiApiKey,
-      openaiBaseUrl: config.openaiBaseUrl,
-      model: config.model,
-      // Without a direct OpenAI key, route follow-ups through the configured
-      // LLM chain (gateway model source or local LLM) — same fallback every
-      // other LLM feature uses. A configured key keeps its precedence so
-      // existing deployments are unchanged.
-      followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
-    }), request.includeLocation, storage.dir, window.from.toISOString(), config.location);
+    // Storage acquisition and the briefing body share one request budget.
+    const result = await withBriefingDeadline(async (signal) => {
+      const storage = await this.deps.orchestrator.getStorage(namespace);
+      return buildWithBriefingLocation(request.includeLocation, storage.dir, window.from.toISOString(), config.location, () => buildBriefing({
+        storage,
+        namespace,
+        window,
+        focus,
+        calendarSource,
+        maxFollowups,
+        allowLlm: config.briefing.llmFollowups,
+        openaiApiKey: config.openaiApiKey,
+        openaiBaseUrl: config.openaiBaseUrl,
+        model: config.model,
+        // Without a direct OpenAI key, route follow-ups through the configured
+        // LLM chain (gateway model source or local LLM) — same fallback every
+        // other LLM feature uses. A configured key keeps its precedence so
+        // existing deployments are unchanged.
+        followupGenerator: config.openaiApiKey ? undefined : this.deps.orchestrator.briefingChainFollowupGenerator,
+        abortSignal: signal,
+      }));
+    }, request.abortSignal);
 
     return {
       format,

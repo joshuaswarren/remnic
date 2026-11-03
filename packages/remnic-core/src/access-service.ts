@@ -507,6 +507,11 @@ export interface EngramAccessBriefingRequest extends LocationContextRequestOptio
   maxFollowups?: number;
   /** Caller principal for namespace access checks. Transport-bound — never from untrusted payloads. */
   principal?: string;
+  /**
+   * Transport request lifetime. When it aborts, the briefing stops and
+   * rejects with that AbortError instead of running on (issue #3139).
+   */
+  abortSignal?: AbortSignal;
 }
 
 /** Response for `remnic_briefing`. */

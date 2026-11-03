@@ -23,7 +23,7 @@ import {
   retainedCategoryAlias,
   suggestionSubmitRequestSchema,
 } from "./access-schema.js";
-import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, type EngramAccessService, type EngramAccessBriefingRequest } from "./access-service.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import {
@@ -381,7 +381,23 @@ defineOperation({ name: "memory_promote", description: "Promote memory.", schema
 defineOperation({ name: "memory_outcome", description: "Record outcome.", schema: strictSchema({ memoryId: S.str, outcome: S.str, namespace: S.str, sessionKey: S.str, timestamp: S.str }), handler: async (input, ctx) => { const o = optStr(input.outcome); if (o !== "success" && o !== "failure") throw new EngramAccessInputError("memory_outcome: outcome must be \"success\" or \"failure\"; got " + JSON.stringify(o)); return { result: await ctx.service.memoryOutcome({ memoryId: optStr(input.memoryId) ?? "", outcome: o, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), timestamp: optStr(input.timestamp), principal: ctx.authenticatedPrincipal }) }; } });
 defineOperation({ name: "memory_action_apply", description: "Apply action.", schema: strictSchema({ action: S.str, outcome: S.str, reason: S.str, memoryId: S.str, namespace: S.str, sessionKey: S.str, content: S.str, category: S.str, linkTargetId: S.str, linkType: S.str, linkStrength: S.num, artifactType: S.str, execute: S.bool, sourcePrompt: S.str, dryRun: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.memoryActionApply({ action: optStr(input.action) ?? "", outcome: optStr(input.outcome), reason: optStr(input.reason), memoryId: optStr(input.memoryId) ?? "", namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), content: optStr(input.content), category: optStr(input.category), linkTargetId: optStr(input.linkTargetId), linkType: optStr(input.linkType), linkStrength: optNum(input.linkStrength), artifactType: optStr(input.artifactType), execute: optBool(input.execute), sourcePrompt: optStr(input.sourcePrompt), dryRun: input.dryRun === true, principal: ctx.authenticatedPrincipal }) }) });
 defineOperation({ name: "context_checkpoint", description: "Context checkpoint.", schema: strictSchema({ sessionKey: S.str, context: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.contextCheckpoint({ sessionKey: optStr(input.sessionKey) ?? "", context: optStr(input.context) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
-defineOperation({ name: "briefing", description: "Daily briefing.", schema: strictSchema({ since: S.str, focus: S.str, namespace: S.str, includeLocation: S.bool, format: S.str, maxFollowups: S.num }), handler: async (input, ctx) => { const rf = optStr(input.format); const fe = validateBriefingFormat(rf); if (fe) throw new EngramAccessInputError(fe); return { result: await ctx.service.briefing({ since: optStr(input.since), focus: optStr(input.focus), namespace: optStr(input.namespace), includeLocation: optBool(input.includeLocation), format: rf as "json" | "markdown" | undefined, maxFollowups: optNum(input.maxFollowups), principal: ctx.authenticatedPrincipal }) }; } });
+defineOperation({
+  name: "briefing", description: "Daily briefing.",
+  schema: strictSchema({ since: S.str, focus: S.str, namespace: S.str, includeLocation: S.bool, format: S.str, maxFollowups: S.num }),
+  handler: async (input, ctx) => {
+    const rf = optStr(input.format);
+    const fe = validateBriefingFormat(rf);
+    if (fe) throw new EngramAccessInputError(fe);
+    // SAFETY: validateBriefingFormat rejects every format except json, markdown, or undefined.
+    const request: EngramAccessBriefingRequest = {
+      since: optStr(input.since), focus: optStr(input.focus), namespace: optStr(input.namespace),
+      includeLocation: optBool(input.includeLocation), format: rf as "json" | "markdown" | undefined,
+      maxFollowups: optNum(input.maxFollowups), principal: ctx.authenticatedPrincipal,
+    };
+    if (ctx.abortSignal) request.abortSignal = ctx.abortSignal;
+    return { result: await ctx.service.briefing(request) };
+  },
+});
 
 // === CONTRADICTION/REVIEW ===
 defineOperation({ name: "review_list", description: "List review pairs.", schema: strictSchema({ filter: S.str, namespace: S.str, limit: S.num }),

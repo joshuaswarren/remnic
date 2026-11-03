@@ -14,6 +14,7 @@
 
 import { mkdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import { throwIfAborted } from "../abort-error.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 
 // ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ export async function enqueuePassiveCorrectionNotification(
  */
 export async function drainPassiveCorrectionNotifications(
   storageDir: string,
+  signal?: AbortSignal,
 ): Promise<PassiveCorrectionNotification[]> {
   const filePath = notificationsPath(storageDir);
   return serializeMutations(`passive-notification:${filePath}`, async () => {
@@ -96,6 +98,8 @@ export async function drainPassiveCorrectionNotifications(
       throw err;
     }
 
+    // Cancellation after the read must keep the queue: the caller never receives these.
+    throwIfAborted(signal, "briefing aborted");
     const notifications: PassiveCorrectionNotification[] = [];
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
