@@ -71,7 +71,19 @@ export class ExtractionDrain {
    */
   private readonly qualified = new Map<string, string>();
 
-  constructor(private readonly deps: ExtractionDrainDeps) {}
+  /**
+   * The claim drain runs with `dropFailedChunks: false`: a chunk that keeps
+   * failing stays in its claim as durable retryable backlog — no side-file
+   * recovery copy may move the original backlog aside.
+   */
+  private readonly dropFailedChunks: boolean;
+
+  private readonly deps: ExtractionDrainDeps;
+
+  constructor(deps: ExtractionDrainDeps, options?: { dropFailedChunks?: boolean }) {
+    this.deps = deps;
+    this.dropFailedChunks = options?.dropFailedChunks !== false;
+  }
 
   /** Characters the coordinator would count for this window: user/assistant text, trimmed and capped per turn, context-only turns left out. */
   private windowChars(turns: readonly BufferTurn[]): number {
@@ -177,7 +189,7 @@ export class ExtractionDrain {
         // preemption reason the host looks for (as it does for the first chunk).
         if (isAbortError(err)) throw preempt && preempt.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
         failures += 1;
-        if (failures < dropAfter) {
+        if (failures < dropAfter || !this.dropFailedChunks) {
           this.setFailureCount(bufferKey, chunk, failures);
           throw err;
         }
@@ -209,7 +221,7 @@ export class ExtractionDrain {
         return mergeDrainResults(aggregate, result);
       }
       failures += 1;
-      if (failures >= dropAfter) {
+      if (failures >= dropAfter && this.dropFailedChunks) {
         if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result, byIdentity))) {
           // No recovery copy: keep the only buffered copy and retry later.
           this.setFailureCount(bufferKey, chunk, failures);
@@ -220,6 +232,8 @@ export class ExtractionDrain {
         continue;
       }
       this.setFailureCount(bufferKey, chunk, failures);
+      // No-drop drains keep the chunk as durable retryable backlog instead of
+      // side-filing it; the failure count still gates future drop decisions.
       // Retain the remaining window for the next trigger (existing behavior).
       return mergeDrainResults(aggregate, result);
     }

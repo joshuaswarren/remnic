@@ -73,7 +73,7 @@ const DEFAULT_LEASE_MS = 120_000;
  * Writes are the drain's progress (what is left to extract), so every
  * successfully extracted chunk is durably removed before the next one runs.
  */
-class ClaimBufferStorage implements BufferStorage {
+export class ClaimBufferStorage implements BufferStorage {
   constructor(
     private readonly claims: BufferDrainClaims,
     private readonly key: string,

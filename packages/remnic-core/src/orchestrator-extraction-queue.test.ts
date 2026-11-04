@@ -441,3 +441,49 @@ test("pauseAndDrain waits for concurrent accepted work and rejects new producers
   assert.equal(second.outcome, "finished");
   assert.equal(coordinator.isProcessing, false);
 });
+
+// ── Key reservations (daemon backlog scheduler) ────────────────────────────
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+test("tryReserveKey defers a queued task's start until the reservation releases", async () => {
+  const queue = createCoordinator();
+  assert.equal(queue.tryReserveKey("s1"), true, "a free key reserves synchronously");
+
+  let ran = false;
+  queue.pushRaw(async () => {
+    ran = true;
+  }, { key: "s1" });
+  const processing = queue.processQueue();
+  await delay(20);
+  assert.equal(ran, false, "a reserved key's queued task must not start");
+  assert.equal(queue.tryReserveKey("s1"), false, "the pending reservation is exclusive");
+
+  queue.releaseKeyReservation("s1");
+  await processing;
+  assert.equal(ran, true, "the task runs once the claim decision settles");
+});
+
+test("tryReserveKey refuses active and queued keys, and releases idempotently", async () => {
+  const queue = createCoordinator();
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  queue.pushRaw(async () => {
+    await gate;
+  }, { key: "s1" });
+  const processing = queue.processQueue();
+  await delay(20);
+  assert.equal(queue.tryReserveKey("s1"), false, "an active key cannot be reserved");
+
+  queue.releaseKeyReservation("s1");
+  queue.releaseKeyReservation("s1"); // idempotent
+  release();
+  await processing;
+
+  assert.equal(queue.tryReserveKey("s1"), true, "a settled key reserves again");
+  queue.releaseKeyReservation("s1");
+});
