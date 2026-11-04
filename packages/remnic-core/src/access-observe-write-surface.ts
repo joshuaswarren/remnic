@@ -801,9 +801,7 @@ export class AccessObserveWriteSurface {
           await this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
           lcmArchived = true;
         } catch (err) {
-          // Fail closed: an observe whose lossless archive failed must not be
-          // acknowledged as accepted (the client would not retry, and the
-          // archived turn would be gone). Extraction below never starts.
+          // Fail closed: an archive failure must not be acknowledged as accepted.
           log.error(`access-observe LCM archival failed: ${err}`);
           throw err;
         }
