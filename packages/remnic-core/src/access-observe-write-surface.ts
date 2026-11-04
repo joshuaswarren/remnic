@@ -34,6 +34,9 @@ import { abortError } from "./abort-error.js";
 import { withBriefingDeadline } from "./briefing-deadline.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
+import { createObserveStageTimer } from "./access-observe-stage-timing.js";
+import { archiveObservedTurns } from "./access-observe-lcm-archive.js";
+import { recordObserveObjectiveState } from "./access-observe-objective-state.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
@@ -133,18 +136,6 @@ export interface AccessObserveWriteSurfaceDeps {
     sessionKey: string | undefined,
     authenticatedPrincipal?: string
   ): string;
-}
-
-// Observes slower than this log `access-observe-slow` with per-stage
-// durations (noncontent) so 25s-class stalls attribute to a phase.
-const OBSERVE_SLOW_LOG_MS = 10_000;
-
-// Monotonic (performance.now) so clock corrections cannot yield negative or
-// nonsense phase durations. Injectable for deterministic tests.
-let observeClock: () => number = () => performance.now();
-/** Test seam: replace the stage-timing clock; pass undefined to restore. */
-export function setObserveClockForTest(fn: (() => number) | undefined): void {
-  observeClock = fn ?? (() => performance.now());
 }
 
 export class AccessObserveWriteSurface {
@@ -722,22 +713,10 @@ export class AccessObserveWriteSurface {
     );
     // Noncontent stage timing for slow/failed observes: durations only, logged
     // in the `access-observe-failed` line (always) and `access-observe-slow`
-    // (successes at or above OBSERVE_SLOW_LOG_MS). Never message content,
+    // (successes at or above the slow threshold). Never message content,
     // session keys, namespaces or principals.
-    const observeStartedAtMs = observeClock();
-    const observeStageMs: Record<string, number> = {};
-    const timed = async <T>(stage: string, fn: () => Promise<T>): Promise<T> => {
-      const stageStartMs = observeClock();
-      try {
-        return await fn();
-      } finally {
-        observeStageMs[stage] = (observeStageMs[stage] ?? 0) + (observeClock() - stageStartMs);
-      }
-    };
-    const formatObserveStages = () =>
-      Object.entries(observeStageMs)
-        .map(([stage, ms]) => `${stage}Ms=${Math.round(ms)}`)
-        .join(" ");
+    const stageTimer = createObserveStageTimer();
+    const timed = stageTimer.timed.bind(stageTimer);
     try {
       let scope: MemoryScopePlan;
       try {
@@ -803,44 +782,23 @@ export class AccessObserveWriteSurface {
       //    (#928 contract, already auth-checked inside the scope plan), not the
       //    general default-store write namespace.
       if (shouldWriteObjectiveState) {
-        await timed("objective", async () => {
-          try {
-            const objectiveStateLocation = await this.deps.objectiveStateStoreLocationForNamespace(
-              scope.objectiveStateNamespace
-            );
-            await recordObjectiveStateSnapshotsFromObservedMessages({
-              memoryDir: objectiveStateLocation.memoryDir,
-              objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
-              objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-                .objectiveStateMemory,
-              objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-                .objectiveStateSnapshotWrites,
-              sessionKey: request.sessionKey,
-              recordedAt: new Date().toISOString(),
-              messages: request.messages,
-            });
-          } catch (err) {
-            log.error(`access-observe objective-state snapshot write failed: ${err}`);
-          }
-        });
+        await timed("objective", () =>
+          recordObserveObjectiveState(
+            this.deps.orchestrator,
+            this.deps.objectiveStateStoreLocationForNamespace,
+            scope,
+            request,
+          ),
+        );
       }
 
       // 5. LCM archival → effective write namespace.
       // The archival append is durable before this returns: the queue holds
       // only a session reference, and summary DAGs are built in the
       // background, so the caller is never blocked on inference.
-      let lcmArchived = false;
-      const lcmEngine = this.deps.orchestrator.lcmEngine;
-      if (lcmEngine && lcmEngine.enabled) {
-        try {
-          await timed("lcm-accept", () => lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages));
-          lcmArchived = true;
-        } catch (err) {
-          // Fail closed: an archive failure must not be acknowledged as accepted.
-          log.error(`access-observe LCM archival failed: ${err}`);
-          throw err;
-        }
-      }
+      const lcmArchived = await timed("lcm-accept", () =>
+        archiveObservedTurns(this.deps.orchestrator.lcmEngine, lcmSessionKey, request.messages),
+      );
 
       // 5b. Transcript persistence → the per-session transcript store the
       // hourly summarizer reads (issue #2783). Best-effort: a transcript
@@ -936,10 +894,7 @@ export class AccessObserveWriteSurface {
         // A native trigger may leave the durable capture pending rather than queued.
       }
 
-      const observeTotalMs = Math.round(observeClock() - observeStartedAtMs);
-      if (observeTotalMs >= OBSERVE_SLOW_LOG_MS) {
-        log.warn(`access-observe-slow totalMs=${observeTotalMs} messages=${request.messages.length} ${formatObserveStages()}`);
-      }
+      stageTimer.logSlow(request.messages.length);
       log.info(
         `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued} transcript=${transcriptPersisted}`
       );
@@ -967,9 +922,7 @@ export class AccessObserveWriteSurface {
       };
     } catch (err) {
       // Failed requests always get phase attribution (noncontent), regardless of duration.
-      log.warn(
-        `access-observe-failed totalMs=${Math.round(observeClock() - observeStartedAtMs)} messages=${request.messages.length} ${formatObserveStages()}`
-      );
+      stageTimer.logFailed(request.messages.length);
       throw err;
     } finally {
       observePreparation.release();

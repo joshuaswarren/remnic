@@ -266,24 +266,10 @@ export class LcmEngine {
         throw new Error("LCM engine is not initialized");
       }
 
-      const currentMax = this.archive.getMaxTurnIndex(normalizedSessionId);
-      const { messagePartsEnabled } = this.config;
-      const newMessages = messages.map((m, i) => ({
-        turnIndex: currentMax + 1 + i,
-        role: m.role,
-        content: m.content,
-        parts: messagePartsEnabled ? m.parts : undefined,
-        rawContent: messagePartsEnabled ? m.rawContent : undefined,
-        sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
-      }));
-
-      this.archive.appendMessages(normalizedSessionId, newMessages, {
-        messagePartsEnabled,
-      });
-
+      const archived = this.archiveObservedMessages(normalizedSessionId, messages);
       this.observeQueue.enqueue(normalizedSessionId);
       log.debug(
-        `LCM observe archived: session=${normalizedSessionId}, messages=${newMessages.length}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
+        `LCM observe archived: session=${normalizedSessionId}, messages=${archived}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
       );
     } catch (err) {
       log.error(
@@ -293,6 +279,26 @@ export class LcmEngine {
     } finally {
       this.releasePendingObserveInit(normalizedSessionId);
     }
+  }
+
+  /** Append observed messages to the archive; returns the number of rows. */
+  private archiveObservedMessages(
+    sessionId: string,
+    messages: LcmObserveMessage[],
+  ): number {
+    const currentMax = this.archive!.getMaxTurnIndex(sessionId);
+    const { messagePartsEnabled } = this.config;
+    const rows = messages.map((m, i) => ({
+      turnIndex: currentMax + 1 + i,
+      role: m.role,
+      content: m.content,
+      parts: messagePartsEnabled ? m.parts : undefined,
+      rawContent: messagePartsEnabled ? m.rawContent : undefined,
+      sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
+    }));
+
+    this.archive!.appendMessages(sessionId, rows, { messagePartsEnabled });
+    return rows.length;
   }
 
   /**

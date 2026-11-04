@@ -13,23 +13,29 @@ import test from "node:test";
 import { EngramAccessService, NamespaceNotWritableError } from "./access-service.js";
 import { initLogger, resetLogger, type LoggerBackend } from "./logger.js";
 import { Orchestrator } from "./orchestrator.js";
-import { setObserveClockForTest } from "./access-observe-write-surface.js";
+import { parseConfig } from "./config.js";
+import type { EngramAccessObserveRequest } from "./access-service.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
+interface OrchestratorInternals {
+  config: PluginConfig;
+  _codingContextBySession: Map<string, CodingContext>;
+}
+
 function makeService(memoryDir: string): EngramAccessService {
+  // SAFETY: the probe drives only the observe scope path on this orchestrator.
   const orch = Object.create(Orchestrator.prototype) as Orchestrator;
-  const internals = orch as unknown as {
-    config: PluginConfig;
-    _codingContextBySession: Map<string, CodingContext>;
-  };
-  internals.config = {
+  // SAFETY: the probe sets exactly these two internal fields.
+  const internals = orch as Orchestrator & OrchestratorInternals;
+  internals.config = parseConfig({
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
     codingMode: { projectScope: true },
+    transcriptEnabled: false,
     memoryDir,
-  } as unknown as PluginConfig;
+  });
   internals._codingContextBySession = new Map();
   return new EngramAccessService(orch);
 }
@@ -51,16 +57,18 @@ test("a rejected observe logs phase attribution with stage durations and still t
   initLogger(backend, false, { timestamps: false });
   try {
     const service = makeService(dir);
+    // SAFETY: the literal sets the request fields the scope path reads.
+    const rejectedRequest = {
+      sessionKey: "sess-timing-1",
+      authenticatedPrincipal: "alice",
+      namespace: "victim-secret",
+      messages: [
+        { role: "user", content: "first secret message body" },
+        { role: "assistant", content: "second secret message body" },
+      ],
+    } as EngramAccessObserveRequest;
     await assert.rejects(
-      service.runObserve({
-        sessionKey: "sess-timing-1",
-        authenticatedPrincipal: "alice",
-        namespace: "victim-secret",
-        messages: [
-          { role: "user", content: "first secret message body" },
-          { role: "assistant", content: "second secret message body" },
-        ],
-      } as unknown as Parameters<EngramAccessService["runObserve"]>[0]),
+      service.runObserve(rejectedRequest),
       NamespaceNotWritableError
     );
 
@@ -87,13 +95,14 @@ test("a rejected observe logs phase attribution with stage durations and still t
 function makeProbe(options: {
   enqueueObserveMessages: (sessionKey: string, messages: unknown[]) => Promise<void> | void;
 }) {
-  const config = {
+  const config = parseConfig({
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
     defaultRecallNamespaces: ["self", "shared"],
     codingMode: { projectScope: true },
+    transcriptEnabled: false,
     memoryDir: "/synthetic/remnic-observe-timing",
     objectiveStateMemoryEnabled: false,
     objectiveStateSnapshotWritesEnabled: false,
@@ -103,9 +112,11 @@ function makeProbe(options: {
     recallCrossNamespaceBudgetWindowMs: 60_000,
     recallCrossNamespaceBudgetSoftLimit: 10,
     recallCrossNamespaceBudgetHardLimit: 30,
-  } as unknown as PluginConfig;
+  });
   const contexts = new Map<string, CodingContext>();
   const extractionCalls: string[][] = [];
+  // SAFETY: the probe exercises the observe surface; the rest of Orchestrator
+  // is unused on this path.
   const orch = {
     config,
     getCodingContextForSession: (sk: string | undefined) => (sk ? contexts.get(sk) : null) ?? null,
@@ -124,7 +135,7 @@ function makeProbe(options: {
     ingestReplayBatch: async (turns: Array<{ sessionKey: string }>) => {
       extractionCalls.push(turns.map((t) => t.sessionKey));
     },
-  } as unknown as Orchestrator;
+  } as any;
   return { orch, extractionCalls };
 }
 
@@ -145,20 +156,23 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
   // Deterministic monotonic clock: every read advances 6s, so each timed
   // stage records exactly 6000ms and the total exceeds the slow threshold.
   let now = 0;
-  setObserveClockForTest(() => (now += 6000));
+  const realPerformanceNow = performance.now;
+  performance.now = () => (now += 6000);
   try {
     const { orch } = makeProbe({
       enqueueObserveMessages: (_sessionKey) => {},
     });
     const service = new EngramAccessService(orch);
-    const res = await service.observe({
+    // SAFETY: the literal sets the request fields the observe path reads.
+    const slowRequest = {
       sessionKey: "alice:sess-slow",
       authenticatedPrincipal: "alice",
       messages: [
         { role: "user", content: "slow path message body" },
         { role: "assistant", content: "reply body" },
       ],
-    } as unknown as Parameters<EngramAccessService["observe"]>[0]);
+    } as EngramAccessObserveRequest;
+    const res = await service.observe(slowRequest);
     assert.equal(res.accepted, 2);
 
     const slow = lines.filter((l) => l.includes("access-observe-slow"));
@@ -173,7 +187,7 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
     assert.match(line, /durable-bufferMs=6000/);
     assert.ok(!line.includes("sess-slow") && !line.includes("alice") && !line.includes("body"));
   } finally {
-    setObserveClockForTest(undefined);
+    performance.now = realPerformanceNow;
     resetLogger();
   }
 });
@@ -199,15 +213,17 @@ test("a failed awaited LCM archival records the lcm-accept phase and still throw
       },
     });
     const service = new EngramAccessService(orch);
+    // SAFETY: the literal sets the request fields the observe path reads.
+    const failedLcmRequest = {
+      sessionKey: "alice:sess-lcmfail",
+      authenticatedPrincipal: "alice",
+      messages: [
+        { role: "user", content: "lcm failure message body" },
+        { role: "assistant", content: "reply body" },
+      ],
+    } as EngramAccessObserveRequest;
     await assert.rejects(
-      service.observe({
-        sessionKey: "alice:sess-lcmfail",
-        authenticatedPrincipal: "alice",
-        messages: [
-          { role: "user", content: "lcm failure message body" },
-          { role: "assistant", content: "reply body" },
-        ],
-      } as unknown as Parameters<EngramAccessService["observe"]>[0]),
+      service.observe(failedLcmRequest),
       /lcm archival append failed/
     );
 
