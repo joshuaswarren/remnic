@@ -34,7 +34,7 @@ import { appendContextTransformRecords, readContextTransformRecords } from "./st
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
-import { updateMetaSerialized, withHeldFileLock } from "./utils/serialize-mutations.js";
+import { serializeMutations, updateMetaSerialized, withHeldFileLock } from "./utils/serialize-mutations.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -4325,28 +4325,30 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   async appendToProfile(updates: string[]): Promise<void> {
+    // Per-dir in-process chain: with the bounded-parallel queue two tasks in one namespace reach
+    // this RMW at once; serialized, the second re-reads after the first's write. Errors propagate.
+    await serializeMutations(`profile:${this.baseDir}`, () => this.appendToProfileUnlocked(updates));
+  }
+  private async appendToProfileUnlocked(updates: string[]): Promise<void> {
     // Filter out non-string entries that the LLM may return
     updates = updates.filter((u) => typeof u === "string" && u.trim().length > 0);
     if (updates.length === 0) return;
     const existing = await this.readProfile();
 
-    const lines = existing ? existing.split("\n") : [];
-    const existingBulletRaw = lines.filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
-    const existingNorms = existingBulletRaw.map(StorageManager.normalizeForDedup);
-
+    const existingNorms = (existing ? existing.split("\n") : [])
+      .filter((l) => l.startsWith("- "))
+      .map((l) => StorageManager.normalizeForDedup(l.slice(2).trim()));
     const newBullets = updates.filter((u) => {
       const norm = StorageManager.normalizeForDedup(u);
       return !StorageManager.isFuzzyDuplicate(norm, existingNorms);
     });
     if (newBullets.length === 0) return;
 
-    if (!existing) {
-      const content = ["# Behavioral Profile", "", ...newBullets.map((b) => `- ${b}`), ""].join("\n");
-      await this.writeProfile(content);
-    } else {
-      const withBullets = existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
-      await this.writeProfile(withBullets);
-    }
+    await this.writeProfile(
+      existing
+        ? existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n"
+        : ["# Behavioral Profile", "", ...newBullets.map((b) => `- ${b}`), ""].join("\n"),
+    );
   }
 
   /** Check if profile.md exceeds the max line cap and needs LLM consolidation */

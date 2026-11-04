@@ -229,7 +229,7 @@ export class ExtractionQueueCoordinator {
 
   /** Run one entry with its own preempt slot; failures are classified + logged. */
   private async runEntry(entry: QueueEntry): Promise<void> {
-    const slot: object = {};
+    const slot: PreemptSlot = {};
     this.preemptSlots.set(slot, { key: entry.key });
     try {
       await entry.run(this.createPreemptHandle(slot));
@@ -241,7 +241,7 @@ export class ExtractionQueueCoordinator {
     }
   }
 
-  private createPreemptHandle(slot: object): ExtractionPreemptHandle {
+  private createPreemptHandle(slot: PreemptSlot): ExtractionPreemptHandle {
     return {
       arm: (abort: () => void) => {
         const state = this.preemptSlots.get(slot);
