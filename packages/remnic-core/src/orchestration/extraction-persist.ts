@@ -1675,6 +1675,15 @@ export class ExtractionPersistCoordinator {
           `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,
         );
       }
+      // Shared confirm options for the persist-time check and the write-window
+      // race recheck below.
+      const raceDedupOpts = (key: string) => ({
+        category: writeCategory,
+        contentHashDedupKey: key,
+        connector: sourceContext?.sourceConnector?.trim() || undefined,
+        citationEnabled,
+        citationTemplate,
+      });
       // Fact dedup disabled → skip the authority check AND the corpus
       // confirmation, so a disabled deployment never suppresses a write via
       // dedup (PR #2016 thread SD-nH).
@@ -1682,29 +1691,18 @@ export class ExtractionPersistCoordinator {
         exactDuplicate = await confirmActiveFactDuplicate(
           { hasContentHashDedup: (storage, key) => this.deps.hasContentHashDedup(storage, key) },
           targetStorage,
-          {
-            category: writeCategory,
-            contentHashDedupKey,
-            connector: sourceContext?.sourceConnector?.trim() || undefined,
-          citationEnabled,
-          citationTemplate,
-          },
+          raceDedupOpts(contentHashDedupKey),
         );
       }
-      // Race recheck (codex P2 #1526) for the write windows below: the SAME
-      // connector-aware confirm, evaluated under the window just before writing.
-      const raceRecheck = (storage: StorageManager, key: string) => () =>
-        confirmActiveFactDuplicate(
+      const raceRecheck = (storage: StorageManager, key: string) => () => {
+        // Gates mirror the persist-time suppression gates (PR #2016 SD-nH; #1645 quarantine).
+        if (!factDedupEnabled || injectionScreenStatus === "pending_review") return Promise.resolve(false);
+        return confirmActiveFactDuplicate(
           { hasContentHashDedup: (s, k) => this.deps.hasContentHashDedup(s, k) },
           storage,
-          {
-            category: writeCategory,
-            contentHashDedupKey: key,
-            connector: sourceContext?.sourceConnector?.trim() || undefined,
-            citationEnabled,
-            citationTemplate,
-          },
+          raceDedupOpts(key),
         );
+      };
       if (exactDuplicate && injectionScreenStatus !== "pending_review") {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the

@@ -8,12 +8,17 @@ import { ConsolidationRunCoordinator } from "./consolidation-run.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { PluginConfig } from "../types.js";
 
+function asPluginConfig(fake: Partial<PluginConfig>): PluginConfig {
+  // SAFETY: the coordinator reads only the three members raceConfig sets.
+  return fake as PluginConfig;
+}
+
 function raceConfig(): PluginConfig {
-  return {
+  return asPluginConfig({
     memoryDir: "/synthetic/remnic-profile-race-tests",
     queryAwareIndexingEnabled: false,
-    dependencyPropagation: { enabled: false, maxDependents: 0 },
-  } as unknown as PluginConfig;
+    dependencyPropagation: { enabled: false, maxDependents: 0, linkTypes: [], timeoutMs: 0, dryRun: true },
+  });
 }
 
 const PROFILE_SECTION = { consolidateTriggerLines: 2, consolidateTargetLines: 5 };
@@ -25,9 +30,11 @@ function makeRaceCoordinator(
   return new ConsolidationRunCoordinator({
     config: raceConfig(),
     getStorage: () => storage,
+    // SAFETY: records nothing in this test.
     getStorageRouter: () => ({ recordWrite: async () => {} }) as never,
     getExtraction: () => extraction,
     storageDirNamespace: () => "namespace-a",
+    // SAFETY: propagation is disabled in this config; the port is never used.
     getDependencyPropagationDelivery: () =>
       ({
         prepare: async () => null,
@@ -35,24 +42,32 @@ function makeRaceCoordinator(
         cancel: () => {},
         deferPrepared: async () => {},
       }) as never,
+    // SAFETY: index removal unused in this test.
     embeddingFallback: { removeFromIndex: async () => {} } as never,
+    // SAFETY: node rebuild unused in this test.
     tmtBuilder: { maybeRebuildNodes: async () => {} } as never,
     consolidationObservers: new Set(),
     getAccessTrackingBuffer: () => new Map(),
+    // SAFETY: unused passes in this config.
     lifecyclePolicyCoordinator: {
       runFactArchival: async () => 0,
       runSummarization: async () => {},
       runTopicExtraction: async () => {},
     } as never,
+    // SAFETY: unused pass in this config.
     compressionGuidelineCoordinator: {
       runCompressionGuidelineLearningPass: async () => {},
     } as never,
+    // SAFETY: unused pass in this config.
     semanticConsolidationCoordinator: {} as never,
+    // SAFETY: unused pass in this config.
     entitySynthesisCoordinator: {} as never,
+    // SAFETY: profile entry only.
     recallSectionCoordinator: {
       getRecallSectionEntry: (sectionId: string) =>
         sectionId === "profile" ? PROFILE_SECTION : undefined,
     } as never,
+    // SAFETY: unused pass in this config.
     tierMigrationCoordinator: {
       runCycle: async () => ({ migrated: 0 }),
     } as never,
@@ -66,12 +81,21 @@ function makeRaceCoordinator(
 /** Extraction fake whose consolidateProfile gates AFTER receiving the old
  * profile, exactly like a slow LLM call, so the test can interleave an append
  * inside the real await window (no fake timing). */
+// SAFETY: the stub implements exactly the two members the profile branch
+// calls; the tests assert their effects instead of the stub's other surface.
+function asExtractionEngine(
+  fake: Pick<ExtractionEngine, "consolidate" | "consolidateProfile">,
+): ExtractionEngine {
+  // SAFETY: callers stub only the members this Pick names.
+  return fake as ExtractionEngine;
+}
+
 function makeGatedConsolidationExtraction(
   profilePassedToModel: PromiseWithResolvers<string>,
   releaseConsolidation: PromiseWithResolvers<void>,
   consolidatedProfile: string,
 ): ExtractionEngine {
-  return {
+  return asExtractionEngine({
     async consolidate() {
       return { items: [], profileUpdates: [], entityUpdates: [] };
     },
@@ -80,7 +104,7 @@ function makeGatedConsolidationExtraction(
       await releaseConsolidation.promise;
       return { consolidatedProfile, removedCount: 2, summary: "test consolidation" };
     },
-  } as unknown as ExtractionEngine;
+  });
 }
 
 async function makeStorage(): Promise<{ storage: StorageManager; cleanup: () => Promise<void> }> {

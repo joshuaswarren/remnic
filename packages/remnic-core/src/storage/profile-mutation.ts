@@ -18,7 +18,6 @@ export interface ProfileMutationPorts {
 export type ProfileCommitOutcome = "committed" | "conflict";
 
 function normalizeForDedup(s: string): string {
-  if (typeof s !== "string") return "";
   return s
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, " ")
@@ -46,8 +45,8 @@ function isFuzzyDuplicate(newNorm: string, existingNorms: string[]): boolean {
 }
 
 async function appendToProfileUnlocked(ports: ProfileMutationPorts, updates: string[]): Promise<void> {
-  // Filter out non-string entries that the LLM may return
-  updates = updates.filter((u) => typeof u === "string" && u.trim().length > 0);
+  // Filter out empty entries the LLM may return (persist screens strings already).
+  updates = updates.filter((u) => u.trim().length > 0);
   if (updates.length === 0) return;
   const existing = await ports.readProfile();
 
