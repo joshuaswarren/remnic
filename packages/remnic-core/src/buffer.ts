@@ -217,10 +217,10 @@ export class SmartBuffer {
   }
 
   /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
-  private pruneEntries(retainKeys: string[]): void {
+  private pruneEntries(retainKeys: string[], maxCount = this.maxSessionEntries): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, retainKeys, this.maxSessionEntries, {
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, maxCount, {
       activityAt: (entry) => this.entryActivityAt(entry),
       holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
     });
@@ -510,26 +510,9 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /**
-   * Free one slot for a new accepted capture using the native eviction policy:
-   * oldest empty entries first, then oldest non-accepted (best-effort native)
-   * entries. Accepted work is never evicted (#3251, COS-244c).
-   */
+  /** Free one slot for an accepted capture via the native eviction policy (COS-244c). */
   private makeRoomForEntryUnlocked(): void {
-    const entries = this.state.entries;
-    if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, [], Math.max(0, this.maxSessionEntries - 1), {
-      activityAt: (entry) => this.entryActivityAt(entry),
-      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
-    });
-    for (const key of evicted) delete entries[key];
-    this.persistence.markEvicted(evicted);
-    if (evicted.length > 0) {
-      log.warn(
-        `buffer: evicted ${evicted.length} non-accepted session entr${evicted.length === 1 ? "y" : "ies"} ` +
-          `to admit a durable capture at the session-entry cap (${this.maxSessionEntries})`,
-      );
-    }
+    this.pruneEntries([], Math.max(0, this.maxSessionEntries - 1));
   }
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
