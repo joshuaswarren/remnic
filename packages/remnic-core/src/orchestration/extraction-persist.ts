@@ -480,7 +480,7 @@ export class ExtractionPersistCoordinator {
             citationTemplate,
             sameEntityGuardEnabled: false,
             survivingAttrs: targetSurvivingAttrs,
-            supersession: { dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(targetStorage.dir) },
+            supersession: { supersessionEnabled: lifecycleCaps.temporalSupersession, dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(targetStorage.dir) },
             backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
           });
           if (promotionWrite.suppressed) continue;
@@ -878,7 +878,7 @@ export class ExtractionPersistCoordinator {
           citationTemplate,
           sameEntityGuardEnabled: lifecycleCaps.temporalSupersession,
           survivingAttrs: sharedSurvivingAttrs,
-          supersession: { dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir) },
+          supersession: { supersessionEnabled: lifecycleCaps.temporalSupersession, dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir) },
           backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
         });
         if (sharedWrite.suppressed) return promotedCopyId;

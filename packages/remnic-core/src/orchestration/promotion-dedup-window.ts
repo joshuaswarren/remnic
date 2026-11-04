@@ -77,6 +77,10 @@ export interface PromotionDedupWriteArgs {
    *  later-dated promotion must still retire a conflicting shared fact dated
    *  between the events, mirroring the gate's hash-dedup-hit pass. */
   supersession?: {
+    /** Caller's lifecycleCaps.temporalSupersession — without it the pass
+     *  must not run even though the event-time `enabled` gate passes
+     *  (PRRT_kwDORJXyws6z2o1t). */
+    supersessionEnabled: boolean;
     dependencyPropagationDelivery?: DependencyPropagationDeliveryPort;
     namespaceScope?: string;
   };
@@ -211,6 +215,15 @@ export async function writePromotionUnderFactDedupWindow(
   args: PromotionDedupWriteArgs,
 ): Promise<FactDedupWindowOutcome<Awaited<ReturnType<StorageManager["writeSealedMemory"]>>>> {
   const { destination, envelope, promotion } = args;
+  // PRRT_kwDORJXyws6z2WsK: the recheck is fact-only, so for other categories
+  // the window would add lock acquisition and fail-closed throw risk with no
+  // dedup value. Write directly with the same extras.
+  if (promotion.category !== "fact") {
+    return {
+      suppressed: false,
+      result: await destination.writeSealedMemory(envelope, buildPromotionWriteOptions(args)),
+    };
+  }
   const entityKeyNorm =
     args.sameEntityGuardEnabled &&
     envelope.entityRef &&
@@ -257,7 +270,7 @@ export async function writePromotionUnderFactDedupWindow(
     // events active. Anchor to the winning copy with useCallerTimestamp —
     // the gate's hash-dedup-hit shape (PR #402 Uyui/UvU1) — and fail open.
     if (
-      args.supersession &&
+      args.supersession?.supersessionEnabled &&
       promotion.category === "fact" &&
       envelope.entityRef &&
       args.survivingAttrs &&
@@ -271,7 +284,11 @@ export async function writePromotionUnderFactDedupWindow(
           connector: args.connector,
           citationEnabled: args.citationEnabled,
           citationTemplate: args.citationTemplate,
-          entityKeyNorm,
+          // PRRT_kwDORJXyws6z2o11: the winner ANCHORS the pass, so the lookup
+          // is always entity-guarded — without it (profile path) it could
+          // match another entity's equal-content fact and combine that fact's
+          // id with the incoming entity's attributes (PR #402 Uybg hazard).
+          entityKeyNorm: normalizeSupersessionKey(envelope.entityRef),
         });
         if (winning) {
           await applyTemporalSupersession({
