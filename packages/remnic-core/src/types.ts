@@ -719,6 +719,8 @@ export interface PluginConfig
   reasoningEffort: ReasoningEffort;
   triggerMode: TriggerMode;
   bufferMaxTurns: number;
+  /** Distinct sessions the extraction buffer admits before backpressure (#3303). */
+  bufferMaxSessions: number;
   bufferMaxMinutes: number;
   /**
    * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
@@ -2696,12 +2698,6 @@ export interface BufferState {
   lastExtractionAt: string | null;
   extractionCount: number;
   entries?: Record<string, BufferEntryState>;
-  /**
-   * Captures refused at the session-entry cap (#3303), in arrival order. Durable
-   * via the whole-state save; drained back into real entries when capacity frees
-   * so live turn capture is never dropped while the extraction worker is busy.
-   */
-  spillQueue?: Array<{ bufferKey: string; turn: BufferTurn }>;
 }
 
 export interface BehaviorLoopAdjustment {

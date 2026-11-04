@@ -670,6 +670,11 @@
         "default": 5,
         "description": "Max turns before forced extraction"
       },
+      "bufferMaxSessions": {
+        "type": "number",
+        "default": 1000,
+        "description": "Distinct sessions the extraction buffer admits before backpressure (#3303); raised from 200"
+      },
       "bufferSaveDebounceMs": {
         "type": "integer",
         "default": 3000,
