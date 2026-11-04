@@ -23,7 +23,8 @@ import type { SealedMemoryEnvelope } from "../write-envelope.js";
 import type { SealedWriteExtras } from "../storage.js";
 import { normalizeStoredHashSource } from "./extraction-persist-citation.js";
 import { readActiveMemoriesBothTiers } from "./extraction-persist-promotion.js";
-import { normalizeSupersessionKey } from "../temporal-supersession.js";
+import { applyTemporalSupersession, normalizeSupersessionKey } from "../temporal-supersession.js";
+import type { DependencyPropagationDeliveryPort } from "./dependency-propagation-delivery.js";
 import { persistUnderFactDedupWindow, type FactDedupWindowOutcome } from "./fact-dedup-window.js";
 
 /**
@@ -71,6 +72,14 @@ export interface PromotionDedupWriteArgs {
   sameEntityGuardEnabled: boolean;
   /** Envelope-surviving structured attributes (PR #402 Uybg guard input). */
   survivingAttrs?: Record<string, string> | null;
+  /** When set, the suppression path runs the post-write supersession pass
+   *  against the winning copy (PRRT_kwDORJXyws6z18qb): a suppressed
+   *  later-dated promotion must still retire a conflicting shared fact dated
+   *  between the events, mirroring the gate's hash-dedup-hit pass. */
+  supersession?: {
+    dependencyPropagationDelivery?: DependencyPropagationDeliveryPort;
+    namespaceScope?: string;
+  };
   backfillTemporalBoundsOnDedupHit: ExtractionPersistDeps["backfillTemporalBoundsOnDedupHit"];
 }
 
@@ -90,14 +99,15 @@ type ExtractionPersistDeps = {
 };
 
 /**
- * In-window race confirm for a promotion destination: same connector/content
- * predicate the promotion gates confirm with (`readActiveMemoriesBothTiers` +
- * citation-aware stored normalization vs the normalized dedup key). The
- * optional entity key mirrors the shared supersession branch's same-entity
- * guard (PR #402 Uybg) so cross-entity same-content facts stay distinct.
- * Fail-open on scan error: an unverifiable state never suppresses.
+ * Locate the active same-destination fact a raced promotion would duplicate:
+ * same connector/content predicate the promotion gates confirm with
+ * (`readActiveMemoriesBothTiers` + citation-aware stored normalization vs the
+ * normalized dedup key). The optional entity key mirrors the shared
+ * supersession branch's same-entity guard (PR #402 Uybg) so cross-entity
+ * same-content facts stay distinct. Returns undefined on scan error — an
+ * unverifiable state never suppresses (fail-open).
  */
-export async function confirmPromotionRaceDuplicate(args: {
+async function findPromotionRaceDuplicate(args: {
   storage: StorageManager;
   dedupContent: string;
   category: string;
@@ -105,12 +115,12 @@ export async function confirmPromotionRaceDuplicate(args: {
   citationEnabled: boolean;
   citationTemplate: string;
   entityKeyNorm?: string;
-}): Promise<boolean> {
+}): Promise<MemoryFile | undefined> {
   try {
     const allMems = await readActiveMemoriesBothTiers(args.storage);
     const nc = args.connector?.trim() || undefined;
     const incomingNormalized = ContentHashIndex.normalizeContent(args.dedupContent);
-    return allMems.some((m: MemoryFile) => {
+    return allMems.find((m: MemoryFile) => {
       if (m.frontmatter.category !== args.category) return false;
       if ((m.frontmatter.status ?? "active") !== "active") return false;
       if (
@@ -128,8 +138,37 @@ export async function confirmPromotionRaceDuplicate(args: {
     log.warn(
       `promotion race recheck scan failed for ${args.storage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return false;
+    return undefined;
   }
+}
+
+/**
+ * In-window race confirm for a promotion destination. Authoritative index +
+ * miss is a clean NOT-duplicate answered WITHOUT the corpus scan, mirroring
+ * `confirmActiveFactDuplicate` and the window contract (one corpus confirm +
+ * one write, not a scan-length lock) — PRRT_kwDORJXyws6z18qS. On a hit, a
+ * non-authoritative index, or a probe failure, confirm against the corpus
+ * with the gates' predicate.
+ */
+export async function confirmPromotionRaceDuplicate(args: {
+  storage: StorageManager;
+  dedupContent: string;
+  category: string;
+  connector: string | undefined;
+  citationEnabled: boolean;
+  citationTemplate: string;
+  entityKeyNorm?: string;
+}): Promise<boolean> {
+  try {
+    if (await args.storage.isFactContentHashAuthoritative()) {
+      if (!(await args.storage.hasFactContentHash(args.dedupContent))) return false;
+    }
+  } catch (probeErr) {
+    log.warn(
+      `promotion race recheck authoritative probe failed for ${args.storage.dir}; confirming against corpus: ${probeErr instanceof Error ? probeErr.message : String(probeErr)}`,
+    );
+  }
+  return (await findPromotionRaceDuplicate(args)) !== undefined;
 }
 
 /**
@@ -211,6 +250,52 @@ export async function writePromotionUnderFactDedupWindow(
         envelope.entityRef,
         args.connector,
       );
+    }
+    // PRRT_kwDORJXyws6z18qb: the unsuppressed path runs temporal supersession
+    // after the write; the suppressed promotion must too, or a later-dated
+    // raced promotion leaves a conflicting shared fact dated between the
+    // events active. Anchor to the winning copy with useCallerTimestamp —
+    // the gate's hash-dedup-hit shape (PR #402 Uyui/UvU1) — and fail open.
+    if (
+      args.supersession &&
+      promotion.category === "fact" &&
+      envelope.entityRef &&
+      args.survivingAttrs &&
+      Object.keys(args.survivingAttrs).length > 0
+    ) {
+      try {
+        const winning = await findPromotionRaceDuplicate({
+          storage: destination,
+          dedupContent: args.dedupContent,
+          category: promotion.category,
+          connector: args.connector,
+          citationEnabled: args.citationEnabled,
+          citationTemplate: args.citationTemplate,
+          entityKeyNorm,
+        });
+        if (winning) {
+          await applyTemporalSupersession({
+            storage: destination,
+            newMemoryId: winning.frontmatter.id,
+            entityRef: envelope.entityRef,
+            structuredAttributes: { ...args.survivingAttrs },
+            // Ordering anchor mirrors the gate's supersessionOrderingAt: an
+            // incoming event date orders the pass, wall clock otherwise.
+            createdAt:
+              promotion.validAt && promotion.validAt.length > 0
+                ? promotion.validAt
+                : new Date().toISOString(),
+            useCallerTimestamp: true,
+            enabled: !(promotion.eventTimeSource === "extracted" && !promotion.validAt),
+            namespaceScope: args.supersession.namespaceScope,
+            dependencyPropagationDelivery: args.supersession.dependencyPropagationDelivery,
+          });
+        }
+      } catch (supersessionErr) {
+        log.warn(
+          `promotion window supersession failed open for ${destination.dir}: ${supersessionErr instanceof Error ? supersessionErr.message : String(supersessionErr)}`,
+        );
+      }
     }
   }
   return outcome;

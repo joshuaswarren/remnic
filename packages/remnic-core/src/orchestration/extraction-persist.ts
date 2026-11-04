@@ -465,11 +465,9 @@ export class ExtractionPersistCoordinator {
             continue;
             }
           }
-          // Sealed-envelope write (issue #1989 PR2) under the destination-dir
-          // fact-dedup window (codex P2 PRRT_kwDORJXyws6zzdG4): the gate above
-          // ran OUTSIDE the window; a twin promotion committing meanwhile is
-          // suppressed by the in-window recheck instead of duplicating. Lock
-          // contention throws fail-closed into the per-target catch below.
+          // Windowed destination write (PRRT_kwDORJXyws6zzdG4): the gate above
+          // ran outside the window; a twin committing meanwhile is suppressed
+          // by the in-window recheck. Contention throws fail-closed below.
           const promotionWrite = await writePromotionUnderFactDedupWindow({
             destination: targetStorage,
             envelope: targetPromotionEnvelope,
@@ -482,6 +480,7 @@ export class ExtractionPersistCoordinator {
             citationTemplate,
             sameEntityGuardEnabled: false,
             survivingAttrs: targetSurvivingAttrs,
+            supersession: { dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(targetStorage.dir) },
             backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
           });
           if (promotionWrite.suppressed) continue;
@@ -863,12 +862,10 @@ export class ExtractionPersistCoordinator {
             // No same-connector active shared fact — fall through to write.
           }
         }
-        // Codex P2 PRRT_kwDORJXyws6zzdG4: the shared gate above ran OUTSIDE
-        // the fact-dedup window (its supersession/backfill scans must not
-        // extend a scan-length lock), so a twin promotion committing between
-        // the gate and this write is suppressed by the module's in-window
-        // recheck. Lock contention throws fail-closed into the outer catch
-        // below (promotion skips open, the source fact stays durable).
+        // Windowed destination write (PRRT_kwDORJXyws6zzdG4): the shared gate
+        // ran outside the window; a twin committing meanwhile is suppressed by
+        // the in-window recheck; contention throws fail-closed to the outer
+        // catch. Supersession rides along for the suppressed branch.
         const sharedWrite = await writePromotionUnderFactDedupWindow({
           destination: sharedStorage,
           envelope: sharedPromotionEnvelope,
@@ -881,6 +878,7 @@ export class ExtractionPersistCoordinator {
           citationTemplate,
           sameEntityGuardEnabled: lifecycleCaps.temporalSupersession,
           survivingAttrs: sharedSurvivingAttrs,
+          supersession: { dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir) },
           backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
         });
         if (sharedWrite.suppressed) return promotedCopyId;
