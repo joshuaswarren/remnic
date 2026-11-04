@@ -217,10 +217,10 @@ export class SmartBuffer {
   }
 
   /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
-  private pruneEntries(retainKeys: string[]): void {
+  private pruneEntries(retainKeys: string[], maxCount = this.maxSessionEntries): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, retainKeys, this.maxSessionEntries, {
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, maxCount, {
       activityAt: (entry) => this.entryActivityAt(entry),
       holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
     });
@@ -510,28 +510,12 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /** Prune empty entries only; accepted work must survive capacity pressure. */
+  /** Free one slot for an accepted capture via the native eviction policy (COS-244c). */
   private makeRoomForEntryUnlocked(): void {
-    const entries = this.state.entries;
-    if (!entries) return;
-    const keys = Object.keys(entries);
-    if (keys.length < this.maxSessionEntries) return;
-    const byOldestActivity = (left: string, right: string): number =>
-      this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
-      this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
-    const emptyRemovable = keys
-      .filter(
-        (key) =>
-          key !== "default" &&
-          (entries[key]?.turns.length ?? 0) === 0 &&
-          (entries[key]?.retainedTurns?.length ?? 0) === 0,
-      )
-      .sort(byOldestActivity);
-    for (const key of emptyRemovable) {
-      if (Object.keys(entries).length < this.maxSessionEntries) break;
-      delete entries[key];
-      this.persistence.markDeleted(key);
-    }
+    const entries = this.state.entries ?? {};
+    const target = Math.max(0, this.maxSessionEntries - 1);
+    const pinned = Object.keys(entries).filter((k) => k === "default" || this.entryHoldsAcceptedCapture(entries[k]));
+    if (pinned.length <= target) this.pruneEntries([], target); // evict only if it frees a slot
   }
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
