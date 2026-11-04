@@ -675,6 +675,11 @@
         "default": 1000,
         "description": "Distinct sessions the extraction buffer admits before backpressure (#3303); raised from 200"
       },
+      "extractionQueueConcurrency": {
+        "type": "integer",
+        "default": 1,
+        "description": "Background extraction tasks the daemon's queue runs at once (positive integer; tasks sharing a buffer/session key never run concurrently)"
+      },
       "bufferSaveDebounceMs": {
         "type": "integer",
         "default": 3000,

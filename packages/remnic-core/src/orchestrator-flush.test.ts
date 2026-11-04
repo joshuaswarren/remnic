@@ -13,12 +13,28 @@ import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
 import type { BufferState, BufferTurn, PluginConfig } from "./types.js";
+import type { MetaState } from "./types.js";
 import type { ImportTurn } from "./bulk-import/types.js";
 import type { LcmEngine } from "./lcm/index.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { readNamespaceMaintenanceStatuses } from "./maintenance/namespace-planner.js";
 import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
+
+/** Adds the `updateMeta` seam to a StorageManager stub that only has loadMeta/saveMeta. */
+function withMetaSeam<S extends { loadMeta: () => Promise<MetaState>; saveMeta: (meta: MetaState) => Promise<unknown> }>(
+  storage: S,
+): S & { updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void> } {
+  const updatable = storage as S & {
+    updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void>;
+  };
+  updatable.updateMeta = async (mutate) => {
+    const meta = await storage.loadMeta();
+    if ((await mutate(meta)) === false) return;
+    await storage.saveMeta(meta);
+  };
+  return updatable;
+}
 
 function makeTurn(sessionKey: string, content: string, sessionOwnerPrincipal?: string): BufferTurn {
   return {
@@ -1525,7 +1541,7 @@ test("runExtraction writes buffered turns to active scope profile write layer", 
   orchestrator.storageRouter = {
     storageFor: async (namespace: string) => {
       requestedNamespace = namespace;
-      return {
+      return withMetaSeam({
         listEntityNames: async () => [],
         loadMeta: async () => ({
           extractionCount: 0,
@@ -1541,7 +1557,7 @@ test("runExtraction writes buffered turns to active scope profile write layer", 
           ],
         }),
         saveMeta: async () => undefined,
-      };
+      });
     },
   };
   orchestrator.extraction = {
@@ -1570,7 +1586,7 @@ test("runExtraction skips batches whose persisted fingerprint already exists in 
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => ({
         extractionCount: 0,
@@ -1651,7 +1667,7 @@ test("runExtraction fails closed on invalid extraction results when required", a
       },
     };
     orchestrator.storageRouter = {
-      storageFor: async () => ({
+      storageFor: async () => withMetaSeam({
         listEntityNames: async () => [],
         loadMeta: async () => ({
           extractionCount: 0,
@@ -1689,18 +1705,7 @@ test("runExtraction persists processed fingerprints for empty extraction results
 
   let clearCalls = 0;
   let saveMetaCalls = 0;
-  let savedMeta:
-    | {
-        extractionCount: number;
-        lastExtractionAt: string | null;
-        totalMemories: number;
-        totalEntities: number;
-        processedExtractionFingerprints: Array<{
-          fingerprint: string;
-          observedAt: string;
-        }>;
-      }
-    | undefined;
+  let savedMeta: MetaState | undefined;
 
   const meta = {
     extractionCount: 0,
@@ -1722,10 +1727,10 @@ test("runExtraction persists processed fingerprints for empty extraction results
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
-      saveMeta: async (nextMeta: typeof meta) => {
+      saveMeta: async (nextMeta: MetaState) => {
         saveMetaCalls += 1;
         savedMeta = structuredClone(nextMeta);
       },
@@ -1762,9 +1767,9 @@ test("runExtraction persists processed fingerprints for empty extraction results
   assert.equal(savedMeta?.extractionCount, 1);
   assert.equal(savedMeta?.totalMemories, 0);
   assert.equal(savedMeta?.totalEntities, 0);
-  assert.equal(savedMeta?.processedExtractionFingerprints.length, 1);
+  assert.equal(savedMeta?.processedExtractionFingerprints?.length, 1);
   assert.equal(
-    savedMeta?.processedExtractionFingerprints[0]?.fingerprint,
+    savedMeta?.processedExtractionFingerprints?.[0]?.fingerprint,
     orchestrator.buildExtractionFingerprint(turns, "logical-thread:empty"),
   );
 });
@@ -1797,7 +1802,7 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
       saveMeta: async () => {
@@ -1853,7 +1858,7 @@ test("runExtraction clears the buffer on a failed extraction when extractionRetr
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => ({ extractionCount: 0, lastExtractionAt: null, lastConsolidationAt: null, totalMemories: 0, totalEntities: 0, processedExtractionFingerprints: [] }),
       saveMeta: async () => {},
@@ -1897,7 +1902,7 @@ test("runExtraction preserves empty-result buffers when fingerprint persistence 
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
       saveMeta: async () => {
@@ -1961,7 +1966,7 @@ test("runExtraction keeps the empty live path fail-open when liveness metadata w
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
       saveMeta: async () => {
@@ -2003,7 +2008,7 @@ test("runExtraction preserves deduped buffers when the caller aborts during meta
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => {
         abortController.abort();
@@ -2075,7 +2080,7 @@ test("runExtraction still clears the buffer when fingerprint persistence fails a
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => ({
         extractionCount: 0,
@@ -2138,18 +2143,7 @@ test("runExtraction persists fingerprint and extraction counters through one coh
   let clearCalls = 0;
   let loadMetaCalls = 0;
   let saveMetaCalls = 0;
-  let savedMeta:
-    | {
-        extractionCount: number;
-        lastExtractionAt: string | null;
-        totalMemories: number;
-        totalEntities: number;
-        processedExtractionFingerprints: Array<{
-          fingerprint: string;
-          observedAt: string;
-        }>;
-      }
-    | undefined;
+  let savedMeta: MetaState | undefined;
 
   const meta = {
     extractionCount: 0,
@@ -2171,13 +2165,13 @@ test("runExtraction persists fingerprint and extraction counters through one coh
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => {
         loadMetaCalls += 1;
         return meta;
       },
-      saveMeta: async (nextMeta: typeof meta) => {
+      saveMeta: async (nextMeta: MetaState) => {
         saveMetaCalls += 1;
         savedMeta = structuredClone(nextMeta);
       },
@@ -2216,14 +2210,17 @@ test("runExtraction persists fingerprint and extraction counters through one coh
     },
   );
 
-  assert.equal(loadMetaCalls, 1);
+  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
+  // updateMeta re-read), so more than one load is expected; the single save is
+  // the coherent-write contract under test.
+  assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
   assert.equal(savedMeta?.extractionCount, 1);
   assert.equal(savedMeta?.totalMemories, 1);
-  assert.equal(savedMeta?.processedExtractionFingerprints.length, 1);
+  assert.equal(savedMeta?.processedExtractionFingerprints?.length, 1);
   assert.equal(
-    savedMeta?.processedExtractionFingerprints[0]?.fingerprint,
+    savedMeta?.processedExtractionFingerprints?.[0]?.fingerprint,
     orchestrator.buildExtractionFingerprint(
       [
         {
@@ -2246,18 +2243,7 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
   let clearCalls = 0;
   let loadMetaCalls = 0;
   let saveMetaCalls = 0;
-  let savedMeta:
-    | {
-        extractionCount: number;
-        lastExtractionAt: string | null;
-        totalMemories: number;
-        totalEntities: number;
-        processedExtractionFingerprints: Array<{
-          fingerprint: string;
-          observedAt: string;
-        }>;
-      }
-    | undefined;
+  let savedMeta: MetaState | undefined;
 
   const meta = {
     extractionCount: 0,
@@ -2279,13 +2265,13 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => {
         loadMetaCalls += 1;
         return meta;
       },
-      saveMeta: async (nextMeta: typeof meta) => {
+      saveMeta: async (nextMeta: MetaState) => {
         saveMetaCalls += 1;
         savedMeta = structuredClone(nextMeta);
       },
@@ -2314,12 +2300,15 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
     bufferKey: "logical-thread:thread-15",
   });
 
-  assert.equal(loadMetaCalls, 1);
+  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
+  // updateMeta re-read), so more than one load is expected; the single save is
+  // the coherent-write contract under test.
+  assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
   assert.equal(savedMeta?.extractionCount, 1);
   assert.equal(savedMeta?.totalMemories, 1);
-  assert.equal(savedMeta?.processedExtractionFingerprints.length, 0);
+  assert.equal(savedMeta?.processedExtractionFingerprints?.length, 0);
 });
 
 test("runExtraction completes after late threading failures and saves the processed fingerprint", async () => {
@@ -2330,18 +2319,7 @@ test("runExtraction completes after late threading failures and saves the proces
 
   let clearCalls = 0;
   let saveMetaCalls = 0;
-  let savedMeta:
-    | {
-        extractionCount: number;
-        lastExtractionAt: string | null;
-        totalMemories: number;
-        totalEntities: number;
-        processedExtractionFingerprints: Array<{
-          fingerprint: string;
-          observedAt: string;
-        }>;
-      }
-    | undefined;
+  let savedMeta: MetaState | undefined;
 
   const meta = {
     extractionCount: 0,
@@ -2363,10 +2341,10 @@ test("runExtraction completes after late threading failures and saves the proces
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
-      saveMeta: async (nextMeta: typeof meta) => {
+      saveMeta: async (nextMeta: MetaState) => {
         saveMetaCalls += 1;
         savedMeta = structuredClone(nextMeta);
       },
@@ -2420,9 +2398,9 @@ test("runExtraction completes after late threading failures and saves the proces
   assert.equal(result.postPersistMetadataFailed, false);
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);
-  assert.equal(savedMeta?.processedExtractionFingerprints.length, 1);
+  assert.equal(savedMeta?.processedExtractionFingerprints?.length, 1);
   assert.equal(
-    savedMeta?.processedExtractionFingerprints[0]?.fingerprint,
+    savedMeta?.processedExtractionFingerprints?.[0]?.fingerprint,
     orchestrator.buildExtractionFingerprint(
       [
         {
@@ -2465,7 +2443,7 @@ test("runExtraction completes and clears the buffer when the post-persist meta s
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
       saveMeta: async () => {
@@ -2549,7 +2527,7 @@ test("runExtraction still runs follow-on extraction helpers when the post-persis
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => meta,
       saveMeta: async () => {
@@ -2654,13 +2632,15 @@ test("runExtraction aborts before late buffer clearing when the caller cancels",
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => ({
         extractionCount: 0,
         lastExtractionAt: null,
+        lastConsolidationAt: null,
         totalMemories: 0,
         totalEntities: 0,
+        processedExtractionFingerprints: [],
       }),
       saveMeta: async () => undefined,
     }),
@@ -2716,13 +2696,15 @@ test("runExtraction still clears the session buffer after persistence even if re
     },
   };
   orchestrator.storageRouter = {
-    storageFor: async () => ({
+    storageFor: async () => withMetaSeam({
       listEntityNames: async () => [],
       loadMeta: async () => ({
         extractionCount: 0,
         lastExtractionAt: null,
+        lastConsolidationAt: null,
         totalMemories: 0,
         totalEntities: 0,
+        processedExtractionFingerprints: [],
       }),
       saveMeta: async () => undefined,
     }),

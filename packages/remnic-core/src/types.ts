@@ -723,6 +723,13 @@ export interface PluginConfig
   bufferMaxSessions: number;
   bufferMaxMinutes: number;
   /**
+   * How many background extraction tasks the daemon's queue may run at once.
+   * Default 1 keeps the historical serial queue; tasks sharing a buffer key
+   * never run concurrently regardless of the value. Applied at orchestrator
+   * construction, so a change needs a daemon restart.
+   */
+  extractionQueueConcurrency: number;
+  /**
    * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
    * (issue #1909). Steady-state buffering coalesces the whole-state serialize
    * onto a trailing-edge timer instead of rewriting on every turn; extraction

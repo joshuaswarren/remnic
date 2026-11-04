@@ -86,9 +86,31 @@ function parseConversationThread(raw: string): ConversationThread | null {
 }
 
 export class ThreadingManager {
-  private currentThreadId: string | null = null;
-  private lastTurnTimestamp: number | null = null;
-  private lastSessionKey: string | null = null;
+  /**
+   * Per-session thread-run state. One global slot let two concurrent
+   * extractions (bounded-parallel queue) interleave sessions and attach
+   * turns to the wrong thread, so the run state is keyed by session.
+   * Bounded: a long-lived daemon sees one entry per active session.
+   */
+  private readonly runStateBySession = new Map<
+    string,
+    { currentThreadId: string | null; lastTurnTimestamp: number | null }
+  >();
+  private static readonly RUN_STATE_MAX_SESSIONS = 512;
+
+  private runStateFor(turn: BufferTurn): { currentThreadId: string | null; lastTurnTimestamp: number | null } {
+    const key = turn.sessionKey ?? "";
+    let state = this.runStateBySession.get(key);
+    if (!state) {
+      state = { currentThreadId: null, lastTurnTimestamp: null };
+      this.runStateBySession.set(key, state);
+      if (this.runStateBySession.size > ThreadingManager.RUN_STATE_MAX_SESSIONS) {
+        const oldest = this.runStateBySession.keys().next().value;
+        if (oldest !== undefined) this.runStateBySession.delete(oldest);
+      }
+    }
+    return state;
+  }
 
   constructor(
     private readonly threadsDir: string,
@@ -164,18 +186,16 @@ export class ThreadingManager {
 
   /**
    * Check if we should start a new thread based on session key and time gap.
+   * State is per session, so the cross-session check the shared slot needed
+   * is gone: different sessions never share run state at all.
    */
   shouldStartNewThread(turn: BufferTurn): boolean {
     const turnTime = new Date(turn.timestamp).getTime();
-
-    // Different session key = new thread
-    if (turn.sessionKey && this.lastSessionKey && turn.sessionKey !== this.lastSessionKey) {
-      return true;
-    }
+    const state = this.runStateFor(turn);
 
     // Time gap > threshold = new thread
-    if (this.lastTurnTimestamp) {
-      const gapMs = turnTime - this.lastTurnTimestamp;
+    if (state.lastTurnTimestamp) {
+      const gapMs = turnTime - state.lastTurnTimestamp;
       const gapMinutes = gapMs / (1000 * 60);
       if (gapMinutes > this.gapMinutes) {
         return true;
@@ -183,7 +203,7 @@ export class ThreadingManager {
     }
 
     // No current thread = new thread
-    if (!this.currentThreadId) {
+    if (!state.currentThreadId) {
       return true;
     }
 
@@ -198,6 +218,7 @@ export class ThreadingManager {
     await this.ensureDirectory();
 
     const turnTime = new Date(turn.timestamp).getTime();
+    const state = this.runStateFor(turn);
 
     if (this.shouldStartNewThread(turn)) {
       // Create new thread
@@ -213,11 +234,11 @@ export class ThreadingManager {
       };
 
       await this.saveThread(thread);
-      this.currentThreadId = threadId;
+      state.currentThreadId = threadId;
       log.debug(`created new thread ${threadId}`);
-    } else if (this.currentThreadId) {
+    } else if (state.currentThreadId) {
       // Add episodes to current thread
-      const thread = await this.loadThread(this.currentThreadId);
+      const thread = await this.loadThread(state.currentThreadId);
       if (thread) {
         for (const id of episodeIds) {
           if (!thread.episodeIds.includes(id)) {
@@ -229,10 +250,9 @@ export class ThreadingManager {
       }
     }
 
-    this.lastTurnTimestamp = turnTime;
-    this.lastSessionKey = turn.sessionKey ?? null;
+    state.lastTurnTimestamp = turnTime;
 
-    return this.currentThreadId!;
+    return state.currentThreadId!;
   }
 
   /**
@@ -378,18 +398,20 @@ export class ThreadingManager {
   }
 
   /**
-   * Get the current thread ID (if any).
+   * Get the current thread ID (if any). With per-session run state there is
+   * no single current thread; null unless exactly one session is tracked.
    */
   getCurrentThreadId(): string | null {
-    return this.currentThreadId;
+    if (this.runStateBySession.size === 1) {
+      return this.runStateBySession.values().next().value?.currentThreadId ?? null;
+    }
+    return null;
   }
 
   /**
    * Reset threading state (e.g., on plugin restart).
    */
   reset(): void {
-    this.currentThreadId = null;
-    this.lastTurnTimestamp = null;
-    this.lastSessionKey = null;
+    this.runStateBySession.clear();
   }
 }

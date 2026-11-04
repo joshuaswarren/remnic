@@ -71,7 +71,12 @@ export interface ExtractionRunCoordinatorDeps {
     sourceText?: string,
     graphCaps?: GraphConstructionCapabilitySet,
     lifecycleCaps?: MemoryLifecycleCapabilitySet
-  ) => Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }>;
+  ) => Promise<{
+    persistedIds: string[];
+    memoryPathById: Map<string, string>;
+    deferredCount: number;
+    pendingReviewIds: string[];
+  }>;
 
   maybeCapturePassiveCorrections: (
     turns: readonly BufferTurn[],
@@ -89,7 +94,7 @@ export interface ExtractionRunCoordinatorDeps {
   getCodingContextForSession: (sessionKey: string) => CodingContext | null;
   applyCodingNamespaceOverlay: (sessionKey: string, namespace: string) => string;
   boxBuilderFor: (storage: StorageManager) => Pick<BoxBuilder, "onExtraction">;
-  appendPersistedThreadEpisodes: (threadId: string, ids: string[]) => Promise<void>;
+  appendPersistedThreadEpisodes: (threadId: string, ids: string[], pendingReviewIds: string[]) => Promise<void>;
   maybeScheduleConsolidation: (nonZero: boolean) => void;
   requestQmdMaintenance: () => void;
   runTierMigrationCycle: (
@@ -101,7 +106,6 @@ export interface ExtractionRunCoordinatorDeps {
       force?: boolean;
     }
   ) => Promise<TierMigrationCycleSummary>;
-  getLastPersistExtractionDeferredCount: () => number;
   recordProcessedExtractionFingerprint: (
     storage: StorageManager,
     fingerprint: string,
@@ -397,7 +401,8 @@ export class ExtractionRunCoordinator {
       this.extractionRetryState.set(namespace, nsMap);
       this.onProviderFailure(cls, now);
       this.persistRetryStateToMeta(namespace, meta);
-      await storage.saveMeta(meta);
+      // The caller's storage.updateMeta persists the mutated meta — saving here
+      // too would write the same file twice per failed extraction.
     } catch (err) {
       // Fail-open: recording failure state must never crash observe/recall.
       log.warn("runExtraction: failed to record extraction retry state (non-fatal)", err);
@@ -953,16 +958,19 @@ export class ExtractionRunCoordinator {
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
         try {
-          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
           await runDeadlineAware(
             () =>
-              this.recordExtractionFailure(
-                storage,
-                selfNamespace,
-                extractionFingerprint,
-                result.extractionFailureClass ?? "provider_retryable",
-                meta!,
-                Date.now(),
+              // updateMeta reloads meta under the per-dir lock, so a concurrent
+              // extraction's retry-state save is not reverted by this one.
+              storage.updateMeta((freshMeta) =>
+                this.recordExtractionFailure(
+                  storage,
+                  selfNamespace,
+                  extractionFingerprint,
+                  result.extractionFailureClass ?? "provider_retryable",
+                  freshMeta,
+                  Date.now(),
+                ),
               ),
             "during_retry_bookkeeping_save",
             false,
@@ -977,23 +985,28 @@ export class ExtractionRunCoordinator {
           // corrupt or locked meta store must not reject the extraction task.
           // With no backoff recorded there is nothing to retain for, so the
           // pre-#1908 clear-buffer behavior applies below.
-          log.warn("runExtraction: failed to load meta for retry bookkeeping (non-fatal)", err);
+          log.warn("runExtraction: failed to record extraction retry state (non-fatal)", err);
         }
       } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
         try {
-          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
-          // Hydrate the in-memory mirror from persisted meta before clearing.
-          // A forced flush (forceExtractionAttempt) bypasses the retry gate and
-          // never hydrated, so without this a stale persisted backoff entry
-          // would survive a successful forced flush and keep blocking normal
-          // extraction until the timer expired (cursor/codex review).
-          this.hydrateRetryStateFromMeta(selfNamespace, meta);
-          if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
-            await runDeadlineAware(() => storage.saveMeta(meta!), "during_retry_bookkeeping_save", false);
-          }
+          await runDeadlineAware(
+            () =>
+              storage.updateMeta((freshMeta) => {
+                // Hydrate the in-memory mirror from persisted meta before clearing.
+                // A forced flush (forceExtractionAttempt) bypasses the retry gate and
+                // never hydrated, so without this a stale persisted backoff entry
+                // would survive a successful forced flush and keep blocking normal
+                // extraction until the timer expired (cursor/codex review).
+                this.hydrateRetryStateFromMeta(selfNamespace, freshMeta);
+                // `false` skips the save when nothing was parked for this fingerprint.
+                return this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, freshMeta);
+              }),
+            "during_retry_bookkeeping_save",
+            false,
+          );
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
           log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
@@ -1018,7 +1031,6 @@ export class ExtractionRunCoordinator {
       }
       const emptySuccessCommit = {
         storage,
-        meta,
         extractionFingerprint,
         shouldPersistProcessedFingerprint,
         hasExtractionFailure: Boolean(extractionFailure),
@@ -1067,7 +1079,7 @@ export class ExtractionRunCoordinator {
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
-    const { persistedIds } = await this.deps.persistExtraction(
+    const { persistedIds, deferredCount, pendingReviewIds } = await this.deps.persistExtraction(
       result,
       storage,
       threadIdForExtraction,
@@ -1094,7 +1106,6 @@ export class ExtractionRunCoordinator {
     const postPersist = await runExtractionPostPersist({
       result,
       storage,
-      meta: meta ?? undefined,
       extractionFingerprint: extractionFingerprint ?? undefined,
       shouldPersistProcessedFingerprint,
       recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
@@ -1105,7 +1116,7 @@ export class ExtractionRunCoordinator {
       clearBufferAfterExtraction,
       runPostPersistBestEffort,
       extractionJudgeShadow: this.config.extractionJudgeShadow,
-      getDeferredCount: () => this.deps.getLastPersistExtractionDeferredCount(),
+      deferredCount,
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
@@ -1113,7 +1124,6 @@ export class ExtractionRunCoordinator {
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });
-    meta = postPersist.meta ?? null;
     const postPersistMetadataFailed = postPersist.metadataFailed;
 
     // Passive correction capture (issue #1581) — detect corrections expressed
@@ -1155,7 +1165,7 @@ export class ExtractionRunCoordinator {
     // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction && persistedIds.length > 0) {
       await runPostPersistBestEffort("during_thread_episode_append", () =>
-        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds),
+        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds, pendingReviewIds),
       );
     }
 

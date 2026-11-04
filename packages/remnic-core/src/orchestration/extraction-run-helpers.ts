@@ -177,7 +177,7 @@ export async function runExtractionPostPersistBestEffort(
 export interface ExtractionDeferRetentionOptions {
   clearBufferAfterExtraction: boolean;
   extractionJudgeShadow: boolean;
-  getDeferredCount: () => number;
+  deferredCount: number;
   normalizedTurns: BufferTurn[];
   bufferKey: string;
   retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
@@ -193,7 +193,7 @@ export async function runExtractionDeferRetention(
 ): Promise<void> {
   await runPostPersistBestEffort("during_defer_retention", async () => {
     if (options.clearBufferAfterExtraction && !options.extractionJudgeShadow) {
-      const deferredCount = options.getDeferredCount();
+      const deferredCount = options.deferredCount;
       if (deferredCount > 0 && options.normalizedTurns.length > 0) {
         await options.retainDeferredTurns(options.bufferKey, options.normalizedTurns, 10);
       } else {
@@ -206,7 +206,6 @@ export async function runExtractionDeferRetention(
 export interface ExtractionPostPersistOptions {
   result: ExtractionResult;
   storage: StorageManager;
-  meta?: MetaState;
   extractionFingerprint?: string;
   shouldPersistProcessedFingerprint: boolean;
   recordProcessedExtractionFingerprint: (
@@ -230,7 +229,8 @@ export interface ExtractionPostPersistOptions {
     options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean; propagateErrors?: boolean },
   ) => Promise<void>;
   extractionJudgeShadow: boolean;
-  getDeferredCount: () => number;
+  /** Facts this run's persist deferred to the judge — drives retention (#1523). */
+  deferredCount: number;
   normalizedTurns: BufferTurn[];
   bufferKey: string;
   retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
@@ -239,7 +239,6 @@ export interface ExtractionPostPersistOptions {
 }
 
 export interface ExtractionPostPersistResult {
-  meta?: MetaState;
   metadataFailed: boolean;
 }
 
@@ -255,47 +254,37 @@ export async function runExtractionPostPersist(
     }
     log.warn(`runExtraction: ${stage} failed after durable persistence; continuing with buffer clear`, error);
   };
-  let meta = options.meta;
+  // Applied under the storage's per-dir meta lock (storage.updateMeta): the
+  // fingerprint record and the counters land on a FRESHLY loaded meta, so a
+  // concurrent extraction's updates are not reverted by this save.
+  const applyPostPersistMetadata = async (fresh: MetaState): Promise<void> => {
+    if (options.extractionFingerprint && options.shouldPersistProcessedFingerprint) {
+      try {
+        await options.recordProcessedExtractionFingerprint(options.storage, options.extractionFingerprint, fresh);
+      } catch (error) {
+        metadataFailed = true;
+        log.warn("runExtraction: processed fingerprint failed after durable persistence; continuing with buffer clear", error);
+      }
+    }
+    fresh.extractionCount += 1;
+    fresh.lastExtractionAt = new Date().toISOString();
+    fresh.totalMemories += Array.isArray(options.result.facts) ? options.result.facts.length : 0;
+    fresh.totalEntities += Array.isArray(options.result.entities) ? options.result.entities.length : 0;
+  };
   try {
-    meta ??= (await options.runDeadlineAware(
-      () => options.storage.loadMeta(),
-      "during_post_persist_load_meta",
+    await options.runDeadlineAware(
+      () => options.storage.updateMeta(applyPostPersistMetadata),
+      "during_post_persist_meta_save",
       false,
-    )) as MetaState;
+    );
   } catch (error) {
-    recordFailure("metadata load", error);
-  }
-  if (meta && options.extractionFingerprint && options.shouldPersistProcessedFingerprint) {
-    try {
-      await options.runDeadlineAware(
-        () => options.recordProcessedExtractionFingerprint(options.storage, options.extractionFingerprint!, meta!),
-        "during_post_persist_fingerprint",
-        false,
-      );
-    } catch (error) {
-      recordFailure("processed fingerprint", error);
-    }
-  }
-  if (meta) {
-    meta.extractionCount += 1;
-    meta.lastExtractionAt = new Date().toISOString();
-    meta.totalMemories += Array.isArray(options.result.facts) ? options.result.facts.length : 0;
-    meta.totalEntities += Array.isArray(options.result.entities) ? options.result.entities.length : 0;
-    try {
-      await options.runDeadlineAware(
-        () => options.storage.saveMeta(meta!),
-        "during_post_persist_meta_save",
-        false,
-      );
-    } catch (error) {
-      recordFailure("metadata save", error);
-    }
+    recordFailure("metadata save", error);
   }
   const runBestEffort = options.runPostPersistBestEffort;
   await runExtractionDeferRetention(runBestEffort, {
     clearBufferAfterExtraction: options.clearBufferAfterExtraction,
     extractionJudgeShadow: options.extractionJudgeShadow,
-    getDeferredCount: options.getDeferredCount,
+    deferredCount: options.deferredCount,
     normalizedTurns: options.normalizedTurns,
     bufferKey: options.bufferKey,
     retainDeferredTurns: options.retainDeferredTurns,
@@ -313,7 +302,7 @@ export async function runExtractionPostPersist(
     throw options.createDeadlineError("during_buffer_clear");
   }
   if (deadlineError) throw deadlineError;
-  return { meta, metadataFailed };
+  return { metadataFailed };
 }
 
 /**
@@ -325,7 +314,6 @@ export async function runExtractionPostPersist(
  */
 export async function commitEmptySuccessExtraction(args: {
   storage: StorageManager;
-  meta: MetaState | null;
   extractionFingerprint: string | null;
   shouldPersistProcessedFingerprint: boolean;
   hasExtractionFailure: boolean;
@@ -336,7 +324,6 @@ export async function commitEmptySuccessExtraction(args: {
 }): Promise<void> {
   const {
     storage,
-    meta: existingMeta,
     extractionFingerprint,
     shouldPersistProcessedFingerprint,
     hasExtractionFailure,
@@ -355,22 +342,17 @@ export async function commitEmptySuccessExtraction(args: {
 
   const metadataFailureIsFatal = shouldRecordFingerprint;
   try {
-    const meta =
-      existingMeta ??
-      await runDeadlineAware(
-        () => storage.loadMeta(),
-        "during_empty_success_liveness_load",
-        false,
-      );
-    if (shouldRecordFingerprint) {
-      await recordProcessedExtractionFingerprint(storage, extractionFingerprint, meta);
-    }
-    if (shouldStampLiveness) {
-      meta.extractionCount += 1;
-      meta.lastExtractionAt = new Date().toISOString();
-    }
     await runDeadlineAware(
-      () => storage.saveMeta(meta),
+      () =>
+        storage.updateMeta(async (meta) => {
+          if (shouldRecordFingerprint) {
+            await recordProcessedExtractionFingerprint(storage, extractionFingerprint!, meta);
+          }
+          if (shouldStampLiveness) {
+            meta.extractionCount += 1;
+            meta.lastExtractionAt = new Date().toISOString();
+          }
+        }),
       "during_empty_success_liveness_save",
       false,
     );

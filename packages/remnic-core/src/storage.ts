@@ -34,6 +34,7 @@ import { appendContextTransformRecords, readContextTransformRecords } from "./st
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -5571,6 +5572,56 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
+  }
+
+  /**
+   * Process-wide chains serializing `updateMeta` per state dir inside this
+   * process. The cross-process advisory lock below only orders DIFFERENT
+   * processes; without the chain, two same-process updates would contend on
+   * the lock file and one could time out to the best-effort path.
+   */
+  private static readonly metaUpdateChains = new Map<string, Promise<unknown>>();
+
+  /**
+   * Serialized meta read-modify-write for this state dir. Parallel extraction
+   * workers (the daemon's bounded queue and out-of-process buffer-drain
+   * workers) each load `state/meta.json`, mutate counters, fingerprints or
+   * retry state, and save; unlocked, a slow writer's save silently reverts a
+   * fast writer's update. The chain orders same-process callers and the
+   * advisory lock file (`meta.json.lock`) orders different processes; a
+   * worker that cannot take the lock inside the budget FAILS the update
+   * instead of writing unlocked — callers are fail-open, so the outcome is a
+   * logged miss retried by the next extraction, never a silent lost update.
+   *
+   * The mutator may return `false` to skip the save (nothing changed).
+   */
+  async updateMeta(mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>): Promise<void> {
+    const dir = this.stateDir;
+    const previous = StorageManager.metaUpdateChains.get(dir) ?? Promise.resolve();
+    const run = previous.then(() =>
+      withHeldFileLock(
+        path.join(dir, "meta.json.lock"),
+        // Bounded: a meta update is a short read-merge-write, never a scan.
+        { staleMs: 5_000, maxWaitMs: 2_000, pollMs: 50 },
+        async (acquired) => {
+          // A lock we could not take (busy peer past the wait budget, or a
+          // filesystem error) must NOT fall back to an unlocked
+          // read-modify-write: that silently reintroduces the lost-update
+          // race this method exists to close. Fail instead — every caller
+          // treats meta updates as fail-open, so the outcome is a logged
+          // miss that the next extraction retries, never a silent clobber.
+          if (!acquired) {
+            throw new Error(`meta update skipped: meta.json.lock not acquired (${dir})`);
+          }
+          const meta = await this.loadMeta();
+          if ((await mutate(meta)) === false) return;
+          await this.saveMeta(meta);
+        },
+      ),
+    );
+    // Every waiter keeps its own result/error; the chain only carries completion.
+    StorageManager.metaUpdateChains.set(dir, run.then(() => undefined, () => undefined));
+    await run;
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {

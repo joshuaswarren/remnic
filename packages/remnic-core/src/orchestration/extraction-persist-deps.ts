@@ -25,8 +25,6 @@ export interface ExtractionPersistDeps {
   getJudgeDeferCounts: () => Map<string, number>;
   getFaithfulnessCounters: () => FaithfulnessGateCounters;
   getEmbeddingFallback: () => EmbeddingFallback;
-  setLastPersistExtractionDeferredCount: (value: number) => void;
-  setLastPersistExtractionPendingReviewIds: (ids: string[]) => void;
   addContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<void>;
   hasContentHashDedup: (targetStorage: StorageManager, content: string) => Promise<boolean>;
   backfillTemporalBoundsOnDedupHit: (

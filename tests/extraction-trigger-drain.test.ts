@@ -9,6 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { isPreemptedExtraction } from "../packages/remnic-core/src/abort-error.js";
+import type { ExtractionPreemptHandle } from "../packages/remnic-core/src/orchestration/extraction-queue-coordinator.js";
 import type { ExtractionRunCoordinator, ExtractionRunResult } from "../packages/remnic-core/src/orchestration/extraction-run.js";
 import type { BufferTurn } from "@remnic/core/types";
 
@@ -72,15 +73,26 @@ function drainFixture(options: {
       extractionMaxTurnChars: 100_000,
     },
     extractionQueueCoordinator: {
-      beginPreemptable: (abort: () => void) => {
-        preemptRegistrations.push(abort);
-      },
-      enqueue: (fn: () => Promise<void>) => {
-        const task = fn().catch(() => {});
+      enqueue: (fn: (preempt?: ExtractionPreemptHandle) => Promise<void>) => {
+        // Synthesize the task's preempt handle like the real coordinator does;
+        // every arm the DRAIN registers (one per chunk after the first) is
+        // recorded, mirroring the old shared beginPreemptable capture. The
+        // fixture's runPreemptable below deliberately arms nothing, so the
+        // chunk-0 outer registration is not counted, as before.
+        const base: ExtractionPreemptHandle = { arm: () => {}, disarm: () => {} };
+        const handle: ExtractionPreemptHandle = {
+          arm: (abort: () => void) => {
+            preemptRegistrations.push(abort);
+            base.arm(abort);
+          },
+          disarm: () => base.disarm(),
+        };
+        const task = fn(handle).catch(() => {});
         tasks.push(task);
         return true;
       },
       runPreemptable: (
+        _preempt: ExtractionPreemptHandle | undefined,
         _preemptable: boolean,
         parent: AbortSignal | undefined,
         fn: (signal: AbortSignal) => Promise<void>,
