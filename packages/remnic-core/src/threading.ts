@@ -124,7 +124,10 @@ export class ThreadingManager {
       this.runStateBySession.set(key, state);
       if (this.runStateBySession.size > ThreadingManager.RUN_STATE_MAX_SESSIONS) {
         for (const [oldestKey, oldest] of this.runStateBySession) {
-          if (this.inFlightRunStates.has(oldest)) continue;
+          // Never evict the state being inserted: before the caller registers
+          // it in-flight, every older entry can be in flight and the loop
+          // would otherwise delete this turn's own state and fork the thread.
+          if (oldest === state || this.inFlightRunStates.has(oldest)) continue;
           this.runStateBySession.delete(oldestKey);
           if (this.runStateBySession.size <= ThreadingManager.RUN_STATE_MAX_SESSIONS) break;
         }

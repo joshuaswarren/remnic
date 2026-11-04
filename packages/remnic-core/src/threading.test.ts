@@ -15,6 +15,45 @@ async function makeThreading(): Promise<{ threading: ThreadingManager; cleanup: 
   return { threading: new ThreadingManager(dir), cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
+test("the state being inserted is never evicted, even with every older session in flight", async () => {
+  const { threading, cleanup } = await makeThreading();
+  try {
+    const realSave = threading.saveThread.bind(threading);
+    const floodGate = Promise.withResolvers<void>();
+    const allEntered = Promise.withResolvers<void>();
+    let entered = 0;
+    threading.saveThread = async (thread: ConversationThread): Promise<void> => {
+      if (thread.sessionKey?.startsWith("flood-")) {
+        entered += 1;
+        if (entered === 512) allEntered.resolve();
+        await floodGate.promise;
+      }
+      await realSave(thread);
+    };
+
+    // Park all 512 flood sessions inside saveThread so every one of their run
+    // states is in-flight while the next session inserts its own.
+    const floodRuns: Promise<ConversationThread["id"]>[] = [];
+    for (let i = 0; i < 512; i++) {
+      floodRuns.push(threading.processTurn(turn(`flood-${i}`, `flood ${i}`), []));
+    }
+    await allEntered.promise;
+
+    // The new session's state is the map's last entry and not yet registered
+    // in-flight when runStateFor's eviction loop runs; eviction must skip it
+    // or this turn's state is orphaned and the follow-up turn forks a new
+    // thread (PRRT_kwDORJXyws6ztlO2).
+    const idN1 = await threading.processTurn(turn("session-new", "n1"), []);
+    const idN2 = await threading.processTurn(turn("session-new", "n2"), []);
+    assert.equal(idN2, idN1, "follow-up turn must append to the same thread");
+
+    floodGate.resolve();
+    await Promise.all(floodRuns);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("a recently used session is not evicted FIFO when the cap overflows", async () => {
   const { threading, cleanup } = await makeThreading();
   try {
