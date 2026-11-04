@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
+import { eventually } from "./testing/orchestrator-lite.js";
 import { LcmArchive } from "./lcm/archive.js";
 import { LcmDag } from "./lcm/dag.js";
 import { LcmEngine } from "./lcm/engine.js";
@@ -268,6 +269,77 @@ test("enqueueObserveMessages rejects instead of silently claiming acceptance whe
     assert.ok(failure instanceof Error, "the archive failure must reject");
     // Nothing was archived: the failed init left no database behind.
     assert.equal(existsSync(path.join(filePath, "state")), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a closed engine rejects acceptance instead of acknowledging an empty archive", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-closed-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "unused");
+    await engine.ensureInitialized();
+    engine.close();
+
+    let failure: unknown;
+    try {
+      await engine.enqueueObserveMessages("session-1", [
+        { role: "user", content: "must not be acknowledged" },
+      ]);
+    } catch (err) {
+      failure = err;
+    }
+    assert.ok(failure instanceof Error, "a closed engine must reject acceptance");
+    assert.match(failure.message, /closed/);
+    assert.equal(durableRowCount(dir, "session-1"), 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed summary pass is retried from the durable archive without a new observe", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "retry summary");
+    await engine.ensureInitialized();
+
+    // Fail the first summary pass, then let the retry succeed.
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = (engine as any).summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    const realSummarize = summarizer.summarizeIncremental.bind(summarizer);
+    let failNext = true;
+    summarizer.summarizeIncremental = async (
+      sessionId: string,
+      options?: { maxLeafBatches?: number },
+    ) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("transient summary failure");
+      }
+      return realSummarize(sessionId, options);
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "retry me" },
+      { role: "assistant", content: "retry me too" },
+    ]);
+
+    // The durable backlog must be summarized by the retry alone: no new
+    // observe, no restart.
+    await eventually(
+      async () => {
+        const summary = await engine.describeContext("session-1", 0, 1);
+        return summary?.depth === 0 ? true : null;
+      },
+      "the failed summary pass is retried",
+    );
+    assert.equal(durableRowCount(dir, "session-1"), 2);
+    engine.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

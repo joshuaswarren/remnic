@@ -92,3 +92,27 @@ test("observe rejects and starts no extraction when the LCM archive fails", asyn
     await cleanupDir(memoryDir);
   }
 });
+
+test("observe rejects a closed LCM engine instead of acknowledging an empty archive", async () => {
+  const memoryDir = await mkTempMemoryDir("observe-lcm-closed");
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, { lcmEnabled: true, lcmLeafBatchSize: 1 }),
+  );
+  try {
+    // The engine is closed underneath the observe surface: acceptance must
+    // fail loudly instead of reporting lcmArchived:true for a turn that was
+    // never stored.
+    orchestrator.lcmEngine?.close();
+    const service = new EngramAccessService(orchestrator);
+
+    await assert.rejects(() => service.observe(observeRequest({})));
+
+    const bufferKeys = await orchestrator.buffer.findBufferKeysForSession(
+      "observe-fail-closed-session",
+    );
+    assert.deepEqual(bufferKeys, [], "no capture may be admitted when the archive is closed");
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});

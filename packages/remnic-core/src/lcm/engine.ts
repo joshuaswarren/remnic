@@ -103,6 +103,11 @@ const EMPTY_LCM_STATS = {
  */
 const LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB = 16;
 
+/** Retry budget for a failed summary pass: base delay, ceiling and attempts. */
+const LCM_SUMMARIZE_RETRY_BASE_MS = 500;
+const LCM_SUMMARIZE_RETRY_MAX_MS = 30_000;
+const LCM_SUMMARIZE_RETRY_MAX_ATTEMPTS = 5;
+
 export class LcmEngine {
   private db: Database.Database | null = null;
   private archive: LcmArchive | null = null;
@@ -113,6 +118,8 @@ export class LcmEngine {
   private readonly config: LcmEngineConfig;
   private readonly memoryDir: string;
   private initPromise: Promise<void> | null = null;
+  private readonly summarizeRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly summarizeRetryAttempts = new Map<string, number>();
   private readonly pendingObserveInitCounts = new Map<string, number>();
   private readonly pendingObserveInitWaiters = new Map<string, Array<() => void>>();
   private readonly pendingObserveInitIdleWaiters: Array<() => void> = [];
@@ -252,7 +259,11 @@ export class LcmEngine {
     sessionId: string,
     messages: LcmObserveMessage[],
   ): Promise<void> {
-    if (!this.config.enabled || this.closed) return;
+    // LCM off is a feature gate (the caller reports "not archived"); a closed
+    // engine is a failure — accepting the turn and archiving nothing would
+    // acknowledge a turn the archive never stored.
+    if (!this.config.enabled) return;
+    if (this.closed) throw new Error("LCM engine is closed");
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     if (messages.length === 0) return;
@@ -261,7 +272,7 @@ export class LcmEngine {
 
     try {
       await this.ensureInitialized();
-      if (this.closed) return;
+      if (this.closed) throw new Error("LCM engine is closed");
       if (!this.archive || !this.observeQueue) {
         throw new Error("LCM engine is not initialized");
       }
@@ -318,9 +329,14 @@ export class LcmEngine {
         maxLeafBatches: LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB,
       });
     } catch (err) {
-      log.debug(`LCM incremental summarization error: ${err}`);
+      // The archived turns are durable; a failed pass must not strand them
+      // until the next observe or a restart.
+      log.error(`LCM incremental summarization failed: session=${sessionId}, error=${err}`);
+      this.scheduleSummarizeRetry(sessionId);
       return;
     }
+
+    this.clearSummarizeRetry(sessionId);
 
     if (
       this.archive.countUnsummarizedMessages(sessionId) >=
@@ -328,6 +344,46 @@ export class LcmEngine {
     ) {
       this.observeQueue.enqueue(sessionId);
     }
+  }
+
+  /**
+   * Schedule a bounded, metadata-only retry for a failed summary pass.
+   *
+   * One pending retry per session, exponential backoff, a capped attempt
+   * count and an unreferenced timer: a persistent failure cannot hot-loop,
+   * and the timer never keeps the process alive.
+   */
+  private scheduleSummarizeRetry(sessionId: string): void {
+    if (this.closed || this.summarizeRetryTimers.has(sessionId)) return;
+    const attempt = (this.summarizeRetryAttempts.get(sessionId) ?? 0) + 1;
+    if (attempt > LCM_SUMMARIZE_RETRY_MAX_ATTEMPTS) {
+      log.error(
+        `LCM summarize retry budget exhausted: session=${sessionId}, attempts=${attempt - 1}`,
+      );
+      return;
+    }
+    this.summarizeRetryAttempts.set(sessionId, attempt);
+    const delayMs = Math.min(
+      LCM_SUMMARIZE_RETRY_MAX_MS,
+      LCM_SUMMARIZE_RETRY_BASE_MS * 2 ** (attempt - 1),
+    );
+    const timer = setTimeout(() => {
+      this.summarizeRetryTimers.delete(sessionId);
+      if (this.closed) return;
+      this.observeQueue?.enqueue(sessionId);
+    }, delayMs);
+    timer.unref?.();
+    this.summarizeRetryTimers.set(sessionId, timer);
+  }
+
+  /** Drop a pending retry and its attempt counter. */
+  private clearSummarizeRetry(sessionId: string): void {
+    const timer = this.summarizeRetryTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.summarizeRetryTimers.delete(sessionId);
+    }
+    this.summarizeRetryAttempts.delete(sessionId);
   }
 
   get observeQueueDepth(): number {
@@ -785,6 +841,9 @@ export class LcmEngine {
   /** Close the database connection. */
   close(): void {
     this.closed = true;
+    for (const timer of this.summarizeRetryTimers.values()) clearTimeout(timer);
+    this.summarizeRetryTimers.clear();
+    this.summarizeRetryAttempts.clear();
     if (this.db) {
       this.db.close();
     }
