@@ -272,3 +272,29 @@ test("legacy-only storage keeps the whole-state saveBuffer behavior", async () =
   assert.equal(storage.lastSaved?.entries?.["thread-a"]?.turns[0]?.content, "alpha");
   assert.equal(storage.lastSaved?.entries?.["thread-b"]?.turns[0]?.content, "beta");
 });
+
+test("durable capture at the entry cap evicts native entries instead of refusing (COS-244c)", async () => {
+  // macstudio: stalled extraction left the cap full of native (non-accepted)
+  // cron-run sessions; addTurnBounded refused every new accepted session (500).
+  const storage = new IncrementalStorage(emptyState());
+  const buffer = new SmartBuffer(
+    parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }),
+    storage,
+  );
+  // default + 3 native sessions = 4 = cap.
+  for (let i = 0; i < 3; i++) await buffer.addTurn(`native-${i}`, makeTurn(`native-${i}`, `native ${i}`));
+  await buffer.flushPendingSave();
+
+  const accepted = (key: string): BufferTurn => ({ ...makeTurn(key, "accepted"), acceptedCapture: true });
+  for (let i = 0; i < 3; i++) {
+    const outcome = await buffer.addTurnBounded(`accepted-${i}`, accepted(`accepted-${i}`));
+    assert.notEqual(outcome, null, `accepted-${i} refused while native entries were evictable`);
+  }
+  await buffer.flushPendingSave();
+  assert.ok(storage.deleted.includes("native-0"), "oldest native entry was not evicted");
+
+  // Accepted work is still never evicted: with only accepted entries left the
+  // cap refuses rather than dropping accepted captures.
+  assert.equal(await buffer.addTurnBounded("accepted-3", accepted("accepted-3")), null);
+  for (let i = 0; i < 3; i++) assert.ok(!storage.deleted.includes(`accepted-${i}`));
+});

@@ -510,27 +510,25 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /** Prune empty entries only; accepted work must survive capacity pressure. */
+  /**
+   * Free one slot for a new accepted capture using the native eviction policy:
+   * oldest empty entries first, then oldest non-accepted (best-effort native)
+   * entries. Accepted work is never evicted (#3251, COS-244c).
+   */
   private makeRoomForEntryUnlocked(): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const keys = Object.keys(entries);
-    if (keys.length < this.maxSessionEntries) return;
-    const byOldestActivity = (left: string, right: string): number =>
-      this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
-      this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
-    const emptyRemovable = keys
-      .filter(
-        (key) =>
-          key !== "default" &&
-          (entries[key]?.turns.length ?? 0) === 0 &&
-          (entries[key]?.retainedTurns?.length ?? 0) === 0,
-      )
-      .sort(byOldestActivity);
-    for (const key of emptyRemovable) {
-      if (Object.keys(entries).length < this.maxSessionEntries) break;
-      delete entries[key];
-      this.persistence.markDeleted(key);
+    const evicted = selectEvictedBufferKeys(entries, [], Math.max(0, this.maxSessionEntries - 1), {
+      activityAt: (entry) => this.entryActivityAt(entry),
+      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+    });
+    for (const key of evicted) delete entries[key];
+    this.persistence.markEvicted(evicted);
+    if (evicted.length > 0) {
+      log.warn(
+        `buffer: evicted ${evicted.length} non-accepted session entr${evicted.length === 1 ? "y" : "ies"} ` +
+          `to admit a durable capture at the session-entry cap (${this.maxSessionEntries})`,
+      );
     }
   }
 
