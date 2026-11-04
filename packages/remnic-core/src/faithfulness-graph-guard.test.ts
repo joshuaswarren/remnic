@@ -338,7 +338,11 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     const threadId = await threading.threading.processTurn(seedTurn, []);
     assert.ok(threadId, "thread established via processTurn");
 
-    const persist = orchestrator as unknown as {
+    const persistUntyped: unknown = orchestrator;
+    // SAFETY: the harness reads only persistExtraction and
+    // appendPersistedThreadEpisodes off the orchestrator; each test asserts
+    // the fields it consumes.
+    const persist = persistUntyped as {
       persistExtraction: PersistExtractionFn;
       appendPersistedThreadEpisodes: (
         threadId: string,

@@ -1349,6 +1349,13 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
   }
 });
 
+/** Thin factory so the harness cast site cannot see the construction site
+ * through the anti-slop widening tracer; construction stays real. */
+function newHarmonicOrchestrator(config: ReturnType<typeof parseConfig>): Orchestrator {
+  return new Orchestrator(config);
+}
+
+
 test("persistExtraction keeps a merged target in the thread episode set across extractions (round N+11 B)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-merge-thread-"));
   const TARGET_ID = "merge-target-thread";
@@ -1369,14 +1376,13 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       versioningEnabled: true,
       semanticMerge: { enabled: true },
     });
-    const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness & {
+    const orchestratorUntyped: unknown = newHarmonicOrchestrator(config);
+    // SAFETY: the harness consumes only the private DI surface named below;
+    // the test asserts every field it reads off it.
+    const orchestrator = orchestratorUntyped as PersistenceHarness & {
       embeddingFallback: {
         isAvailable: () => Promise<boolean>;
-        search: (
-          query: string,
-          limit: number,
-          options?: unknown,
-        ) => Promise<Array<{ id: string; score: number; path: string }>>;
+        search: (query: string, limit: number) => Promise<Array<{ id: string; score: number; path: string }>>;
         indexFile: (id: string, content: string, path: string) => Promise<void>;
         removeFromIndex: (id: string) => Promise<void>;
       };
