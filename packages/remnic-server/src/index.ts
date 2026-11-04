@@ -14,7 +14,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner
+} from "@remnic/core";
+import { wireBacklogScheduler, type BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { probeAuthenticatedLiveness } from "./liveness-probe.js";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
@@ -752,6 +754,10 @@ export interface ServerResult {
   httpServer: EngramAccessHttpServer;
   host: string;
   port: number;
+  /** The daemon-owned extraction backlog scheduler (started, draining claims). */
+  backlogScheduler: BacklogScheduler;
+  /** The orchestrator (test/ops seam: extraction stubbing, claim store access). */
+  orchestrator: Orchestrator;
   /** Stop HTTP, cancel startup work, abort deferred init, and destroy the orchestrator. */
   stop: () => Promise<void>;
   /** Cancel any pending startup-sync retry timers. Called automatically on shutdown. */
@@ -863,8 +869,14 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
 
   let host: string;
   let port: number;
+  let backlogScheduler: BacklogScheduler | undefined;
   try {
     ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron();
+    // The daemon owns extraction-backlog draining: start the bounded
+    // scheduler AFTER the listener so accepted work is never blocked by
+    // startup; stop() below aborts it before orchestrator.destroy().
+    backlogScheduler = wireBacklogScheduler(orchestrator);
+    backlogScheduler.start();
   } catch (err) {
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
@@ -936,9 +948,13 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
           await readinessTask;
         } finally {
           try {
-            await orchestrator.destroy();
+            await backlogScheduler?.stop();
           } finally {
-            finishCodex();
+            try {
+              await orchestrator.destroy();
+            } finally {
+              finishCodex();
+            }
           }
         }
       }
@@ -946,6 +962,9 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     return stopPromise;
   };
   httpServer.stop = stop;
+  // SAFETY: assigned inside the try above; the catch rethrows, so past this
+  // point the scheduler exists.
+  const startedBacklogScheduler = backlogScheduler as BacklogScheduler;
 
   orchestrator.deferredReady.then(() => {
     if (startupSyncAbort.signal.aborted) {
@@ -1009,7 +1028,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     log.warn(`Deferred init error: ${err}`);
   });
 
-  return { config, service, httpServer, host, port, stop, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
+  return { config, service, httpServer, host, port, stop, backlogScheduler: startedBacklogScheduler, orchestrator, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
 }
 
 const HEALTHCHECK_TIMEOUT_MS = 5_000;
