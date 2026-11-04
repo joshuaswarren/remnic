@@ -26,9 +26,9 @@ test("LcmWorkQueue coalesces duplicate pending jobs per session", async () => {
     },
   });
 
-  queue.enqueue("blocked", [{ role: "user", content: "hold" }]);
-  queue.enqueue("session-a", [{ role: "user", content: "one" }]);
-  queue.enqueue("session-a", [{ role: "assistant", content: "two" }]);
+  queue.enqueue("blocked");
+  queue.enqueue("session-a");
+  queue.enqueue("session-a");
 
   await Promise.resolve();
 
@@ -56,8 +56,8 @@ test("LcmWorkQueue continues after a worker failure", async () => {
     },
   });
 
-  queue.enqueue("session-a", [{ role: "user", content: "one" }]);
-  queue.enqueue("session-b", [{ role: "assistant", content: "two" }]);
+  queue.enqueue("session-a");
+  queue.enqueue("session-b");
 
   await queue.whenIdle();
 
@@ -87,14 +87,14 @@ test("LcmWorkQueue preserves first enqueue time when pending jobs coalesce", asy
       },
     });
 
-    queue.enqueue("blocked", [{ role: "user", content: "hold" }]);
+    queue.enqueue("blocked");
     await Promise.resolve();
 
     now = 110;
-    queue.enqueue("session-a", [{ role: "user", content: "one" }]);
+    queue.enqueue("session-a");
 
     now = 150;
-    queue.enqueue("session-a", [{ role: "assistant", content: "two" }]);
+    queue.enqueue("session-a");
 
     now = 200;
     blocker.resolve();
@@ -127,10 +127,10 @@ test("LcmWorkQueue does not start a second job for a session already in flight",
     },
   });
 
-  queue.enqueue("session-a", [{ role: "user", content: "first" }]);
+  queue.enqueue("session-a");
   await Promise.resolve();
-  queue.enqueue("session-a", [{ role: "assistant", content: "second" }]);
-  queue.enqueue("session-b", [{ role: "user", content: "other" }]);
+  queue.enqueue("session-a");
+  queue.enqueue("session-b");
 
   await Promise.resolve();
   await Promise.resolve();
@@ -159,8 +159,8 @@ test("LcmWorkQueue waits for a specific session without waiting for unrelated id
     },
   });
 
-  queue.enqueue("blocked", [{ role: "user", content: "hold" }]);
-  queue.enqueue("session-a", [{ role: "assistant", content: "queued" }]);
+  queue.enqueue("blocked");
+  queue.enqueue("session-a");
 
   await Promise.resolve();
   const sessionIdlePromise = queue.whenSessionIdle("session-a").then(() => {
@@ -185,7 +185,7 @@ test("#3077 whenSessionIdle abort unregisters the waiter", async () => {
       await blocker.promise;
     },
   });
-  queue.enqueue("blocked", [{ role: "user", content: "hold" }]);
+  queue.enqueue("blocked");
   await Promise.resolve();
   const abort = new AbortController();
   const waiting = queue.whenSessionIdle("blocked", abort.signal);

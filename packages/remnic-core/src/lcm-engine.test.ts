@@ -887,7 +887,8 @@ test("close prevents deferred observe work from reinitializing the engine", asyn
     await engine.ensureInitialized();
     engine.close();
 
-    await (engine as any).processObserveMessages("session-1", [
+    await (engine as any).processSummarizeJob("session-1");
+    await engine.observeMessages("session-1", [
       { role: "user", content: "should not reopen" },
     ]);
 
