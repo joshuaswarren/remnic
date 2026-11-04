@@ -133,11 +133,16 @@ export class ExtractionDrain {
     preemptHandle?: ExtractionPreemptHandle,
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
+    // Accepted-capture groups chunk too when their turns clear by IDENTITY
+    // (clearMatchingTurns — the pinned-capture and claim-drain paths): a
+    // whole-window single run would truncate at the model budget and ack
+    // turns the model never saw. Without identity clears the single-run
+    // prefix clear stays (existing behavior).
     const chunkable =
       runOptions.clearBufferAfterExtraction &&
       !runOptions.forceExtractionAttempt &&
       !runOptions.failOnExtractionFailure &&
-      !turns.some((turn) => turn.acceptedCapture === true) &&
+      (runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true)) &&
       Number.isFinite(budgetChars) &&
       budgetChars > 0;
     const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];

@@ -29,6 +29,7 @@ import { selfDeps } from "./self-deps.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingestion.js";
 import { ExtractionDrain } from "./extraction-drain.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import type { Orchestrator } from "../orchestrator.js";
 
 export type DrainSessionStatus = "drained" | "deferred" | "failed" | "skipped";
@@ -238,6 +239,7 @@ export class BufferDrainRunner {
     }, Math.max(1_000, Math.floor(leaseMs / 3)));
     heartbeat.unref?.();
 
+    try {
     // Exact captured-scope grouping: each scope group keeps its own
     // namespace/principal/plan pins, and the shared extraction boundary
     // re-applies CURRENT authorization from the turn's ORIGINAL coding
@@ -266,7 +268,14 @@ export class BufferDrainRunner {
           abortSignal: signal,
           writeNamespaceOverride: group.writeNamespaceOverride,
           principalOverride: group.principalOverride,
-          scopeProfileWritePlan: group.scopeProfileWritePlan ?? null,
+          // Plan semantics: pinned plan forwards as-is; a planless ACCEPTED
+          // group pins null (existing flush behavior); unpinned legacy groups
+          // pass NO option so runExtraction resolves the CURRENT profile.
+          ...(group.scopeProfileWritePlan !== undefined
+            ? { scopeProfileWritePlan: group.scopeProfileWritePlan }
+            : group.turns.some((turn) => turn.acceptedCapture === true)
+              ? { scopeProfileWritePlan: null }
+              : {}),
           execution: { buffer: claimBuffer, drain: executionDrain },
           onTaskSettled: settle,
         })
@@ -278,9 +287,11 @@ export class BufferDrainRunner {
       }
       groupOutcomes.push({ turns: group.turns.length, result: settled.result });
     }
+    // Heartbeat cleared on EVERY exit path: a rejected drain must not keep
+    // renewing the lease forever.
     clearInterval(heartbeat);
     const remaining = await claims.load(key);
-    const turnsRemaining = remaining
+    let turnsRemaining = remaining
       ? remaining.entry.turns.length + (remaining.entry.retainedTurns?.length ?? 0)
       : 0;
     const persistedCount = groupOutcomes.reduce((sum, entry) => sum + (entry.result?.persistedCount ?? 0), 0);
@@ -296,12 +307,27 @@ export class BufferDrainRunner {
 
     let status: DrainSessionStatus;
     let reason: string | undefined;
+    let acked = false;
     if (turnsRemaining === 0) {
       // Everything extracted: the claim is finished and the session file is
       // gone for good. (Durable outputs preceded the claim clear, so an ack
-      // never references unprocessed content.)
-      await claims.ack(key, options.ownerId);
-      status = "drained";
+      // never references unprocessed content.) The ack verdict is the truth:
+      // live ingress merged between our read and the ack leaves the claim
+      // non-empty — report deferred, never a false drained.
+      const ackOutcome = await claims.ack(key, options.ownerId);
+      acked = ackOutcome === "acked";
+      if (acked) {
+        status = "drained";
+      } else {
+        // Not acked: the claim holds turns we did not count (live ingress
+        // merged between our read and the ack) or the lease moved. Reload
+        // the honest pending count, release OUR lease, keep the source.
+        const reloaded = await claims.load(key);
+        if (reloaded) turnsRemaining = reloaded.entry.turns.length + (reloaded.entry.retainedTurns?.length ?? 0);
+        await claims.releaseLease(key, options.ownerId);
+        status = "deferred";
+        reason = ackOutcome === "not_empty" ? "ack_not_empty" : "ack_not_owner";
+      }
     } else if (groupError) {
       // A failed run keeps the remaining turns for the next attempt.
       await claims.releaseLease(key, options.ownerId);
@@ -338,6 +364,9 @@ export class BufferDrainRunner {
     if (reason !== undefined) outcome.reason = reason;
     options.onEvent?.({ type: "session_finished", key, outcome });
     return outcome;
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
   /** Claim a session file for the drain. Returns false when it is not claimable. */

@@ -55,6 +55,14 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
         return "claimed";
       },
       isClaimed: (key) => state.claimed.has(key) || state.claimedThisRun.has(key),
+      listPage: async (after, limit) => {
+        const names = [...state.claimed].sort();
+        const start = after === undefined ? 0 : names.findIndex((n) => n > after);
+        const begin = start < 0 ? names.length : start;
+        const out = names.slice(begin, begin + limit).map((key) => ({ key, turnCount: state.claimTurns.get(key) ?? 0, leased: false, leaseExpired: true }));
+        const consumed = begin + out.length;
+        return { entries: out, nextCursor: consumed < names.length ? names[consumed] : undefined };
+      },
     },
     liveBufferCounts: () => state.counts,
     lease: () => ({
@@ -482,4 +490,48 @@ test("a claim decision unsettled mid-rename keeps the key reserved until it sett
     releaseClaim();
     await scheduler.stop();
   }
+});
+
+test("stop during a pending discovery submit: no drain runs, restart handles it", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const state: StubState = {
+    counts: new Map([["late", { turns: 1, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const deps = makeDeps(state, queue);
+  let releaseList!: () => void;
+  const listGate = new Promise<void>((resolve) => {
+    releaseList = resolve;
+  });
+  const entered = Promise.withResolvers<void>();
+  const scheduler = new BacklogScheduler(
+    {
+      ...deps,
+      claims: {
+        ...deps.claims,
+        list: async () => {
+          await listGate;
+          return deps.claims.list();
+        },
+      },
+      drainKey: async (key) => {
+        entered.resolve();
+        state.drained.push({ key, outcome: emptyOutcome(key) });
+        return emptyOutcome(key);
+      },
+    },
+    { pollMs: 3_600_000 },
+  );
+  scheduler.start();
+  const stopping = scheduler.stop();
+  releaseList();
+  await stopping;
+  await Promise.race([entered.promise, new Promise((r) => setTimeout(r, 0))]);
+  assert.equal(state.drained.length, 0, "no drain may run after stop, even when discovery was pending");
+  assert.equal(scheduler.snapshot().inFlight.length, 0);
+  void entered;
 });

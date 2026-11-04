@@ -582,6 +582,44 @@ export class BufferDrainClaims {
     return out;
   }
 
+  /**
+   * Paged listing for bounded periodic scans: at most `limit` claims with
+   * pending turns, starting AFTER `afterName` (a raw entry name returned as
+   * `nextCursor` by a previous page — file-name order is stable, so a
+   * rotating cursor visits every claim fairly without ever materializing
+   * the whole directory's bodies). Names only skip; bodies are read lazily
+   * per entry and only for the page.
+   */
+  async listPage(afterName: string | undefined, limit: number): Promise<{ entries: DrainClaimListing[]; nextCursor?: string }> {
+    let names: string[];
+    try {
+      names = (await readdir(this.dir)).filter((name) => name.endsWith(".json") && !name.endsWith(".lease.json")).sort();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { entries: [] };
+      throw err;
+    }
+    const start = afterName === undefined ? 0 : names.findIndex((name) => name > afterName);
+    const out: DrainClaimListing[] = [];
+    let cursor: string | undefined;
+    for (let index = start < 0 ? names.length : start; index < names.length; index += 1) {
+      const name = names[index]!;
+      if (out.length >= limit) {
+        cursor = name;
+        break;
+      }
+      const claim = await this.readClaimBodyByKey(name);
+      if (!claim) continue;
+      const lease = await this.readLease(claim.key);
+      out.push({
+        key: claim.key,
+        turnCount: claim.entry.turns.length + (claim.entry.retainedTurns?.length ?? 0),
+        leased: lease !== null,
+        leaseExpired: lease !== null ? isLeaseExpired(lease) : true,
+      });
+    }
+    return cursor === undefined && start + out.length < names.length ? { entries: out, nextCursor: names[start + out.length] } : { entries: out, nextCursor: cursor };
+  }
+
   private async readClaimBodyByKey(name: string): Promise<DrainClaimFile | null> {
     try {
       return parseBody(await this.io.read(path.join(this.dir, name)));

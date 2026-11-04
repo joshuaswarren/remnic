@@ -263,6 +263,68 @@ test("cancelling mid-drain keeps the claim retryable; a rerun finishes it", asyn
   }
 });
 
+test("a large pinned accepted group chunks to the model budget before any clear", async () => {
+  const d = await makeDrainer(NAMESPACED);
+  try {
+    // Shadow the private budget seam (house field-seam pattern): 200 chars.
+    Object.defineProperty(d.orchestrator, "extractionWindowBudgetChars", {
+      value: () => 200,
+      configurable: true,
+    });
+    const contents = Array.from({ length: 8 }, (_, i) => `pinned fact ${i} ${"x".repeat(24)}`);
+    for (const [index, content] of contents.entries()) {
+      const pinned: BufferTurn = {
+        ...turn(content, "sess-big", `2026-11-01T00:0${index}:00.000Z`),
+        acceptedCapture: true,
+        writeNamespaceOverride: "alice",
+        principalOverride: "alice",
+      };
+      await d.orchestrator.buffer.addTurn("sess-big", pinned);
+    }
+    await d.orchestrator.buffer.save();
+    assert.equal(await d.runner.claim("sess-big", "drain-1"), true);
+
+    const outcome = await d.runner.drainSession("sess-big", { ownerId: "drain-1" });
+    assert.equal(outcome.status, "drained");
+    assert.ok(d.calls.length >= 2, `every turn must be seen by budget-fit calls, got ${d.calls.length}`);
+    for (const [index, callTurns] of d.calls.entries()) {
+      const total = callTurns.reduce((sum, t) => sum + t.content.trim().length, 0);
+      assert.ok(total <= 200, `model call ${index} exceeded the window budget: ${total}`);
+    }
+    const seen = new Set(d.calls.flat().map((t) => t.content));
+    for (const content of contents) {
+      assert.ok(seen.has(content), `turn never handed to extraction: ${content}`);
+    }
+    const claim = await d.runner.claims.load("sess-big");
+    assert.equal(claim?.entry.turns.length ?? 0, 0, "the claim empties only after every chunk extracted");
+  } finally {
+    await d.cleanup();
+  }
+});
+
+test("an ack that lands non-empty never reports drained: honest pending, own lease released", async () => {
+  const d = await makeDrainer();
+  try {
+    await d.orchestrator.buffer.addTurn("sess-race", turn("r1", "sess-race"));
+    await d.orchestrator.buffer.save();
+    assert.equal(await d.runner.claim("sess-race", "drain-1"), true);
+
+    const claims = d.runner.claims;
+    const originalAck = claims.ack.bind(claims);
+    claims.ack = async () => "not_empty";
+    const outcome = await d.runner.drainSession("sess-race", { ownerId: "drain-1" });
+    claims.ack = originalAck;
+
+    assert.equal(outcome.status, "deferred", "a non-empty ack is never reported drained");
+    assert.equal(outcome.reason, "ack_not_empty");
+    assert.equal(existsSync(d.runner.claims.leasePathForTest("sess-race")), false, "our lease is released");
+    const retry = await d.runner.drainSession("sess-race", { ownerId: "drain-1" });
+    assert.equal(retry.status, "drained");
+  } finally {
+    await d.cleanup();
+  }
+});
+
 test("an abandoned claim with a dead owner's lease is adopted and drained", async () => {
   const d = await makeDrainer();
   try {

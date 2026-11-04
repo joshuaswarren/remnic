@@ -37,7 +37,7 @@ import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-clai
  *  orchestrator wiring); injectable so tests drive ticks deterministically. */
 export interface BacklogSchedulerDeps {
   queue: Pick<ExtractionQueueCoordinator, "tryReserveKey" | "releaseKeyReservation" | "maxConcurrency">;
-  claims: Pick<BufferDrainClaims, "list" | "claimFromSessionFile" | "isClaimed">;
+  claims: Pick<BufferDrainClaims, "list" | "listPage" | "claimFromSessionFile" | "isClaimed">;
   /** Live per-key pending counts (counts only — never turn payloads). */
   liveBufferCounts(): Map<string, { turns: number; retainedTurns: number }>;
   /** A fresh lease for claims this scheduler takes. */
@@ -113,6 +113,7 @@ export class BacklogScheduler {
     denied: { keys: 0, turns: 0 },
     failed: 0,
   };
+  private claimCursor: string | undefined;
   private timer: ReturnType<typeof setInterval> | undefined;
   private ticking = false;
   private stopped = true;
@@ -205,8 +206,12 @@ export class BacklogScheduler {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
     try {
-      for (const candidate of await this.discoverCandidates()) {
-        if (this.inFlight.size >= this.deps.queue.maxConcurrency) break;
+      // stop() may land while discovery's I/O is pending: re-check before
+      // submitting anything, and again per candidate.
+      const candidates = await this.discoverCandidates();
+      if (this.stopped) return;
+      for (const candidate of candidates) {
+        if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) break;
         // inFlight is the authority for "already submitted" — key state only
         // exists once an outcome landed (backoff/denied gating below).
         if (this.inFlight.has(candidate.key)) continue;
@@ -226,17 +231,25 @@ export class BacklogScheduler {
     }
   }
 
-  /** Bounded discovery: existing claims with pending turns first (adopted in
-   *  place), then unclaimed live keys with pending counts. Empty tombstones
-   *  and claimed keys' live copies are never candidates. */
+  /**
+   * Bounded discovery: ONE page of existing claims with pending turns
+   * (adopted in place), then unclaimed live keys with pending counts. The
+   * page cursor rotates across ticks, so every pending claim is visited
+   * fairly within ceil(N/page) ticks — all pending stays visible and
+   * resumable without ever materializing the whole claim corpus. Empty
+   * tombstones and claimed keys' live copies are never candidates.
+   */
   private async discoverCandidates(): Promise<{ key: string; needsClaim: boolean }[]> {
     const out: { key: string; needsClaim: boolean }[] = [];
     const seen = new Set<string>();
-    for (const listed of await this.deps.claims.list()) {
+    const pageLimit = Math.max(this.deps.queue.maxConcurrency * 4, 16);
+    const page = await this.deps.claims.listPage(this.claimCursor, pageLimit);
+    for (const listed of page.entries) {
       if (listed.turnCount <= 0) continue;
       seen.add(listed.key);
       out.push({ key: listed.key, needsClaim: false });
     }
+    this.claimCursor = page.nextCursor;
     for (const [key, counts] of this.deps.liveBufferCounts()) {
       if (counts.turns + counts.retainedTurns <= 0) continue;
       if (seen.has(key) || this.deps.claims.isClaimed(key)) continue;
@@ -268,6 +281,9 @@ export class BacklogScheduler {
           this.deps.queue.releaseKeyReservation(key);
         }
       }
+      // Stopped between the claim decision and the task: leave the claim
+      // with its lease (it expires; the next start adopts) — never drain.
+      if (this.stopped) return;
       this.counters.claimed += 1;
       const outcome = await this.deps.drainKey(key, {
         ownerId: this.options.ownerId,
