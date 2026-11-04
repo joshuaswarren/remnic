@@ -5,91 +5,31 @@
  * failure was invisible, the response reported the turn as archived, and the
  * client never retried — the lossless copy of the turn was simply gone.
  *
- * These tests pin the contract: a successful observe means the archive
- * accepted the turn, and a failed archive rejects the observe BEFORE
- * extraction starts, so the caller can retry the same turns.
+ * These tests drive the REAL orchestrator (real LCM engine, real SQLite
+ * archive, real capture buffer) and pin the contract: a successful observe
+ * means the archive accepted the turn, and a failed archive rejects the
+ * observe BEFORE extraction starts, so the caller can retry the same turns.
  */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
-import type { CodingContext, PluginConfig } from "./types.js";
-
-interface ObserveProbe {
-  orch: Orchestrator;
-  lcmCalls: Array<{ sessionKey: string }>;
-  extractionCalls: Array<{ sessionKeys: string[] }>;
-  lcmFailure: Error | null;
-}
-
-function makeObserveProbe(memoryDir: string): ObserveProbe {
-  const contexts = new Map<string, CodingContext>();
-  const lcmCalls: ObserveProbe["lcmCalls"] = [];
-  const extractionCalls: ObserveProbe["extractionCalls"] = [];
-
-  const config = {
-    namespacesEnabled: true,
-    defaultNamespace: "default",
-    sharedNamespace: "shared",
-    namespacePolicies: [
-      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
-    ],
-    codingMode: { projectScope: true },
-    memoryDir,
-    objectiveStateMemoryEnabled: false,
-    objectiveStateSnapshotWritesEnabled: false,
-    principalFromSessionKeyMode: "prefix",
-    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
-    recallCrossNamespaceBudgetEnabled: false,
-    recallCrossNamespaceBudgetWindowMs: 60_000,
-    recallCrossNamespaceBudgetSoftLimit: 10,
-    recallCrossNamespaceBudgetHardLimit: 30,
-  } as unknown as PluginConfig;
-
-  const probe: ObserveProbe = {
-    orch: null as unknown as Orchestrator,
-    lcmCalls,
-    extractionCalls,
-    lcmFailure: null,
-  };
-
-  const orch = {
-    config,
-    getCodingContextForSession: (sk: string | undefined) =>
-      (sk ? contexts.get(sk) : null) ?? null,
-    setCodingContextForSession: (sk: string, ctx: CodingContext | null) => {
-      if (ctx === null) contexts.delete(sk);
-      else contexts.set(sk, ctx);
-    },
-    applyCodingNamespaceOverlay: (sk: string | undefined, base: string) =>
-      Orchestrator.prototype.applyCodingNamespaceOverlay.call(orch, sk, base),
-    getStorage: async (ns: string) => ({ dir: join(memoryDir, "storage", ns) }),
-    lcmEngine: {
-      enabled: true,
-      enqueueObserveMessages: async (sessionKey: string) => {
-        lcmCalls.push({ sessionKey });
-        if (probe.lcmFailure) throw probe.lcmFailure;
-      },
-    },
-    ingestReplayBatch: async (turns: Array<{ sessionKey: string }>) => {
-      extractionCalls.push({ sessionKeys: turns.map((t) => t.sessionKey) });
-    },
-  } as unknown as Orchestrator;
-
-  probe.orch = orch;
-  return probe;
-}
+import {
+  cleanupDir,
+  makeLifecycleConfig,
+  mkTempMemoryDir,
+} from "./testing/orchestrator-lite.js";
 
 function observeRequest(
   overrides: Partial<EngramAccessObserveRequest>,
 ): EngramAccessObserveRequest {
+  // SAFETY: the literal sets every required observe field the surface reads.
   return {
-    sessionKey: "pi-geek:abc123",
+    sessionKey: "observe-fail-closed-session",
     messages: [
       { role: "user", content: "what database are we using?" },
       { role: "assistant", content: "we use postgres for the primary store" },
@@ -99,40 +39,56 @@ function observeRequest(
 }
 
 test("observe reports the turn as archived only after the archive accepted it", async () => {
-  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-lcm-ok-"));
+  const memoryDir = await mkTempMemoryDir("observe-lcm-ok");
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, { lcmEnabled: true, lcmLeafBatchSize: 1 }),
+  );
   try {
-    const probe = makeObserveProbe(memoryDir);
-    const service = new EngramAccessService(probe.orch);
+    const service = new EngramAccessService(orchestrator);
 
     const response = await service.observe(observeRequest({}));
 
     assert.equal(response.lcmArchived, true);
-    assert.equal(probe.lcmCalls.length, 1);
-    assert.equal(probe.extractionCalls.length, 1);
+    const archived = await orchestrator.lcmEngine?.searchContextFull(
+      "postgres",
+      10,
+      "observe-fail-closed-session",
+    );
+    assert.equal(
+      archived?.length ?? 0,
+      1,
+      "the observed turn must be in the durable LCM archive",
+    );
   } finally {
-    rmSync(memoryDir, { recursive: true, force: true });
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
   }
 });
 
 test("observe rejects and starts no extraction when the LCM archive fails", async () => {
-  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-lcm-fail-"));
+  const memoryDir = await mkTempMemoryDir("observe-lcm-fail");
+  // The LCM archive database cannot be opened (a directory sits where the
+  // SQLite file belongs), so the archive rejects the turn: exactly the
+  // "archive failed" case a client must be able to retry.
+  await mkdir(path.join(memoryDir, "state", "lcm.sqlite"), { recursive: true });
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, { lcmEnabled: true, lcmLeafBatchSize: 1 }),
+  );
   try {
-    const probe = makeObserveProbe(memoryDir);
-    probe.lcmFailure = new Error("lcm archive unavailable");
-    const service = new EngramAccessService(probe.orch);
+    const service = new EngramAccessService(orchestrator);
 
-    await assert.rejects(
-      () => service.observe(observeRequest({})),
-      /lcm archive unavailable/,
+    await assert.rejects(() => service.observe(observeRequest({})));
+
+    const bufferKeys = await orchestrator.buffer.findBufferKeysForSession(
+      "observe-fail-closed-session",
     );
-
-    assert.equal(probe.lcmCalls.length, 1, "the archive was attempted");
-    assert.equal(
-      probe.extractionCalls.length,
-      0,
+    assert.deepEqual(
+      bufferKeys,
+      [],
       "extraction must not start when the lossless archive rejected the turn",
     );
   } finally {
-    rmSync(memoryDir, { recursive: true, force: true });
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
   }
 });

@@ -5,18 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { parseConfig } from "./config.js";
 import { LcmArchive } from "./lcm/archive.js";
 import { LcmDag } from "./lcm/dag.js";
 import { LcmEngine } from "./lcm/engine.js";
 import { ensureLcmStateDir, openLcmDatabase } from "./lcm/schema.js";
 import { LcmSummarizer } from "./lcm/summarizer.js";
-import type { PluginConfig } from "./types.js";
 
-function createConfig(
-  memoryDir: string,
-  overrides: Record<string, unknown> = {},
-): PluginConfig {
-  return {
+function createConfig(memoryDir: string) {
+  return parseConfig({
     memoryDir,
     lcmEnabled: true,
     lcmLeafBatchSize: 2,
@@ -29,8 +26,7 @@ function createConfig(
     lcmRecallBudgetShare: 0.15,
     lcmObserveConcurrency: 1,
     messagePartsEnabled: false,
-    ...overrides,
-  } as unknown as PluginConfig;
+  });
 }
 
 /** Second SQLite handle on the same file: proves content is durable on disk,
@@ -38,6 +34,7 @@ function createConfig(
 function durableRowCount(memoryDir: string, sessionId: string): number {
   const db = openLcmDatabase(memoryDir);
   try {
+    // SAFETY: the query returns exactly one aggregate column, `n`.
     const row = db
       .prepare("SELECT COUNT(*) AS n FROM lcm_messages WHERE session_id = ?")
       .get(sessionId) as { n: number };
@@ -50,6 +47,7 @@ function durableRowCount(memoryDir: string, sessionId: string): number {
 function durableContents(memoryDir: string, sessionId: string): string[] {
   const db = openLcmDatabase(memoryDir);
   try {
+    // SAFETY: the query returns the lcm_messages `content` column.
     const rows = db
       .prepare(
         "SELECT content FROM lcm_messages WHERE session_id = ? ORDER BY turn_index",
@@ -64,6 +62,7 @@ function durableContents(memoryDir: string, sessionId: string): string[] {
 function leafRanges(memoryDir: string, sessionId: string): Array<[number, number]> {
   const db = openLcmDatabase(memoryDir);
   try {
+    // SAFETY: the query returns the summary node range columns.
     const rows = db
       .prepare(
         "SELECT msg_start, msg_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0 ORDER BY msg_start",
@@ -107,13 +106,10 @@ test("enqueueObserveMessages archives content durably before acknowledgement whi
 
 test("burst enqueue keeps the pending queue metadata-only and every message lands in SQLite while summarization is blocked", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-durable-2-"));
-  const { promise: summarizeStarted, resolve: resolveStarted } =
-    Promise.withResolvers<void>();
   const { promise: releaseSummarize, resolve: resolveRelease } =
     Promise.withResolvers<void>();
   try {
     const engine = new LcmEngine(createConfig(dir), async () => {
-      resolveStarted();
       await releaseSummarize;
       return "blocked summary";
     });
@@ -261,13 +257,15 @@ test("enqueueObserveMessages rejects instead of silently claiming acceptance whe
   await writeFile(filePath, "occupied", "utf8");
   try {
     const engine = new LcmEngine(createConfig(filePath), async () => "unused");
-    await assert.rejects(
-      () =>
-        engine.enqueueObserveMessages("session-1", [
-          { role: "user", content: "must not be claimed durable" },
-        ]),
-      (err: unknown) => err instanceof Error,
-    );
+    let failure: unknown;
+    try {
+      await engine.enqueueObserveMessages("session-1", [
+        { role: "user", content: "must not be claimed durable" },
+      ]);
+    } catch (err) {
+      failure = err;
+    }
+    assert.ok(failure instanceof Error, "the archive failure must reject");
     // Nothing was archived: the failed init left no database behind.
     assert.equal(existsSync(path.join(filePath, "state")), false);
   } finally {

@@ -188,15 +188,20 @@ export class LcmArchive {
       .all(sessionId, fromTurn, toTurn) as LcmMessage[];
   }
 
-  /** Retrieve unsummarized messages (after last leaf summary), optionally bounded. */
-  getUnsummarizedMessages(sessionId: string, limit?: number): LcmMessage[] {
-    const lastLeafEnd = this.db
+  /** Highest turn index covered by a leaf summary (-1 when none exist). */
+  private lastLeafSummaryEnd(sessionId: string): number {
+    // SAFETY: the query returns exactly one aggregate column, `last_end`.
+    const row = this.db
       .prepare(
         "SELECT MAX(msg_end) as last_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0",
       )
       .get(sessionId) as { last_end: number | null } | undefined;
+    return row?.last_end ?? -1;
+  }
 
-    const lastSummarized = lastLeafEnd?.last_end ?? -1;
+  /** Retrieve unsummarized messages (after last leaf summary), optionally bounded. */
+  getUnsummarizedMessages(sessionId: string, limit?: number): LcmMessage[] {
+    const lastSummarized = this.lastLeafSummaryEnd(sessionId);
     if (limit !== undefined && limit <= 0) return [];
 
     const stmt = this.db.prepare(
@@ -204,6 +209,7 @@ export class LcmArchive {
         ? "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index"
         : "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index LIMIT ?",
     );
+    // SAFETY: the statement selects the lcm_messages row shape.
     const rows = (
       limit === undefined ? stmt.all(sessionId, lastSummarized) : stmt.all(sessionId, lastSummarized, limit)
     ) as LcmMessage[];
@@ -212,13 +218,8 @@ export class LcmArchive {
 
   /** Count archived turns that no leaf summary covers yet. */
   countUnsummarizedMessages(sessionId: string): number {
-    const lastLeafEnd = this.db
-      .prepare(
-        "SELECT MAX(msg_end) as last_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0",
-      )
-      .get(sessionId) as { last_end: number | null } | undefined;
-
-    const lastSummarized = lastLeafEnd?.last_end ?? -1;
+    const lastSummarized = this.lastLeafSummaryEnd(sessionId);
+    // SAFETY: the query returns exactly one aggregate column, `n`.
     const row = this.db
       .prepare(
         "SELECT COUNT(*) as n FROM lcm_messages WHERE session_id = ? AND turn_index > ?",
@@ -234,6 +235,7 @@ export class LcmArchive {
    */
   listSessionsWithUnsummarizedTurns(minTurns: number): string[] {
     if (minTurns <= 0) return [];
+    // SAFETY: the query returns one `session_id` column per session.
     const rows = this.db
       .prepare(
         `
