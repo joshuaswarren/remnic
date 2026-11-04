@@ -2581,8 +2581,8 @@ export class ExtractionPersistCoordinator {
       const factWriteOutcome = await persistUnderFactDedupWindow(
         targetStorage.dir,
         raceRecheck(targetStorage, contentHashDedupKey),
-        async () =>
-          targetStorage.writeSealedMemory(factWriteEnvelope, {
+        async () => {
+          const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
         importance,
         supersedes,
         links: links.length > 0 ? links : undefined,
@@ -2605,7 +2605,22 @@ export class ExtractionPersistCoordinator {
         // must see this hash, or its recheck misses and duplicates it.
         deferHashIndexSave: false,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
-          }),
+          });
+          // Register the dedup hash inside the same commit window: writeMemory
+          // indexes facts only (rule 44 #1579), so non-fact categories
+          // previously registered after the window released, letting a
+          // concurrent session's in-window recheck miss and both write the
+          // same content (issue #3312). Fail-open, like the post-write
+          // registration this replaces.
+          if (!factWrite.tombstoneBlocked) {
+            try {
+              await this.deps.addContentHashDedup(targetStorage, contentHashDedupKey);
+            } catch (err) {
+              log.warn(`content-hash dedup registration failed for memory ${factWrite.id}: ${err}`);
+            }
+          }
+          return factWrite;
+        },
       ).catch(finalizeOnWindowFailure);
       if (factWriteOutcome.suppressed) {
         // Codex P2: backfill bounds onto the window's winning copy first.
@@ -2799,29 +2814,6 @@ export class ExtractionPersistCoordinator {
             ...(origin ? { origin } : {}),
             ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
-        }
-        // Register in the target storage content-hash index after successful
-        // write. Thread 3 fix: canonicalize by stripping any pre-existing
-        // citation so the stored hash matches what the dedup check computes.
-        try {
-          const canonicalFactContent =
-            citationEnabled &&
-            hasCitationForTemplate(fact.content, citationTemplate)
-              ? stripCitationForTemplate(fact.content, citationTemplate)
-              : fact.content;
-          const hashRegisterKey =
-            writeCategory === "procedure"
-              ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
-              : canonicalFactContent;
-          // #1645: do NOT register a tombstone-blocked fact's content in the dedup
-          // index (rule 44 defeat) — see chunked path comment.
-          if (!tombstoneBlocked) {
-            await this.deps.addContentHashDedup(targetStorage, hashRegisterKey);
-          }
-        } catch (err) {
-          log.warn(
-            `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
-          );
         }
       } catch (err) {
         // PR #2016 / #3231: finalize deferred side effects for facts already
