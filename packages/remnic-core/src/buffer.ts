@@ -512,7 +512,10 @@ export class SmartBuffer {
 
   /** Free one slot for an accepted capture via the native eviction policy (COS-244c). */
   private makeRoomForEntryUnlocked(): void {
-    this.pruneEntries([], Math.max(0, this.maxSessionEntries - 1));
+    const entries = this.state.entries ?? {};
+    const target = Math.max(0, this.maxSessionEntries - 1);
+    const pinned = Object.keys(entries).filter((k) => k === "default" || this.entryHoldsAcceptedCapture(entries[k]));
+    if (pinned.length <= target) this.pruneEntries([], target); // evict only if it frees a slot
   }
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {

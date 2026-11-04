@@ -298,3 +298,16 @@ test("durable capture at the entry cap evicts native entries instead of refusing
   assert.equal(await buffer.addTurnBounded("accepted-3", accepted("accepted-3")), null);
   for (let i = 0; i < 3; i++) assert.ok(!storage.deleted.includes(`accepted-${i}`));
 });
+
+test("at-cap admission evicts nothing when eviction cannot free a slot (COS-244c)", async () => {
+  // Cap lowered below the accepted backlog: admission must refuse without dropping native work.
+  const accepted = (key: string): BufferTurn => ({ ...makeTurn(key, "accepted"), acceptedCapture: true });
+  const entry = (turn: BufferTurn): BufferEntryState => ({ turns: [turn], lastExtractionAt: null, extractionCount: 0 });
+  const entries: Record<string, BufferEntryState> = { native: entry(makeTurn("native", "native")) };
+  for (let i = 0; i < 4; i++) entries[`acc-${i}`] = entry(accepted(`acc-${i}`));
+  const storage = new IncrementalStorage({ ...emptyState(), entries });
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }), storage);
+  assert.equal(await buffer.addTurnBounded("new", accepted("new")), null);
+  await buffer.flushPendingSave();
+  assert.ok(!storage.deleted.includes("native"), "native entry evicted although admission was still refused");
+});
