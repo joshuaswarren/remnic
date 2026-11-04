@@ -125,7 +125,7 @@ import {
 } from "./extraction-run-helpers.js";
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
 import type { ExtractionPersistResult } from "./extraction-persist.js";
-import { ProviderCircuitBreaker } from "./provider-breaker.js";
+import { ProviderCircuitBreaker, type ProbeOwnerToken } from "./provider-breaker.js";
 
 export {
   capExtractionRetryStateEntries,
@@ -307,10 +307,11 @@ export class ExtractionRunCoordinator {
     cls: ExtractionFailureClass,
     meta: MetaState,
     now: number,
+    probeToken?: ProbeOwnerToken,
   ): Promise<void> {
     try {
       this.hydrateRetryStateFromMeta(namespace, meta);
-      this.applyExtractionFailureToMemory(namespace, fingerprint, cls, now);
+      this.applyExtractionFailureToMemory(namespace, fingerprint, cls, now, probeToken);
       this.persistRetryStateToMeta(namespace, meta);
       // The caller's storage.updateMeta persists this — saving here would write the same file twice.
     } catch (err) {
@@ -326,6 +327,7 @@ export class ExtractionRunCoordinator {
     fingerprint: string,
     cls: ExtractionFailureClass,
     now: number,
+    probeToken?: ProbeOwnerToken,
   ): void {
     const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
     const prev = nsMap.get(fingerprint);
@@ -350,7 +352,7 @@ export class ExtractionRunCoordinator {
       failureThreshold: this.config.extractionBreakerFailureThreshold,
       cooldownMs: this.config.extractionBreakerCooldownMs,
       authCooldownMs: this.config.extractionBreakerAuthCooldownMs,
-    });
+    }, probeToken);
   }
 
   /** Delete a fingerprint's retry entry from the mirror + meta. Returns whether
@@ -771,6 +773,7 @@ export class ExtractionRunCoordinator {
     // #1523) rather than reading the raw config flag at each call site.
     const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
     let extractionProbeOwned = false;
+    let extractionProbeToken: ProbeOwnerToken | undefined;
     if (extractionFingerprint && !forcedExtractionAttempt && extractionRetryEnabled) {
       try {
         meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_gate");
@@ -778,6 +781,7 @@ export class ExtractionRunCoordinator {
         const nowMs = Date.now();
         const probeAttempt = this.providerBreaker.acquire(nowMs);
         extractionProbeOwned = probeAttempt.probe;
+        extractionProbeToken = probeAttempt.token;
         let suppressReason: "provider_circuit_open" | "extraction_backoff" | null = null;
         if (probeAttempt.suppressed) {
           suppressReason = "provider_circuit_open";
@@ -903,7 +907,7 @@ export class ExtractionRunCoordinator {
           await runDeadlineAware(
             () =>
               storage.updateMeta((freshMeta) =>
-                this.recordExtractionFailure(selfNamespace, extractionFingerprint, failureClass, freshMeta, Date.now()),
+                this.recordExtractionFailure(selfNamespace, extractionFingerprint, failureClass, freshMeta, Date.now(), extractionProbeToken),
               ),
             "during_retry_bookkeeping_save",
             false,
@@ -914,7 +918,7 @@ export class ExtractionRunCoordinator {
           // Fail-open, but retain the turns (a cleared buffer with no retry state drops them). Only a
           // LOCK skip reaches here without the mutator having run — a later save must not double-count.
           if (err instanceof Error && err.message.includes("meta.json.lock not acquired"))
-            this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now());
+            this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now(), extractionProbeToken);
           recordedRetryFailure = true;
           log.warn("runExtraction: retry state kept in memory; meta persist will catch up", err);
         }
@@ -1135,7 +1139,7 @@ export class ExtractionRunCoordinator {
       clearExtractionDeadlineTimer();
       // The half-open probe is OWNED, not timed: any exit (deadline, abort,
       // throw, return) releases it so the breaker can never pin half_open.
-      if (extractionProbeOwned) this.providerBreaker.releaseProbe();
+      if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
     }
   }
 }

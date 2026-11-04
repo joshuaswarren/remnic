@@ -7,6 +7,10 @@ export interface ProviderBreakerConfig {
   readonly authCooldownMs: number;
 }
 
+export interface ProbeOwnerToken {
+  readonly __probeOwner: true;
+}
+
 export interface ProviderBreakerSnapshot {
   readonly state: "closed" | "open" | "half_open";
   readonly openUntilMs: number;
@@ -19,9 +23,14 @@ export interface ProbeAcquisition {
    *  probe is owned by another attempt). */
   readonly suppressed: boolean;
   /** True when THIS attempt owns the single half-open probe and must
-   *  terminate it via {@link failure}/{@link success}, or release it via
-   *  {@link releaseProbe} on any early exit (deadline, abort, throw). */
+   *  terminate it via {@link failure}/{@link success} (with its token), or
+   *  release it via {@link releaseProbe} on any early exit (deadline, abort,
+   *  throw). */
   readonly probe: boolean;
+  /** Opaque ownership token; only the matching token settles or releases the
+   *  probe, so attempts that bypass the gate (forced extractions) can never
+   *  release another attempt's in-flight probe. */
+  readonly token?: ProbeOwnerToken;
 }
 
 /**
@@ -41,32 +50,46 @@ export class ProviderCircuitBreaker {
   private state: ProviderBreakerSnapshot["state"] = "closed";
   private lastReason = "";
   private probeHeld = false;
+  private probeToken: ProbeOwnerToken | null = null;
 
   acquire(now: number): ProbeAcquisition {
     if (now < this.openUntilMs) return { suppressed: true, probe: false };
     if (this.state === "open") {
       this.state = "half_open";
       this.probeHeld = true;
+      const token: ProbeOwnerToken = { __probeOwner: true };
+      this.probeToken = token;
       this.logTransition();
-      return { suppressed: false, probe: true }; // THIS attempt is the probe.
+      return { suppressed: false, probe: true, token }; // THIS attempt is the probe.
     }
     if (this.state === "half_open") {
       if (this.probeHeld) return { suppressed: true, probe: false };
       this.probeHeld = true; // previous owner released without settling; re-probe.
-      return { suppressed: false, probe: true };
+      const token: ProbeOwnerToken = { __probeOwner: true };
+      this.probeToken = token;
+      return { suppressed: false, probe: true, token };
     }
     return { suppressed: false, probe: false };
   }
 
   /** Release an owned probe on an attempt that exits without a terminal
-   *  outcome (deadline, abort, throw). Idempotent; state stays half_open so
-   *  the next attempt re-probes. */
-  releaseProbe(): void {
+   *  outcome (deadline, abort, throw). Only the matching owner releases;
+   *  idempotent; state stays half_open so the next attempt re-probes. */
+  releaseProbe(token?: ProbeOwnerToken): void {
+    if (token === undefined || this.probeToken !== token) return;
+    this.probeToken = null;
     this.probeHeld = false;
   }
 
-  failure(cls: ExtractionFailureClass, now: number, config: ProviderBreakerConfig): void {
-    this.probeHeld = false;
+  failure(cls: ExtractionFailureClass, now: number, config: ProviderBreakerConfig, probeToken?: ProbeOwnerToken): void {
+    // Only the probe OWNER's failure settles the half-open probe: a failure
+    // from an attempt that bypassed acquire (forced extraction) must not
+    // release another attempt's in-flight probe or masquerade as its result.
+    const owned = probeToken !== undefined && this.probeToken === probeToken;
+    if (owned) {
+      this.probeToken = null;
+      this.probeHeld = false;
+    }
     this.consecutiveFailures += 1;
     const trip =
       cls === "auth_config" ||
@@ -74,7 +97,7 @@ export class ProviderCircuitBreaker {
       // semantics). Without this, an auth_config-opened breaker (which trips
       // below the threshold) would get stuck half_open after a transient
       // probe failure and stop suppressing (cursor review).
-      this.state === "half_open" ||
+      (owned && this.state === "half_open") ||
       this.consecutiveFailures >= config.failureThreshold;
     if (!trip) return;
     const cooldown = cls === "auth_config" ? config.authCooldownMs : config.cooldownMs;
@@ -91,6 +114,7 @@ export class ProviderCircuitBreaker {
       this.state !== "closed" || this.consecutiveFailures > 0 || this.openUntilMs > 0;
     if (!wasDisturbed) return;
     const wasOpen = this.state !== "closed";
+    this.probeToken = null;
     this.probeHeld = false;
     this.consecutiveFailures = 0;
     this.openUntilMs = 0;

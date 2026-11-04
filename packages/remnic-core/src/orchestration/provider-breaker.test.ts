@@ -9,25 +9,56 @@ test("half-open probe ownership is single-flight under parallel callers", () => 
   breaker.failure("provider_retryable", 1_000, CONFIG);
   breaker.failure("provider_retryable", 1_100, CONFIG);
   breaker.failure("provider_retryable", 1_200, CONFIG); // threshold → open
-  assert.deepEqual(breaker.acquire(1_300), { suppressed: true, probe: false }, "open suppresses during cooldown");
+  assert.deepEqual(breaker.acquire(1_300).suppressed, true, "open suppresses during cooldown");
 
   // Cooldown expires: the FIRST caller takes the probe…
-  assert.deepEqual(breaker.acquire(6_200), { suppressed: false, probe: true }, "expired breaker hands one probe out");
-  // …a concurrent sibling stays suppressed for as long as the probe is held —
-  // even far beyond any wall-clock window (long provider timeouts, retries).
-  assert.deepEqual(breaker.acquire(600_000), { suppressed: true, probe: false }, "a live probe keeps suppressing");
-  assert.deepEqual(breaker.acquire(3_600_000), { suppressed: true, probe: false }, "no timer expiry while held");
+  const probe = breaker.acquire(6_200);
+  assert.equal(probe.probe, true, "expired breaker hands one probe out");
+  // …siblings stay suppressed for as long as the probe is held — no wall-clock
+  // expiry, however long the provider attempt runs (timeouts + retries).
+  assert.deepEqual(breaker.acquire(600_000).suppressed, true, "a live probe keeps suppressing");
+  assert.deepEqual(breaker.acquire(3_600_000).suppressed, true, "no timer expiry while held");
 
   // Probe attempt dies WITHOUT a terminal outcome (deadline/abort): explicit
   // release lets the next attempt re-probe.
-  breaker.releaseProbe();
-  assert.deepEqual(breaker.acquire(3_600_001), { suppressed: false, probe: true }, "released probe is re-acquired");
+  breaker.releaseProbe(probe.token);
+  const reprobe = breaker.acquire(3_600_001);
+  assert.equal(reprobe.probe, true, "released probe is re-acquired");
+  assert.deepEqual(breaker.acquire(3_600_002).suppressed, true, "re-probe is also single-flight");
 
-  // Terminal outcomes release ownership: failure re-opens immediately…
-  breaker.failure("provider_retryable", 3_600_002, CONFIG);
-  assert.deepEqual(breaker.acquire(3_600_003), { suppressed: true, probe: false }, "failed probe re-opens at once");
-  // …success closes.
-  assert.deepEqual(breaker.acquire(4_000_000), { suppressed: false, probe: true }, "fresh probe after cooldown");
+  // Terminal outcomes release ownership: the OWNER's failed probe re-opens
+  // immediately (cooldown to 6_500 + 5_000).
+  breaker.failure("provider_retryable", 6_500, CONFIG, reprobe.token);
+  assert.deepEqual(breaker.acquire(7_000).suppressed, true, "failed probe re-opens at once");
+  assert.deepEqual(breaker.acquire(12_000).suppressed, false, "cooldown expiry admits a fresh probe");
   breaker.success();
-  assert.deepEqual(breaker.acquire(4_000_001), { suppressed: false, probe: false }, "successful probe closes the breaker");
+  assert.deepEqual(breaker.acquire(12_001).probe, false, "successful probe closes the breaker");
+});
+
+test("a forced attempt's failure never releases another attempt's live probe", () => {
+  const breaker = new ProviderCircuitBreaker();
+  breaker.failure("provider_retryable", 1_000, CONFIG);
+  breaker.failure("provider_retryable", 1_100, CONFIG);
+  breaker.failure("provider_retryable", 1_200, CONFIG); // threshold → open
+  const probe = breaker.acquire(6_200);
+  assert.equal(probe.probe, true, "ordinary attempt owns the probe");
+
+  // A FORCED attempt bypassed acquire, fails while the probe is in flight:
+  // it must not release the owner or masquerade as the probe result.
+  breaker.failure("provider_retryable", 6_300, CONFIG /* no token */);
+  assert.deepEqual(breaker.acquire(6_400), { suppressed: true, probe: false }, "probe stays single-flight");
+
+  // Only the owner's failure settles it: re-open at once.
+  breaker.failure("provider_retryable", 6_500, CONFIG, probe.token);
+  assert.deepEqual(breaker.acquire(6_600), { suppressed: true, probe: false }, "failed probe re-opens immediately");
+
+  // A released probe is re-acquired only via its own token path.
+  const fresh = breaker.acquire(12_000);
+  assert.equal(fresh.probe, true);
+  breaker.releaseProbe(fresh.token);
+  const reprobe = breaker.acquire(12_001);
+  assert.equal(reprobe.probe, true, "released probe is re-acquired by the next attempt");
+  // A non-owner release with a foreign token is a no-op.
+  breaker.releaseProbe({ __probeOwner: true });
+  assert.deepEqual(breaker.acquire(12_002), { suppressed: true, probe: false });
 });
