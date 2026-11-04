@@ -163,7 +163,7 @@ test("clearAfterExtraction persists the cleared session state", async () => {
 
 test("evicted sessions get their files deleted", async () => {
   const storage = new IncrementalStorage(emptyState());
-  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 200 }), storage);
 
   // normalizeState always materializes a "default" entry, so 198 seeded
   // sessions + default = 199; new-session reaches exactly 200 (the
@@ -189,6 +189,24 @@ test("evicted sessions get their files deleted", async () => {
   for (const key of storage.deleted) {
     assert.equal(storage.sessions.has(key), false, `evicted session ${key} still has a file record`);
   }
+});
+
+test("the default entry cap leaves headroom for live sessions during backlog drains (#3303)", async () => {
+  // w9C: live session captures were dropped when the extraction worker was busy
+  // on a backlog doc and the 200-session default cap refused new sessions. The
+  // default must leave enough headroom that live captures survive a backlog.
+  const storage = new IncrementalStorage(emptyState());
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);
+
+  for (let i = 0; i < 200; i++) {
+    await buffer.addTurnBounded(`backlog-${i}`, makeTurn(`backlog-${i}`, `backlog doc ${i}`));
+  }
+  await buffer.flushPendingSave();
+
+  // A live session arriving while the backlog occupies 200 entries must be
+  // admitted, not dropped.
+  const outcome = await buffer.addTurnBounded("live-session", makeTurn("live-session", "live turn"));
+  assert.notEqual(outcome, null, "a live session at the default cap must not be dropped");
 });
 
 test("resetToEmpty drops every session file on the next persist", async () => {

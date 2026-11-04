@@ -49,7 +49,9 @@ export interface RetainedTurnCleanupOptions {
   codingContext?: import("./types.js").CodingContext;
 }
 
-const MAX_BUFFER_ENTRY_COUNT = 200;
+// Raised from 200 in #3303: live captures were being dropped at busy hours
+// while the single extraction worker drained a backlog.
+const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
 const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
   t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
 
@@ -129,6 +131,14 @@ export class SmartBuffer {
     this.surpriseProbe = surpriseProbe;
   }
 
+  /** Distinct sessions admitted before backpressure; configurable (#3303, raised from 200). */
+  private get maxSessionEntries(): number {
+    // parseConfig defaults, validates, and floors bufferMaxSessions at the I/O
+    // boundary; FALLBACK_MAX_BUFFER_SESSIONS covers direct constructions with
+    // configs from before the knob existed.
+    return this.config.bufferMaxSessions ?? FALLBACK_MAX_BUFFER_SESSIONS;
+  }
+
   private enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
     const run = this.mutationChain.catch(() => {}).then(op);
     this.mutationChain = run.catch(() => {});
@@ -206,11 +216,11 @@ export class SmartBuffer {
     );
   }
 
-  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT and queue their session files for deletion. */
+  /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[]): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, retainKeys, MAX_BUFFER_ENTRY_COUNT, {
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, this.maxSessionEntries, {
       activityAt: (entry) => this.entryActivityAt(entry),
       holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
     });
@@ -222,7 +232,7 @@ export class SmartBuffer {
       // be observable, not silent.
       log.warn(
         `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
-          `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
+          `past the session-entry cap (${this.maxSessionEntries}); buffered turn data for those sessions was dropped`,
       );
     }
   }
@@ -487,9 +497,9 @@ export class SmartBuffer {
       await this.loadUnlocked();
       if (this.peekEntry(bufferKey) === null) {
         this.makeRoomForEntryUnlocked();
-        if (Object.keys(this.state.entries ?? {}).length >= MAX_BUFFER_ENTRY_COUNT) {
+        if (Object.keys(this.state.entries ?? {}).length >= this.maxSessionEntries) {
           log.warn(
-            `buffer[${bufferKey}]: durable capture refused at MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}`,
+            `buffer[${bufferKey}]: durable capture refused at the session-entry cap (${this.maxSessionEntries})`,
           );
           return null;
         }
@@ -505,7 +515,7 @@ export class SmartBuffer {
     const entries = this.state.entries;
     if (!entries) return;
     const keys = Object.keys(entries);
-    if (keys.length < MAX_BUFFER_ENTRY_COUNT) return;
+    if (keys.length < this.maxSessionEntries) return;
     const byOldestActivity = (left: string, right: string): number =>
       this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
       this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
@@ -518,7 +528,7 @@ export class SmartBuffer {
       )
       .sort(byOldestActivity);
     for (const key of emptyRemovable) {
-      if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
+      if (Object.keys(entries).length < this.maxSessionEntries) break;
       delete entries[key];
       this.persistence.markDeleted(key);
     }
