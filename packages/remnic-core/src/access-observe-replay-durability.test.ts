@@ -392,6 +392,7 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
     memoryDir: join(tmpdir(), "remnic-observe-capacity"),
     bufferSaveDebounceMs: 0,
     bufferMaxTurns: 1000,
+    bufferMaxSessions: 200,
     extractionMinChars: 1_000_000,
     extractionMinUserTurns: 1000,
   });
