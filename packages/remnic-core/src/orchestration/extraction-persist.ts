@@ -2195,7 +2195,7 @@ export class ExtractionPersistCoordinator {
             deferHashIndexSave: false,
             ...(factToolScoped ? { toolScoped: true as const } : {}),
               }),
-          ).catch(async (err: unknown) => {
+          ).catch(async (err: Error) => {
             // PR #2016 / #3231 pattern: finalize deferred side effects for
             // facts already durable in this batch before the fail-closed
             // window throw propagates (PRRT_kwDORJXyws6zxG6H).
@@ -2612,7 +2612,7 @@ export class ExtractionPersistCoordinator {
         deferHashIndexSave: false,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
           }),
-      ).catch(async (err: unknown) => {
+      ).catch(async (err: Error) => {
         // PR #2016 / #3231 pattern: finalize deferred side effects for facts
         // already durable in this batch before the fail-closed window throw
         // propagates (PRRT_kwDORJXyws6zxG6H).
