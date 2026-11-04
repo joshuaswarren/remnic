@@ -104,6 +104,22 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
   return copy;
 }
 
+/**
+ * Remove the turns that a drain already extracted (`drained`) from `turns`.
+ * Identity-based (role/content/timestamp/session/...): the same comparison
+ * the buffer uses to match live turns, so a stale owner can subtract exactly
+ * what the drain took and keep everything else.
+ */
+export function subtractBufferTurns(turns: readonly BufferTurn[], drained: readonly BufferTurn[]): BufferTurn[] {
+  if (drained.length === 0) return [...turns];
+  const kept = [...turns];
+  for (const gone of drained) {
+    const at = kept.findIndex((live) => bufferTurnsEqual(live, gone));
+    if (at >= 0) kept.splice(at, 1);
+  }
+  return kept;
+}
+
 export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
   if (!left) return false;
   return (

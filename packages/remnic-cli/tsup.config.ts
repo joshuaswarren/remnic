@@ -4,7 +4,7 @@ import { defineConfig } from "tsup";
 // Their source modules use computed imports for optional runtime loading.
 // Adding these packages to noExternal would bundle them into every CLI install.
 export default defineConfig({
-  entry: ["src/index.ts"],
+  entry: ["src/index.ts", "src/buffer-drain-worker.ts"],
   format: ["esm"],
   target: "es2022",
   platform: "node",

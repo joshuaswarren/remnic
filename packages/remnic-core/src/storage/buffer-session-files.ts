@@ -1,7 +1,9 @@
+import { BufferDrainClaims, type BufferSessionSaveOutcome } from "./buffer-drain-claims.js";
 import { createHash } from "node:crypto";
 import type { Stats } from "node:fs";
 import { lstat, readdir, unlink } from "node:fs/promises";
 import path from "node:path";
+import { subtractBufferTurns } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { SecureStoreDecryptError, SecureStoreLockedError } from "../secure-store/secure-fs.js";
 import type { BufferEntryState, BufferState, BufferTurn } from "../types.js";
@@ -75,14 +77,32 @@ function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntry
  * One file per buffer session under `<stateDir>/buffer/`, so the observe hot
  * path persists only the session that changed. All writes happen under
  * SmartBuffer's serialized mutation chain (one writer per process).
+ *
+ * Sessions claimed by `remnic buffer drain` (see buffer-drain-claims.ts) are
+ * owned by the drain: `save` hands the in-memory entry INTO the claim
+ * (identity-deduped merge) instead of writing a session file, so a live
+ * buffer owner can never resurrect claimed turns.
  */
 export class BufferSessionFiles {
   private dirVerified = false;
+  private readonly claimsStore: BufferDrainClaims;
 
   constructor(
     private readonly stateDir: string,
     private readonly io: BufferFileIo,
-  ) {}
+  ) {
+    this.claimsStore = new BufferDrainClaims(stateDir, io);
+  }
+
+  /** The drain-claim store for this state dir (CLI scan + claim ops). */
+  get claims(): BufferDrainClaims {
+    return this.claimsStore;
+  }
+
+  /** Sync gate check: is this session claimed by a buffer drain? */
+  isClaimed(key: string): boolean {
+    return this.claimsStore.isClaimed(key);
+  }
 
   private get dir(): string {
     return path.join(this.stateDir, "buffer");
@@ -113,10 +133,37 @@ export class BufferSessionFiles {
   }
 
   /** Persist ONE session atomically. Compact JSON: machine-read state, and
-   * pretty-printing a large buffer costs CPU and bytes on every observe. */
-  async save(key: string, entry: BufferEntryState): Promise<void> {
+   * pretty-printing a large buffer costs CPU and bytes on every observe.
+   * A drain-claimed session is handed over instead (see class doc). */
+  async save(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome> {
+    if (this.isClaimed(key)) {
+      // Consume the tombstone ONLY when the drain finished (acked: extracted
+      // turns recorded, nothing pending, no lease). Partial `drained` just
+      // means chunks completed — the drainer may still be running, and
+      // releasing here would unlink its claim and turn its later writes into
+      // no-ops.
+      if (await this.claimsStore.isDrained(key)) {
+        const drained = await this.claimsStore.drainedTurns(key);
+        // The drain finished this session: the claim is a tombstone. Write
+        // the owner's fresh remainder back as a session file (the drained
+        // turns are subtracted here too, so a caller that did not subtract
+        // them cannot resurrect them) and release the tombstone.
+        const fresh: BufferEntryState = { ...entry, turns: subtractBufferTurns(entry.turns, drained) };
+        if (entry.retainedTurns && entry.retainedTurns.length > 0) {
+          fresh.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained);
+          if (fresh.retainedTurns.length === 0) delete fresh.retainedTurns;
+        }
+        await this.assertDirSafe();
+        await this.io.write(this.fileFor(key), JSON.stringify({ key, ...fresh }));
+        await this.claimsStore.release(key);
+        return { status: "saved", drainedTurns: drained };
+      }
+      await this.claimsStore.mergeIntoClaim(key, entry);
+      return { status: "handed_over" };
+    }
     await this.assertDirSafe();
     await this.io.write(this.fileFor(key), JSON.stringify({ key, ...entry }));
+    return { status: "saved" };
   }
 
   /** Remove one session's file. Idempotent: an absent file is fine. */

@@ -13,7 +13,7 @@ import type {
 } from "./types.js";
 import { resolvePresentationCapabilities, resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
-import { scopeProfilePlanIdentity } from "./buffer-turn-helpers.js";
+import { scopeProfilePlanIdentity, subtractBufferTurns } from "./buffer-turn-helpers.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
@@ -289,7 +289,37 @@ export class SmartBuffer {
   }
 
   private async saveUnlocked(): Promise<void> {
-    await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
+    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
+    // A drain tombstone: the turns the drain extracted leave this copy too,
+    // so a stale owner never extracts (or persists) them a second time.
+    for (const [key, drained] of drainedTurns) {
+      const entry = this.peekEntry(key);
+      if (!entry) continue;
+      entry.turns = subtractBufferTurns(entry.turns, drained);
+      if (entry.retainedTurns && entry.retainedTurns.length > 0) {
+        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained);
+        if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
+      }
+      if (key === "default") this.state.turns = entry.turns;
+    }
+    if (handedOver.length === 0) return;
+    // A drain claim now owns these sessions' turns (durable in the claim
+    // file): drop the in-memory entries so this process cannot resurrect
+    // them. A later observe for the same key starts a fresh entry whose
+    // turns flow into the claim at the next handover.
+    const entries = this.state.entries;
+    if (!entries) return;
+    for (const key of handedOver) {
+      delete entries[key];
+      if (key === "default") {
+        this.state.turns = [];
+      }
+    }
+  }
+
+  /** Sync gate for the extraction queue: is this session claimed by a buffer drain? */
+  isSessionClaimed(key: string): boolean {
+    return this.storage.isBufferSessionClaimed?.(key) === true;
   }
 
   async save(): Promise<void> {

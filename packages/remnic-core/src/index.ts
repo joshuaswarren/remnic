@@ -346,7 +346,7 @@ export { MeilisearchBackend } from "./search/meilisearch-backend.js";
 // ---------------------------------------------------------------------------
 
 export { buildEntityRecallSection } from "./entity-retrieval.js";
-export { isNamespacePolicyCovered, resolvePrincipal } from "./namespaces/principal.js";
+export { defaultNamespaceForPrincipal, isNamespacePolicyCovered, resolvePrincipal } from "./namespaces/principal.js";
 export {
   NamespaceCatalog,
   type NamespaceRecord,

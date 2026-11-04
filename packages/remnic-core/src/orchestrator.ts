@@ -21,6 +21,8 @@ import { formatDaySummaryMemories } from "./day-summary.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { migrateFromEngram } from "./migrate/from-engram.js";
 import { SmartBuffer } from "./buffer.js";
+import { withBufferStorage } from "./orchestration/buffer-swap.js";
+import type { BufferStorage } from "./buffer-persistence.js";
 import { chunkContent, type ChunkingConfig } from "./chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "./semantic-chunking.js";
 import { ExtractionEngine } from "./extraction.js";
@@ -593,7 +595,7 @@ export class Orchestrator {
   private readonly conversationIndexBackend?: ConversationIndexBackend;
   readonly sharedContext?: SharedContextManager;
   readonly compounding?: CompoundingEngine;
-  readonly buffer: SmartBuffer;
+  buffer: SmartBuffer;
   readonly transcript: TranscriptManager;
   readonly sessionObserver: SessionObserverState;
   readonly summarizer: HourlySummarizer;
@@ -2348,11 +2350,7 @@ export class Orchestrator {
       // behavior while still placing every X-ray writer in the same ordering
       // domain. In particular, a pre-aborted legacy recall continues to
       // resolve with an empty string rather than rejecting.
-      const { result } = await this.runRecallWithXrayCapture(
-        prompt,
-        sessionKey,
-        options,
-      );
+      const { result } = await this.runRecallWithXrayCapture(prompt, sessionKey, options);
       return result;
     }
     return this.invokeRecall(prompt, sessionKey, options);
@@ -2965,6 +2963,11 @@ export class Orchestrator {
       sessionKey,
       options,
     );
+  }
+
+  /** Run `task` with the buffer backed by `storage` (the drain claims). */
+  async withBufferStorage<T>(storage: BufferStorage, task: () => Promise<T>): Promise<T> {
+    return withBufferStorage(this, storage, task);
   }
 
   async flushSession(

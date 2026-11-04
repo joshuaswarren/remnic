@@ -17,6 +17,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 
 import { Orchestrator } from "../../orchestrator.js";
+import { BufferDrainRunner } from "../../orchestration/buffer-drain-runner.js";
 import { resolveNamespaceStorageRoot } from "../../namespaces/storage.js";
 import type { BufferTurn, PluginConfig } from "../../types.js";
 import {
@@ -133,6 +134,37 @@ async function assertHarmonicEpisode(memoryDir: string, sessionKey?: string): Pr
     "the persisted episode must retain its source memory ids"
   );
   if (sessionKey) assert.equal(status.latestNode?.sessionKey, sessionKey);
+}
+
+
+/**
+ * The out-of-process drain path: a buffered session is claimed into a drain
+ * claim, the drain extracts it through the same pipeline, and the claim ends
+ * empty. The live buffer keeps its in-memory copy; the drain tombstone makes
+ * the owner subtract the drained turn instead of writing it back.
+ */
+async function exerciseBufferDrain(state: ExtractionLifecycleState): Promise<void> {
+  // Its own memory root and orchestrator: the drain must not perturb the
+  // row's own extraction calls or fact counts.
+  const memoryDir = await mkTempMemoryDir("extraction-drain-row");
+  const cfg = makeHarmonicLifecycleConfig(memoryDir, { extraction: { spanMode: "on" } });
+  const orchestrator = new Orchestrator(cfg);
+  state.orchestrators.push(orchestrator);
+  stubExtraction(orchestrator, (turns) => spanBearingResult(turns));
+  const sessionKey = "drain-row-session";
+  const content = "The drain row retains the canary gate detail for the teal dashboard.";
+  await orchestrator.buffer.addTurn(sessionKey, {
+    role: "user",
+    content,
+    timestamp: new Date().toISOString(),
+    sessionKey,
+  });
+  await orchestrator.buffer.save();
+  const runner = new BufferDrainRunner(orchestrator);
+  assert.equal(await runner.claim(sessionKey, "subject-drain"), true, "the drain claims the buffered session");
+  const outcome = await runner.drainSession(sessionKey, { ownerId: "subject-drain" });
+  assert.equal(outcome.status, "drained", "the drain empties the claimed session");
+  assert.equal(outcome.turnsRemaining, 0, "no turn is left claimed");
 }
 
 const subject: LifecycleSubject<ExtractionLifecycleState> = {
@@ -254,6 +286,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "before-reset": {
+        await exerciseBufferDrain(state);
         // Buffer a low-signal turn, then fire a before_reset flush whose abort
         // trips mid-extraction. The abort wiring (the signal threaded from
         // flushSession into runExtraction, guarding `before_persist` and
@@ -419,6 +452,7 @@ const subject: LifecycleSubject<ExtractionLifecycleState> = {
         return;
       }
       case "before-reset": {
+        await exerciseBufferDrain(state);
         assert.equal(
           state.abortFlushRejected,
           true,
