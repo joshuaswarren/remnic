@@ -817,24 +817,27 @@ export class ExtractionRunCoordinator {
       }
     }
     // Pass existing entity names so the LLM can reuse them instead of inventing variants.
-    const existingEntities = await runDeadlineAware(
-      () => storage.listEntityNames(),
-      "during_list_entity_names",
-    );
-    let result: ExtractionResult;
+    // The probe owner must release on ANY pre-persistence exit too (codex P1):
+    // the big try below only covers from the extract call onward.
     try {
-      result = await raceRecallAbort(
-        this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
-        extractionAbortSignal,
-        "extraction aborted (during_extract)",
+      const existingEntities = await runDeadlineAware(
+        () => storage.listEntityNames(),
+        "during_list_entity_names",
       );
-    } catch (error) {
-      clearExtractionDeadlineTimer();
-      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
-        throw new ExtractionDeadlineError("during_extract");
+      let result: ExtractionResult;
+      try {
+        result = await raceRecallAbort(
+          this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
+          extractionAbortSignal,
+          "extraction aborted (during_extract)",
+        );
+      } catch (error) {
+        clearExtractionDeadlineTimer();
+        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError("during_extract");
+        }
+        throw error;
       }
-      throw error;
-    }
     try {
       throwIfDeadlineExceeded("before_persist");
       throwIfAborted("before_persist");
@@ -1137,8 +1140,11 @@ export class ExtractionRunCoordinator {
     };
     } finally {
       clearExtractionDeadlineTimer();
-      // The half-open probe is OWNED, not timed: any exit (deadline, abort,
-      // throw, return) releases it so the breaker can never pin half_open.
+    }
+    } finally {
+      // The half-open probe is OWNED, not timed: the WRAPPER finally releases
+      // it on every exit path, including pre-persistence ones (codex P1) that
+      // never reach the inner try above.
       if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
     }
   }
