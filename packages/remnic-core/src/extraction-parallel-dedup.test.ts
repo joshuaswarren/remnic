@@ -28,12 +28,30 @@ import type { LocalLlmClient } from "./local-llm.js";
 import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 import type { StorageManager } from "./storage.js";
 
+// Fixture contract for the private Orchestrator surface this suite drives.
+interface OrchestratorFixture {
+  localLlm?: unknown;
+  chatCompletion?: unknown;
+  getStorage?: unknown;
+  persistExtraction?: unknown;
+}
+
+// Named owner contract for the private internals this suite drives.
+interface OrchestratorInternals {
+  localLlm: LocalLlmClient;
+  getStorage: (ns: string) => Promise<StorageManager>;
+  persistExtraction: PersistExtractionFn;
+}
+
+function asInternals<T extends object>(value: OrchestratorFixture): T {
+  // SAFETY: the fixture provides the members the persist path reads; the
+  // remaining contract members are unused by these tests.
+  return value as T;
+}
+
 async function makeHarness(): Promise<{
   orchestrator: Orchestrator;
-  persist: {
-    getStorage: (ns: string) => Promise<StorageManager>;
-    persistExtraction: PersistExtractionFn;
-  };
+  persist: OrchestratorInternals;
   memoryDir: string;
 }> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-parallel-dedup-"));
@@ -58,20 +76,13 @@ async function makeHarness(): Promise<{
     verbatimArtifactCategories: ["preference"],
   });
   const orchestrator = new Orchestrator(config);
-  // Test seam: named view of the private internals this suite drives.
-  const internals = orchestrator as unknown as {
-    localLlm: LocalLlmClient;
-    getStorage: (ns: string) => Promise<StorageManager>;
-    persistExtraction: PersistExtractionFn;
-  };
-  internals.localLlm = {
-    chatCompletion: async () => null,
-  } as unknown as LocalLlmClient;
+  const internals = asInternals<OrchestratorInternals>(orchestrator);
+  internals.localLlm = asInternals<LocalLlmClient>({ chatCompletion: async () => null });
   return { orchestrator, persist: internals, memoryDir };
 }
 
 function preferenceResult(content: string): ExtractionResult {
-  return {
+  const result = {
     facts: [
       {
         content,
@@ -84,7 +95,10 @@ function preferenceResult(content: string): ExtractionResult {
     relationships: [],
     questions: [],
     profileUpdates: [],
-  } as unknown as ExtractionResult;
+  };
+  // SAFETY: literal carries the full extraction-result shape persistExtraction
+  // consumes for a single preference candidate.
+  return result as ExtractionResult;
 }
 
 async function activePreferenceCopies(storage: StorageManager): Promise<number> {
