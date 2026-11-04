@@ -1,4 +1,5 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
+import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
@@ -1663,69 +1664,47 @@ export class ExtractionPersistCoordinator {
         fact.tags,
       );
       let exactDuplicate = false;
-      let needsCorpusConfirm = false;
       try {
         exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
-        if (factDedupEnabled && !exactDuplicate) {
-          // Fact dedup disabled → skip the authority check AND (via the guarded
-          // corpus block below) corpus confirmation, so a disabled deployment
-          // never suppresses a write via dedup (PR #2016 thread SD-nH). Enabled:
-          // a MISS is trustworthy only against an AUTHORITATIVE index — re-check.
-          if (await targetStorage.isFactContentHashAuthoritative()) {
-            exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
-          } else {
-            needsCorpusConfirm = true;
-          }
-        }
       } catch (err) {
-        // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
-        // NOT fail-open into a possible duplicate — confirm against the corpus.
-        needsCorpusConfirm = true;
+        // Dedup lookup failed (e.g. the authoritative rebuild could not run).
+        // When dedup is enabled the confirm below still scans the corpus; when
+        // it is disabled, never suppress a write via dedup (PR #2016 SD-nH).
+        exactDuplicate = false;
         log.warn(
           `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,
         );
       }
-      // Connector-aware dedup (QOjlB): if the hash says duplicate — or the index
-      // could not authoritatively confirm a miss — verify a same-content,
-      // same-connector active fact exists across the hot+cold tiers. Different
-      // connectors with the same content are NOT duplicates. Fail open (write) on
-      // scan failure so an unverifiable state cannot silently drop content.
-      if (factDedupEnabled && (exactDuplicate || needsCorpusConfirm)) {
-        try {
-          // #2016 cold-tier finding: the authoritative content-hash rebuild
-          // unions the HOT and COLD tiers, so a hash hit can name an active copy
-          // that was demoted to cold/. A hot-only confirmation scan misses it,
-          // flips exactDuplicate back to false, and writes a second active hot
-          // copy of the same content. Scan both tiers so a cold-only active copy
-          // still confirms the duplicate and suppresses the redundant hot write.
-          const [hotMems, coldMems] = await Promise.all([
-            targetStorage.readAllMemories(),
-            targetStorage.readAllColdMemories(),
-          ]);
-          const nc = sourceContext?.sourceConnector?.trim() || undefined;
-          const matchesActiveDuplicate = (m: MemoryFile): boolean => {
-            if (m.frontmatter.category !== writeCategory) return false;
-            if ((m.frontmatter.status ?? "active") !== "active") return false;
-            // Thread 5 (QPDE5): for procedures the hash is keyed on the full
-            // body (title + steps via buildProcedurePersistBody), so compare
-            // against contentHashDedupKey — not canonicalContentForHash which
-            // is the title only. Thread 3 (QO42V): facts with
-            // structuredAttributes get an appended [Attributes: ...] suffix in
-            // the stored body that the hash key lacks; strip it before
-            // comparing so same-connector enriched facts dedup correctly.
-            if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
-              ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
-            return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
-          };
-          exactDuplicate =
-            hotMems.some(matchesActiveDuplicate) || coldMems.some(matchesActiveDuplicate);
-        } catch (err) {
-          log.warn(
-            `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          exactDuplicate = false;
-        }
+      // Fact dedup disabled → skip the authority check AND the corpus
+      // confirmation, so a disabled deployment never suppresses a write via
+      // dedup (PR #2016 thread SD-nH).
+      if (factDedupEnabled) {
+        exactDuplicate = await confirmActiveFactDuplicate(
+          { hasContentHashDedup: (storage, key) => this.deps.hasContentHashDedup(storage, key) },
+          targetStorage,
+          {
+            category: writeCategory,
+            contentHashDedupKey,
+            connector: sourceContext?.sourceConnector?.trim() || undefined,
+          citationEnabled,
+          citationTemplate,
+          },
+        );
       }
+      // Race recheck (codex P2 #1526) for the write windows below: the SAME
+      // connector-aware confirm, evaluated under the window just before writing.
+      const raceRecheck = (storage: StorageManager, key: string) => () =>
+        confirmActiveFactDuplicate(
+          { hasContentHashDedup: (s, k) => this.deps.hasContentHashDedup(s, k) },
+          storage,
+          {
+            category: writeCategory,
+            contentHashDedupKey: key,
+            connector: sourceContext?.sourceConnector?.trim() || undefined,
+            citationEnabled,
+            citationTemplate,
+          },
+        );
       if (exactDuplicate && injectionScreenStatus !== "pending_review") {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
@@ -2198,7 +2177,11 @@ export class ExtractionPersistCoordinator {
             },
             { source: extractionWriteSource },
 );
-          const parentWrite = await targetStorage.writeSealedMemory(parentWriteEnvelope, {
+          const parentWriteOutcome = await persistUnderFactDedupWindow(
+            targetStorage.dir,
+            raceRecheck(targetStorage, contentHashDedupKey),
+            async () =>
+              targetStorage.writeSealedMemory(parentWriteEnvelope, {
             importance,
             supersedes,
             links: links.length > 0 ? links : undefined,
@@ -2218,7 +2201,14 @@ export class ExtractionPersistCoordinator {
             // durable parent .md; flush the hash now so a throw can't strand it (dup).
             deferHashIndexSave: false,
             ...(factToolScoped ? { toolScoped: true as const } : {}),
-          });
+              }),
+          );
+          if (parentWriteOutcome.suppressed) {
+            log.info(`dedup: raced duplicate suppressed in fact-dedup window (chunked parent) for storage ${targetStorage.dir}`);
+            dedupedCount++;
+            continue;
+          }
+          const parentWrite = parentWriteOutcome.result;
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
           const tombstoneBlocked = parentWrite.tombstoneBlocked;
@@ -2589,7 +2579,11 @@ export class ExtractionPersistCoordinator {
         },
         { source: extractionWriteSource },
 );
-      const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
+      const factWriteOutcome = await persistUnderFactDedupWindow(
+        targetStorage.dir,
+        raceRecheck(targetStorage, contentHashDedupKey),
+        async () =>
+          targetStorage.writeSealedMemory(factWriteEnvelope, {
         importance,
         supersedes,
         links: links.length > 0 ? links : undefined,
@@ -2611,7 +2605,14 @@ export class ExtractionPersistCoordinator {
         // fact dedup is on (the batch saver is a no-op otherwise).
         deferHashIndexSave: factDedupEnabled,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
-      });
+          }),
+      );
+      if (factWriteOutcome.suppressed) {
+        log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
+        dedupedCount++;
+        continue;
+      }
+      const factWrite = factWriteOutcome.result;
       const memoryId = factWrite.id;
       // #1645: surface the tombstone block; gate active post-write paths like #1576
       // so a blocked fact creates no active shared copy / supersession / graph entry.

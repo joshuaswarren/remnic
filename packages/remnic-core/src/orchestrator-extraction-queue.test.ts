@@ -281,8 +281,10 @@ function createParallelCoordinator(limit: number): ExtractionQueueCoordinator {
 function makeParkedTask(preemptable: boolean) {
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
+  let didStart = false;
   let outcome: "parked" | "finished" | "aborted" = "parked";
   const task: ExtractionQueueTask = async (preempt?: ExtractionPreemptHandle) => {
+    didStart = true;
     const controller = new AbortController();
     if (preemptable) {
       preempt?.arm(() => controller.abort(abortError("preempted")));
@@ -300,6 +302,9 @@ function makeParkedTask(preemptable: boolean) {
     task,
     startedPromise: started.promise,
     release: () => release.resolve(),
+    get started() {
+      return didStart;
+    },
     get outcome() {
       return outcome;
     },
@@ -316,7 +321,7 @@ test("independent keys run concurrently up to the configured limit", async () =>
   coordinator.enqueue(third.task, { key: "session-c" });
   await first.startedPromise;
   await second.startedPromise;
-  assert.equal(third.outcome, "parked", "the third task waits: both slots are taken");
+  assert.equal(third.started, false, "the third task must still be queued, not running: both slots are taken");
   first.release();
   await third.startedPromise;
   second.release();
@@ -338,7 +343,7 @@ test("tasks sharing a buffer key never run concurrently even with free capacity"
   coordinator.enqueue(queuedSameKey.task, { key: "s1" });
   coordinator.enqueue(otherKey.task, { key: "s2" });
   await otherKey.startedPromise;
-  assert.equal(queuedSameKey.outcome, "parked", "the busy session's next task waits for its own key");
+  assert.equal(queuedSameKey.started, false, "the busy session's next task must not have started: its own key is still busy");
   busy.release();
   await queuedSameKey.startedPromise;
   queuedSameKey.release();
@@ -356,7 +361,7 @@ test("the default limit stays serial", async () => {
   coordinator.enqueue(first.task, { key: "s1" });
   coordinator.enqueue(second.task, { key: "s2" });
   await first.startedPromise;
-  assert.equal(second.outcome, "parked", "limit 1 never runs a second task concurrently");
+  assert.equal(second.started, false, "limit 1 never starts a second task concurrently");
   first.release();
   await second.startedPromise;
   second.release();
