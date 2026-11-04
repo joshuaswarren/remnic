@@ -98,7 +98,13 @@ export class ProviderCircuitBreaker {
       // below the threshold) would get stuck half_open after a transient
       // probe failure and stop suppressing (cursor review).
       (owned && this.state === "half_open") ||
-      this.consecutiveFailures >= config.failureThreshold;
+      // PRRT_kwDORJXyws6zxG6V: an unowned (forced-extraction) failure must
+      // not cross the threshold while another attempt owns the half-open
+      // probe — reopening here would strand the owner's token and let the
+      // next cooldown mint a second concurrent probe. The failure count and
+      // retry bookkeeping still accumulate for when the state leaves
+      // half_open.
+      (this.state !== "half_open" && this.consecutiveFailures >= config.failureThreshold);
     if (!trip) return;
     const cooldown = cls === "auth_config" ? config.authCooldownMs : config.cooldownMs;
     this.openUntilMs = now + Math.max(0, cooldown);
@@ -109,10 +115,15 @@ export class ProviderCircuitBreaker {
     }
   }
 
-  success(): void {
+  success(probeToken?: ProbeOwnerToken): void {
     const wasDisturbed =
       this.state !== "closed" || this.consecutiveFailures > 0 || this.openUntilMs > 0;
     if (!wasDisturbed) return;
+    // PRRT_kwDORJXyws6zxG6u: while a half-open probe is held, only its OWNER
+    // may settle it. An unowned (forced-extraction) success must not clear
+    // another run's probe or close the breaker mid-probe — the next ordinary
+    // acquisition could then start a second concurrent probe.
+    if (this.probeHeld && !(probeToken !== undefined && this.probeToken === probeToken)) return;
     const wasOpen = this.state !== "closed";
     this.probeToken = null;
     this.probeHeld = false;

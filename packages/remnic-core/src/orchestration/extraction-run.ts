@@ -932,7 +932,9 @@ export class ExtractionRunCoordinator {
       } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
-        this.providerBreaker.success();
+        // PRRT_kwDORJXyws6zxG6u: pass the run's probe token so the settlement
+        // only applies to a probe this run owns.
+        this.providerBreaker.success(extractionProbeToken);
         try {
           await runDeadlineAware(
             () =>

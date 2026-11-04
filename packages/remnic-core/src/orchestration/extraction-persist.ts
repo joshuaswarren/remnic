@@ -1703,85 +1703,80 @@ export class ExtractionPersistCoordinator {
           raceDedupOpts(key),
         );
       };
-      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
-        // #1671 — before short-circuiting, backfill bi-temporal bounds
-        // onto the existing source-namespace copy if it lacks bounds the
-        // incoming fact now carries (re-extraction with a resolved invalidAt).
-        // Skip when the fact would be rejected/deferred/pending by downstream
-        // gates — a non-durable candidate must not expire an active fact
-        // (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
-        // #1671 + #1707: backfill bi-temporal bounds onto the existing
-        // source-namespace copy if it lacks bounds the incoming fact now
-        // carries (re-extraction with a resolved bound). #1707 thread 3:
-        // gate on writeCategory === "fact" — the helper only matches facts,
-        // so a non-fact duplicate must not reach the fact-only scan.
-        // #1707 thread 2: also fire when only a corrected start bound
-        // (validFrom) is present, not just an end bound (validUntil). The
-        // downstream-gate skip still applies — a non-durable candidate must
-        // not expire an active fact (chatgpt-codex P1).
+      // #1671 — backfill bi-temporal bounds onto the existing source-namespace
+      // copy when a duplicate short-circuits (persist-time hit OR a raced
+      // duplicate suppressed inside the fact-dedup window, codex P2 on
+      // #3311): a re-extraction can carry a resolved bound the surviving copy
+      // lacks. Skip when the fact would be rejected/deferred/pending by
+      // downstream gates — a non-durable candidate must not expire an active
+      // fact (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
+      // #1707 thread 3: gate on writeCategory === "fact" — the helper only
+      // matches facts, so a non-fact duplicate must not reach the fact-only
+      // scan. #1707 thread 2: fire on a corrected start bound (validFrom)
+      // too, not only an end bound (validUntil).
+      const backfillDuplicateTemporalBounds = async () => {
+        if (!(biTemporal && writeCategory === "fact" && (biTemporal.validUntil || biTemporal.validFrom))) return;
+        const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
+        const faithfulnessWouldPending =
+          faithfulnessMode === "enforce" &&
+          fr?.ok === true &&
+          (fr.verdict === "unsupported" || fr.verdict === "contradicted");
+        const requireSpansWouldPending =
+          this.deps.config.provenance?.requireSpans === true &&
+          fact.requireSpansPending === true;
+        const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
+        const judgeWouldGate =
+          !this.deps.config.extractionJudgeShadow &&
+          judgeVerdict !== undefined &&
+          !judgeVerdict.durable;
+        // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
+        // would never persist (#372) and carry no judge verdict (the
+        // pre-filter skips them), so they must not expire an active fact.
         if (
-          biTemporal &&
-          writeCategory === "fact" &&
-          (biTemporal.validUntil || biTemporal.validFrom)
+          !isAboveImportanceThreshold(importance.level, this.deps.config.extractionMinImportanceLevel) ||
+          faithfulnessWouldPending ||
+          requireSpansWouldPending ||
+          judgeWouldGate
         ) {
-          const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
-          const faithfulnessWouldPending =
-            faithfulnessMode === "enforce" &&
-            fr?.ok === true &&
-            (fr.verdict === "unsupported" || fr.verdict === "contradicted");
-          const requireSpansWouldPending =
-            this.deps.config.provenance?.requireSpans === true &&
-            fact.requireSpansPending === true;
-          const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
-          const judgeWouldGate =
-            !this.deps.config.extractionJudgeShadow &&
-            judgeVerdict !== undefined &&
-            !judgeVerdict.durable;
-          // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
-          // would never persist (#372) and carry no judge verdict (the
-          // pre-filter skips them), so they must not expire an active fact.
-          if (
-            isAboveImportanceThreshold(importance.level, this.deps.config.extractionMinImportanceLevel) &&
-            !faithfulnessWouldPending &&
-            !requireSpansWouldPending &&
-            !judgeWouldGate
-          ) {
-            await this.deps.backfillTemporalBoundsOnDedupHit(
-              targetStorage,
-              contentHashDedupKey,
-              {
-                invalidAt: biTemporal.validUntil,
-                // #1707 thread 2 — carry the corrected start bound too.
-                validFrom: biTemporal.validFrom,
-                observedAt: biTemporal.observedAt,
-                eventTimeSource: biTemporal.eventTimeSource,
-              },
-              fact.entityRef,
-              sourceContext?.sourceConnector,
-            );
-            // #1707 thread 1 — the source branch short-circuits (`continue`
-            // below) before the promotion dedup paths run, so promoted
-            // shared/profile copies written before the source fact carried
-            // resolved bounds stay stale and cross-namespace recall surfaces
-            // an expired fact. Backfill the promotion targets too (fail-open,
-            // backfill-only — never writes a new promoted copy).
-            await backfillTemporalBoundsOnPromotionCopies({
-              sourceStorage: targetStorage,
-              content: fact.content,
-              category: writeCategory,
-              confidence: fact.confidence,
-              entityRef: fact.entityRef,
-              structuredAttributes: fact.structuredAttributes,
-              sourceConnector: sourceContext?.sourceConnector,
-              bounds: {
-                invalidAt: biTemporal.validUntil,
-                validFrom: biTemporal.validFrom,
-                observedAt: biTemporal.observedAt,
-                eventTimeSource: biTemporal.eventTimeSource,
-              },
-            });
-          }
+          return;
         }
+        await this.deps.backfillTemporalBoundsOnDedupHit(
+          targetStorage,
+          contentHashDedupKey,
+          {
+            invalidAt: biTemporal.validUntil,
+            // #1707 thread 2 — carry the corrected start bound too.
+            validFrom: biTemporal.validFrom,
+            observedAt: biTemporal.observedAt,
+            eventTimeSource: biTemporal.eventTimeSource,
+          },
+          fact.entityRef,
+          sourceContext?.sourceConnector,
+        );
+        // #1707 thread 1 — a short-circuited source branch never reaches the
+        // promotion dedup paths, so promoted shared/profile copies written
+        // before the source fact carried resolved bounds stay stale and
+        // cross-namespace recall surfaces an expired fact. Backfill the
+        // promotion targets too (fail-open, backfill-only — never writes a
+        // new promoted copy).
+        await backfillTemporalBoundsOnPromotionCopies({
+          sourceStorage: targetStorage,
+          content: fact.content,
+          category: writeCategory,
+          confidence: fact.confidence,
+          entityRef: fact.entityRef,
+          structuredAttributes: fact.structuredAttributes,
+          sourceConnector: sourceContext?.sourceConnector,
+          bounds: {
+            invalidAt: biTemporal.validUntil,
+            validFrom: biTemporal.validFrom,
+            observedAt: biTemporal.observedAt,
+            eventTimeSource: biTemporal.eventTimeSource,
+          },
+        });
+      };
+      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
+        await backfillDuplicateTemporalBounds();
         log.debug(
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
@@ -2200,8 +2195,19 @@ export class ExtractionPersistCoordinator {
             deferHashIndexSave: false,
             ...(factToolScoped ? { toolScoped: true as const } : {}),
               }),
-          );
+          ).catch(async (err: unknown) => {
+            // PR #2016 / #3231 pattern: finalize deferred side effects for
+            // facts already durable in this batch before the fail-closed
+            // window throw propagates (PRRT_kwDORJXyws6zxG6H).
+            await finalizeCommittedWrites(true).catch((finalizeErr) =>
+              log.warn(`committed-write finalization after fact-dedup window failure failed: ${finalizeErr}`),
+            );
+            throw err;
+          });
           if (parentWriteOutcome.suppressed) {
+            // Codex P2 (#3311): backfill bounds onto the window's winning
+            // copy before short-circuiting, same as the normal path.
+            await backfillDuplicateTemporalBounds();
             log.info(`dedup: raced duplicate suppressed in fact-dedup window (chunked parent) for storage ${targetStorage.dir}`);
             dedupedCount++;
             continue;
@@ -2599,13 +2605,26 @@ export class ExtractionPersistCoordinator {
         // through to frontmatter so they survive end-to-end.
         ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
         ...(fact.provenance ? { provenance: fact.provenance } : {}),
-        // #1909: defer the per-fact index flush to the batch save only when
-        // fact dedup is on (the batch saver is a no-op otherwise).
-        deferHashIndexSave: factDedupEnabled,
+        // PR #2016: never defer inside the commit window — the same rule the
+        // chunked path applies. A peer process loading an authoritative index
+        // after the window releases must see this write's hash, or its
+        // in-window recheck misses and it writes a duplicate active fact.
+        deferHashIndexSave: false,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
           }),
-      );
+      ).catch(async (err: unknown) => {
+        // PR #2016 / #3231 pattern: finalize deferred side effects for facts
+        // already durable in this batch before the fail-closed window throw
+        // propagates (PRRT_kwDORJXyws6zxG6H).
+        await finalizeCommittedWrites(true).catch((finalizeErr) =>
+          log.warn(`committed-write finalization after fact-dedup window failure failed: ${finalizeErr}`),
+        );
+        throw err;
+      });
       if (factWriteOutcome.suppressed) {
+        // Codex P2 (#3311): the raced duplicate that won the window may lack
+        // bounds this candidate carries — backfill before short-circuiting.
+        await backfillDuplicateTemporalBounds();
         log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
         dedupedCount++;
         continue;
