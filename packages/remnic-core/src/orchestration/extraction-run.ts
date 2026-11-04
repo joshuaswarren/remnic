@@ -808,6 +808,10 @@ export class ExtractionRunCoordinator {
             log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
           }
           clearExtractionDeadlineTimer();
+          // Backoff suppression exits inside the gate, before the wrapper
+          // finally: release an acquired probe here (codex follow-up) so a
+          // cooldown-expired fingerprint cannot pin the breaker half_open.
+          if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
           return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
