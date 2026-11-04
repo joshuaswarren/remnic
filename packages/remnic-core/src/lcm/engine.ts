@@ -119,6 +119,11 @@ export class LcmEngine {
   private initPromise: Promise<void> | null = null;
   private readonly summarizeRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly summarizeRetryAttempts = new Map<string, number>();
+  /** Resolved when the session's pending retry timer has fired or been cleared. */
+  private readonly summarizeRetryWaiters = new Map<
+    string,
+    { promise: Promise<void>; resolve: () => void }
+  >();
   /** Base backoff delay; tests shrink it to keep the retry loop fast. */
   private summarizeRetryBaseMs = LCM_SUMMARIZE_RETRY_BASE_MS;
   private readonly pendingObserveInitCounts = new Map<string, number>();
@@ -362,16 +367,30 @@ export class LcmEngine {
       LCM_SUMMARIZE_RETRY_MAX_MS,
       this.summarizeRetryBaseMs * 2 ** Math.min(attempt - 1, 16),
     );
+    // The waiter makes the pending retry visible to idle waits, so a direct
+    // flush (pre-compaction) serializes with the retry instead of racing it.
+    const retry = Promise.withResolvers<void>();
+    this.summarizeRetryWaiters.set(sessionId, retry);
     const timer = setTimeout(() => {
       this.summarizeRetryTimers.delete(sessionId);
-      if (this.closed) return;
-      if (!this.hasCompleteBatchPending(sessionId)) {
-        this.summarizeRetryAttempts.delete(sessionId);
+      this.summarizeRetryWaiters.delete(sessionId);
+      if (this.closed) {
+        retry.resolve();
         return;
       }
+      if (!this.hasCompleteBatchPending(sessionId)) {
+        this.summarizeRetryAttempts.delete(sessionId);
+        retry.resolve();
+        return;
+      }
+      // Re-queue before releasing the waiter: an idle wait released by the
+      // retry must observe the queued job, never run beside it.
       this.observeQueue?.enqueue(sessionId);
+      retry.resolve();
     }, delayMs);
-    timer.unref?.();
+    // close() clears every pending retry timer, so the process never waits
+    // on shutdown for one; keep the timer referenced so short-lived hosts
+    // still fire it.
     this.summarizeRetryTimers.set(sessionId, timer);
   }
 
@@ -384,12 +403,17 @@ export class LcmEngine {
     );
   }
 
-  /** Drop a pending retry and its attempt counter. */
+  /** Drop a pending retry, its attempt counter, and release idle waiters. */
   private clearSummarizeRetry(sessionId: string): void {
     const timer = this.summarizeRetryTimers.get(sessionId);
     if (timer) {
       clearTimeout(timer);
       this.summarizeRetryTimers.delete(sessionId);
+    }
+    const waiter = this.summarizeRetryWaiters.get(sessionId);
+    if (waiter) {
+      this.summarizeRetryWaiters.delete(sessionId);
+      waiter.resolve();
     }
     this.summarizeRetryAttempts.delete(sessionId);
   }
@@ -406,8 +430,14 @@ export class LcmEngine {
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle();
-    await this.observeQueue?.whenIdle();
+    for (;;) {
+      await this.waitForPendingObserveInitIdle();
+      await this.observeQueue?.whenIdle();
+      const waiter = [...this.summarizeRetryWaiters.values()][0];
+      if (!waiter) return;
+      await waiter.promise;
+      // A fired retry may have re-queued a session: wait for the queue again.
+    }
   }
 
   async waitForSessionObserveIdle(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
@@ -418,8 +448,16 @@ export class LcmEngine {
     await this.ensureInitialized();
     abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
-    await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
+    // Serialize with pending summary retries: a direct flush (pre-compaction)
+    // must not run beside a retry pass for the same session.
+    for (;;) {
+      await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
+      await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
+      const waiter = this.summarizeRetryWaiters.get(normalizedSessionId);
+      if (!waiter) return;
+      await abortOnSignal(abortSignal, waiter.promise);
+      // The retry fired and may have re-queued the session: wait again.
+    }
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -852,6 +890,8 @@ export class LcmEngine {
     for (const timer of this.summarizeRetryTimers.values()) clearTimeout(timer);
     this.summarizeRetryTimers.clear();
     this.summarizeRetryAttempts.clear();
+    for (const retry of this.summarizeRetryWaiters.values()) retry.resolve();
+    this.summarizeRetryWaiters.clear();
     if (this.db) {
       this.db.close();
     }

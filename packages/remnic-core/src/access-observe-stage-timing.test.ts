@@ -26,17 +26,19 @@ function makeService(memoryDir: string): EngramAccessService {
   // SAFETY: the probe drives only the observe scope path on this orchestrator.
   const orch = Object.create(Orchestrator.prototype) as Orchestrator;
   // SAFETY: the probe sets exactly these two internal fields.
-  const internals = orch as Orchestrator & OrchestratorInternals;
-  internals.config = parseConfig({
-    namespacesEnabled: true,
-    defaultNamespace: "default",
-    sharedNamespace: "shared",
-    namespacePolicies: [],
-    codingMode: { projectScope: true },
-    transcriptEnabled: false,
-    memoryDir,
-  });
-  internals._codingContextBySession = new Map();
+  const internals: OrchestratorInternals = {
+    config: parseConfig({
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      codingMode: { projectScope: true },
+      transcriptEnabled: false,
+      memoryDir,
+    }),
+    _codingContextBySession: new Map(),
+  };
+  Object.assign(orch, internals);
   return new EngramAccessService(orch);
 }
 
@@ -68,7 +70,7 @@ test("a rejected observe logs phase attribution with stage durations and still t
       ],
     } as EngramAccessObserveRequest;
     await assert.rejects(
-      service.runObserve(rejectedRequest),
+      service.observe(rejectedRequest),
       NamespaceNotWritableError
     );
 

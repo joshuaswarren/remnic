@@ -430,3 +430,52 @@ test("closing the engine cancels a pending summary retry", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("pre-compaction flush serializes with a pending summary retry", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-flush-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "compaction summary");
+    await engine.ensureInitialized();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 10;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    const realSummarize = summarizer.summarizeIncremental.bind(summarizer);
+    let failures = 0;
+    summarizer.summarizeIncremental = async (
+      sessionId: string,
+      options?: { maxLeafBatches?: number },
+    ) => {
+      failures += 1;
+      if (failures === 1) throw new Error("transient summary failure");
+      // Keep later passes busy long enough for a retry timer to fire mid-pass,
+      // which is exactly the overlap a direct flush must not allow.
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, 50));
+      return realSummarize(sessionId, options);
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "flush race" },
+      { role: "assistant", content: "flush race too" },
+    ]);
+
+    // Compaction starts while the retry delay is still pending: the flush
+    // must serialize behind the retry, not run a second pass beside it.
+    await engine.preCompactionFlush("session-1");
+    await engine.waitForObserveQueueIdle();
+
+    assert.ok(failures >= 2, "the retry must have run before the flush");
+    // Exactly one leaf for the batch: no duplicate summary ranges.
+    assert.deepEqual(leafRanges(dir, "session-1"), [[0, 1]]);
+    engine.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
