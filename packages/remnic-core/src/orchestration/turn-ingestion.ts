@@ -43,6 +43,7 @@ import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../typ
 
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
 import { ExtractionDrain } from "./extraction-drain.js";
+import { skipClaimedSession } from "./buffer-drain-gate.js";
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
@@ -854,6 +855,7 @@ export class TurnIngestionCoordinator {
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
+    if (skipClaimedSession(this.deps.buffer, bufferKey, (result) => options.onTaskSettled?.(undefined, result))) return;
     if (
       !options.skipDedupeCheck &&
       !this.deps.shouldQueueExtraction(turnsToExtract, { bufferKey })

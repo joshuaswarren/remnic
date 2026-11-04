@@ -183,6 +183,7 @@ import {
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
+import { BUFFER_DRAIN_USAGE, runBufferDrain } from "./buffer-drain-cmd.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
 import { runCodegraphBinaryCommand } from "./commands/codegraph.js";
@@ -473,6 +474,7 @@ type CommandName =
   | "meetings" | "timeline" | "okf" | "location" | "export" | "standup" | "journal" | "journal-vault" | "activity-privacy" | "activity-export" | "activity-status" | "vault-publish" | "codegraph"
   | "external-wiki"
   | "capsule"
+  | "buffer"
   | "offline"
   | "capture"
   | "oauth"
@@ -13179,6 +13181,25 @@ Other:
       const exitCode = await cmdCapture(rest, {
         stdout: (line) => console.log(line),
         stderr: (line) => console.error(line),
+      });
+      if (exitCode !== 0) process.exit(exitCode);
+      break;
+    }
+
+    case "buffer": {
+      // `remnic buffer drain` — drain the extraction buffer out of process.
+      const subAction = rest[0] ?? "help";
+      if (subAction !== "drain") {
+        console.error(subAction === "help" ? BUFFER_DRAIN_USAGE : `remnic buffer: unknown subcommand: ${subAction}`);
+        if (subAction !== "help") console.error(BUFFER_DRAIN_USAGE);
+        if (subAction !== "help") process.exit(2);
+        break;
+      }
+      const exitCode = await runBufferDrain(rest.slice(1), {
+        stdout: (line) => console.log(line),
+        stderr: (line) => console.error(line),
+        configPath: resolveConfigPath(),
+        memoryDir: resolveMemoryDir(),
       });
       if (exitCode !== 0) process.exit(exitCode);
       break;

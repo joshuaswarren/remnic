@@ -1900,6 +1900,16 @@
       "remnic-source": "./src/orchestration/maintenance.ts",
       "import": "./dist/orchestration/maintenance.js"
     },
+    "./orchestration/buffer-drain-runner": {
+      "types": "./dist/orchestration/buffer-drain-runner.d.ts",
+      "remnic-source": "./src/orchestration/buffer-drain-runner.ts",
+      "import": "./dist/orchestration/buffer-drain-runner.js"
+    },
+    "./orchestration/buffer-drain-runner.js": {
+      "types": "./dist/orchestration/buffer-drain-runner.d.ts",
+      "remnic-source": "./src/orchestration/buffer-drain-runner.ts",
+      "import": "./dist/orchestration/buffer-drain-runner.js"
+    },
     "./orchestration/compression-guideline-coordinator": {
       "types": "./dist/orchestration/compression-guideline-coordinator.d.ts",
       "remnic-source": "./src/orchestration/compression-guideline-coordinator.ts",
@@ -2779,6 +2789,26 @@
       "types": "./dist/storage.d.ts",
       "remnic-source": "./src/storage.ts",
       "import": "./dist/storage.js"
+    },
+    "./storage/buffer-drain-claims": {
+      "types": "./dist/storage/buffer-drain-claims.d.ts",
+      "remnic-source": "./src/storage/buffer-drain-claims.ts",
+      "import": "./dist/storage/buffer-drain-claims.js"
+    },
+    "./storage/buffer-drain-claims.js": {
+      "types": "./dist/storage/buffer-drain-claims.d.ts",
+      "remnic-source": "./src/storage/buffer-drain-claims.ts",
+      "import": "./dist/storage/buffer-drain-claims.js"
+    },
+    "./storage/buffer-session-files": {
+      "types": "./dist/storage/buffer-session-files.d.ts",
+      "remnic-source": "./src/storage/buffer-session-files.ts",
+      "import": "./dist/storage/buffer-session-files.js"
+    },
+    "./storage/buffer-session-files.js": {
+      "types": "./dist/storage/buffer-session-files.d.ts",
+      "remnic-source": "./src/storage/buffer-session-files.ts",
+      "import": "./dist/storage/buffer-session-files.js"
     },
     "./store-contract": {
       "types": "./dist/store-contract.d.ts",

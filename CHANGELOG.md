@@ -13,6 +13,9 @@ All notable changes to this project will be documented in this file.
 ### Performance
 
 - The corpus path walk no longer resolves every directory and every markdown file with a separate `realpath`. Containment is established once — the memory root is resolved with a single `realpath` and entry types come from the directory listing — so a symlinked category directory, symlinked entry or symlinked file is still skipped, while a corpus-wide scan spends one syscall per file instead of two. Measured on a 134k-file corpus, the walk's wall time drops from 5.9 s to 0.34 s and the corpus read and watermark improve by the same walk cost; the collected path set is unchanged.
+### Added
+
+- `remnic buffer drain`: one command empties the extraction buffer out of process. The extraction runs in worker processes (not on the daemon's event loop), so a live daemon keeps serving while its backlog drains, and no daemon is needed at all. Each session is claimed into a durable claim file first, so a kill loses nothing, the next run resumes, a live buffer owner hands its turns into the claim instead of resurrecting them, and two drains at once are safe.
 
 ## [v10.0.47] — 2026-11-02
 
