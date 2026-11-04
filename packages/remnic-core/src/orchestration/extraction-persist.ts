@@ -1,4 +1,5 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
+import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
@@ -1663,148 +1664,123 @@ export class ExtractionPersistCoordinator {
         fact.tags,
       );
       let exactDuplicate = false;
-      let needsCorpusConfirm = false;
       try {
         exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
-        if (factDedupEnabled && !exactDuplicate) {
-          // Fact dedup disabled → skip the authority check AND (via the guarded
-          // corpus block below) corpus confirmation, so a disabled deployment
-          // never suppresses a write via dedup (PR #2016 thread SD-nH). Enabled:
-          // a MISS is trustworthy only against an AUTHORITATIVE index — re-check.
-          if (await targetStorage.isFactContentHashAuthoritative()) {
-            exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
-          } else {
-            needsCorpusConfirm = true;
-          }
-        }
       } catch (err) {
-        // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
-        // NOT fail-open into a possible duplicate — confirm against the corpus.
-        needsCorpusConfirm = true;
+        // Dedup lookup failed (e.g. the authoritative rebuild could not run).
+        // When dedup is enabled the confirm below still scans the corpus; when
+        // it is disabled, never suppress a write via dedup (PR #2016 SD-nH).
+        exactDuplicate = false;
         log.warn(
           `content-hash dedup lookup unavailable for storage ${targetStorage.dir}; confirming against corpus: ${err}`,
         );
       }
-      // Connector-aware dedup (QOjlB): if the hash says duplicate — or the index
-      // could not authoritatively confirm a miss — verify a same-content,
-      // same-connector active fact exists across the hot+cold tiers. Different
-      // connectors with the same content are NOT duplicates. Fail open (write) on
-      // scan failure so an unverifiable state cannot silently drop content.
-      if (factDedupEnabled && (exactDuplicate || needsCorpusConfirm)) {
-        try {
-          // #2016 cold-tier finding: the authoritative content-hash rebuild
-          // unions the HOT and COLD tiers, so a hash hit can name an active copy
-          // that was demoted to cold/. A hot-only confirmation scan misses it,
-          // flips exactDuplicate back to false, and writes a second active hot
-          // copy of the same content. Scan both tiers so a cold-only active copy
-          // still confirms the duplicate and suppresses the redundant hot write.
-          const [hotMems, coldMems] = await Promise.all([
-            targetStorage.readAllMemories(),
-            targetStorage.readAllColdMemories(),
-          ]);
-          const nc = sourceContext?.sourceConnector?.trim() || undefined;
-          const matchesActiveDuplicate = (m: MemoryFile): boolean => {
-            if (m.frontmatter.category !== writeCategory) return false;
-            if ((m.frontmatter.status ?? "active") !== "active") return false;
-            // Thread 5 (QPDE5): for procedures the hash is keyed on the full
-            // body (title + steps via buildProcedurePersistBody), so compare
-            // against contentHashDedupKey — not canonicalContentForHash which
-            // is the title only. Thread 3 (QO42V): facts with
-            // structuredAttributes get an appended [Attributes: ...] suffix in
-            // the stored body that the hash key lacks; strip it before
-            // comparing so same-connector enriched facts dedup correctly.
-            if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
-              ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
-            return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
-          };
-          exactDuplicate =
-            hotMems.some(matchesActiveDuplicate) || coldMems.some(matchesActiveDuplicate);
-        } catch (err) {
-          log.warn(
-            `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
-          );
-          exactDuplicate = false;
-        }
+      // Shared confirm options for the persist-time check and the write-window
+      // race recheck below.
+      const raceDedupOpts = (key: string) => ({
+        category: writeCategory,
+        contentHashDedupKey: key,
+        connector: sourceContext?.sourceConnector?.trim() || undefined,
+        citationEnabled,
+        citationTemplate,
+      });
+      // Fact dedup disabled → skip the authority check AND the corpus
+      // confirmation, so a disabled deployment never suppresses a write via
+      // dedup (PR #2016 thread SD-nH).
+      if (factDedupEnabled) {
+        exactDuplicate = await confirmActiveFactDuplicate(
+          { hasContentHashDedup: (storage, key) => this.deps.hasContentHashDedup(storage, key) },
+          targetStorage,
+          raceDedupOpts(contentHashDedupKey),
+        );
       }
-      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
-        // #1671 — before short-circuiting, backfill bi-temporal bounds
-        // onto the existing source-namespace copy if it lacks bounds the
-        // incoming fact now carries (re-extraction with a resolved invalidAt).
-        // Skip when the fact would be rejected/deferred/pending by downstream
-        // gates — a non-durable candidate must not expire an active fact
-        // (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
-        // #1671 + #1707: backfill bi-temporal bounds onto the existing
-        // source-namespace copy if it lacks bounds the incoming fact now
-        // carries (re-extraction with a resolved bound). #1707 thread 3:
-        // gate on writeCategory === "fact" — the helper only matches facts,
-        // so a non-fact duplicate must not reach the fact-only scan.
-        // #1707 thread 2: also fire when only a corrected start bound
-        // (validFrom) is present, not just an end bound (validUntil). The
-        // downstream-gate skip still applies — a non-durable candidate must
-        // not expire an active fact (chatgpt-codex P1).
+      // PR #2016/#3231: finalize committed writes before a fail-closed
+      // window throw propagates (PRRT_kwDORJXyws6zxG6H).
+      const finalizeOnWindowFailure = async (err: Error): Promise<never> => {
+        await finalizeCommittedWrites(true).catch((finalizeErr) =>
+          log.warn(`committed-write finalization after fact-dedup window failure failed: ${finalizeErr}`),
+        );
+        throw err;
+      };
+      const raceRecheck = (storage: StorageManager, key: string) => () => {
+        // Gates mirror the persist-time suppression gates (PR #2016 SD-nH; #1645 quarantine).
+        if (!factDedupEnabled || injectionScreenStatus === "pending_review") return Promise.resolve(false);
+        return confirmActiveFactDuplicate(
+          { hasContentHashDedup: (s, k) => this.deps.hasContentHashDedup(s, k) },
+          storage,
+          raceDedupOpts(key),
+        );
+      };
+      // #1671/#1707 — backfill bi-temporal bounds onto the surviving copy
+      // when a duplicate short-circuits: persist-time hit OR raced duplicate
+      // suppressed in the window (codex P2, PRRT_kwDORJXyws6zxlor). Facts
+      // only (#1707 t3); a corrected start bound counts (t2). Skipped when a
+      // downstream gate would reject the candidate — a non-durable candidate
+      // must not expire an active fact (faithfulness, requireSpans, judge,
+      // #372 importance).
+      const backfillDuplicateTemporalBounds = async () => {
+        if (!(biTemporal && writeCategory === "fact" && (biTemporal.validUntil || biTemporal.validFrom))) return;
+        const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
+        const faithfulnessWouldPending =
+          faithfulnessMode === "enforce" &&
+          fr?.ok === true &&
+          (fr.verdict === "unsupported" || fr.verdict === "contradicted");
+        const requireSpansWouldPending =
+          this.deps.config.provenance?.requireSpans === true &&
+          fact.requireSpansPending === true;
+        const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
+        const judgeWouldGate =
+          !this.deps.config.extractionJudgeShadow &&
+          judgeVerdict !== undefined &&
+          !judgeVerdict.durable;
+        // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
+        // would never persist (#372) and carry no judge verdict (the
+        // pre-filter skips them), so they must not expire an active fact.
         if (
-          biTemporal &&
-          writeCategory === "fact" &&
-          (biTemporal.validUntil || biTemporal.validFrom)
+          !isAboveImportanceThreshold(importance.level, this.deps.config.extractionMinImportanceLevel) ||
+          faithfulnessWouldPending ||
+          requireSpansWouldPending ||
+          judgeWouldGate
         ) {
-          const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
-          const faithfulnessWouldPending =
-            faithfulnessMode === "enforce" &&
-            fr?.ok === true &&
-            (fr.verdict === "unsupported" || fr.verdict === "contradicted");
-          const requireSpansWouldPending =
-            this.deps.config.provenance?.requireSpans === true &&
-            fact.requireSpansPending === true;
-          const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
-          const judgeWouldGate =
-            !this.deps.config.extractionJudgeShadow &&
-            judgeVerdict !== undefined &&
-            !judgeVerdict.durable;
-          // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
-          // would never persist (#372) and carry no judge verdict (the
-          // pre-filter skips them), so they must not expire an active fact.
-          if (
-            isAboveImportanceThreshold(importance.level, this.deps.config.extractionMinImportanceLevel) &&
-            !faithfulnessWouldPending &&
-            !requireSpansWouldPending &&
-            !judgeWouldGate
-          ) {
-            await this.deps.backfillTemporalBoundsOnDedupHit(
-              targetStorage,
-              contentHashDedupKey,
-              {
-                invalidAt: biTemporal.validUntil,
-                // #1707 thread 2 — carry the corrected start bound too.
-                validFrom: biTemporal.validFrom,
-                observedAt: biTemporal.observedAt,
-                eventTimeSource: biTemporal.eventTimeSource,
-              },
-              fact.entityRef,
-              sourceContext?.sourceConnector,
-            );
-            // #1707 thread 1 — the source branch short-circuits (`continue`
-            // below) before the promotion dedup paths run, so promoted
-            // shared/profile copies written before the source fact carried
-            // resolved bounds stay stale and cross-namespace recall surfaces
-            // an expired fact. Backfill the promotion targets too (fail-open,
-            // backfill-only — never writes a new promoted copy).
-            await backfillTemporalBoundsOnPromotionCopies({
-              sourceStorage: targetStorage,
-              content: fact.content,
-              category: writeCategory,
-              confidence: fact.confidence,
-              entityRef: fact.entityRef,
-              structuredAttributes: fact.structuredAttributes,
-              sourceConnector: sourceContext?.sourceConnector,
-              bounds: {
-                invalidAt: biTemporal.validUntil,
-                validFrom: biTemporal.validFrom,
-                observedAt: biTemporal.observedAt,
-                eventTimeSource: biTemporal.eventTimeSource,
-              },
-            });
-          }
+          return;
         }
+        await this.deps.backfillTemporalBoundsOnDedupHit(
+          targetStorage,
+          contentHashDedupKey,
+          {
+            invalidAt: biTemporal.validUntil,
+            // #1707 thread 2 — carry the corrected start bound too.
+            validFrom: biTemporal.validFrom,
+            observedAt: biTemporal.observedAt,
+            eventTimeSource: biTemporal.eventTimeSource,
+          },
+          fact.entityRef,
+          sourceContext?.sourceConnector,
+        );
+        // #1707 thread 1 — a short-circuited source branch never reaches the
+        // promotion dedup paths, so promoted shared/profile copies written
+        // before the source fact carried resolved bounds stay stale and
+        // cross-namespace recall surfaces an expired fact. Backfill the
+        // promotion targets too (fail-open, backfill-only — never writes a
+        // new promoted copy).
+        await backfillTemporalBoundsOnPromotionCopies({
+          sourceStorage: targetStorage,
+          content: fact.content,
+          category: writeCategory,
+          confidence: fact.confidence,
+          entityRef: fact.entityRef,
+          structuredAttributes: fact.structuredAttributes,
+          sourceConnector: sourceContext?.sourceConnector,
+          bounds: {
+            invalidAt: biTemporal.validUntil,
+            validFrom: biTemporal.validFrom,
+            observedAt: biTemporal.observedAt,
+            eventTimeSource: biTemporal.eventTimeSource,
+          },
+        });
+      };
+      if (exactDuplicate && injectionScreenStatus !== "pending_review") {
+        await backfillDuplicateTemporalBounds();
         log.debug(
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
@@ -2198,7 +2174,11 @@ export class ExtractionPersistCoordinator {
             },
             { source: extractionWriteSource },
 );
-          const parentWrite = await targetStorage.writeSealedMemory(parentWriteEnvelope, {
+          const parentWriteOutcome = await persistUnderFactDedupWindow(
+            targetStorage.dir,
+            raceRecheck(targetStorage, contentHashDedupKey),
+            async () =>
+              targetStorage.writeSealedMemory(parentWriteEnvelope, {
             importance,
             supersedes,
             links: links.length > 0 ? links : undefined,
@@ -2218,7 +2198,16 @@ export class ExtractionPersistCoordinator {
             // durable parent .md; flush the hash now so a throw can't strand it (dup).
             deferHashIndexSave: false,
             ...(factToolScoped ? { toolScoped: true as const } : {}),
-          });
+              }),
+          ).catch(finalizeOnWindowFailure);
+          if (parentWriteOutcome.suppressed) {
+            // Codex P2: backfill bounds onto the winning copy first.
+            await backfillDuplicateTemporalBounds();
+            log.info(`dedup: raced duplicate suppressed in fact-dedup window (chunked parent) for storage ${targetStorage.dir}`);
+            dedupedCount++;
+            continue;
+          }
+          const parentWrite = parentWriteOutcome.result;
           const parentId = parentWrite.id;
           // #1645: surface the tombstone block and gate active post-write paths
           const tombstoneBlocked = parentWrite.tombstoneBlocked;
@@ -2589,7 +2578,11 @@ export class ExtractionPersistCoordinator {
         },
         { source: extractionWriteSource },
 );
-      const factWrite = await targetStorage.writeSealedMemory(factWriteEnvelope, {
+      const factWriteOutcome = await persistUnderFactDedupWindow(
+        targetStorage.dir,
+        raceRecheck(targetStorage, contentHashDedupKey),
+        async () =>
+          targetStorage.writeSealedMemory(factWriteEnvelope, {
         importance,
         supersedes,
         links: links.length > 0 ? links : undefined,
@@ -2607,11 +2600,21 @@ export class ExtractionPersistCoordinator {
         // through to frontmatter so they survive end-to-end.
         ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
         ...(fact.provenance ? { provenance: fact.provenance } : {}),
-        // #1909: defer the per-fact index flush to the batch save only when
-        // fact dedup is on (the batch saver is a no-op otherwise).
-        deferHashIndexSave: factDedupEnabled,
+        // PR #2016: never defer inside the commit window (chunked-path
+        // rule): a peer loading an authoritative index after the release
+        // must see this hash, or its recheck misses and duplicates it.
+        deferHashIndexSave: false,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
-      });
+          }),
+      ).catch(finalizeOnWindowFailure);
+      if (factWriteOutcome.suppressed) {
+        // Codex P2: backfill bounds onto the window's winning copy first.
+        await backfillDuplicateTemporalBounds();
+        log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
+        dedupedCount++;
+        continue;
+      }
+      const factWrite = factWriteOutcome.result;
       const memoryId = factWrite.id;
       // #1645: surface the tombstone block; gate active post-write paths like #1576
       // so a blocked fact creates no active shared copy / supersession / graph entry.

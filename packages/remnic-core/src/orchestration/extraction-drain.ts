@@ -13,6 +13,7 @@ import { describeError } from "../buffer-turn-helpers.js";
 import { chunkExtractionWindow, classifyDrainResult, mergeDrainResults } from "../extraction-window-drain.js";
 import { log } from "../logger.js";
 import type { BufferTurn } from "../types.js";
+import type { ExtractionPreemptHandle } from "./extraction-queue-coordinator.js";
 import type { ExtractionRunCoordinator, ExtractionRunResult } from "./extraction-run.js";
 
 type RunOptions = Parameters<ExtractionRunCoordinator["runExtraction"]>[1];
@@ -42,7 +43,6 @@ export interface ExtractionDrainDeps {
   buffer: {
     dropExtractionChunk(bufferKey: string, turns: readonly BufferTurn[], options?: { allowNonPrefix?: boolean }): Promise<number>;
   };
-  extractionQueueCoordinator: { beginPreemptable(abort: () => void): void };
 }
 
 /** Identity of a chunk: its failure count must not follow a buffer key to different content. */
@@ -111,8 +111,15 @@ export class ExtractionDrain {
    * persist step ends the host's preemption registration, so the drain registers
    * it again before every later chunk; a fail-closed flush can then abort the
    * next chunk's model request instead of waiting behind the whole window.
+   * `preemptHandle`: the queue task's own preemption slot (per task, so two
+   * concurrent automatic extractions cannot clobber each other's registration).
    */
-  async run(turns: BufferTurn[], runOptions: DrainRunOptions, preemptable = false): Promise<ExtractionRunResult> {
+  async run(
+    turns: BufferTurn[],
+    runOptions: DrainRunOptions,
+    preemptable = false,
+    preemptHandle?: ExtractionPreemptHandle,
+  ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
     const chunkable =
       runOptions.clearBufferAfterExtraction &&
@@ -155,7 +162,7 @@ export class ExtractionDrain {
       if (preemptable && position > 0) {
         const local = new AbortController();
         preempt = local;
-        this.deps.extractionQueueCoordinator.beginPreemptable(() => local.abort(preemptedExtractionError()));
+        preemptHandle?.arm(() => local.abort(preemptedExtractionError()));
         chunkOptions = {
           ...chunkOptions,
           abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, local.signal]) : local.signal,

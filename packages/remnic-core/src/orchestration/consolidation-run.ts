@@ -930,14 +930,26 @@ export class ConsolidationRunCoordinator {
           profileConsolidationTargetLines,
         );
         if (profileResult) {
-          await storage.writeProfile(profileResult.consolidatedProfile);
-          // Profile consolidation rewrites profile.md — a durable namespace
-          // mutation; record it for the catalog touch even when it is the only
-          // change in the pass (codex). Otherwise lastWriteAt goes stale.
-          memoryItemMutated = true;
-          log.info(
-            `profile.md consolidated: removed ${profileResult.removedCount} items — ${profileResult.summary}`,
+          const outcome = await storage.commitConsolidatedProfile(
+            currentProfile,
+            profileResult.consolidatedProfile,
           );
+          if (outcome === "conflict") {
+            // A concurrent append landed during the LLM call. Committing the
+            // stale rewrite would drop it, so skip; the line cap still trips
+            // next pass, so consolidation retries against the fresh profile.
+            log.info(
+              "profile.md changed during consolidation — skipping stale rewrite (retries next pass)",
+            );
+          } else {
+            // Profile consolidation rewrites profile.md — a durable namespace
+            // mutation; record it for the catalog touch even when it is the only
+            // change in the pass (codex). Otherwise lastWriteAt goes stale.
+            memoryItemMutated = true;
+            log.info(
+              `profile.md consolidated: removed ${profileResult.removedCount} items — ${profileResult.summary}`,
+            );
+          }
         }
       }
     }

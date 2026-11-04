@@ -722,6 +722,8 @@ export interface PluginConfig
   /** Distinct sessions the extraction buffer admits before backpressure (#3303). */
   bufferMaxSessions: number;
   bufferMaxMinutes: number;
+  /** Queue depth cap; default 1 = serial queue, same-buffer tasks never overlap. Applies at daemon start. */
+  extractionQueueConcurrency: number;
   /**
    * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
    * (issue #1909). Steady-state buffering coalesces the whole-state serialize

@@ -125,6 +125,7 @@ import {
 } from "./extraction-run-helpers.js";
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
 import type { ExtractionPersistResult } from "./extraction-persist.js";
+import { ProviderCircuitBreaker, type ProbeOwnerToken } from "./provider-breaker.js";
 
 export {
   capExtractionRetryStateEntries,
@@ -150,12 +151,7 @@ export class ExtractionRunCoordinator {
   // backoff still throttles, so a restart can't resurrect the hot loop.
   private readonly extractionRetryState = new Map<string, Map<string, ExtractionRetryStateEntry>>();
   private readonly hydratedRetryNamespaces = new Set<string>();
-  private providerBreaker: {
-    consecutiveFailures: number;
-    openUntilMs: number;
-    state: "closed" | "open" | "half_open";
-    lastReason: string;
-  } = { consecutiveFailures: 0, openUntilMs: 0, state: "closed", lastReason: "" };
+  private readonly providerBreaker = new ProviderCircuitBreaker();
 
   constructor(private readonly deps: ExtractionRunCoordinatorDeps) {}
 
@@ -282,65 +278,6 @@ export class ExtractionRunCoordinator {
     this.extractionRetryState.set(namespace, nsMap);
   }
 
-  private logBreakerTransition(state: "closed" | "open" | "half_open"): void {
-    // Once per state change (not per attempt) — AGENTS.md observability rule.
-    log.warn("extraction: provider circuit breaker transition", {
-      state,
-      consecutiveFailures: this.providerBreaker.consecutiveFailures,
-      lastReason: this.providerBreaker.lastReason,
-      openUntilMs: this.providerBreaker.openUntilMs,
-    });
-  }
-
-  /** True while the breaker suppresses non-forced attempts. Flips an expired
-   *  `open` breaker to `half_open`, which allows exactly one probe (the next
-   *  non-forced attempt) because the extraction queue is a serial drain. */
-  private isProviderBreakerOpen(now: number): boolean {
-    if (now < this.providerBreaker.openUntilMs) return true;
-    if (this.providerBreaker.state === "open") {
-      this.providerBreaker.state = "half_open";
-      this.logBreakerTransition("half_open");
-    }
-    return false;
-  }
-
-  private onProviderFailure(cls: ExtractionFailureClass, now: number): void {
-    this.providerBreaker.consecutiveFailures += 1;
-    const trip =
-      cls === "auth_config" ||
-      // A failed half-open probe re-opens immediately (standard breaker
-      // semantics). Without this, an auth_config-opened breaker (which trips
-      // below the threshold) would get stuck half_open after a transient
-      // probe failure and stop suppressing (cursor review).
-      this.providerBreaker.state === "half_open" ||
-      this.providerBreaker.consecutiveFailures >= this.config.extractionBreakerFailureThreshold;
-    if (!trip) return;
-    const cooldown =
-      cls === "auth_config"
-        ? this.config.extractionBreakerAuthCooldownMs
-        : this.config.extractionBreakerCooldownMs;
-    this.providerBreaker.openUntilMs = now + Math.max(0, cooldown);
-    this.providerBreaker.lastReason = cls;
-    if (this.providerBreaker.state !== "open") {
-      this.providerBreaker.state = "open";
-      this.logBreakerTransition("open");
-    }
-  }
-
-  private resetProviderBreakerOnSuccess(): void {
-    const wasDisturbed =
-      this.providerBreaker.state !== "closed" ||
-      this.providerBreaker.consecutiveFailures > 0 ||
-      this.providerBreaker.openUntilMs > 0;
-    if (!wasDisturbed) return;
-    const wasOpen = this.providerBreaker.state !== "closed";
-    this.providerBreaker.consecutiveFailures = 0;
-    this.providerBreaker.openUntilMs = 0;
-    this.providerBreaker.lastReason = "";
-    this.providerBreaker.state = "closed";
-    if (wasOpen) this.logBreakerTransition("closed");
-  }
-
   /** Rebuild `meta.extractionRetryState` from the in-memory namespace mirror,
    *  bounded to the newest entries, and prune the mirror to match. */
   private persistRetryStateToMeta(namespace: string, meta: MetaState): void {
@@ -370,10 +307,11 @@ export class ExtractionRunCoordinator {
     cls: ExtractionFailureClass,
     meta: MetaState,
     now: number,
+    probeToken?: ProbeOwnerToken,
   ): Promise<void> {
     try {
       this.hydrateRetryStateFromMeta(namespace, meta);
-      this.applyExtractionFailureToMemory(namespace, fingerprint, cls, now);
+      this.applyExtractionFailureToMemory(namespace, fingerprint, cls, now, probeToken);
       this.persistRetryStateToMeta(namespace, meta);
       // The caller's storage.updateMeta persists this — saving here would write the same file twice.
     } catch (err) {
@@ -389,6 +327,7 @@ export class ExtractionRunCoordinator {
     fingerprint: string,
     cls: ExtractionFailureClass,
     now: number,
+    probeToken?: ProbeOwnerToken,
   ): void {
     const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
     const prev = nsMap.get(fingerprint);
@@ -409,7 +348,11 @@ export class ExtractionRunCoordinator {
     }
     nsMap.set(fingerprint, { attempts, nextEligibleAtMs, firstFailedAtMs, lastFailureClass: cls });
     this.extractionRetryState.set(namespace, nsMap);
-    this.onProviderFailure(cls, now);
+    this.providerBreaker.failure(cls, now, {
+      failureThreshold: this.config.extractionBreakerFailureThreshold,
+      cooldownMs: this.config.extractionBreakerCooldownMs,
+      authCooldownMs: this.config.extractionBreakerAuthCooldownMs,
+    }, probeToken);
   }
 
   /** Delete a fingerprint's retry entry from the mirror + meta. Returns whether
@@ -430,12 +373,7 @@ export class ExtractionRunCoordinator {
       backoffFingerprintCount += nsMap.size;
     }
     return {
-      breaker: {
-        state: this.providerBreaker.state,
-        openUntilMs: this.providerBreaker.openUntilMs,
-        consecutiveFailures: this.providerBreaker.consecutiveFailures,
-        lastReason: this.providerBreaker.lastReason,
-      },
+      breaker: this.providerBreaker.snapshot(),
       backoffFingerprintCount,
     };
   }
@@ -834,13 +772,18 @@ export class ExtractionRunCoordinator {
     // Resolve the gate through the shared lifecycle capability plan (issue
     // #1523) rather than reading the raw config flag at each call site.
     const extractionRetryEnabled = resolveMemoryLifecycleCapabilities(this.config).extractionRetry;
+    let extractionProbeOwned = false;
+    let extractionProbeToken: ProbeOwnerToken | undefined;
     if (extractionFingerprint && !forcedExtractionAttempt && extractionRetryEnabled) {
       try {
         meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_gate");
         this.hydrateRetryStateFromMeta(selfNamespace, meta);
         const nowMs = Date.now();
+        const probeAttempt = this.providerBreaker.acquire(nowMs);
+        extractionProbeOwned = probeAttempt.probe;
+        extractionProbeToken = probeAttempt.token;
         let suppressReason: "provider_circuit_open" | "extraction_backoff" | null = null;
-        if (this.isProviderBreakerOpen(nowMs)) {
+        if (probeAttempt.suppressed) {
           suppressReason = "provider_circuit_open";
         } else {
           const st = this.extractionRetryState.get(selfNamespace)?.get(extractionFingerprint);
@@ -865,6 +808,10 @@ export class ExtractionRunCoordinator {
             log.warn("runExtraction: passive correction capture failed on suppressed attempt (non-fatal)", captureErr);
           }
           clearExtractionDeadlineTimer();
+          // Backoff suppression exits inside the gate, before the wrapper
+          // finally: release an acquired probe here (codex follow-up) so a
+          // cooldown-expired fingerprint cannot pin the breaker half_open.
+          if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
           return { status: "skipped", reason: suppressReason, persistedCount: 0, durableOutputCount: 0 };
         }
       } catch (err) {
@@ -873,26 +820,28 @@ export class ExtractionRunCoordinator {
         log.warn("runExtraction: extraction retry gate check failed; proceeding (fail-open)", err);
       }
     }
-
     // Pass existing entity names so the LLM can reuse them instead of inventing variants.
-    const existingEntities = await runDeadlineAware(
-      () => storage.listEntityNames(),
-      "during_list_entity_names",
-    );
-    let result: ExtractionResult;
+    // The probe owner must release on ANY pre-persistence exit too (codex P1):
+    // the big try below only covers from the extract call onward.
     try {
-      result = await raceRecallAbort(
-        this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
-        extractionAbortSignal,
-        "extraction aborted (during_extract)",
+      const existingEntities = await runDeadlineAware(
+        () => storage.listEntityNames(),
+        "during_list_entity_names",
       );
-    } catch (error) {
-      clearExtractionDeadlineTimer();
-      if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
-        throw new ExtractionDeadlineError("during_extract");
+      let result: ExtractionResult;
+      try {
+        result = await raceRecallAbort(
+          this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
+          extractionAbortSignal,
+          "extraction aborted (during_extract)",
+        );
+      } catch (error) {
+        clearExtractionDeadlineTimer();
+        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+          throw new ExtractionDeadlineError("during_extract");
+        }
+        throw error;
       }
-      throw error;
-    }
     try {
       throwIfDeadlineExceeded("before_persist");
       throwIfAborted("before_persist");
@@ -965,7 +914,7 @@ export class ExtractionRunCoordinator {
           await runDeadlineAware(
             () =>
               storage.updateMeta((freshMeta) =>
-                this.recordExtractionFailure(selfNamespace, extractionFingerprint, failureClass, freshMeta, Date.now()),
+                this.recordExtractionFailure(selfNamespace, extractionFingerprint, failureClass, freshMeta, Date.now(), extractionProbeToken),
               ),
             "during_retry_bookkeeping_save",
             false,
@@ -976,14 +925,16 @@ export class ExtractionRunCoordinator {
           // Fail-open, but retain the turns (a cleared buffer with no retry state drops them). Only a
           // LOCK skip reaches here without the mutator having run — a later save must not double-count.
           if (err instanceof Error && err.message.includes("meta.json.lock not acquired"))
-            this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now());
+            this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now(), extractionProbeToken);
           recordedRetryFailure = true;
           log.warn("runExtraction: retry state kept in memory; meta persist will catch up", err);
         }
       } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
-        this.resetProviderBreakerOnSuccess();
+        // PRRT_kwDORJXyws6zxG6u: pass the run's probe token so the settlement
+        // only applies to a probe this run owns.
+        this.providerBreaker.success(extractionProbeToken);
         try {
           await runDeadlineAware(
             () =>
@@ -1195,6 +1146,12 @@ export class ExtractionRunCoordinator {
     };
     } finally {
       clearExtractionDeadlineTimer();
+    }
+    } finally {
+      // The half-open probe is OWNED, not timed: the WRAPPER finally releases
+      // it on every exit path, including pre-persistence ones (codex P1) that
+      // never reach the inner try above.
+      if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
     }
   }
 }

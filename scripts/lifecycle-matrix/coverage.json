@@ -171,7 +171,10 @@
     "packages/remnic-core/src/storage/windowed-memory-read.ts",
     "packages/remnic-core/src/temporal-supersession.ts",
     "packages/remnic-core/src/verified-recall.ts",
-    "src/openclaw-flush-plan-lifecycle.ts"
+    "src/openclaw-flush-plan-lifecycle.ts",
+    "packages/remnic-core/src/orchestration/fact-dedup-window.ts",
+    "packages/remnic-core/src/storage/profile-mutation.ts",
+    "packages/remnic-core/src/orchestration/provider-breaker.ts"
   ],
   "coverage": {
     "packages/plugin-openclaw/src/delegate-runtime.ts": "openclaw-delegate-runtime",
@@ -275,7 +278,10 @@
     "packages/remnic-core/src/storage/tombstone-blocked-capture-mutation.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/tombstone-blocked-capture-sync.ts": "tombstone-blocked-capture",
     "packages/remnic-core/src/storage/tombstone-migration-sources.ts": "tombstone-blocked-capture",
-    "packages/remnic-core/src/storage/windowed-memory-read.ts": "windowed-memory-read"
+    "packages/remnic-core/src/storage/windowed-memory-read.ts": "windowed-memory-read",
+    "packages/remnic-core/src/orchestration/fact-dedup-window.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/profile-mutation.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/provider-breaker.ts": "extraction-lifecycle"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",

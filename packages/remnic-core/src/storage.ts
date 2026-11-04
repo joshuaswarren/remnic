@@ -28,13 +28,14 @@ import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migr
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
+import { appendToProfileSerialized, commitConsolidatedProfileSerialized, type ProfileMutationPorts } from "./storage/profile-mutation.js";
 import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
 import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, okfTypeForMemory } from "./okf/type-mapping.js";
 import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
-import { updateMetaSerialized, withHeldFileLock } from "./utils/serialize-mutations.js";
+import { updateMetaSerialized } from "./utils/serialize-mutations.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -4296,57 +4297,25 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     log.debug("updated profile.md");
   }
 
-  private static normalizeForDedup(s: string): string {
-    if (typeof s !== "string") return "";
-    return s
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
-  /**
-   * Check if a new bullet is a fuzzy duplicate of any existing bullet.
-   * Returns true if the new bullet should be skipped.
-   */
-  private static isFuzzyDuplicate(newNorm: string, existingNorms: string[]): boolean {
-    for (const existing of existingNorms) {
-      // Exact normalized match
-      if (newNorm === existing) return true;
-
-      // Containment check: shorter must be >60% length of longer
-      const shorter = newNorm.length <= existing.length ? newNorm : existing;
-      const longer = newNorm.length > existing.length ? newNorm : existing;
-      if (shorter.length > 20 && shorter.length / longer.length > 0.6 && longer.includes(shorter)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   async appendToProfile(updates: string[]): Promise<void> {
-    // Filter out non-string entries that the LLM may return
-    updates = updates.filter((u) => typeof u === "string" && u.trim().length > 0);
-    if (updates.length === 0) return;
-    const existing = await this.readProfile();
+    await appendToProfileSerialized(this.profileMutationPorts(), updates);
+  }
 
-    const lines = existing ? existing.split("\n") : [];
-    const existingBulletRaw = lines.filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
-    const existingNorms = existingBulletRaw.map(StorageManager.normalizeForDedup);
+  /** Commit an LLM profile consolidation only if the profile is unchanged
+   * since `baseline` was read; see profile-mutation.ts for the race domain. */
+  async commitConsolidatedProfile(
+    baseline: string,
+    consolidated: string,
+  ): Promise<"committed" | "conflict"> {
+    return commitConsolidatedProfileSerialized(this.profileMutationPorts(), baseline, consolidated);
+  }
 
-    const newBullets = updates.filter((u) => {
-      const norm = StorageManager.normalizeForDedup(u);
-      return !StorageManager.isFuzzyDuplicate(norm, existingNorms);
-    });
-    if (newBullets.length === 0) return;
-
-    if (!existing) {
-      const content = ["# Behavioral Profile", "", ...newBullets.map((b) => `- ${b}`), ""].join("\n");
-      await this.writeProfile(content);
-    } else {
-      const withBullets = existing.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
-      await this.writeProfile(withBullets);
-    }
+  private profileMutationPorts(): ProfileMutationPorts {
+    return {
+      baseDir: this.baseDir,
+      readProfile: () => this.readProfile(),
+      writeProfile: (content) => this.writeProfile(content),
+    };
   }
 
   /** Check if profile.md exceeds the max line cap and needs LLM consolidation */

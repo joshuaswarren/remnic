@@ -17,6 +17,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { SmartBuffer } from "./buffer.js";
+import type { ExtractionPreemptHandle } from "./orchestration/extraction-queue-coordinator.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import { BufferDrainClaims, type DrainLease } from "./storage/buffer-drain-claims.js";
 import type { BufferStorage } from "./buffer-persistence.js";
@@ -195,12 +196,11 @@ function gateFixture(isClaimed: boolean) {
     },
     config,
     extractionQueueCoordinator: {
-      enqueue: (fn: () => Promise<void>) => {
+      enqueue: (fn: (preempt?: ExtractionPreemptHandle) => Promise<void>) => {
         void fn().catch(() => {});
         return true;
       },
-      runPreemptable: (_preemptable: boolean, parent: AbortSignal | undefined, fn: (signal: AbortSignal) => Promise<void>) => fn(parent ?? new AbortController().signal),
-      beginPreemptable: () => {},
+      runPreemptable: (_preempt: ExtractionPreemptHandle | undefined, _preemptable: boolean, parent: AbortSignal | undefined, fn: (signal: AbortSignal) => Promise<void>) => fn(parent ?? new AbortController().signal),
     },
     extractionWindowBudgetChars: () => 500,
     getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),

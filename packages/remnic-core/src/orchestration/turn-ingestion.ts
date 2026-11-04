@@ -932,8 +932,8 @@ export class TurnIngestionCoordinator {
     }
     if (settled) return;
     const preemptable = options.preemptable === true && options.preemptRunning !== true;
-    const accepted = this.deps.extractionQueueCoordinator.enqueue(async () => {
-      await this.deps.extractionQueueCoordinator.runPreemptable(preemptable, options.abortSignal, async (abortSignal) => {
+    const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
+      await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -1082,14 +1082,14 @@ export class TurnIngestionCoordinator {
           deadlineMs: extractionDeadlineMs,
           bufferKey,
           onDurableCommit: options.onDurableCommit,
-          onBeforePersist: () => this.deps.extractionQueueCoordinator.endPreemptable(),
+          onBeforePersist: () => preemptHandle?.disarm(),
           abortSignal,
           failOnExtractionFailure: options.failOnExtractionFailure === true,
           writeNamespaceOverride: options.writeNamespaceOverride,
           principalOverride: options.principalOverride,
           scopeProfileWritePlan: effectiveScopePlan,
           forceExtractionAttempt: options.forceExtractionAttempt === true,
-        }, preemptable);
+        }, preemptable, preemptHandle);
         settleTask(undefined, result);
       } catch (err) {
         const reason = abortSignal.reason;
@@ -1099,7 +1099,7 @@ export class TurnIngestionCoordinator {
         }
       }
       });
-    }, { front: options.preemptRunning === true });
+    }, { front: options.preemptRunning === true, key: bufferKey });
     if (!accepted) {
       settleTask(new Error("extraction queue is stopped"));
       return;
