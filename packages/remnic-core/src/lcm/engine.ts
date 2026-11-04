@@ -103,10 +103,9 @@ const EMPTY_LCM_STATS = {
  */
 const LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB = 16;
 
-/** Retry budget for a failed summary pass: base delay, ceiling and attempts. */
+/** Retry pacing for a failed summary pass: base delay and backoff ceiling. */
 const LCM_SUMMARIZE_RETRY_BASE_MS = 500;
 const LCM_SUMMARIZE_RETRY_MAX_MS = 30_000;
-const LCM_SUMMARIZE_RETRY_MAX_ATTEMPTS = 5;
 
 export class LcmEngine {
   private db: Database.Database | null = null;
@@ -120,6 +119,8 @@ export class LcmEngine {
   private initPromise: Promise<void> | null = null;
   private readonly summarizeRetryTimers = new Map<string, NodeJS.Timeout>();
   private readonly summarizeRetryAttempts = new Map<string, number>();
+  /** Base backoff delay; tests shrink it to keep the retry loop fast. */
+  private summarizeRetryBaseMs = LCM_SUMMARIZE_RETRY_BASE_MS;
   private readonly pendingObserveInitCounts = new Map<string, number>();
   private readonly pendingObserveInitWaiters = new Map<string, Array<() => void>>();
   private readonly pendingObserveInitIdleWaiters: Array<() => void> = [];
@@ -338,42 +339,49 @@ export class LcmEngine {
 
     this.clearSummarizeRetry(sessionId);
 
-    if (
-      this.archive.countUnsummarizedMessages(sessionId) >=
-      this.config.leafBatchSize
-    ) {
+    if (this.hasCompleteBatchPending(sessionId)) {
       this.observeQueue.enqueue(sessionId);
     }
   }
 
   /**
-   * Schedule a bounded, metadata-only retry for a failed summary pass.
+   * Schedule a metadata-only retry for a failed summary pass.
    *
-   * One pending retry per session, exponential backoff, a capped attempt
-   * count and an unreferenced timer: a persistent failure cannot hot-loop,
-   * and the timer never keeps the process alive.
+   * The retry keeps trying for as long as the engine is open and complete
+   * batches remain — a transient failure must never strand durable work.
+   * What is bounded is the RATE, not the ability to retry: one pending timer
+   * per session, exponential backoff capped at
+   * {@link LCM_SUMMARIZE_RETRY_MAX_MS}, and an unreferenced timer that is
+   * cleared when the engine closes.
    */
   private scheduleSummarizeRetry(sessionId: string): void {
     if (this.closed || this.summarizeRetryTimers.has(sessionId)) return;
     const attempt = (this.summarizeRetryAttempts.get(sessionId) ?? 0) + 1;
-    if (attempt > LCM_SUMMARIZE_RETRY_MAX_ATTEMPTS) {
-      log.error(
-        `LCM summarize retry budget exhausted: session=${sessionId}, attempts=${attempt - 1}`,
-      );
-      return;
-    }
     this.summarizeRetryAttempts.set(sessionId, attempt);
     const delayMs = Math.min(
       LCM_SUMMARIZE_RETRY_MAX_MS,
-      LCM_SUMMARIZE_RETRY_BASE_MS * 2 ** (attempt - 1),
+      this.summarizeRetryBaseMs * 2 ** Math.min(attempt - 1, 16),
     );
     const timer = setTimeout(() => {
       this.summarizeRetryTimers.delete(sessionId);
       if (this.closed) return;
+      if (!this.hasCompleteBatchPending(sessionId)) {
+        this.summarizeRetryAttempts.delete(sessionId);
+        return;
+      }
       this.observeQueue?.enqueue(sessionId);
     }, delayMs);
     timer.unref?.();
     this.summarizeRetryTimers.set(sessionId, timer);
+  }
+
+  /** True when the session still holds a complete unsummarized batch. */
+  private hasCompleteBatchPending(sessionId: string): boolean {
+    if (!this.archive) return false;
+    return (
+      this.archive.countUnsummarizedMessages(sessionId) >=
+      this.config.leafBatchSize
+    );
   }
 
   /** Drop a pending retry and its attempt counter. */

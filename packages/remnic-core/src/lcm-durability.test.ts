@@ -344,3 +344,89 @@ test("a failed summary pass is retried from the durable archive without a new ob
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a summary pass that keeps failing is retried until it succeeds", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-persist-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "persistent summary");
+    await engine.ensureInitialized();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 10;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    const realSummarize = summarizer.summarizeIncremental.bind(summarizer);
+    let failures = 0;
+    summarizer.summarizeIncremental = async (
+      sessionId: string,
+      options?: { maxLeafBatches?: number },
+    ) => {
+      failures += 1;
+      // More failures than any attempt budget would allow: the retry must
+      // keep trying, not stop and strand the durable backlog.
+      if (failures <= 7) throw new Error("persistent summary failure");
+      return realSummarize(sessionId, options);
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "keep retrying" },
+      { role: "assistant", content: "keep retrying too" },
+    ]);
+
+    await eventually(
+      async () => {
+        const summary = await engine.describeContext("session-1", 0, 1);
+        return summary?.depth === 0 ? true : null;
+      },
+      "the failing summary pass is retried until it succeeds",
+    );
+    assert.ok(failures > 7, `expected more than 7 attempts, got ${failures}`);
+    assert.equal(durableRowCount(dir, "session-1"), 2);
+    engine.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("closing the engine cancels a pending summary retry", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-close-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "unused");
+    await engine.ensureInitialized();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 10_000;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    summarizer.summarizeIncremental = async () => {
+      throw new Error("permanent summary failure");
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "pending retry" },
+      { role: "assistant", content: "pending retry too" },
+    ]);
+    await eventually(
+      async () => (internals.summarizeRetryTimers.size > 0 ? true : null),
+      "a summary retry is pending",
+    );
+
+    engine.close();
+    assert.equal(internals.summarizeRetryTimers.size, 0, "close must clear pending retries");
+    assert.equal(internals.db, null, "close must not reinitialize the engine");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
