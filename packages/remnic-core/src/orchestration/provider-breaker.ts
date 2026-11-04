@@ -92,7 +92,10 @@ export class ProviderCircuitBreaker {
     }
     this.consecutiveFailures += 1;
     const trip =
-      cls === "auth_config" ||
+      // An unowned auth_config failure (forced extraction) must not reopen
+      // over a held half-open probe — same ownership rule as the threshold
+      // term; the auth cooldown still applies once the probe settles.
+      (cls === "auth_config" && (this.state !== "half_open" || owned)) ||
       // A failed half-open probe re-opens immediately (standard breaker
       // semantics). Without this, an auth_config-opened breaker (which trips
       // below the threshold) would get stuck half_open after a transient
