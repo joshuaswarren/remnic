@@ -306,9 +306,9 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
             validAt?: string;
             sourceConnector?: string;
           }
-        ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> => {
+        ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string>; deferredCount: number; pendingReviewIds: string[] }> => {
           spy(sourceContext);
-          return { persistedIds: ["fact-1"], memoryPathById: new Map() };
+          return { persistedIds: ["fact-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
         },
         maybeCapturePassiveCorrections: async () => {},
         resolveSelfNamespace: () => "default",
@@ -323,7 +323,6 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
         runTierMigrationCycle: async () => {
           throw new Error("unexpected runTierMigrationCycle");
         },
-        getLastPersistExtractionDeferredCount: () => 0,
         recordProcessedExtractionFingerprint: async () => {},
       };
     }
@@ -409,9 +408,9 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
           validAt?: string;
           sourceConnector?: string;
         }
-      ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> => {
+      ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string>; deferredCount: number; pendingReviewIds: string[] }> => {
         capturedConnector = sourceContext?.sourceConnector;
-        return { persistedIds: ["fact-1"], memoryPathById: new Map() };
+        return { persistedIds: ["fact-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
       },
       maybeCapturePassiveCorrections: async () => {},
       resolveSelfNamespace: () => "default",
@@ -426,7 +425,6 @@ test("runExtraction: context-only turns without sourceConnector do not affect at
       runTierMigrationCycle: async () => {
         throw new Error("unexpected runTierMigrationCycle");
       },
-      getLastPersistExtractionDeferredCount: () => 0,
       recordProcessedExtractionFingerprint: async () => {},
     });
 
@@ -667,7 +665,7 @@ test("runExtraction: the Source agent header connector equals the persisted sour
       getThreading: () => ({ processTurn: async () => "thread-1", updateThreadTitle: async () => {} }),
       persistExtraction: async (_r, _s, _t, sourceContext?) => {
         persistedConnector = sourceContext?.sourceConnector;
-        return { persistedIds: ["fact-1"], memoryPathById: new Map() };
+        return { persistedIds: ["fact-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
       },
       maybeCapturePassiveCorrections: async () => {},
       resolveSelfNamespace: () => "default",
@@ -678,7 +676,6 @@ test("runExtraction: the Source agent header connector equals the persisted sour
       maybeScheduleConsolidation: () => {},
       requestQmdMaintenance: () => {},
       runTierMigrationCycle: async () => { throw new Error("unexpected runTierMigrationCycle"); },
-      getLastPersistExtractionDeferredCount: () => 0,
       recordProcessedExtractionFingerprint: async () => {},
     });
 

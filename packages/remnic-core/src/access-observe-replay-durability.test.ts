@@ -1827,7 +1827,7 @@ test("#3251 scoped defer then successful retry preserves other retained turns ac
     {
       clearBufferAfterExtraction: true,
       extractionJudgeShadow: false,
-      getDeferredCount: () => deferredCount,
+      deferredCount,
       normalizedTurns,
       bufferKey: "sr-sess",
       retainDeferredTurns: (key, turns, max) =>

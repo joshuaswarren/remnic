@@ -177,7 +177,7 @@ export async function runExtractionPostPersistBestEffort(
 export interface ExtractionDeferRetentionOptions {
   clearBufferAfterExtraction: boolean;
   extractionJudgeShadow: boolean;
-  getDeferredCount: () => number;
+  deferredCount: number;
   normalizedTurns: BufferTurn[];
   bufferKey: string;
   retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
@@ -193,7 +193,7 @@ export async function runExtractionDeferRetention(
 ): Promise<void> {
   await runPostPersistBestEffort("during_defer_retention", async () => {
     if (options.clearBufferAfterExtraction && !options.extractionJudgeShadow) {
-      const deferredCount = options.getDeferredCount();
+      const deferredCount = options.deferredCount;
       if (deferredCount > 0 && options.normalizedTurns.length > 0) {
         await options.retainDeferredTurns(options.bufferKey, options.normalizedTurns, 10);
       } else {
@@ -229,7 +229,8 @@ export interface ExtractionPostPersistOptions {
     options?: { ignoreAbort?: boolean; ignoreDeadline?: boolean; propagateErrors?: boolean },
   ) => Promise<void>;
   extractionJudgeShadow: boolean;
-  getDeferredCount: () => number;
+  /** Facts this run's persist deferred to the judge — drives retention (#1523). */
+  deferredCount: number;
   normalizedTurns: BufferTurn[];
   bufferKey: string;
   retainDeferredTurns: (bufferKey: string, turns: BufferTurn[], max: number) => Promise<void>;
@@ -283,7 +284,7 @@ export async function runExtractionPostPersist(
   await runExtractionDeferRetention(runBestEffort, {
     clearBufferAfterExtraction: options.clearBufferAfterExtraction,
     extractionJudgeShadow: options.extractionJudgeShadow,
-    getDeferredCount: options.getDeferredCount,
+    deferredCount: options.deferredCount,
     normalizedTurns: options.normalizedTurns,
     bufferKey: options.bufferKey,
     retainDeferredTurns: options.retainDeferredTurns,
