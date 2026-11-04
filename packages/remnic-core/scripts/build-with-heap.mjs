@@ -54,3 +54,11 @@ const targetDir = path.resolve(packageRoot, "dist/admin-console/public/what-help
 await rm(targetDir, { recursive: true, force: true });
 await mkdir(path.dirname(targetDir), { recursive: true });
 await cp(sourceDir, targetDir, { recursive: true });
+
+// The corpus-scan worker entry is plain JavaScript (a worker thread cannot
+// load the TypeScript sources). It is generated from the TypeScript entry and
+// committed, so the build copies it next to the bundled host.
+await cp(
+  path.resolve(packageRoot, "src/corpus-scan-worker.entry.mjs"),
+  path.resolve(packageRoot, "dist/corpus-scan-worker.entry.mjs"),
+);

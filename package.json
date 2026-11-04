@@ -1,6 +1,6 @@
 {
   "name": "remnic-workspace",
-  "version": "10.0.59",
+  "version": "10.0.60",
   "private": true,
   "packageManager": "pnpm@10.32.1",
   "type": "module",
@@ -1590,6 +1590,8 @@
   },
   "scripts": {
     "sync:openclaw-plugin": "node scripts/sync-openclaw-plugin.mjs",
+    "sync:corpus-scan-worker": "node scripts/sync-corpus-scan-worker.mjs",
+    "check:corpus-scan-worker-sync": "node scripts/check-corpus-scan-worker-sync.mjs",
     "check:openclaw-plugin-sync": "node scripts/check-openclaw-plugin-sync.mjs",
     "sync:hook-runner": "node scripts/sync-hook-runner.mjs",
     "check:hook-runner-sync": "node scripts/check-hook-runner-sync.mjs",
@@ -1602,7 +1604,7 @@
     "check:regex-safety": "node scripts/check-regex-safety.mjs",
     "check:pre-push": "node scripts/check-pre-push.mjs",
     "release:bump-changed-packages": "node scripts/bump-changed-packages.mjs",
-    "build": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs run check:openclaw-plugin-sync && tsup && node scripts/copy-admin-console.mjs",
+    "build": "node scripts/pnpm.mjs --filter @remnic/core build && node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs run check:openclaw-plugin-sync && node scripts/check-corpus-scan-worker-sync.mjs && tsup && node scripts/copy-admin-console.mjs",
     "dev": "node scripts/pnpm.mjs --filter @remnic/plugin-openclaw build && node scripts/pnpm.mjs --parallel --filter remnic-workspace --filter @remnic/plugin-openclaw run dev:watch",
     "dev:watch": "tsup --watch",
     "check-types": "node scripts/pnpm.mjs --filter @remnic/core build && tsc --noEmit && node scripts/check-type-packages.mjs --run && node scripts/check-test-types.mjs",
