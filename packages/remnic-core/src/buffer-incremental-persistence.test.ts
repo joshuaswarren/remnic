@@ -274,8 +274,8 @@ test("legacy-only storage keeps the whole-state saveBuffer behavior", async () =
 });
 
 test("durable capture at the entry cap evicts native entries instead of refusing (COS-244c)", async () => {
-  // macstudio: stalled extraction left the cap full of native (non-accepted)
-  // cron-run sessions; addTurnBounded refused every new accepted session (500).
+  // Stalled extraction left the cap full of native (non-accepted)
+  // sessions; addTurnBounded refused every new accepted session.
   const storage = new IncrementalStorage(emptyState());
   const buffer = new SmartBuffer(
     parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }),
