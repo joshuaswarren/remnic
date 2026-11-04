@@ -4232,14 +4232,17 @@ const pluginDefinition = {
               if (lcmMessages.length > 0) {
                 // Awaited: the archive append is durable before this returns,
                 // so a failure is reported instead of silently dropping the
-                // turn. Summary building stays in the background.
+                // turn. Summary building stays in the background. The hook
+                // has no acknowledgement contract, so the failure is logged
+                // rather than thrown at the host (the turn is already
+                // persisted upstream and re-running it would duplicate work).
                 await orchestrator.lcmEngine.enqueueObserveMessages(
                   sessionKey,
                   lcmMessages,
                 );
               }
             } catch (lcmErr) {
-              log.debug(`LCM agent_end indexing error: ${lcmErr}`);
+              log.error(`LCM agent_end archiving failed: ${lcmErr}`);
             }
           }
         } catch (err) {
