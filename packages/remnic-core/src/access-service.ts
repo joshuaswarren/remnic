@@ -1079,6 +1079,7 @@ export interface EngramAccessObserveResponse {
   effectiveNamespace: string;
   /** Additive diagnostic view of the resolved scope plan (#1495). */
   scopeDebug?: EngramAccessScopeDebug;
+  /** True when the observed turns are durably archived in LCM — the archive append completed before the response was produced. */
   lcmArchived: boolean;
   extractionQueued: boolean;
   /** True when at least one observe-derived turn was appended to the transcript store (issue #2783). False when the transcript capability is off, every message was filtered/deduped, or every append failed. */

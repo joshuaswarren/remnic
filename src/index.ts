@@ -4230,7 +4230,10 @@ const pluginDefinition = {
                 })
                 .filter((m) => m.content.length > 0);
               if (lcmMessages.length > 0) {
-                orchestrator.lcmEngine.enqueueObserveMessages(
+                // Awaited: the archive append is durable before this returns,
+                // so a failure is reported instead of silently dropping the
+                // turn. Summary building stays in the background.
+                await orchestrator.lcmEngine.enqueueObserveMessages(
                   sessionKey,
                   lcmMessages,
                 );

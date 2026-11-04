@@ -792,24 +792,26 @@ export class AccessObserveWriteSurface {
       }
 
       // 5. LCM archival → effective write namespace.
-      // lcmArchived in the response means "LCM archival was queued" (not
-      // "completed"), matching extractionQueued semantics.  Both run async.
+      // The archival append is durable before this returns: the queue holds
+      // only a session reference, and summary DAGs are built in the
+      // background, so the caller is never blocked on inference.
       let lcmArchived = false;
       if (this.deps.orchestrator.lcmEngine && this.deps.orchestrator.lcmEngine.enabled) {
-        // Fire-and-forget: LCM archival writes to SQLite and builds summary
-        // DAGs, which can take tens of seconds for large sessions.  Don't
-        // block the HTTP response — the caller only needs acknowledgment.
         try {
-          this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
+          await this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
           lcmArchived = true;
         } catch (err) {
-          log.error(`access-observe LCM enqueue failed: ${err}`);
+          // Fail closed: an observe whose lossless archive failed must not be
+          // acknowledged as accepted (the client would not retry, and the
+          // archived turn would be gone). Extraction below never starts.
+          log.error(`access-observe LCM archival failed: ${err}`);
+          throw err;
         }
       }
 
       // 5b. Transcript persistence → the per-session transcript store the
-      // hourly summarizer reads (issue #2783). Best-effort like the LCM
-      // enqueue above: a transcript failure must not fail the observe.
+      // hourly summarizer reads (issue #2783). Best-effort: a transcript
+      // failure must not fail the observe.
       const transcriptPersisted = resolvePresentationCapabilities(this.deps.orchestrator.config).transcript
         ? await this.observeTranscriptPersister.persist(
             this.deps.orchestrator,
