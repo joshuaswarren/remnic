@@ -1513,7 +1513,7 @@ export class Orchestrator {
     this.storageRouter.onStorageCreated = bindStorage;
     this.storageRouter.forEachCachedStorage(bindStorage);
     // Issue #1526: background extraction queue lives on its own coordinator.
-    this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+    this.extractionQueueCoordinator = new ExtractionQueueCoordinator(config.extractionQueueConcurrency);
 
     this.recallResultFormatter = new RecallResultFormatter(this.config);
     const conversationIndexRuntime = createConversationIndexRuntime(config, {
