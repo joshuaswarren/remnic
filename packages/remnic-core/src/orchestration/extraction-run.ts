@@ -71,7 +71,7 @@ export interface ExtractionRunCoordinatorDeps {
     sourceText?: string,
     graphCaps?: GraphConstructionCapabilitySet,
     lifecycleCaps?: MemoryLifecycleCapabilitySet
-  ) => Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }>;
+  ) => Promise<ExtractionPersistResult>;
 
   maybeCapturePassiveCorrections: (
     turns: readonly BufferTurn[],
@@ -89,7 +89,7 @@ export interface ExtractionRunCoordinatorDeps {
   getCodingContextForSession: (sessionKey: string) => CodingContext | null;
   applyCodingNamespaceOverlay: (sessionKey: string, namespace: string) => string;
   boxBuilderFor: (storage: StorageManager) => Pick<BoxBuilder, "onExtraction">;
-  appendPersistedThreadEpisodes: (threadId: string, ids: string[]) => Promise<void>;
+  appendPersistedThreadEpisodes: (threadId: string, ids: string[], pendingReviewIds: string[]) => Promise<void>;
   maybeScheduleConsolidation: (nonZero: boolean) => void;
   requestQmdMaintenance: () => void;
   runTierMigrationCycle: (
@@ -101,7 +101,6 @@ export interface ExtractionRunCoordinatorDeps {
       force?: boolean;
     }
   ) => Promise<TierMigrationCycleSummary>;
-  getLastPersistExtractionDeferredCount: () => number;
   recordProcessedExtractionFingerprint: (
     storage: StorageManager,
     fingerprint: string,
@@ -125,6 +124,7 @@ import {
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
 } from "./extraction-run-helpers.js";
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
+import type { ExtractionPersistResult } from "./extraction-persist.js";
 
 export {
   capExtractionRetryStateEntries,
@@ -1069,7 +1069,7 @@ export class ExtractionRunCoordinator {
     throwIfDeadlineExceeded("before_persist");
     throwIfAborted("before_persist");
 
-    const { persistedIds } = await this.deps.persistExtraction(
+    const { persistedIds, deferredCount, pendingReviewIds } = await this.deps.persistExtraction(
       result,
       storage,
       threadIdForExtraction,
@@ -1106,7 +1106,7 @@ export class ExtractionRunCoordinator {
       clearBufferAfterExtraction,
       runPostPersistBestEffort,
       extractionJudgeShadow: this.config.extractionJudgeShadow,
-      getDeferredCount: () => this.deps.getLastPersistExtractionDeferredCount(),
+      deferredCount,
       normalizedTurns: normalizedTurns as BufferTurn[],
       bufferKey,
       retainDeferredTurns: (key, retainedTurns, max) =>
@@ -1155,7 +1155,7 @@ export class ExtractionRunCoordinator {
     // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction && persistedIds.length > 0) {
       await runPostPersistBestEffort("during_thread_episode_append", () =>
-        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds),
+        this.deps.appendPersistedThreadEpisodes(threadIdForExtraction, persistedIds, pendingReviewIds),
       );
     }
 

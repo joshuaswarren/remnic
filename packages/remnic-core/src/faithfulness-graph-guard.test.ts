@@ -342,7 +342,8 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
       persistExtraction: PersistExtractionFn;
       appendPersistedThreadEpisodes: (
         threadId: string,
-        persistedIds: string[]
+        persistedIds: string[],
+        pendingReviewIds: string[]
       ) => Promise<void>;
     };
 
@@ -350,7 +351,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
       "The widget factory reopened this quarter after being closed permanently last year.";
 
     // --- Flush 1: an active fact + a pending_review fact, same thread ---
-    const { persistedIds: flush1 } = await persist.persistExtraction(
+    const { persistedIds: flush1, pendingReviewIds: pendingReviewIds1 } = await persist.persistExtraction(
       twoFactResult(
         "The widget factory reopened this quarter.", "wf-active",
         "The widget factory closed permanently last year.", "wf-pending",
@@ -367,7 +368,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     assert.ok(pendingId, "flush1 pending_review fact persisted");
 
     // runExtraction's append step (the real helper; filters pending_review).
-    await persist.appendPersistedThreadEpisodes(threadId, flush1);
+    await persist.appendPersistedThreadEpisodes(threadId, flush1, pendingReviewIds1);
 
     // PART (a): the thread FILE must hold the active id but NOT the pending id.
     const threadAfter1 = await threading.threading.loadThread(threadId);
@@ -393,7 +394,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     );
 
     // --- Flush 2: an active fact in the SAME thread ---
-    const { persistedIds: flush2 } = await persist.persistExtraction(
+    const { persistedIds: flush2, pendingReviewIds: pendingReviewIds2 } = await persist.persistExtraction(
       factResult("The widget factory hired ten new engineers.", "wf-active"),
       storage,
       threadId,
@@ -404,7 +405,7 @@ test("pending_review id must NOT enter persisted thread episodes across a cross-
     );
     const activeId2 = flush2[0];
     assert.ok(activeId2, "flush2 active fact persisted");
-    await persist.appendPersistedThreadEpisodes(threadId, flush2);
+    await persist.appendPersistedThreadEpisodes(threadId, flush2, pendingReviewIds2);
 
     // PART (a)+(b): no predecessor edge may reference the pending fact. Under
     // the bug, flush 1 would have appended pendingId to the thread file, flush

@@ -175,7 +175,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     persistExtraction: async () => {
       persistCalls += 1;
       await persistHandler();
-      return { persistedIds: ["memory-1"], memoryPathById: new Map() };
+      return { persistedIds: ["memory-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
     },
     maybeCapturePassiveCorrections: async (_turns, options) => {
       await passiveCaptureHandler();
@@ -193,7 +193,6 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
     maybeScheduleConsolidation: () => {},
     requestQmdMaintenance: () => {},
     runTierMigrationCycle: async () => migrationSummary,
-    getLastPersistExtractionDeferredCount: () => 0,
     recordProcessedExtractionFingerprint: async (storage, fingerprint, meta) => {
       recordedProcessedCount += 1;
       await fingerprintRecorder(storage, fingerprint, meta);

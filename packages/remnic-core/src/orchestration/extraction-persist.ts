@@ -127,6 +127,16 @@ import {
   normalizeStoredHashSource as normalizeStoredHashSourceContent,
 } from "./extraction-persist-citation.js";
 
+/** One extraction run's persist outcome: per-run values, no shared side channels (#1526). */
+export interface ExtractionPersistResult {
+  persistedIds: string[];
+  memoryPathById: Map<string, string>;
+  /** Facts the judge deferred — drives this run's buffer retention (#562). */
+  deferredCount: number;
+  /** Persisted pending_review ids, excluded from the thread episode set (#1635). */
+  pendingReviewIds: string[];
+}
+
 export class ExtractionPersistCoordinator {
   constructor(
     private readonly deps: ExtractionPersistDeps,
@@ -149,7 +159,7 @@ export class ExtractionPersistCoordinator {
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
-  ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
+  ): Promise<ExtractionPersistResult> {
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
@@ -190,6 +200,10 @@ export class ExtractionPersistCoordinator {
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
     const pendingReviewPersistedIds: string[] = [];
+    // This run's judge-deferred count, returned to the caller (issue #562 PR 2)
+    // instead of shared side-channel state, so concurrent extractions cannot
+    // read each other's retention decision.
+    let deferredCount = 0;
     const persistedIdsByStorage = new Map<string, { storage: StorageManager; ids: string[] }>();
     const trackPersistedId = (
       targetStorage: StorageManager,
@@ -1071,7 +1085,7 @@ export class ExtractionPersistCoordinator {
         "persistExtraction: result or result.facts is invalid, skipping",
         { resultType: typeof result, factsType: typeof result?.facts },
       );
-      return { persistedIds, memoryPathById };
+      return { persistedIds, memoryPathById, deferredCount, pendingReviewIds: pendingReviewPersistedIds };
     }
 
     // Chunking config from plugin settings
@@ -1243,10 +1257,6 @@ export class ExtractionPersistCoordinator {
     // be persisted, not the raw extraction-time category.
     let judgeVerdictsByFactIndex: Map<number, import("../extraction-judge.js").JudgeVerdict> | null = null;
     let judgeGatedCount = 0;
-    // Reset the side-channel defer count at the start of every
-    // persistExtraction call so stale state from a prior call cannot leak
-    // into the caller's buffer-retention decision.
-    this.deps.setLastPersistExtractionDeferredCount(0);
     if (lifecycleCaps.extractionJudge) {
       // #1669 P1 + #1713 Item 1: pre-filter redacted facts from judge candidates
       // so never-store content is not persisted as judge training data.
@@ -1433,7 +1443,7 @@ export class ExtractionPersistCoordinator {
         );
         // Expose defer count to the caller (issue #562 PR 2) so it can decide
         // whether to retain buffer turns for the next extraction pass.
-        this.deps.setLastPersistExtractionDeferredCount(judgeResult.deferred);
+        deferredCount = judgeResult.deferred;
       } catch (err) {
         // Fail-open: if the entire judge pipeline errors, proceed without filtering
         log.warn(
@@ -2978,9 +2988,7 @@ export class ExtractionPersistCoordinator {
       `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount - semanticMergedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
 
-    // #1635: surface pending_review ids so the thread episode set excludes them.
-    this.deps.setLastPersistExtractionPendingReviewIds(pendingReviewPersistedIds);
     // Return the persisted fact IDs for threading
-    return { persistedIds, memoryPathById };
+    return { persistedIds, memoryPathById, deferredCount, pendingReviewIds: pendingReviewPersistedIds };
   }
 }
