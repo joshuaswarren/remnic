@@ -119,6 +119,7 @@ import {
 } from "./orchestration/contradiction-linking-coordinator.js";
 import {
   ExtractionRunCoordinator,
+  type ExtractionRunCoordinatorDeps,
   type ExtractionRunResult,
   type ExtractionResilienceStatus,
 } from "./orchestration/extraction-run.js";
@@ -757,31 +758,44 @@ export class Orchestrator {
   readonly extractionQueueCoordinator: ExtractionQueueCoordinator;
   private _extractionRunCoordinator: ExtractionRunCoordinator | undefined;
 
+  /** The run-coordinator deps bundle, parameterized by its buffer accessor so
+   * an isolated claim-backed drain can bind its own SmartBuffer (the daemon
+   * backlog scheduler) while live extraction keeps `this.buffer`. */
+  private extractionRunDeps(getBuffer: () => SmartBuffer): ExtractionRunCoordinatorDeps {
+    return {
+      config: this.config,
+      getBuffer,
+      getExtraction: () => this.extraction,
+      getStorageRouter: () => this.storageRouter,
+      getThreading: () => this.threading,
+      persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
+        this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
+      maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
+      resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
+      getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
+      applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
+      boxBuilderFor: (storage) => this.boxBuilderFor(storage),
+      appendPersistedThreadEpisodes: (threadId, ids, pendingReviewIds) =>
+        this.appendPersistedThreadEpisodes(threadId, ids, pendingReviewIds),
+      maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
+      requestQmdMaintenance: () => this.requestQmdMaintenance(),
+      runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
+      recordProcessedExtractionFingerprint: (storage, fingerprint, preloadedMeta) =>
+        this.recordProcessedExtractionFingerprint(storage, fingerprint, preloadedMeta),
+    };
+  }
+
   private get extractionRunCoordinator(): ExtractionRunCoordinator {
     if (!this._extractionRunCoordinator) {
-      this._extractionRunCoordinator = new ExtractionRunCoordinator({
-        config: this.config,
-        getBuffer: () => this.buffer,
-        getExtraction: () => this.extraction,
-        getStorageRouter: () => this.storageRouter,
-        getThreading: () => this.threading,
-        persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
-          this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
-        maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
-        resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
-        getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
-        applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
-        boxBuilderFor: (storage) => this.boxBuilderFor(storage),
-        appendPersistedThreadEpisodes: (threadId, ids, pendingReviewIds) =>
-          this.appendPersistedThreadEpisodes(threadId, ids, pendingReviewIds),
-        maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
-        requestQmdMaintenance: () => this.requestQmdMaintenance(),
-        runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
-        recordProcessedExtractionFingerprint: (storage, fingerprint, preloadedMeta) =>
-          this.recordProcessedExtractionFingerprint(storage, fingerprint, preloadedMeta),
-      });
+      this._extractionRunCoordinator = new ExtractionRunCoordinator(this.extractionRunDeps(() => this.buffer));
     }
     return this._extractionRunCoordinator;
+  }
+
+  /** An extraction run coordinator bound to `buffer` — per drain task, so a
+   * claim-backed drain never shares the live buffer's mutable state. */
+  extractionRunCoordinatorForBuffer(buffer: SmartBuffer): ExtractionRunCoordinator {
+    return new ExtractionRunCoordinator(this.extractionRunDeps(() => buffer));
   }
   private _consolidationRunCoordinator: ConsolidationRunCoordinator | undefined;
   private get consolidationRunCoordinator(): ConsolidationRunCoordinator {
