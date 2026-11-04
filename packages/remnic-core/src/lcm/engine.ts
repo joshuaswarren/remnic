@@ -96,6 +96,13 @@ const EMPTY_LCM_STATS = {
   maxDepth: -1,
 } as const;
 
+/**
+ * Upper bound on leaf batches summarized by one background job. Keeps a single
+ * job's archive read and wall time bounded; leftover batches stay durable and
+ * the job re-queues itself.
+ */
+const LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB = 16;
+
 export class LcmEngine {
   private db: Database.Database | null = null;
   private archive: LcmArchive | null = null;
@@ -158,8 +165,8 @@ export class LcmEngine {
     );
     const observeQueue = new LcmWorkQueue({
       concurrency: this.config.observeConcurrency,
-      worker: async (sessionId, messages) => {
-        await this.processObserveMessages(sessionId, messages);
+      worker: async (sessionId) => {
+        await this.processSummarizeJob(sessionId);
       },
       hooks: {
         onJobStart: ({ sessionId, depth, inFlight, waitMs }) => {
@@ -200,12 +207,31 @@ export class LcmEngine {
     this.dag = dag;
     this.summarizer = summarizer;
     this.observeQueue = observeQueue;
+    this.resumeOutstandingSummaries();
     log.info("LCM engine initialized");
   }
 
   /**
-   * Enqueue messages from agent_end hook.
-   * The queue worker performs the archive append and incremental summarization.
+   * Restart resume: sessions whose durable archive still holds complete
+   * unsummarized batches get a summary job without any new observe call.
+   * Only session references are queued — the content already lives in SQLite.
+   */
+  private resumeOutstandingSummaries(): void {
+    if (!this.archive || !this.observeQueue) return;
+    const sessions = this.archive.listSessionsWithUnsummarizedTurns(
+      this.config.leafBatchSize,
+    );
+    if (sessions.length === 0) return;
+    for (const sessionId of sessions) this.observeQueue.enqueue(sessionId);
+    log.info(`LCM resume scheduled summary jobs: sessions=${sessions.length}`);
+  }
+
+  /**
+   * Archive observed messages and schedule background summarization.
+   *
+   * The archive append completes BEFORE this resolves: an accepted observe is
+   * already durable in SQLite, so a crash cannot lose it. Only the
+   * summarization is background work, and it resumes from the durable archive.
    */
   async observeMessages(
     sessionId: string,
@@ -213,14 +239,19 @@ export class LcmEngine {
   ): Promise<void> {
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
-    this.enqueueObserveMessages(normalizedSessionId, messages);
+    await this.enqueueObserveMessages(normalizedSessionId, messages);
   }
 
-  /** Enqueue an observe job without waiting for worker completion. */
-  enqueueObserveMessages(
+  /**
+   * Durably archive messages, then queue a metadata-only summary job.
+   *
+   * Rejects when the archive append fails — callers must not treat a failed
+   * archive as an accepted observation.
+   */
+  async enqueueObserveMessages(
     sessionId: string,
     messages: LcmObserveMessage[],
-  ): void {
+  ): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
@@ -228,55 +259,68 @@ export class LcmEngine {
 
     this.reservePendingObserveInit(normalizedSessionId);
 
-    void this.ensureInitialized()
-      .then(() => {
-        if (this.closed || !this.observeQueue) return;
-        this.observeQueue.enqueue(normalizedSessionId, messages);
-        log.debug(
-          `LCM observe enqueued: session=${normalizedSessionId}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
-        );
-      })
-      .catch((err) => {
-        if (this.closed) return;
-        log.error(
-          `LCM observe enqueue initialization error: ${err}${nativeBindingRecoveryHint(err)}`,
-        );
-      })
-      .finally(() => {
-        this.releasePendingObserveInit(normalizedSessionId);
+    try {
+      await this.ensureInitialized();
+      if (this.closed) return;
+      if (!this.archive || !this.observeQueue) {
+        throw new Error("LCM engine is not initialized");
+      }
+
+      const currentMax = this.archive.getMaxTurnIndex(normalizedSessionId);
+      const { messagePartsEnabled } = this.config;
+      const newMessages = messages.map((m, i) => ({
+        turnIndex: currentMax + 1 + i,
+        role: m.role,
+        content: m.content,
+        parts: messagePartsEnabled ? m.parts : undefined,
+        rawContent: messagePartsEnabled ? m.rawContent : undefined,
+        sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
+      }));
+
+      this.archive.appendMessages(normalizedSessionId, newMessages, {
+        messagePartsEnabled,
       });
+
+      this.observeQueue.enqueue(normalizedSessionId);
+      log.debug(
+        `LCM observe archived: session=${normalizedSessionId}, messages=${newMessages.length}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
+      );
+    } catch (err) {
+      log.error(
+        `LCM observe archive failed: session=${normalizedSessionId}, error=${err}${nativeBindingRecoveryHint(err)}`,
+      );
+      throw err;
+    } finally {
+      this.releasePendingObserveInit(normalizedSessionId);
+    }
   }
 
-  private async processObserveMessages(
-    sessionId: string,
-    messages: LcmObserveMessage[],
-  ): Promise<void> {
+  /**
+   * Summarize one session's durable backlog.
+   *
+   * The pass is capped so a long backlog never holds a job open indefinitely;
+   * remaining batches stay durable and the job re-queues itself.
+   */
+  private async processSummarizeJob(sessionId: string): Promise<void> {
     if (this.closed) return;
     await this.ensureInitialized();
-    if (this.closed || !this.archive || !this.summarizer) return;
+    if (this.closed || !this.archive || !this.summarizer || !this.observeQueue)
+      return;
 
-    if (messages.length === 0) return;
-
-    const currentMax = this.archive.getMaxTurnIndex(sessionId);
-    const { messagePartsEnabled } = this.config;
-    const newMessages = messages.map((m, i) => ({
-      turnIndex: currentMax + 1 + i,
-      role: m.role,
-      content: m.content,
-      parts: messagePartsEnabled ? m.parts : undefined,
-      rawContent: messagePartsEnabled ? m.rawContent : undefined,
-      sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
-    }));
-
-    this.archive.appendMessages(sessionId, newMessages, {
-      messagePartsEnabled,
-    });
-
-    // Trigger incremental summarization inside the worker, after append.
     try {
-      await this.summarizer.summarizeIncremental(sessionId);
+      await this.summarizer.summarizeIncremental(sessionId, {
+        maxLeafBatches: LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB,
+      });
     } catch (err) {
       log.debug(`LCM incremental summarization error: ${err}`);
+      return;
+    }
+
+    if (
+      this.archive.countUnsummarizedMessages(sessionId) >=
+      this.config.leafBatchSize
+    ) {
+      this.observeQueue.enqueue(sessionId);
     }
   }
 

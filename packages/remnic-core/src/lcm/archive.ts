@@ -188,8 +188,8 @@ export class LcmArchive {
       .all(sessionId, fromTurn, toTurn) as LcmMessage[];
   }
 
-  /** Retrieve unsummarized messages (after last leaf summary). */
-  getUnsummarizedMessages(sessionId: string): LcmMessage[] {
+  /** Retrieve unsummarized messages (after last leaf summary), optionally bounded. */
+  getUnsummarizedMessages(sessionId: string, limit?: number): LcmMessage[] {
     const lastLeafEnd = this.db
       .prepare(
         "SELECT MAX(msg_end) as last_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0",
@@ -197,11 +197,61 @@ export class LcmArchive {
       .get(sessionId) as { last_end: number | null } | undefined;
 
     const lastSummarized = lastLeafEnd?.last_end ?? -1;
-    return this.db
+    if (limit !== undefined && limit <= 0) return [];
+
+    const stmt = this.db.prepare(
+      limit === undefined
+        ? "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index"
+        : "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index LIMIT ?",
+    );
+    const rows = (
+      limit === undefined ? stmt.all(sessionId, lastSummarized) : stmt.all(sessionId, lastSummarized, limit)
+    ) as LcmMessage[];
+    return rows;
+  }
+
+  /** Count archived turns that no leaf summary covers yet. */
+  countUnsummarizedMessages(sessionId: string): number {
+    const lastLeafEnd = this.db
       .prepare(
-        "SELECT * FROM lcm_messages WHERE session_id = ? AND turn_index > ? ORDER BY turn_index",
+        "SELECT MAX(msg_end) as last_end FROM lcm_summary_nodes WHERE session_id = ? AND depth = 0",
       )
-      .all(sessionId, lastSummarized) as LcmMessage[];
+      .get(sessionId) as { last_end: number | null } | undefined;
+
+    const lastSummarized = lastLeafEnd?.last_end ?? -1;
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) as n FROM lcm_messages WHERE session_id = ? AND turn_index > ?",
+      )
+      .get(sessionId, lastSummarized) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Sessions whose durable archive still holds at least `minTurns`
+   * unsummarized turns. Metadata only — used to resume outstanding summary
+   * work after a restart.
+   */
+  listSessionsWithUnsummarizedTurns(minTurns: number): string[] {
+    if (minTurns <= 0) return [];
+    const rows = this.db
+      .prepare(
+        `
+        SELECT m.session_id AS session_id
+        FROM lcm_messages m
+        LEFT JOIN (
+          SELECT session_id, MAX(msg_end) AS last_end
+          FROM lcm_summary_nodes
+          WHERE depth = 0
+          GROUP BY session_id
+        ) leaves ON leaves.session_id = m.session_id
+        WHERE m.turn_index > COALESCE(leaves.last_end, -1)
+        GROUP BY m.session_id
+        HAVING COUNT(*) >= ?
+      `,
+      )
+      .all(minTurns) as Array<{ session_id: string }>;
+    return rows.map((row) => row.session_id);
   }
 
   /** Full-text search across all messages. */
