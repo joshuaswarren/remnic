@@ -1703,17 +1703,13 @@ export class ExtractionPersistCoordinator {
           raceDedupOpts(key),
         );
       };
-      // #1671 — backfill bi-temporal bounds onto the existing source-namespace
-      // copy when a duplicate short-circuits (persist-time hit OR a raced
-      // duplicate suppressed inside the fact-dedup window, codex P2 on
-      // #3311): a re-extraction can carry a resolved bound the surviving copy
-      // lacks. Skip when the fact would be rejected/deferred/pending by
-      // downstream gates — a non-durable candidate must not expire an active
-      // fact (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
-      // #1707 thread 3: gate on writeCategory === "fact" — the helper only
-      // matches facts, so a non-fact duplicate must not reach the fact-only
-      // scan. #1707 thread 2: fire on a corrected start bound (validFrom)
-      // too, not only an end bound (validUntil).
+      // #1671/#1707 — backfill bi-temporal bounds onto the surviving copy
+      // when a duplicate short-circuits: at the persist-time check OR when
+      // the fact-dedup window suppresses a raced duplicate (codex P2,
+      // PRRT_kwDORJXyws6zxlor). Facts only (#1707 t3); a corrected start
+      // bound counts (t2). Skipped when a downstream gate would reject the
+      // candidate — a non-durable candidate must not expire an active fact
+      // (faithfulness, requireSpans, judge, #372 importance).
       const backfillDuplicateTemporalBounds = async () => {
         if (!(biTemporal && writeCategory === "fact" && (biTemporal.validUntil || biTemporal.validFrom))) return;
         const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
@@ -2205,8 +2201,6 @@ export class ExtractionPersistCoordinator {
             throw err;
           });
           if (parentWriteOutcome.suppressed) {
-            // Codex P2 (#3311): backfill bounds onto the window's winning
-            // copy before short-circuiting, same as the normal path.
             await backfillDuplicateTemporalBounds();
             log.info(`dedup: raced duplicate suppressed in fact-dedup window (chunked parent) for storage ${targetStorage.dir}`);
             dedupedCount++;
@@ -2605,10 +2599,10 @@ export class ExtractionPersistCoordinator {
         // through to frontmatter so they survive end-to-end.
         ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
         ...(fact.provenance ? { provenance: fact.provenance } : {}),
-        // PR #2016: never defer inside the commit window — the same rule the
-        // chunked path applies. A peer process loading an authoritative index
-        // after the window releases must see this write's hash, or its
-        // in-window recheck misses and it writes a duplicate active fact.
+        // PR #2016: never defer inside the commit window (same rule as the
+        // chunked path): a peer loading an authoritative index after the
+        // release must see this write's hash, or its in-window recheck
+        // misses and writes a duplicate active fact.
         deferHashIndexSave: false,
         ...(factToolScoped ? { toolScoped: true as const } : {}),
           });
@@ -2637,8 +2631,7 @@ export class ExtractionPersistCoordinator {
         throw err;
       });
       if (factWriteOutcome.suppressed) {
-        // Codex P2 (#3311): the raced duplicate that won the window may lack
-        // bounds this candidate carries — backfill before short-circuiting.
+        // Codex P2: backfill bounds onto the window's winning copy first.
         await backfillDuplicateTemporalBounds();
         log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
         dedupedCount++;
