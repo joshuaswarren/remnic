@@ -85,10 +85,53 @@ function parseConversationThread(raw: string): ConversationThread | null {
   }
 }
 
+/** One session's thread-run state: its current thread and last turn time. */
+interface ThreadingRunState {
+  currentThreadId: string | null;
+  lastTurnTimestamp: number | null;
+}
+
 export class ThreadingManager {
-  private currentThreadId: string | null = null;
-  private lastTurnTimestamp: number | null = null;
-  private lastSessionKey: string | null = null;
+  /**
+   * Per-session thread-run state. One global slot let two concurrent
+   * extractions (bounded-parallel queue) interleave sessions and attach
+   * turns to the wrong thread, so the run state is keyed by session.
+   * Bounded: a long-lived daemon sees one entry per active session.
+   */
+  private readonly runStateBySession = new Map<string, ThreadingRunState>();
+  /**
+   * Run states with a processTurn awaiting inside them. A session parked on
+   * `saveThread` can watch 512 other sessions insert and evict; dropping its
+   * state mid-await loses its thread id and forks its thread, so eviction
+   * never takes an in-flight state (the cap may be exceeded briefly by the
+   * number of in-flight extractions, which is bounded by the queue).
+   */
+  private readonly inFlightRunStates = new Set<ThreadingRunState>();
+  private static readonly RUN_STATE_MAX_SESSIONS = 512;
+
+  private runStateFor(turn: BufferTurn): ThreadingRunState {
+    const key = turn.sessionKey ?? "";
+    let state = this.runStateBySession.get(key);
+    if (state) {
+      // Refresh recency: Map iteration is insertion-ordered, so re-putting a
+      // touched session makes eviction true LRU instead of first-in-first-out —
+      // an active session must not be the oldest entry just because it started
+      // first.
+      this.runStateBySession.delete(key);
+      this.runStateBySession.set(key, state);
+    } else {
+      state = { currentThreadId: null, lastTurnTimestamp: null };
+      this.runStateBySession.set(key, state);
+      if (this.runStateBySession.size > ThreadingManager.RUN_STATE_MAX_SESSIONS) {
+        for (const [oldestKey, oldest] of this.runStateBySession) {
+          if (this.inFlightRunStates.has(oldest)) continue;
+          this.runStateBySession.delete(oldestKey);
+          if (this.runStateBySession.size <= ThreadingManager.RUN_STATE_MAX_SESSIONS) break;
+        }
+      }
+    }
+    return state;
+  }
 
   constructor(
     private readonly threadsDir: string,
@@ -164,18 +207,16 @@ export class ThreadingManager {
 
   /**
    * Check if we should start a new thread based on session key and time gap.
+   * State is per session, so the cross-session check the shared slot needed
+   * is gone: different sessions never share run state at all.
    */
   shouldStartNewThread(turn: BufferTurn): boolean {
     const turnTime = new Date(turn.timestamp).getTime();
-
-    // Different session key = new thread
-    if (turn.sessionKey && this.lastSessionKey && turn.sessionKey !== this.lastSessionKey) {
-      return true;
-    }
+    const state = this.runStateFor(turn);
 
     // Time gap > threshold = new thread
-    if (this.lastTurnTimestamp) {
-      const gapMs = turnTime - this.lastTurnTimestamp;
+    if (state.lastTurnTimestamp) {
+      const gapMs = turnTime - state.lastTurnTimestamp;
       const gapMinutes = gapMs / (1000 * 60);
       if (gapMinutes > this.gapMinutes) {
         return true;
@@ -183,7 +224,7 @@ export class ThreadingManager {
     }
 
     // No current thread = new thread
-    if (!this.currentThreadId) {
+    if (!state.currentThreadId) {
       return true;
     }
 
@@ -198,41 +239,45 @@ export class ThreadingManager {
     await this.ensureDirectory();
 
     const turnTime = new Date(turn.timestamp).getTime();
+    const state = this.runStateFor(turn);
+    this.inFlightRunStates.add(state);
+    try {
+      if (this.shouldStartNewThread(turn)) {
+        // Create new thread
+        const threadId = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const thread: ConversationThread = {
+          id: threadId,
+          title: "New Thread", // Will be updated later with keywords
+          createdAt: turn.timestamp,
+          updatedAt: turn.timestamp,
+          sessionKey: turn.sessionKey,
+          episodeIds: [...episodeIds],
+          linkedThreadIds: [],
+        };
 
-    if (this.shouldStartNewThread(turn)) {
-      // Create new thread
-      const threadId = `thread-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const thread: ConversationThread = {
-        id: threadId,
-        title: "New Thread", // Will be updated later with keywords
-        createdAt: turn.timestamp,
-        updatedAt: turn.timestamp,
-        sessionKey: turn.sessionKey,
-        episodeIds: [...episodeIds],
-        linkedThreadIds: [],
-      };
-
-      await this.saveThread(thread);
-      this.currentThreadId = threadId;
-      log.debug(`created new thread ${threadId}`);
-    } else if (this.currentThreadId) {
-      // Add episodes to current thread
-      const thread = await this.loadThread(this.currentThreadId);
-      if (thread) {
-        for (const id of episodeIds) {
-          if (!thread.episodeIds.includes(id)) {
-            thread.episodeIds.push(id);
-          }
-        }
-        thread.updatedAt = turn.timestamp;
         await this.saveThread(thread);
+        state.currentThreadId = threadId;
+        log.debug(`created new thread ${threadId}`);
+      } else if (state.currentThreadId) {
+        // Add episodes to current thread
+        const thread = await this.loadThread(state.currentThreadId);
+        if (thread) {
+          for (const id of episodeIds) {
+            if (!thread.episodeIds.includes(id)) {
+              thread.episodeIds.push(id);
+            }
+          }
+          thread.updatedAt = turn.timestamp;
+          await this.saveThread(thread);
+        }
       }
+
+      state.lastTurnTimestamp = turnTime;
+
+      return state.currentThreadId!;
+    } finally {
+      this.inFlightRunStates.delete(state);
     }
-
-    this.lastTurnTimestamp = turnTime;
-    this.lastSessionKey = turn.sessionKey ?? null;
-
-    return this.currentThreadId!;
   }
 
   /**
@@ -378,18 +423,20 @@ export class ThreadingManager {
   }
 
   /**
-   * Get the current thread ID (if any).
+   * Get the current thread ID (if any). With per-session run state there is
+   * no single current thread; null unless exactly one session is tracked.
    */
   getCurrentThreadId(): string | null {
-    return this.currentThreadId;
+    if (this.runStateBySession.size === 1) {
+      return this.runStateBySession.values().next().value?.currentThreadId ?? null;
+    }
+    return null;
   }
 
   /**
    * Reset threading state (e.g., on plugin restart).
    */
   reset(): void {
-    this.currentThreadId = null;
-    this.lastTurnTimestamp = null;
-    this.lastSessionKey = null;
+    this.runStateBySession.clear();
   }
 }
