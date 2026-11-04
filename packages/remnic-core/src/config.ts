@@ -1591,6 +1591,7 @@ export function parseConfig(
     ...parseSecurityConfig(cfg, rawOperatorConfig),
     bufferMaxTurns:
       typeof cfg.bufferMaxTurns === "number" ? cfg.bufferMaxTurns : 5,
+    bufferMaxSessions: parsePositiveInteger(cfg.bufferMaxSessions, "bufferMaxSessions") ?? 1000,
     bufferMaxMinutes:
       typeof cfg.bufferMaxMinutes === "number" ? cfg.bufferMaxMinutes : 15,
     // Surprise-gated buffer flush (issue #563, D-MEM). See types.ts for

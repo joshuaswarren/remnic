@@ -719,6 +719,8 @@ export interface PluginConfig
   reasoningEffort: ReasoningEffort;
   triggerMode: TriggerMode;
   bufferMaxTurns: number;
+  /** Distinct sessions the extraction buffer admits before backpressure (#3303). */
+  bufferMaxSessions: number;
   bufferMaxMinutes: number;
   /**
    * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`
