@@ -331,6 +331,42 @@ export class ExtractionPersistCoordinator {
     // Subject guard (issue #2372): the ONE gate shared by every extraction-side
     // promotion path so behavior matches the spaces surface (§27).
     const subjectGuardAllows = makeSubjectGuardAllows(this.deps.config);
+    // Codex P2 PRRT_kwDORJXyws6zzdG4: in-window race confirm for promotion
+    // destinations. The persist-time promotion gates run OUTSIDE the
+    // fact-dedup window, so a twin promotion committing between a gate and its
+    // destination write is caught by the window's recheck instead of
+    // duplicating. Same connector/content predicate the promotion gates
+    // confirm with; the optional entity key mirrors the shared supersession
+    // branch's same-entity guard (PR #402 Uybg) so cross-entity same-content
+    // facts stay distinct. Fail-open on scan error: an unverifiable state
+    // never suppresses.
+    const promotionRaceDuplicateIn = async (
+      storage: StorageManager,
+      dedupContent: string,
+      category: string,
+      entityKeyNorm?: string,
+    ): Promise<boolean> => {
+      try {
+        const allMems = await readActiveMemoriesBothTiers(storage);
+        const nc = sourceContext?.sourceConnector?.trim() || undefined;
+        const incomingNormalized = ContentHashIndex.normalizeContent(dedupContent);
+        return allMems.some((m) => {
+          if (m.frontmatter.category !== category) return false;
+          if ((m.frontmatter.status ?? "active") !== "active") return false;
+          if (normalizeStoredHashSource(m.content ?? "") !== incomingNormalized) return false;
+          if (entityKeyNorm !== undefined) {
+            if (!m.frontmatter.entityRef) return false;
+            if (normalizeSupersessionKey(m.frontmatter.entityRef) !== entityKeyNorm) return false;
+          }
+          return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
+        });
+      } catch (err) {
+        log.warn(
+          `promotion race recheck scan failed for ${storage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+    };
     const promoteMemoryToProfileTargets = async (options: {
       sourceStorage: StorageManager;
       category: string;
@@ -466,23 +502,58 @@ export class ExtractionPersistCoordinator {
           }
           // Sealed-envelope write (issue #1989 PR2): cross-cutting fields ride
           // the composed envelope (built above, before the dedup gate).
-          const targetPromotion = await targetStorage.writeSealedMemory(targetPromotionEnvelope, {
-            importance: options.importance,
-            lineage: [options.sourceMemoryId],
-            sourceMemoryId: options.sourceMemoryId,
-            intentGoal: options.intentGoal,
-            intentActionType: options.intentActionType,
-            intentEntityTypes: options.intentEntityTypes,
-            memoryKind: options.memoryKind,
-            // #1578 — forward bi-temporal bounds + ingestion provenance.
-            ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-            ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-            ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-            ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-            ...(options.provenance ? { provenance: options.provenance } : {}),
-            ...(options.toolScoped ? { toolScoped: true as const } : {}),
-          });
+          // Codex P2 PRRT_kwDORJXyws6zzdG4: the gate above ran OUTSIDE the
+          // fact-dedup window; a twin promotion committing meanwhile is caught
+          // by this destination-window recheck instead of duplicating. Lock
+          // contention throws fail-closed into the per-target catch below
+          // (promotion skips open, the source fact stays durable).
+          const promotionWrite = await persistUnderFactDedupWindow(
+            targetStorage.dir,
+            () =>
+              options.category === "fact"
+                ? promotionRaceDuplicateIn(targetStorage, dedupContent, options.category)
+                : Promise.resolve(false),
+            () =>
+              targetStorage.writeSealedMemory(targetPromotionEnvelope, {
+                importance: options.importance,
+                lineage: [options.sourceMemoryId],
+                sourceMemoryId: options.sourceMemoryId,
+                intentGoal: options.intentGoal,
+                intentActionType: options.intentActionType,
+                intentEntityTypes: options.intentEntityTypes,
+                memoryKind: options.memoryKind,
+                // #1578 — forward bi-temporal bounds + ingestion provenance.
+                ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+                ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+                contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+                ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+                ...(options.provenance ? { provenance: options.provenance } : {}),
+                ...(options.toolScoped ? { toolScoped: true as const } : {}),
+              }),
+          );
+          if (promotionWrite.suppressed) {
+            log.info(`dedup: raced promotion duplicate suppressed in fact-dedup window for ${targetStorage.dir}`);
+            // #1671 parity with the gate's skip path above: the winning copy
+            // may lack resolved bounds the suppressed promotion carried.
+            if (options.invalidAt || options.validAt) {
+              await this.deps.backfillTemporalBoundsOnDedupHit(
+                targetStorage,
+                dedupContent,
+                {
+                  invalidAt: options.invalidAt,
+                  // #1707 thread 2 — carry the corrected start bound.
+                  validFrom: options.validAt,
+                  observedAt: options.observedAt,
+                  eventTimeSource: options.eventTimeSource,
+                },
+                targetPromotionEnvelope.entityRef,
+                sourceContext?.sourceConnector,
+              );
+            }
+            continue;
+          }
+          const targetPromotion = promotionWrite.result;
           const promotedId = targetPromotion.id;
           // #1645: if the TARGET namespace's own tombstone blocked this promotion,
           // the row lands pending_review — do NOT supersede active target memories.
@@ -860,24 +931,73 @@ export class ExtractionPersistCoordinator {
             // No same-connector active shared fact — fall through to write.
           }
         }
-        const sharedPromotion = await sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
-          importance: options.importance,
-          lineage: [options.sourceMemoryId],
-          sourceMemoryId: options.sourceMemoryId,
-          intentGoal: options.intentGoal,
-          intentActionType: options.intentActionType,
-          intentEntityTypes: options.intentEntityTypes,
-          memoryKind: options.memoryKind,
-          // #1578 — forward bi-temporal bounds + ingestion provenance.
-          ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-          ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-          ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-          contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-          // Claim-level provenance spans (issue #1575 PR 2).
-          ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-          ...(options.provenance ? { provenance: options.provenance } : {}),
-          ...(toolScoped ? { toolScoped: true as const } : {}),
-        });
+        // Codex P2 PRRT_kwDORJXyws6zzdG4: the shared gate above ran OUTSIDE
+        // the fact-dedup window (its supersession/backfill scans must not
+        // extend a scan-length lock), so a twin promotion committing between
+        // the gate and this write is caught by the destination-window recheck.
+        // Lock contention throws fail-closed into the outer catch below
+        // (promotion skips open, the source fact stays durable).
+        const sharedWrite = await persistUnderFactDedupWindow(
+          sharedStorage.dir,
+          () =>
+            options.category === "fact"
+              ? promotionRaceDuplicateIn(
+                  sharedStorage,
+                  dedupContent,
+                  options.category,
+                  // Same-entity guard mirrors the shared supersession branch
+                  // (PR #402 Uybg): cross-entity same-content facts are
+                  // distinct active facts, not duplicates.
+                  lifecycleCaps.temporalSupersession &&
+                  sharedPromotionEnvelope.entityRef &&
+                  sharedSurvivingAttrs &&
+                  Object.keys(sharedSurvivingAttrs).length > 0
+                    ? normalizeSupersessionKey(sharedPromotionEnvelope.entityRef)
+                    : undefined,
+                )
+              : Promise.resolve(false),
+          () =>
+            sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
+              importance: options.importance,
+              lineage: [options.sourceMemoryId],
+              sourceMemoryId: options.sourceMemoryId,
+              intentGoal: options.intentGoal,
+              intentActionType: options.intentActionType,
+              intentEntityTypes: options.intentEntityTypes,
+              memoryKind: options.memoryKind,
+              // #1578 — forward bi-temporal bounds + ingestion provenance.
+              ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+              ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+              ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+              contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+              // Claim-level provenance spans (issue #1575 PR 2).
+              ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+              ...(options.provenance ? { provenance: options.provenance } : {}),
+              ...(toolScoped ? { toolScoped: true as const } : {}),
+            }),
+        );
+        if (sharedWrite.suppressed) {
+          log.info(`dedup: raced shared promotion duplicate suppressed in fact-dedup window for ${sharedStorage.dir}`);
+          // #1671 parity with the gate's dedup-hit path: the winning twin may
+          // lack resolved bounds the suppressed promotion carried.
+          if (options.invalidAt || options.validAt) {
+            await this.deps.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              {
+                invalidAt: options.invalidAt,
+                // #1707 thread 2 — carry the corrected start bound.
+                validFrom: options.validAt,
+                observedAt: options.observedAt,
+                eventTimeSource: options.eventTimeSource,
+              },
+              sharedPromotionEnvelope.entityRef,
+              sourceContext?.sourceConnector,
+            );
+          }
+          return promotedCopyId;
+        }
+        const sharedPromotion = sharedWrite.result;
         const promotedId = sharedPromotion.id;
         // #1645: if the shared namespace's own tombstone blocked this promotion,
         // leave the row pending_review but do NOT supersede active shared memories.
