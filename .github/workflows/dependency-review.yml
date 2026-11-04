@@ -8,7 +8,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: dependency-review
+  # A single global group lets each stack update evict every other open PR's
+  # pending run (GitHub allows one pending slot per group), leaving required
+  # checks cancelled before any job starts. Key the group per PR so each pull
+  # request owns its slot.
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 
