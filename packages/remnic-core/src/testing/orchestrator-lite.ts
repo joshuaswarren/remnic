@@ -166,7 +166,7 @@ export function stubPersistExtraction(
   const impl: PersistExtractionFn = async (...args) => {
     calls.push(args);
     const persistedIds = factory ? await factory(args, calls.length) : [];
-    return { persistedIds, memoryPathById: new Map() };
+    return { persistedIds, memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
   };
   seam.persistExtraction = impl;
   return calls;

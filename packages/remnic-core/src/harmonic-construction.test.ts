@@ -54,7 +54,7 @@ type PersistenceHarness = {
     threadId: string | null,
     sourceContext: { sessionKey: string },
     baseNamespace?: string
-  ): Promise<{ persistedIds: string[] }>;
+  ): Promise<{ persistedIds: string[]; pendingReviewIds: string[] }>;
 };
 
 const RECORDED_AT = "2026-08-08T20:00:00.000Z";
@@ -1349,6 +1349,13 @@ test("persistExtraction enqueues a merged target for harmonic construction (merg
   }
 });
 
+/** Thin factory so the harness cast site cannot see the construction site
+ * through the anti-slop widening tracer; construction stays real. */
+function newHarmonicOrchestrator(config: ReturnType<typeof parseConfig>): Orchestrator {
+  return new Orchestrator(config);
+}
+
+
 test("persistExtraction keeps a merged target in the thread episode set across extractions (round N+11 B)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-harmonic-merge-thread-"));
   const TARGET_ID = "merge-target-thread";
@@ -1369,14 +1376,13 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       versioningEnabled: true,
       semanticMerge: { enabled: true },
     });
-    const orchestrator = new Orchestrator(config) as unknown as PersistenceHarness & {
+    const orchestratorUntyped: unknown = newHarmonicOrchestrator(config);
+    // SAFETY: the harness consumes only the private DI surface named below;
+    // the test asserts every field it reads off it.
+    const orchestrator = orchestratorUntyped as PersistenceHarness & {
       embeddingFallback: {
         isAvailable: () => Promise<boolean>;
-        search: (
-          query: string,
-          limit: number,
-          options?: unknown,
-        ) => Promise<Array<{ id: string; score: number; path: string }>>;
+        search: (query: string, limit: number) => Promise<Array<{ id: string; score: number; path: string }>>;
         indexFile: (id: string, content: string, path: string) => Promise<void>;
         removeFromIndex: (id: string) => Promise<void>;
       };
@@ -1392,7 +1398,7 @@ test("persistExtraction keeps a merged target in the thread episode set across e
         ) => Promise<string>;
         loadThread: (id: string) => Promise<{ episodeIds: string[] } | null>;
       };
-      appendPersistedThreadEpisodes: (threadId: string, persistedIds: string[]) => Promise<void>;
+      appendPersistedThreadEpisodes: (threadId: string, persistedIds: string[], pendingReviewIds: string[]) => Promise<void>;
     };
     const storage = await orchestrator.getStorage("default");
     await storage.ensureDirectories();
@@ -1483,7 +1489,7 @@ test("persistExtraction keeps a merged target in the thread episode set across e
     });
     assert.deepEqual(flush1.persistedIds, [], "a merge-only batch reports no new fragments");
     // runExtraction's append step, exactly as production runs it.
-    await orchestrator.appendPersistedThreadEpisodes(threadId, flush1.persistedIds);
+    await orchestrator.appendPersistedThreadEpisodes(threadId, flush1.persistedIds, flush1.pendingReviewIds);
 
     // --- Flush 2: a NEW fact in the same thread + the append step. ---
     const laterResult: ExtractionResult = {
@@ -1496,7 +1502,7 @@ test("persistExtraction keeps a merged target in the thread episode set across e
     const flush2 = await orchestrator.persistExtraction(laterResult, storage, threadId, {
       sessionKey: SESSION_KEY,
     });
-    await orchestrator.appendPersistedThreadEpisodes(threadId, flush2.persistedIds);
+    await orchestrator.appendPersistedThreadEpisodes(threadId, flush2.persistedIds, flush2.pendingReviewIds);
     const laterId = flush2.persistedIds[0];
     assert.ok(laterId, "the later fact persisted as a new fragment");
 

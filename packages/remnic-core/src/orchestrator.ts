@@ -123,7 +123,7 @@ import {
   type ExtractionResilienceStatus,
 } from "./orchestration/extraction-run.js";
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
-import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
+import { ExtractionPersistCoordinator, type ExtractionPersistResult } from "./orchestration/extraction-persist.js";
 import type { ExtractionSourceContext } from "./orchestration/extraction-origin-context.js";
 import { drainExtractionAndShutdownDependencyPropagation } from "./orchestration/extraction-shutdown.js";
 import {
@@ -614,19 +614,6 @@ export class Orchestrator {
    * (rule 11) — these hang off the orchestrator instance.
    */
   private faithfulnessCounters: FaithfulnessGateCounters = createFaithfulnessCounters();
-  /**
-   * Side-channel: number of facts deferred in the most recent
-   * `persistExtraction` call (issue #562, PR 2). The caller reads this after
-   * `persistExtraction` returns to decide whether to retain buffer turns for
-   * the next extraction pass. Not part of the return signature because many
-   * callers already destructure `persistedIds` by position.
-   */
-  private lastPersistExtractionDeferredCount: number = 0;
-  /**
-   * Side-channel (#1635): pending_review persisted ids from the last
-   * persistExtraction; runExtraction excludes them from the thread episode set.
-   */
-  private lastPersistExtractionPendingReviewIds: string[] = [];
   private readonly _fastGatewayLlm: FallbackLlmClient | null;
 
   get fastGatewayLlm(): FallbackLlmClient | null {
@@ -785,11 +772,11 @@ export class Orchestrator {
         getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
         applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
         boxBuilderFor: (storage) => this.boxBuilderFor(storage),
-        appendPersistedThreadEpisodes: (threadId, ids) => this.appendPersistedThreadEpisodes(threadId, ids),
+        appendPersistedThreadEpisodes: (threadId, ids, pendingReviewIds) =>
+          this.appendPersistedThreadEpisodes(threadId, ids, pendingReviewIds),
         maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
         requestQmdMaintenance: () => this.requestQmdMaintenance(),
         runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
-        getLastPersistExtractionDeferredCount: () => this.lastPersistExtractionDeferredCount,
         recordProcessedExtractionFingerprint: (storage, fingerprint, preloadedMeta) =>
           this.recordProcessedExtractionFingerprint(storage, fingerprint, preloadedMeta),
       });
@@ -841,8 +828,6 @@ export class Orchestrator {
         getJudgeDeferCounts: () => this.judgeDeferCounts,
         getFaithfulnessCounters: () => this.faithfulnessCounters,
         getEmbeddingFallback: () => this.embeddingFallback,
-        setLastPersistExtractionDeferredCount: (v) => { this.lastPersistExtractionDeferredCount = v; },
-        setLastPersistExtractionPendingReviewIds: (ids) => { this.lastPersistExtractionPendingReviewIds = ids; },
         addContentHashDedup: (targetStorage, content) => this.addContentHashDedup(targetStorage, content),
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
         backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
@@ -3197,8 +3182,8 @@ export class Orchestrator {
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
-  ): Promise<{ persistedIds: string[]; memoryPathById: Map<string, string> }> {
-    const { persistedIds, memoryPathById } = await this.extractionPersistCoordinator.persistExtraction(
+  ): Promise<ExtractionPersistResult> {
+    return await this.extractionPersistCoordinator.persistExtraction(
       result,
       storage,
       threadIdForExtraction,
@@ -3209,7 +3194,6 @@ export class Orchestrator {
       graphCaps,
       lifecycleCaps,
     );
-    return { persistedIds, memoryPathById };
   }
   /**
    * Append persisted ids to the thread episode set, excluding pending_review
@@ -3219,8 +3203,8 @@ export class Orchestrator {
   private async appendPersistedThreadEpisodes(
     threadId: string,
     persistedIds: string[],
+    pendingReviewIds: string[],
   ): Promise<void> {
-    const pendingReviewIds = this.lastPersistExtractionPendingReviewIds ?? [];
     const episodeIds =
       pendingReviewIds.length > 0
         ? persistedIds.filter((id) => !pendingReviewIds.includes(id))
