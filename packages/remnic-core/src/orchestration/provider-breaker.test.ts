@@ -87,3 +87,25 @@ test("an unowned forced outcome neither trips the half-open threshold nor settle
   breaker.success(probe.token);
   assert.deepEqual(breaker.acquire(6_500).suppressed, false, "owner success closes the breaker");
 });
+
+test("an unowned auth_config failure does not reopen over a held probe", () => {
+  const breaker = new ProviderCircuitBreaker();
+  breaker.failure("provider_retryable", 1_000, CONFIG);
+  breaker.failure("provider_retryable", 1_050, CONFIG);
+  breaker.failure("provider_retryable", 1_100, CONFIG);
+  const probe = breaker.acquire(6_100);
+  assert.equal(probe.probe, true);
+
+  // A forced extraction reporting auth_config while the probe runs must not
+  // flip the breaker open over the still-held owner token (PRRT_kwDORJXyws6z07Mu).
+  breaker.failure("auth_config", 1_200, CONFIG);
+  assert.deepEqual(breaker.acquire(1_300), { suppressed: true, probe: false }, "probe stays held");
+
+  // The owner's own auth_config failure settles it with the auth cooldown.
+  breaker.failure("auth_config", 1_400, CONFIG, probe.token);
+  assert.deepEqual(breaker.acquire(1_500).suppressed, true, "owned auth_config failure reopens at once");
+  assert.deepEqual(breaker.acquire(60_000).suppressed, true, "auth cooldown still gates the next probe");
+  // The stranded-owner hazard: after the auth cooldown elapses, no SECOND
+  // probe may mint while the original owner is still held.
+  assert.deepEqual(breaker.acquire(60_001), { suppressed: true, probe: false }, "no second probe over a held one");
+});
