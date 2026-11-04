@@ -2,7 +2,6 @@ import { log } from "./logger.js";
 import { throwIfAborted } from "./abort-error.js";
 import { scanSignals } from "./signal.js";
 import { BufferSessionPersistence, type BufferStorage } from "./buffer-persistence.js";
-import { drainCaptureSpill, spillCapturedTurn, type CaptureSpillPort } from "./buffer-capture-spill.js";
 import { selectEvictedBufferKeys } from "./buffer-eviction.js";
 import type {
   BufferEntryState,
@@ -35,8 +34,10 @@ export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering"
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
-import type { AddTurnOutcome } from "./buffer-capture-spill.js";
-export type { AddTurnOutcome };
+export interface AddTurnOutcome {
+  decision: TriggerDecision;
+  extractionTurns?: BufferTurn[];
+}
 
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
@@ -48,7 +49,9 @@ export interface RetainedTurnCleanupOptions {
   codingContext?: import("./types.js").CodingContext;
 }
 
-const MAX_BUFFER_ENTRY_COUNT = 200;
+// Raised from 200 in #3303: live captures were being dropped at busy hours
+// while the single extraction worker drained a backlog.
+const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
 const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
   t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
 
@@ -71,7 +74,7 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 
-export interface AddTurnMutationResult {
+interface AddTurnMutationResult {
   decision: TriggerDecision;
   signalLevel: SignalLevel;
   priorTurns: BufferTurn[];
@@ -126,6 +129,14 @@ export class SmartBuffer {
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.surpriseProbe = surpriseProbe;
+  }
+
+  /** Distinct sessions admitted before backpressure; configurable (#3303, raised from 200). */
+  private get maxSessionEntries(): number {
+    // parseConfig defaults, validates, and floors bufferMaxSessions at the I/O
+    // boundary; FALLBACK_MAX_BUFFER_SESSIONS covers direct constructions with
+    // configs from before the knob existed.
+    return this.config.bufferMaxSessions ?? FALLBACK_MAX_BUFFER_SESSIONS;
   }
 
   private enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
@@ -187,9 +198,6 @@ export class SmartBuffer {
       lastExtractionAt: entries.default.lastExtractionAt,
       extractionCount: entries.default.extractionCount,
       entries,
-      // The spill queue survives normalization (#3303): it is state-level, not
-      // tied to the "default" entry the rest of this function rebuilds.
-      spillQueue: Array.isArray(state.spillQueue) ? state.spillQueue : undefined,
     };
   }
 
@@ -208,11 +216,11 @@ export class SmartBuffer {
     );
   }
 
-  /** Evict oldest entries past MAX_BUFFER_ENTRY_COUNT and queue their session files for deletion. */
+  /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[]): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, retainKeys, MAX_BUFFER_ENTRY_COUNT, {
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, this.maxSessionEntries, {
       activityAt: (entry) => this.entryActivityAt(entry),
       holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
     });
@@ -224,7 +232,7 @@ export class SmartBuffer {
       // be observable, not silent.
       log.warn(
         `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
-          `past MAX_BUFFER_ENTRY_COUNT=${MAX_BUFFER_ENTRY_COUNT}; buffered turn data for those sessions was dropped`,
+          `past the session-entry cap (${this.maxSessionEntries}); buffered turn data for those sessions was dropped`,
       );
     }
   }
@@ -453,52 +461,23 @@ export class SmartBuffer {
     return (await this.addTurnWithOutcome(bufferKey, turn)).decision;
   }
 
-  /** Admit atomically; at capacity, spill to the durable queue rather than evict accepted work. */
+  /** Admit atomically; refuse at capacity rather than evict accepted work. */
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       if (this.peekEntry(bufferKey) === null) {
         this.makeRoomForEntryUnlocked();
-        if (Object.keys(this.state.entries ?? {}).length >= MAX_BUFFER_ENTRY_COUNT) {
-          // Signal the caller (outside the mutation) that this capture must be
-          // spilled: the mutation result type is reserved for admitted turns.
+        if (Object.keys(this.state.entries ?? {}).length >= this.maxSessionEntries) {
+          log.warn(
+            `buffer[${bufferKey}]: durable capture refused at the session-entry cap (${this.maxSessionEntries})`,
+          );
           return null;
         }
       }
       return this.recordTurnUnlocked(bufferKey, turn);
     });
-    if (mutation === null) {
-      // At the session-entry cap: spill to the durable spill queue rather than
-      // refusing, so live capture is never dropped while the single extraction
-      // worker is busy on a backlog doc (#3303).
-      return spillCapturedTurn(this.captureSpillPort(), bufferKey, turn);
-    }
+    if (mutation === null) return null;
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
-  }
-
-  /**
-   * Admit spilled turns (FIFO) while capacity allows (#3303); returns the
-   * outcomes of the admitted turns so the caller can queue their extraction.
-   * Implementation lives in buffer-capture-spill.ts (file-size cap).
-   */
-  async drainCaptureSpill(): Promise<Array<{ bufferKey: string; outcome: AddTurnOutcome }>> {
-    return drainCaptureSpill(this.captureSpillPort());
-  }
-
-  /** Everything the capture spill/drain needs from this instance. */
-  private captureSpillPort(): CaptureSpillPort {
-    return {
-      state: this.state,
-      maxEntryCount: MAX_BUFFER_ENTRY_COUNT,
-      enqueueMutation: (op) => this.enqueueMutation(op),
-      loadUnlocked: () => this.loadUnlocked(),
-      makeRoomForEntryUnlocked: () => this.makeRoomForEntryUnlocked(),
-      peekEntry: (key) => this.peekEntry(key),
-      recordTurnUnlocked: (key, turn) => this.recordTurnUnlocked(key, turn),
-      markDirty: (key) => this.persistence.markDirty(key),
-      completeAddTurnOutcome: (key, turn, mutation) => this.completeAddTurnOutcome(key, turn, mutation),
-      saveWholeState: () => this.storage.saveBuffer(this.state),
-    };
   }
 
   /** Prune empty entries only; accepted work must survive capacity pressure. */
@@ -506,7 +485,7 @@ export class SmartBuffer {
     const entries = this.state.entries;
     if (!entries) return;
     const keys = Object.keys(entries);
-    if (keys.length < MAX_BUFFER_ENTRY_COUNT) return;
+    if (keys.length < this.maxSessionEntries) return;
     const byOldestActivity = (left: string, right: string): number =>
       this.entryActivityAt(entries[left] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }) -
       this.entryActivityAt(entries[right] ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
@@ -519,7 +498,7 @@ export class SmartBuffer {
       )
       .sort(byOldestActivity);
     for (const key of emptyRemovable) {
-      if (Object.keys(entries).length < MAX_BUFFER_ENTRY_COUNT) break;
+      if (Object.keys(entries).length < this.maxSessionEntries) break;
       delete entries[key];
       this.persistence.markDeleted(key);
     }

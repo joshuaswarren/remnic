@@ -19,10 +19,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { abortError, isPreemptedExtraction } from "../abort-error.js";
 import { SmartBuffer } from "../buffer.js";
-import {
-  drainCaptureSpillForIngestion,
-  ReplayAdmissionRefusedError,
-} from "../buffer-capture-spill.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import type { CorrectionService } from "../correction/correction-service.js";
@@ -57,6 +53,19 @@ import {
   targetSourceValidAtSortMs,
   type BulkImportBatchIngestResult,
 } from "../orchestrator.js";
+
+/**
+ * #3251: raised by the buffered observe capture path when bounded admission
+ * refuses a NEW session entry because the extraction buffer is at its entry
+ * cap. The request was never accepted — no durable capture exists and no
+ * previously accepted capture was evicted to make room.
+ */
+export class ReplayAdmissionRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReplayAdmissionRefusedError";
+  }
+}
 
 export interface TurnIngestionDeps {
   readonly buffer: SmartBuffer;
@@ -123,7 +132,31 @@ export interface TurnIngestionDeps {
  * Options for {@link TurnIngestionCoordinator.processTurn}.
  * Extends {@link SourceConnectorProvenance} to thread trusted connector identity.
  */
+export interface TurnIngestionOptions extends SourceConnectorProvenance {
+  bufferKey?: string;
+  logicalSessionKey?: string;
+  providerThreadId?: string | null;
+  turnFingerprint?: string;
+}
 
+/**
+ * Flush-plan recovery imports are compacted material the host already
+ * summarized before appending it to the flush-plan file. Feeding those
+ * turns through LCM observation again re-summarizes the same content
+ * (issue #2457). The producer stamps both a dedicated `sourceLabel` and a
+ * `:flush-plan[:chunk]`-shaped `sourceId`, so either marker identifies a
+ * recovery turn; ordinary bulk-import turns never carry either.
+ */
+function isFlushPlanRecoveryTurn(
+  turn: Pick<BufferTurn, "importProvenance">,
+): boolean {
+  const provenance = turn.importProvenance;
+  if (provenance?.sourceLabel === "OpenClaw flush plan") return true;
+  return (
+    typeof provenance?.sourceId === "string" &&
+    /:flush-plan(:\d+\/\d+)?$/.test(provenance.sourceId)
+  );
+}
 
 export class TurnIngestionCoordinator {
   private readonly drain: ExtractionDrain; // chunked trigger-drain (extraction-drain.ts)
@@ -402,13 +435,6 @@ export class TurnIngestionCoordinator {
         "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
       );
     }
-    // Drain the capture spill first (#3303): turns spilled while the buffer was
-    // at its entry cap are admitted FIFO now that capacity may have freed.
-    await drainCaptureSpillForIngestion(
-      this.deps.buffer,
-      (turns, key) => this.queueBufferedCaptureScopeGroups(turns, key, options),
-      "entry",
-    );
     for (const [bufferKey, sessionTurns] of bySession) {
       // No top-level abort check: cancellation applies to the background
       // extraction, never to the durable capture or save barrier (#3251).
@@ -431,31 +457,14 @@ export class TurnIngestionCoordinator {
         if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
         const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
         if (outcome === null) {
-          // Defensive: addTurnBounded spills at the entry cap (#3303), so null
-          // can no longer come from capacity pressure.
           throw new ReplayAdmissionRefusedError(
             `durable observe capture refused: extraction buffer at entry capacity for ${bufferKey}`,
           );
-        }
-        if (outcome.spilled) {
-          // Durable in the buffer's spill queue (#3303): admitted later, when
-          // capacity frees. Nothing is queued for a spilled turn here.
-          log.warn(
-            `turn-ingestion: capture for ${bufferKey} spilled to the extraction buffer spill queue (entry capacity); it will be admitted on a later ingest`,
-          );
-          continue;
         }
         if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
           this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, options);
         }
       }
-      // Post-loop spill drain (#3303): this batch's admissions may have freed
-      // entry slots (extraction clears sessions); admit what fits now.
-      await drainCaptureSpillForIngestion(
-        this.deps.buffer,
-        (turns, key) => this.queueBufferedCaptureScopeGroups(turns, key, options),
-        "post-loop",
-      );
       // Acceptance durability barrier (#1909 seam): surfaces storage failures
       // BEFORE the caller can report acceptance. Not abort-gated.
       await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
@@ -1187,7 +1196,3 @@ export class TurnIngestionCoordinator {
 
 /** Named option contract for `TurnIngestionCoordinator.ingestReplayBatch` (#3251). */
 export type IngestReplayBatchOptions = Parameters<TurnIngestionCoordinator["ingestReplayBatch"]>[1];
-export { ReplayAdmissionRefusedError } from "../buffer-capture-spill.js";
-import type { TurnIngestionOptions } from "../buffer-turn.js";
-import { isFlushPlanRecoveryTurn } from "../buffer-turn-helpers.js";
-export type { TurnIngestionOptions };

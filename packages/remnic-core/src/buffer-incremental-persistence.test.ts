@@ -163,7 +163,7 @@ test("clearAfterExtraction persists the cleared session state", async () => {
 
 test("evicted sessions get their files deleted", async () => {
   const storage = new IncrementalStorage(emptyState());
-  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 200 }), storage);
 
   // normalizeState always materializes a "default" entry, so 198 seeded
   // sessions + default = 199; new-session reaches exactly 200 (the
@@ -191,38 +191,24 @@ test("evicted sessions get their files deleted", async () => {
   }
 });
 
-test("addTurnBounded at capacity spills to the durable spill queue and drains FIFO (#3303)", async () => {
-  const parse = () => parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 });
+test("the default entry cap leaves headroom for live sessions during backlog drains (#3303)", async () => {
+  // w9C: live session captures were dropped when the extraction worker was busy
+  // on a backlog doc and the 200-session default cap refused new sessions. The
+  // default must leave enough headroom that live captures survive a backlog.
   const storage = new IncrementalStorage(emptyState());
-  const buffer = new SmartBuffer(parse(), storage);
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);
 
-  // default + 198 sessions = 199; new-session reaches exactly 200 (admitted),
-  // second-new is the 201st and hits the cap.
-  for (let i = 0; i < 198; i++) {
-    await buffer.addTurnBounded(`s${i}`, makeTurn(`s${i}`, `content ${i}`));
+  for (let i = 0; i < 200; i++) {
+    await buffer.addTurnBounded(`backlog-${i}`, makeTurn(`backlog-${i}`, `backlog doc ${i}`));
   }
   await buffer.flushPendingSave();
-  const first = await buffer.addTurnBounded("new-session", makeTurn("new-session", "fresh"));
-  assert.equal(first?.spilled, undefined, "the 200th entry is admitted normally");
-  const second = await buffer.addTurnBounded("second-new", makeTurn("second-new", "spilled"));
-  assert.equal(second?.spilled, true, "the 201st session is spilled, not refused");
-  await buffer.flushPendingSave();
 
-  // The spill is durable: a fresh buffer over the same storage keeps it, and a
-  // drain with no free slot admits nothing but keeps the queue.
-  const reloaded = new SmartBuffer(parse(), storage);
-  await reloaded.clearAfterExtraction("s0"); // empties the oldest entry
-  let drained = await reloaded.drainCaptureSpill();
-  assert.equal(drained.length, 1, "the freed slot admitted exactly the first spilled turn");
-  await reloaded.flushPendingSave();
-  assert.equal(storage.sessions.get("second-new")?.entry.turns.at(-1)?.content, "spilled");
-
-  // FIFO: the rest of the queue is untouched until another slot frees.
-  await reloaded.clearAfterExtraction("s1");
-  drained = await reloaded.drainCaptureSpill();
-  assert.equal(drained.length, 0, "no spilled turns remain after the queue drained");
-  await reloaded.flushPendingSave();
+  // A live session arriving while the backlog occupies 200 entries must be
+  // admitted, not dropped.
+  const outcome = await buffer.addTurnBounded("live-session", makeTurn("live-session", "live turn"));
+  assert.notEqual(outcome, null, "a live session at the default cap must not be dropped");
 });
+
 test("resetToEmpty drops every session file on the next persist", async () => {
   const storage = new IncrementalStorage(emptyState());
   const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100 }), storage);

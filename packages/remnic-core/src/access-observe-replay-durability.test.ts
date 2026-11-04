@@ -426,10 +426,10 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
       } satisfies BufferTurn);
     }
 
-    // A NEW observe session at the cap must settle promptly WITHOUT dropping
-    // the turns (#3303): they spill to the durable queue instead of refusing,
-    // and previously accepted pending captures are never evicted. The spilled
-    // capture is not queued for extraction until capacity frees.
+    // A NEW observe session at the cap must be REFUSED before acceptance —
+    // bounded backpressure, not silent eviction of previously accepted
+    // pending captures. Bounded settle so a regression that queues instead
+    // of refusing fails fast instead of hanging the harness.
     const settled = await Promise.race([
       coordinator
         .ingestReplayBatch(
@@ -443,8 +443,12 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
       sleep(2000).then(() => "timeout" as const),
     ]);
     assert.ok(settled !== "timeout", "at-cap observe must settle promptly");
-    assert.equal(settled, null, "at-cap observe must spill, not throw");
-    assert.equal(queued.length, 0, "spilled capture must not queue extraction yet");
+    assert.ok(settled instanceof Error, "at-cap observe must be refused, not accepted");
+    assert.match(
+      settled instanceof Error ? settled.message : "",
+      /capacity/,
+    );
+    assert.equal(queued.length, 0, "refused capture must not queue extraction");
 
     const snapshot = await buffer.getBufferSnapshot();
     assert.equal(snapshot.bufferedSessionCount, 200, "refusal must not evict accepted captures");
@@ -2206,4 +2210,3 @@ test("#3251 profile-pinned context-unbound shared capture drains under unchanged
     await cleanupDir(memoryDir);
   }
 });
-
