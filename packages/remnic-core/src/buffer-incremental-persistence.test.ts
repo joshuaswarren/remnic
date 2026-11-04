@@ -303,8 +303,11 @@ test("at-cap admission evicts nothing when eviction cannot free a slot (COS-244c
   // Cap lowered below the accepted backlog: admission must refuse without dropping native work.
   const accepted = (key: string): BufferTurn => ({ ...makeTurn(key, "accepted"), acceptedCapture: true });
   const entry = (turn: BufferTurn): BufferEntryState => ({ turns: [turn], lastExtractionAt: null, extractionCount: 0 });
-  const entries: Record<string, BufferEntryState> = { native: entry(makeTurn("native", "native")) };
-  for (let i = 0; i < 4; i++) entries[`acc-${i}`] = entry(accepted(`acc-${i}`));
+  const accKeys = ["acc-0", "acc-1", "acc-2", "acc-3"];
+  const entries = Object.fromEntries([
+    ["native", entry(makeTurn("native", "native"))],
+    ...accKeys.map((key) => [key, entry(accepted(key))] as const),
+  ]);
   const storage = new IncrementalStorage({ ...emptyState(), entries });
   const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }), storage);
   assert.equal(await buffer.addTurnBounded("new", accepted("new")), null);
