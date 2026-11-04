@@ -135,6 +135,18 @@ export interface AccessObserveWriteSurfaceDeps {
   ): string;
 }
 
+// Observes slower than this log `access-observe-slow` with per-stage
+// durations (noncontent) so 25s-class stalls attribute to a phase.
+const OBSERVE_SLOW_LOG_MS = 10_000;
+
+// Monotonic (performance.now) so clock corrections cannot yield negative or
+// nonsense phase durations. Injectable for deterministic tests.
+let observeClock: () => number = () => performance.now();
+/** Test seam: replace the stage-timing clock; pass undefined to restore. */
+export function setObserveClockForTest(fn: (() => number) | undefined): void {
+  observeClock = fn ?? (() => performance.now());
+}
+
 export class AccessObserveWriteSurface {
   private quarantineStoreInstance?: WriteQuarantineStore;
   private readonly pendingObserveExtractions = new PendingObserveExtractionTracker();
@@ -708,10 +720,28 @@ export class AccessObserveWriteSurface {
       request.sessionKey,
       pendingObserveScopeHint(request)
     );
+    // Noncontent stage timing for slow/failed observes: durations only, logged
+    // in the `access-observe-failed` line (always) and `access-observe-slow`
+    // (successes at or above OBSERVE_SLOW_LOG_MS). Never message content,
+    // session keys, namespaces or principals.
+    const observeStartedAtMs = observeClock();
+    const observeStageMs: Record<string, number> = {};
+    const timed = async <T>(stage: string, fn: () => Promise<T>): Promise<T> => {
+      const stageStartMs = observeClock();
+      try {
+        return await fn();
+      } finally {
+        observeStageMs[stage] = (observeStageMs[stage] ?? 0) + (observeClock() - stageStartMs);
+      }
+    };
+    const formatObserveStages = () =>
+      Object.entries(observeStageMs)
+        .map(([stage, ms]) => `${stage}Ms=${Math.round(ms)}`)
+        .join(" ");
     try {
       let scope: MemoryScopePlan;
       try {
-        scope = await this.deps.resolveMemoryScopePlan(request);
+        scope = await timed("scope", () => this.deps.resolveMemoryScopePlan(request));
       } catch (err) {
         // A replay re-submit sets suppressQuarantine so a still-unwritable target
         // propagates instead of re-parking (#1888); observe has no dryRun path.
@@ -749,10 +779,12 @@ export class AccessObserveWriteSurface {
       //    on the same session is project-scoped (rule 42: same namespace layer as
       //    recall). Done AFTER the scope plan authorized the write, so a rejected
       //    request never leaves orphaned context on the session.
-      await this.deps.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
-      });
+      await timed("context", () =>
+        this.deps.maybeAttachCodingContext(request.sessionKey, {
+          cwd: request.cwd,
+          projectTag: request.projectTag,
+        })
+      );
 
       // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
       // observed turns are scoped to the same namespace project-scoped recall
@@ -771,24 +803,26 @@ export class AccessObserveWriteSurface {
       //    (#928 contract, already auth-checked inside the scope plan), not the
       //    general default-store write namespace.
       if (shouldWriteObjectiveState) {
-        try {
-          const objectiveStateLocation = await this.deps.objectiveStateStoreLocationForNamespace(
-            scope.objectiveStateNamespace
-          );
-          await recordObjectiveStateSnapshotsFromObservedMessages({
-            memoryDir: objectiveStateLocation.memoryDir,
-            objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
-            objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-              .objectiveStateMemory,
-            objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
-              .objectiveStateSnapshotWrites,
-            sessionKey: request.sessionKey,
-            recordedAt: new Date().toISOString(),
-            messages: request.messages,
-          });
-        } catch (err) {
-          log.error(`access-observe objective-state snapshot write failed: ${err}`);
-        }
+        await timed("objective", async () => {
+          try {
+            const objectiveStateLocation = await this.deps.objectiveStateStoreLocationForNamespace(
+              scope.objectiveStateNamespace
+            );
+            await recordObjectiveStateSnapshotsFromObservedMessages({
+              memoryDir: objectiveStateLocation.memoryDir,
+              objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
+              objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
+                .objectiveStateMemory,
+              objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(this.deps.orchestrator.config)
+                .objectiveStateSnapshotWrites,
+              sessionKey: request.sessionKey,
+              recordedAt: new Date().toISOString(),
+              messages: request.messages,
+            });
+          } catch (err) {
+            log.error(`access-observe objective-state snapshot write failed: ${err}`);
+          }
+        });
       }
 
       // 5. LCM archival → effective write namespace.
@@ -796,9 +830,10 @@ export class AccessObserveWriteSurface {
       // only a session reference, and summary DAGs are built in the
       // background, so the caller is never blocked on inference.
       let lcmArchived = false;
-      if (this.deps.orchestrator.lcmEngine && this.deps.orchestrator.lcmEngine.enabled) {
+      const lcmEngine = this.deps.orchestrator.lcmEngine;
+      if (lcmEngine && lcmEngine.enabled) {
         try {
-          await this.deps.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
+          await timed("lcm-accept", () => lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages));
           lcmArchived = true;
         } catch (err) {
           // Fail closed: an observe whose lossless archive failed must not be
@@ -813,11 +848,13 @@ export class AccessObserveWriteSurface {
       // hourly summarizer reads (issue #2783). Best-effort: a transcript
       // failure must not fail the observe.
       const transcriptPersisted = resolvePresentationCapabilities(this.deps.orchestrator.config).transcript
-        ? await this.observeTranscriptPersister.persist(
-            this.deps.orchestrator,
-            observeTranscriptSessionKey(request.sessionKey, writeNamespace, this.deps.orchestrator.config),
-            request.messages,
-            request.sessionKey
+        ? await timed("transcript", () =>
+            this.observeTranscriptPersister.persist(
+              this.deps.orchestrator,
+              observeTranscriptSessionKey(request.sessionKey, writeNamespace, this.deps.orchestrator.config),
+              request.messages,
+              request.sessionKey
+            )
           )
         : false;
 
@@ -897,10 +934,14 @@ export class AccessObserveWriteSurface {
             extractionQueued = true;
           };
         }
-        await this.deps.orchestrator.ingestReplayBatch(turns, ingestOptions);
+        await timed("durable-buffer", () => this.deps.orchestrator.ingestReplayBatch(turns, ingestOptions));
         // A native trigger may leave the durable capture pending rather than queued.
       }
 
+      const observeTotalMs = Math.round(observeClock() - observeStartedAtMs);
+      if (observeTotalMs >= OBSERVE_SLOW_LOG_MS) {
+        log.warn(`access-observe-slow totalMs=${observeTotalMs} messages=${request.messages.length} ${formatObserveStages()}`);
+      }
       log.info(
         `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued} transcript=${transcriptPersisted}`
       );
@@ -926,6 +967,12 @@ export class AccessObserveWriteSurface {
         extractionQueued,
         transcriptPersisted,
       };
+    } catch (err) {
+      // Failed requests always get phase attribution (noncontent), regardless of duration.
+      log.warn(
+        `access-observe-failed totalMs=${Math.round(observeClock() - observeStartedAtMs)} messages=${request.messages.length} ${formatObserveStages()}`
+      );
+      throw err;
     } finally {
       observePreparation.release();
     }
