@@ -733,3 +733,56 @@ async function refreshHeldLock(
   }
   return lockHeldBySelf(held);
 }
+
+/**
+ * Process-wide chains serializing meta updates per state dir inside one
+ * process. The cross-process advisory lock below only orders DIFFERENT
+ * processes; without the chain, two same-process updates would contend on the
+ * lock file and one could time out to failure.
+ */
+const metaUpdateChains = new Map<string, Promise<unknown>>();
+
+/**
+ * Serialized meta read-modify-write for one state dir (`<stateDir>/meta.json`).
+ * Parallel extraction workers (the daemon's bounded queue and out-of-process
+ * buffer-drain workers) each load meta, mutate counters, fingerprints or retry
+ * state, and save; unlocked, a slow writer's save silently reverts a fast
+ * writer's update. The chain orders same-process callers and the advisory lock
+ * file (`meta.json.lock`) orders different processes; a worker that cannot
+ * take the lock inside the budget FAILS the update instead of writing
+ * unlocked — callers are fail-open, so the outcome is a logged miss retried by
+ * the next extraction, never a silent lost update. The mutator may return
+ * `false` to skip the save (nothing changed).
+ */
+export async function updateMetaSerialized<M>(
+  dir: string,
+  loadMeta: () => Promise<M>,
+  saveMeta: (meta: M) => Promise<void>,
+  mutate: (meta: M) => boolean | void | Promise<boolean | void>,
+): Promise<void> {
+  const previous = metaUpdateChains.get(dir) ?? Promise.resolve();
+  const run = previous.then(() =>
+    withHeldFileLock(
+      path.join(dir, "meta.json.lock"),
+      // Bounded: a meta update is a short read-merge-write, never a scan.
+      { staleMs: 5_000, maxWaitMs: 2_000, pollMs: 50 },
+      async (acquired) => {
+        // A lock we could not take (busy peer past the wait budget, or a
+        // filesystem error) must NOT fall back to an unlocked
+        // read-modify-write: that silently reintroduces the lost-update race
+        // this function exists to close. Fail instead — every caller treats
+        // meta updates as fail-open, so the outcome is a logged miss that
+        // the next extraction retries, never a silent clobber.
+        if (!acquired) {
+          throw new Error(`meta update skipped: meta.json.lock not acquired (${dir})`);
+        }
+        const meta = await loadMeta();
+        if ((await mutate(meta)) === false) return;
+        await saveMeta(meta);
+      },
+    ),
+  );
+  // Every waiter keeps its own result/error; the chain only carries completion.
+  metaUpdateChains.set(dir, run.then(() => undefined, () => undefined));
+  await run;
+}

@@ -34,6 +34,7 @@ import { appendContextTransformRecords, readContextTransformRecords } from "./st
 import type { ContextTransformTelemetryRecord } from "./active-context-transform.js";
 import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import { parseOfflineSyncDigestCache, type OfflineSyncDigestCacheEntry } from "./offline-sync-digest-cache.js";
+import { updateMetaSerialized, withHeldFileLock } from "./utils/serialize-mutations.js";
 import {
   appendLifecycleEventsSerialized,
   type DrainPendingLifecycleForSyncResult,
@@ -5558,12 +5559,8 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;
       return {
-        extractionCount: 0,
-        lastExtractionAt: null,
-        lastConsolidationAt: null,
-        totalMemories: 0,
-        totalEntities: 0,
-        processedExtractionFingerprints: [],
+        extractionCount: 0, lastExtractionAt: null, lastConsolidationAt: null,
+        totalMemories: 0, totalEntities: 0, processedExtractionFingerprints: [],
       };
     }
   }
@@ -5571,6 +5568,10 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async saveMeta(state: MetaState): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(path.join(this.stateDir, "meta.json"), JSON.stringify(state, null, 2));
+  }
+
+  async updateMeta(mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>): Promise<void> {
+    await updateMetaSerialized(this.stateDir, () => this.loadMeta(), (meta) => this.saveMeta(meta), mutate);
   }
 
   async appendMemoryActionEvents(events: MemoryActionEvent[]): Promise<number> {

@@ -363,10 +363,8 @@ export class ExtractionRunCoordinator {
       }
     }
   }
-  /** Record an extraction failure into per-fingerprint backoff state + breaker,
-   *  persisting to namespace meta. Fail-open: never throws upward. */
+  /** Record an extraction failure into per-fingerprint backoff state + breaker, persisting to namespace meta. Fail-open. */
   private async recordExtractionFailure(
-    storage: StorageManager,
     namespace: string,
     fingerprint: string,
     cls: ExtractionFailureClass,
@@ -375,33 +373,43 @@ export class ExtractionRunCoordinator {
   ): Promise<void> {
     try {
       this.hydrateRetryStateFromMeta(namespace, meta);
-      const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
-      const prev = nsMap.get(fingerprint);
-      const attempts = (prev?.attempts ?? 0) + 1;
-      const firstFailedAtMs = prev?.firstFailedAtMs ?? now;
-      let nextEligibleAtMs: number;
-      if (cls === "parse_empty" && attempts > this.config.extractionParseEmptyMaxAttempts) {
-        // parse_empty exhausted its attempt budget → long-park (still never
-        // marked processed). A dead gateway also yields unparseable output.
-        nextEligibleAtMs = now + Math.max(0, this.config.extractionRetryMaxBackoffMs);
-      } else {
-        nextEligibleAtMs = computeExtractionRetryNextEligibleMs(
-          attempts,
-          this.config.extractionRetryScheduleMs,
-          this.config.extractionRetryMaxBackoffMs,
-          this.config.extractionRetryJitterRatio,
-          now,
-        );
-      }
-      nsMap.set(fingerprint, { attempts, nextEligibleAtMs, firstFailedAtMs, lastFailureClass: cls });
-      this.extractionRetryState.set(namespace, nsMap);
-      this.onProviderFailure(cls, now);
+      this.applyExtractionFailureToMemory(namespace, fingerprint, cls, now);
       this.persistRetryStateToMeta(namespace, meta);
-      await storage.saveMeta(meta);
+      // The caller's storage.updateMeta persists this — saving here would write the same file twice.
     } catch (err) {
       // Fail-open: recording failure state must never crash observe/recall.
       log.warn("runExtraction: failed to record extraction retry state (non-fatal)", err);
     }
+  }
+
+  /** Failure backoff into the in-memory mirror + breaker WITHOUT touching meta — the fallback
+   *  when the locked meta write cannot run: the retry gate reads this mirror, so it stays shut. */
+  private applyExtractionFailureToMemory(
+    namespace: string,
+    fingerprint: string,
+    cls: ExtractionFailureClass,
+    now: number,
+  ): void {
+    const nsMap = this.extractionRetryState.get(namespace) ?? new Map<string, ExtractionRetryStateEntry>();
+    const prev = nsMap.get(fingerprint);
+    const attempts = (prev?.attempts ?? 0) + 1;
+    const firstFailedAtMs = prev?.firstFailedAtMs ?? now;
+    let nextEligibleAtMs: number;
+    if (cls === "parse_empty" && attempts > this.config.extractionParseEmptyMaxAttempts) {
+      // parse_empty budget exhausted → long-park (still never marked processed).
+      nextEligibleAtMs = now + Math.max(0, this.config.extractionRetryMaxBackoffMs);
+    } else {
+      nextEligibleAtMs = computeExtractionRetryNextEligibleMs(
+        attempts,
+        this.config.extractionRetryScheduleMs,
+        this.config.extractionRetryMaxBackoffMs,
+        this.config.extractionRetryJitterRatio,
+        now,
+      );
+    }
+    nsMap.set(fingerprint, { attempts, nextEligibleAtMs, firstFailedAtMs, lastFailureClass: cls });
+    this.extractionRetryState.set(namespace, nsMap);
+    this.onProviderFailure(cls, now);
   }
 
   /** Delete a fingerprint's retry entry from the mirror + meta. Returns whether
@@ -952,48 +960,43 @@ export class ExtractionRunCoordinator {
     // extractionRetryEnabled so a disabled feature restores prior behavior.
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
+        const failureClass = result.extractionFailureClass ?? "provider_retryable";
         try {
-          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
           await runDeadlineAware(
             () =>
-              this.recordExtractionFailure(
-                storage,
-                selfNamespace,
-                extractionFingerprint,
-                result.extractionFailureClass ?? "provider_retryable",
-                meta!,
-                Date.now(),
+              storage.updateMeta((freshMeta) =>
+                this.recordExtractionFailure(selfNamespace, extractionFingerprint, failureClass, freshMeta, Date.now()),
               ),
             "during_retry_bookkeeping_save",
             false,
           );
-          // The buffer is retained below so the backoff gate can re-attempt
-          // these turns after nextEligibleAt — clearing would orphan the
-          // retry state.
           recordedRetryFailure = true;
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
-          // Fail-open (codex review): retry bookkeeping is best-effort — a
-          // corrupt or locked meta store must not reject the extraction task.
-          // With no backoff recorded there is nothing to retain for, so the
-          // pre-#1908 clear-buffer behavior applies below.
-          log.warn("runExtraction: failed to load meta for retry bookkeeping (non-fatal)", err);
+          // Fail-open, but retain the turns (a cleared buffer with no retry state drops them). Only a
+          // LOCK skip reaches here without the mutator having run — a later save must not double-count.
+          if (err instanceof Error && err.message.includes("meta.json.lock not acquired"))
+            this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now());
+          recordedRetryFailure = true;
+          log.warn("runExtraction: retry state kept in memory; meta persist will catch up", err);
         }
       } else if (result.extractionSkippedReason === undefined) {
         // Provider responded without failure → breaker heals; clear any
         // parked backoff for this fingerprint so it proceeds normally.
         this.resetProviderBreakerOnSuccess();
         try {
-          meta ??= await runDeadlineAware(() => storage.loadMeta(), "during_retry_bookkeeping_load", false);
-          // Hydrate the in-memory mirror from persisted meta before clearing.
-          // A forced flush (forceExtractionAttempt) bypasses the retry gate and
-          // never hydrated, so without this a stale persisted backoff entry
-          // would survive a successful forced flush and keep blocking normal
-          // extraction until the timer expired (cursor/codex review).
-          this.hydrateRetryStateFromMeta(selfNamespace, meta);
-          if (this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, meta)) {
-            await runDeadlineAware(() => storage.saveMeta(meta!), "during_retry_bookkeeping_save", false);
-          }
+          await runDeadlineAware(
+            () =>
+              storage.updateMeta((freshMeta) => {
+                // Hydrate the mirror from persisted meta before clearing: a forced flush
+                // bypassed the retry gate, and a stale persisted entry would keep blocking.
+                this.hydrateRetryStateFromMeta(selfNamespace, freshMeta);
+                // `false` skips the save when nothing was parked for this fingerprint.
+                return this.clearExtractionRetryEntry(selfNamespace, extractionFingerprint, freshMeta);
+              }),
+            "during_retry_bookkeeping_save",
+            false,
+          );
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
           log.warn("runExtraction: failed to persist cleared retry state (non-fatal)", err);
@@ -1018,7 +1021,6 @@ export class ExtractionRunCoordinator {
       }
       const emptySuccessCommit = {
         storage,
-        meta,
         extractionFingerprint,
         shouldPersistProcessedFingerprint,
         hasExtractionFailure: Boolean(extractionFailure),
@@ -1094,7 +1096,6 @@ export class ExtractionRunCoordinator {
     const postPersist = await runExtractionPostPersist({
       result,
       storage,
-      meta: meta ?? undefined,
       extractionFingerprint: extractionFingerprint ?? undefined,
       shouldPersistProcessedFingerprint,
       recordProcessedExtractionFingerprint: this.deps.recordProcessedExtractionFingerprint,
@@ -1113,7 +1114,6 @@ export class ExtractionRunCoordinator {
       clearBuffer,
       failOnExtractionFailure: options.failOnExtractionFailure === true,
     });
-    meta = postPersist.meta ?? null;
     const postPersistMetadataFailed = postPersist.metadataFailed;
 
     // Passive correction capture (issue #1581) — detect corrections expressed
