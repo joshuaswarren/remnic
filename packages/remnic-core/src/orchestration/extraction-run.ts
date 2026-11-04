@@ -837,7 +837,7 @@ export class ExtractionRunCoordinator {
         );
       } catch (error) {
         clearExtractionDeadlineTimer();
-        if (typeof deadlineMs === "number" && Date.now() >= deadlineMs) {
+        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
           throw new ExtractionDeadlineError("during_extract");
         }
         throw error;
