@@ -97,7 +97,6 @@ async function drainBehindPinnedCapture(buffer: SmartBuffer, results: Extraction
     },
     getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" }),
     buffer,
-    extractionQueueCoordinator: { beginPreemptable: () => {} },
   });
   return await drain.run(native, {
     bufferKey: "s1",
