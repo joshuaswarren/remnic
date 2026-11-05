@@ -626,3 +626,34 @@ test("a deferred outcome without a denial report backs off but never counts deni
     await scheduler.stop();
   }
 });
+
+test("a claim creation failure is caught: failed counter, backoff, no crash", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["enospc-1", { turns: 1, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const deps = makeDeps(state, queue);
+  deps.claims.claimFromSessionFile = async () => {
+    throw Object.assign(new Error("ENOSPC: no space left on device"), { code: "ENOSPC" });
+  };
+  const scheduler = new BacklogScheduler(deps, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    // The detached submission must swallow the claim failure: no unhandled
+    // rejection, the scheduler stays alive.
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    const snapshot = scheduler.snapshot();
+    assert.equal(snapshot.counters.failed, 1, "the claim failure counts failed");
+    const keyState = snapshot.keys.find((entry) => entry.key === "enospc-1");
+    assert.equal(keyState?.state, "backoff", "the key backs off for a later attempt");
+    assert.equal(state.drained.length, 0, "nothing drained without a claim");
+  } finally {
+    await scheduler.stop();
+  }
+});

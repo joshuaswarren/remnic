@@ -1,0 +1,259 @@
+
+<!doctype html>
+<html lang="en">
+
+<head>
+    <title>Code coverage report for src/orchestration/self-deps.ts</title>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../../prettify.css" />
+    <link rel="stylesheet" href="../../base.css" />
+    <link rel="shortcut icon" type="image/x-icon" href="../../favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style type='text/css'>
+        .coverage-summary .sorter {
+            background-image: url(../../sort-arrow-sprite.png);
+        }
+    </style>
+</head>
+    
+<body>
+<div class='wrapper'>
+    <div class='pad1'>
+        <h1><a href="../../index.html">All files</a> / <a href="index.html">src/orchestration</a> self-deps.ts</h1>
+        <div class='clearfix'>
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">96.55% </span>
+                <span class="quiet">Statements</span>
+                <span class='fraction'>56/58</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">88.88% </span>
+                <span class="quiet">Branches</span>
+                <span class='fraction'>8/9</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">80% </span>
+                <span class="quiet">Functions</span>
+                <span class='fraction'>4/5</span>
+            </div>
+        
+            
+            <div class='fl pad1y space-right2'>
+                <span class="strong">96.55% </span>
+                <span class="quiet">Lines</span>
+                <span class='fraction'>56/58</span>
+            </div>
+        
+            
+        </div>
+        <p class="quiet">
+            Press <em>n</em> or <em>j</em> to go to the next uncovered block, <em>b</em>, <em>p</em> or <em>k</em> for the previous block.
+        </p>
+        <template id="filterTemplate">
+            <div class="quiet">
+                Filter:
+                <input type="search" id="fileSearch">
+            </div>
+        </template>
+    </div>
+    <div class='status-line high'></div>
+    <pre><table class="coverage">
+<tr><td class="line-count quiet"><a name='L1'></a><a href='#L1'>1</a>
+<a name='L2'></a><a href='#L2'>2</a>
+<a name='L3'></a><a href='#L3'>3</a>
+<a name='L4'></a><a href='#L4'>4</a>
+<a name='L5'></a><a href='#L5'>5</a>
+<a name='L6'></a><a href='#L6'>6</a>
+<a name='L7'></a><a href='#L7'>7</a>
+<a name='L8'></a><a href='#L8'>8</a>
+<a name='L9'></a><a href='#L9'>9</a>
+<a name='L10'></a><a href='#L10'>10</a>
+<a name='L11'></a><a href='#L11'>11</a>
+<a name='L12'></a><a href='#L12'>12</a>
+<a name='L13'></a><a href='#L13'>13</a>
+<a name='L14'></a><a href='#L14'>14</a>
+<a name='L15'></a><a href='#L15'>15</a>
+<a name='L16'></a><a href='#L16'>16</a>
+<a name='L17'></a><a href='#L17'>17</a>
+<a name='L18'></a><a href='#L18'>18</a>
+<a name='L19'></a><a href='#L19'>19</a>
+<a name='L20'></a><a href='#L20'>20</a>
+<a name='L21'></a><a href='#L21'>21</a>
+<a name='L22'></a><a href='#L22'>22</a>
+<a name='L23'></a><a href='#L23'>23</a>
+<a name='L24'></a><a href='#L24'>24</a>
+<a name='L25'></a><a href='#L25'>25</a>
+<a name='L26'></a><a href='#L26'>26</a>
+<a name='L27'></a><a href='#L27'>27</a>
+<a name='L28'></a><a href='#L28'>28</a>
+<a name='L29'></a><a href='#L29'>29</a>
+<a name='L30'></a><a href='#L30'>30</a>
+<a name='L31'></a><a href='#L31'>31</a>
+<a name='L32'></a><a href='#L32'>32</a>
+<a name='L33'></a><a href='#L33'>33</a>
+<a name='L34'></a><a href='#L34'>34</a>
+<a name='L35'></a><a href='#L35'>35</a>
+<a name='L36'></a><a href='#L36'>36</a>
+<a name='L37'></a><a href='#L37'>37</a>
+<a name='L38'></a><a href='#L38'>38</a>
+<a name='L39'></a><a href='#L39'>39</a>
+<a name='L40'></a><a href='#L40'>40</a>
+<a name='L41'></a><a href='#L41'>41</a>
+<a name='L42'></a><a href='#L42'>42</a>
+<a name='L43'></a><a href='#L43'>43</a>
+<a name='L44'></a><a href='#L44'>44</a>
+<a name='L45'></a><a href='#L45'>45</a>
+<a name='L46'></a><a href='#L46'>46</a>
+<a name='L47'></a><a href='#L47'>47</a>
+<a name='L48'></a><a href='#L48'>48</a>
+<a name='L49'></a><a href='#L49'>49</a>
+<a name='L50'></a><a href='#L50'>50</a>
+<a name='L51'></a><a href='#L51'>51</a>
+<a name='L52'></a><a href='#L52'>52</a>
+<a name='L53'></a><a href='#L53'>53</a>
+<a name='L54'></a><a href='#L54'>54</a>
+<a name='L55'></a><a href='#L55'>55</a>
+<a name='L56'></a><a href='#L56'>56</a>
+<a name='L57'></a><a href='#L57'>57</a>
+<a name='L58'></a><a href='#L58'>58</a>
+<a name='L59'></a><a href='#L59'>59</a></td><td class="line-coverage quiet"><span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">1x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">529x</span>
+<span class="cline-any cline-yes">483x</span>
+<span class="cline-any cline-yes">2154x</span>
+<span class="cline-any cline-yes">2637x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">118x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-yes">283x</span>
+<span class="cline-any cline-neutral">&nbsp;</span></td><td class="text"><pre class="prettyprint lang-js">/**
+ * Live self-deps factory (issue #1526 seam 27).
+ *
+ * Every coordinator extracted from the orchestrator (seams 4–26) takes a
+ * deps bundle whose property names MATCH the orchestrator's own member
+ * names, wired as live accessors / late-binding arrows so instance-level
+ * test stubs and subclass overrides keep taking effect. Those hand-written
+ * wiring blocks were ~100 lines each and pure repetition. This factory
+ * replaces them with a Proxy that preserves the exact semantics:
+ *
+ *   - property GET reads `self[prop]` live on every access (late binding —
+ *     an instance stub installed after coordinator creation is observed);
+ *   - method properties are bound to `self` at access time, so `this`
+ *     inside the orchestrator method stays the orchestrator;
+ *   - property SET writes through to `self` (gate fields like
+ *     `deferredReady` / `lastXraySnapshot` stay on the orchestrator);
+ *   - getters on `self` (e.g. `fastLlmForRerank`) are invoked live.
+ *
+ * The `as unknown as T` cast is deliberate: the deps interfaces reference
+ * the orchestrator's PRIVATE members, which TypeScript cannot verify
+ * structurally from outside the class. The interfaces remain fully
+ * enforced on the coordinator side. Per-access `bind` costs nanoseconds
+ * and allocates one closure per property access — negligible against the
+ * I/O-bound work every coordinator method performs.
+ */
+export function selfDeps&lt;T extends object&gt;(self: object): T {
+  const source = self as Record&lt;PropertyKey, unknown&gt;;
+  return new Proxy(Object.create(null) as object, {
+    get(_target, prop) {
+      const value = source[prop as string];
+      // Bind ONLY prototype/concise methods (they have no own `prototype`
+      // property). Class-valued deps (e.g. `storageManagerClass`, used by
+      // the storage decomposition to reach shared static caches) must pass
+      // through unbound: Function.prototype.bind returns a bound function
+      // WITHOUT the original's own static properties, which silently
+      // strips the class's statics. Plain data and arrows also pass
+      // through unchanged (arrows ignore bind receivers anyway).
+      return typeof value === "function" &amp;&amp;
+        !Object.prototype.hasOwnProperty.call(value, "prototype")
+        ? (value as (...args: unknown[]) =&gt; unknown).bind(self)
+        : value;
+    },
+    set(_target, prop, value) {
+      // Fail fast on writes to properties the orchestrator does not
+      // declare (Kilo review on PR #1801): returning false makes the
+      // assignment throw a TypeError in strict mode, matching the
+      // error-safety of the hand-written accessor blocks this factory
+      // replaced. Legitimate gate-field writes (deferredReady,
+      // lastXraySnapshot, …) all target existing members.
+      if (!((prop as string) in source)) <span class="branch-0 cbranch-no" title="branch not covered" >return false;</span>
+      source[prop as string] = value;
+      return true;
+    },
+<span class="fstat-no" title="function not covered" >    has(_target, prop) {</span>
+<span class="cstat-no" title="statement not covered" >      return (prop as string) in source;</span>
+<span class="cstat-no" title="statement not covered" >    },</span>
+  }) as unknown as T;
+}
+&nbsp;</pre></td></tr></table></pre>
+
+                <div class='push'></div><!-- for sticky footer -->
+            </div><!-- /wrapper -->
+            <div class='footer quiet pad2 space-top1 center small'>
+                Code coverage generated by
+                <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
+                at 2026-11-05T04:19:41.354Z
+            </div>
+        <script src="../../prettify.js"></script>
+        <script>
+            window.onload = function () {
+                prettyPrint();
+            };
+        </script>
+        <script src="../../sorter.js"></script>
+        <script src="../../block-navigation.js"></script>
+    </body>
+</html>
+    

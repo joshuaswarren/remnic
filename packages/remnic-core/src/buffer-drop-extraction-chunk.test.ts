@@ -85,7 +85,7 @@ async function drainBehindPinnedCapture(
   buffer: SmartBuffer,
   results: ExtractionRunResult[],
   dropAfter: number,
-  overrides: { getStorage?: () => Promise<{ saveDroppedExtractionChunk: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string> }> } = {},
+  overrides: { getStorage?: () => Promise<{ saveDroppedExtractionChunk: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string> }>; runExtractionOverride?: () => Promise<ExtractionRunResult> } = {},
 ): Promise<ExtractionRunResult> {
   const pinned: BufferTurn = { ...makeTurn("s1", "pinned capture"), acceptedCapture: true };
   const native = [makeTurn("s1", "a".repeat(60)), makeTurn("s1", "b".repeat(60))];
@@ -95,6 +95,7 @@ async function drainBehindPinnedCapture(
     config: { extractionMinUserTurns: 1, extractionMinChars: 0, extractionMaxTurnChars: 100_000, extractionChunkDropAfterFailures: dropAfter },
     extractionWindowBudgetChars: () => 100,
     runExtraction: async (turns, options) => {
+      if (overrides.runExtractionOverride) return await overrides.runExtractionOverride();
       const result = results.shift() ?? DONE;
       // A successful run clears its chunk the way the coordinator does for a native group: by identity.
       if (result.status === "completed") await buffer.clearAfterExtraction("s1", turns, options?.clearMatchingTurns === true ? { allowNonPrefix: true } : undefined);
@@ -304,6 +305,29 @@ test("one failure below the drop threshold keeps the chunk (no drop, no side fil
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
       true,
       "the failing chunk stays buffered for the next trigger",
+    );
+  });
+});
+
+test("a thrown chunk dropped at the threshold must not end the drain: later chunks still run", async () => {
+  await withBuffer(async (buffer, restart) => {
+    // chunk1 THROWS (model crash); at dropAfter 1 it is side-file-copied and
+    // dropped — the live drop policy then CONTINUES to the next chunk.
+    let calls = 0;
+    const result = await drainBehindPinnedCapture(buffer, [DONE], 1, {
+      getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" }),
+      runExtractionOverride: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("model connection reset");
+        return DONE;
+      },
+    });
+
+    assert.equal(result.status, "completed", "the drain finishes with the later chunk");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").filter((turn) => turn.content === "a".repeat(60)),
+      [],
+      "the thrown chunk was dropped by identity",
     );
   });
 });

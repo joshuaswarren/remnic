@@ -227,7 +227,10 @@ export class ExtractionDrain {
         result = await this.deps.runExtraction(chunk, chunkOptions);
       } catch (err) {
         this.rethrowChunkAbort(err, preempt, runOptions.abortSignal?.aborted === true);
-        return await this.settleThrownChunk(bufferKey, chunk, failures, dropAfter, err, byIdentity, aggregate);
+        // A successfully dropped thrown chunk does not end the drain: later
+        // chunks still run this pass (live drop policy).
+        aggregate = await this.settleThrownChunk(bufferKey, chunk, failures, dropAfter, err, byIdentity, aggregate);
+        continue;
       }
       const settled = this.settleVerdict(bufferKey, chunk, result, aggregate);
       if (settled.action === "continue") {

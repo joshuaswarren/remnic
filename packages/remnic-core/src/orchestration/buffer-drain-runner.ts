@@ -357,7 +357,9 @@ async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes
       done = true;
       resolve({ error, result });
     };
-    void ctx.coordinator
+    // Settlement and callback EXIT are tracked separately: the lease is
+    // released only after the queued closure has fully exited.
+    const queued = ctx.coordinator
       .queueBufferedExtraction(group.turns, "trigger_mode", {
         bufferKey: ctx.key,
         clearBufferAfterExtraction: true,
@@ -365,6 +367,9 @@ async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes
         skipDedupeCheck: true,
         skipCharThreshold: true,
         skipUserTurnThreshold: true,
+        // Automatic background work yields to fail-closed foreground flushes
+        // (preemptRunning), same as the live trigger path.
+        preemptable: true,
         abortSignal: ctx.signal,
         writeNamespaceOverride: group.writeNamespaceOverride,
         principalOverride: group.principalOverride,
@@ -374,6 +379,9 @@ async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes
       })
       .catch((error: DrainExtractionError) => settle(error));
     const settled = await promise;
+    // Wait for the callback EXIT before the caller releases the lease (the
+    // settlement error is already captured; a rethrow here is that error).
+    await queued.catch(() => undefined);
     if (settled.error !== undefined) {
       groupError = settled.error as DrainExtractionError;
       break;

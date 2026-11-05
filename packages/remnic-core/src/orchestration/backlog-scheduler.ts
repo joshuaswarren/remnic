@@ -292,6 +292,14 @@ export class BacklogScheduler {
       // with its lease (it expires; the next start adopts) — never drain.
       if (this.stopped) return;
       await this.drainClaimedKey(key, controller.signal);
+    } catch (err) {
+      // Claim/drain failures are scheduler-level: the claim content is
+      // untouched — count failed and back off (never an unhandled rejection
+      // in the detached submission).
+      this.counters.failed += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      this.setBackoff(key, (err as { turnsRemaining?: number })?.turnsRemaining ?? 0, message);
+      log.warn(`backlog drain: ${key} submission failed: ${message}`);
     } finally {
       this.inFlight.delete(key);
       this.reserved.delete(key);
