@@ -44,6 +44,11 @@ import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../typ
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
 import { ExtractionDrain } from "./extraction-drain.js";
 import { skipClaimedSession } from "./buffer-drain-gate.js";
+import {
+  queueBufferedCaptureScopeGroups,
+  type CaptureScopeGroupQueueOptions,
+  type ExtractionTaskExecutionContext,
+} from "./extraction-task-queueing.js";
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
@@ -224,7 +229,7 @@ export class TurnIngestionCoordinator {
       // #3251: native triggers must not run mixed accepted scopes under one
       // policy — each scope group drains through the shared execution
       // boundary with its own pins.
-      this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, {});
+      queueBufferedCaptureScopeGroups(this.deps.queueBufferedExtraction, outcome.extractionTurns, bufferKey, {});
       return;
     }
     await this.deps.queueBufferedExtraction(
@@ -463,64 +468,17 @@ export class TurnIngestionCoordinator {
           );
         }
         if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
-          this.queueBufferedCaptureScopeGroups(outcome.extractionTurns, bufferKey, options);
+          queueBufferedCaptureScopeGroups(
+            this.deps.queueBufferedExtraction,
+            outcome.extractionTurns,
+            bufferKey,
+            options,
+          );
         }
       }
       // Acceptance durability barrier (#1909 seam): surfaces storage failures
       // BEFORE the caller can report acceptance. Not abort-gated.
       await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
-    }
-  }
-
-  /**
-   * Buffer-approved captures skip threshold/dedupe rechecks, not provider retry cooldowns.
-   * Scope and staleness are enforced at the shared queueBufferedExtraction boundary.
-   */
-  private queueBufferedCaptureScopeGroups(
-    extractionTurns: BufferTurn[],
-    bufferKey: string,
-    options: {
-      deadlineMs?: number;
-      abortSignal?: AbortSignal;
-      writeNamespaceOverride?: string;
-      principalOverride?: string;
-      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      codingContext?: import("../types.js").CodingContext;
-      onExtractionQueued?: (extraction: Promise<void>) => void;
-    },
-  ): void {
-    for (const group of groupTurnsByExtractionScope(extractionTurns)) {
-      const groupIsAccepted = group.turns.some((turn) => turn.acceptedCapture === true);
-      if (!groupIsAccepted) {
-        // Native groups keep their own routing; skipped accepted prefixes require identity clearing.
-        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
-          bufferKey,
-          clearMatchingTurns: true,
-          preemptable: true,
-        }).catch((err) => log.error(`native trigger extraction failed: ${err}`));
-        continue;
-      }
-      // Accepted groups use ONLY their own pins — no fallback to the
-      // triggering observe's scope.
-      const extraction = new Promise<void>((resolve, reject) => {
-        void this.deps.queueBufferedExtraction(group.turns, "trigger_mode", {
-          bufferKey,
-          clearBufferAfterExtraction: true,
-          clearMatchingTurns: true,
-          skipDedupeCheck: true,
-          skipCharThreshold: true,
-          skipUserTurnThreshold: true,
-          abortSignal: options.abortSignal,
-          extractionDeadlineMs: options.deadlineMs,
-          writeNamespaceOverride: group.writeNamespaceOverride,
-          principalOverride: group.principalOverride,
-          scopeProfileWritePlan: group.scopeProfileWritePlan ?? null,
-          preemptable: true,
-          onTaskSettled: (err) => (err ? reject(err) : resolve()),
-        }).catch(reject);
-      });
-      if (options.onExtractionQueued) options.onExtractionQueued(extraction);
-      else extraction.catch((err) => log.error(`buffered capture extraction failed: ${err}`));
     }
   }
 
@@ -802,7 +760,7 @@ export class TurnIngestionCoordinator {
         if (turns.some((turn) => turn.acceptedCapture === true)) {
           // #3251: heartbeat triggers must not run mixed accepted scopes
           // under one policy — per-scope groups via the shared boundary.
-          this.queueBufferedCaptureScopeGroups(turns, bufferKey, {});
+          queueBufferedCaptureScopeGroups(this.deps.queueBufferedExtraction, turns, bufferKey, {});
           return;
         }
         await this.deps.queueBufferedExtraction(turns, "heartbeat_observer", {
@@ -860,23 +818,8 @@ export class TurnIngestionCoordinator {
        */
       principalOverride?: string;
       scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      /**
-       * Isolated per-task execution context (claim-backed backlog drain).
-       * Bound at enqueue time and read ONLY inside the enqueued closure, so
-       * the task runs against its own buffer/extraction/drain no matter
-       * which async context the coordinator's processor executes it from.
-       * Absent for live work, which keeps the shared orchestrator state.
-       */
-      execution?: {
-        /** The task's own buffer (a claim-backed SmartBuffer). */
-        buffer: SmartBuffer;
-        /**
-         * The task's own chunked drain; its deps carry the isolated
-         * runExtraction + buffer (claim tasks build one with
-         * `dropFailedChunks: false` — the no-drop backlog policy).
-         */
-        drain: ExtractionDrain;
-      };
+      /** Isolated per-task execution context (claim-backed backlog drain). */
+      execution?: ExtractionTaskExecutionContext;
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";

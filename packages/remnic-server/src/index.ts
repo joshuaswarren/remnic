@@ -16,7 +16,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner
 } from "@remnic/core";
-import { wireBacklogScheduler, type BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
+import type { BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
+import { shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { probeAuthenticatedLiveness } from "./liveness-probe.js";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
@@ -870,11 +871,9 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let backlogScheduler: BacklogScheduler | undefined;
   try {
     ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron();
-    // The daemon owns extraction-backlog draining: start the bounded
-    // scheduler AFTER the listener so accepted work is never blocked by
-    // startup; stop() below aborts it before orchestrator.destroy().
-    backlogScheduler = wireBacklogScheduler(orchestrator);
-    backlogScheduler.start();
+    // The daemon owns extraction-backlog draining: the bounded scheduler
+    // starts AFTER the listener and stops before the orchestrator.
+    backlogScheduler = startBacklogScheduler(orchestrator);
   } catch (err) {
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
@@ -945,15 +944,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
         try {
           await readinessTask;
         } finally {
-          try {
-            await backlogScheduler?.stop();
-          } finally {
-            try {
-              await orchestrator.destroy();
-            } finally {
-              finishCodex();
-            }
-          }
+          await shutdownBacklogDrain(backlogScheduler, () => orchestrator.destroy(), finishCodex);
         }
       }
     })();

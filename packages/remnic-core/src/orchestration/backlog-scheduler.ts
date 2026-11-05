@@ -240,7 +240,7 @@ export class BacklogScheduler {
   private async discoverCandidates(): Promise<{ key: string; needsClaim: boolean }[]> {
     const out: { key: string; needsClaim: boolean }[] = [];
     const seen = new Set<string>();
-    const pageLimit = Math.max(this.deps.queue.maxConcurrency * 4, 16);
+    const pageLimit = Math.max(this.submissionLimit() * 4, 16);
     const page = await this.deps.claims.listPage(this.claimCursor, pageLimit);
     for (const listed of page.entries) {
       if (listed.turnCount <= 0) continue;
@@ -257,11 +257,18 @@ export class BacklogScheduler {
     return out;
   }
 
+  /** Submission bound: the queue's own concurrency limit, read with the
+   *  documented "0 disables" contract — a zero limit submits nothing. */
+  private submissionLimit(): number {
+    if (this.deps.queue.maxConcurrency <= 0) return 0;
+    return this.deps.queue.maxConcurrency;
+  }
+
   /** Submit discovery candidates within the queue's concurrency bound. */
   private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): boolean {
     let dropped = false;
     for (const candidate of candidates) {
-      if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) {
+      if (this.stopped || this.inFlight.size >= this.submissionLimit()) {
         dropped = true;
         break;
       }
@@ -281,7 +288,7 @@ export class BacklogScheduler {
   /** inFlight is the authority for "already submitted" — key state only
    *  exists once an outcome landed (backoff/denied gating below). */
   private candidateEligible(candidate: { key: string; needsClaim: boolean }): boolean {
-    if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) return false;
+    if (this.stopped || this.inFlight.size >= this.submissionLimit()) return false;
     if (this.inFlight.has(candidate.key)) return false;
     const state = this.keys.get(candidate.key);
     return !(state && this.now() < state.nextAttemptMs);

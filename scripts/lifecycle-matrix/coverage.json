@@ -73,6 +73,7 @@
     "packages/remnic-core/src/orchestration/extraction-queue-coordinator.ts",
     "packages/remnic-core/src/orchestration/extraction-run-helpers.ts",
     "packages/remnic-core/src/orchestration/extraction-run.ts",
+    "packages/remnic-core/src/orchestration/extraction-task-queueing.ts",
     "packages/remnic-core/src/orchestration/extraction-shutdown.ts",
     "packages/remnic-core/src/orchestration/extraction-watermark.ts",
     "packages/remnic-core/src/orchestration/fact-dedup-window.ts",
@@ -285,7 +286,8 @@
     "packages/remnic-core/src/storage/profile-mutation.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/provider-breaker.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/promotion-dedup-window.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/backlog-scheduler.ts": "extraction-lifecycle"
+    "packages/remnic-core/src/orchestration/backlog-scheduler.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/extraction-task-queueing.ts": "extraction-lifecycle"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",

@@ -1,4 +1,4 @@
-import type { BufferEntryState, BufferTurn } from "./types.js";
+import type { BufferEntryState, BufferState, BufferTurn } from "./types.js";
 
 export interface BufferTurnOwner {
   /**
@@ -118,6 +118,25 @@ export function subtractBufferTurns(turns: readonly BufferTurn[], drained: reado
     if (at >= 0) kept.splice(at, 1);
   }
   return kept;
+}
+
+/** Per-key pending counts over the IN-MEMORY buffer state (counts only — no
+ *  turn payloads). The claim store's answer stays authoritative for claimed
+ *  keys; callers must filter through `BufferDrainClaims.isClaimed` before
+ *  treating a count here as work. */
+export interface BufferEntryCounts {
+  turns: number;
+  retainedTurns: number;
+}
+
+export function bufferEntryCounts(state: BufferState): Map<string, BufferEntryCounts> {
+  const out = new Map<string, BufferEntryCounts>();
+  const entries = state.entries;
+  if (!entries) return out;
+  for (const [key, entry] of Object.entries(entries)) {
+    out.set(key, { turns: entry.turns.length, retainedTurns: entry.retainedTurns?.length ?? 0 });
+  }
+  return out;
 }
 
 export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
