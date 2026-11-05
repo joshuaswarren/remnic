@@ -106,3 +106,7 @@ output/playwright/
 .node_modules.partial-broken/
 .turbo/
 .turbo/
+
+# Local quality-tool receipts (crapper/mutator) and coverage artifacts
+.metrics/
+coverage/

@@ -13,6 +13,10 @@
 //      canonical turns stay claimed.
 //   3. A malformed/null extraction result is a retained failure: the claim's
 //      canonical turns survive repeated attempts above the drop threshold.
+//   4. An unpinned legacy drain under an ACTIVE profile that IS writable: the
+//      fact lands in the profile's write namespace. Flattening the group to
+//      plan=null bypasses the profile gate and persists it in the
+//      principal's default namespace instead.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import http from "node:http";
@@ -21,6 +25,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { Orchestrator, parseConfig } from "./index.js";
+import { namespaceIdentityToken } from "./namespaces/identity.js";
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { BufferDrainRunner } from "./orchestration/buffer-drain-runner.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
@@ -348,6 +353,84 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
     const claim = await runner.claims.load("alice:legacy");
     assert.equal(claim?.entry.turns.length ?? 0, 1, "the denied turn stays in the claim");
     assert.equal(claim?.entry.turns[0]?.content, "legacy unpinned profile probe");
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an unpinned legacy drain writes under the ACTIVE profile namespace, never the principal default", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-profile-namespace-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config: PluginConfig = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      // The principal resolves to the "default" namespace (prefix mode), and
+      // BOTH the default and the shared namespace are writable for it — so
+      // the write DESTINATION depends on which plan the drain forwards, not
+      // on who is allowed to write.
+      sharedNamespace: "shared",
+      namespacePolicies: [
+        { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+        { name: "default", readPrincipals: ["default"], writePrincipals: ["default"] },
+        { name: "shared", readPrincipals: ["default"], writePrincipals: ["default"] },
+      ],
+      memoryDir,
+      debug: true,
+      openaiApiKey: "sk-test",
+      // The controlled boundary serves the extraction — no network fallback.
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+      // House scope-profile shape (orchestrator-flush profile fixture): an
+      // ACTIVE profile whose serverShared layer IS writable for the
+      // principal, so the CURRENT profile decides where the fact lands.
+      scopeProfiles: {
+        "sharedProfile": {
+          readOrder: ["serverShared"],
+          writeDefault: "serverShared",
+          promotionTargets: ["serverShared"],
+          autoPromote: { enabled: false, targets: [], categories: [], minConfidenceTier: "speculative" },
+        },
+      },
+      defaultScopeProfile: "sharedProfile",
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    await orchestrator.buffer.addTurn("bob:legacy", {
+      role: "user",
+      content: "profile namespace probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "bob:legacy",
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("bob:legacy", "drain-namespace"), true);
+
+    const outcome = await runner.drainSession("bob:legacy", { ownerId: "drain-namespace" });
+    assert.equal(outcome.status, "drained", `expected a full drain, got ${outcome.reason ?? "deferred"}`);
+
+    const factPath = await findFactPath(memoryDir, "profile namespace probe");
+    assert.ok(factPath, "the drained fact was persisted");
+    // The ACTIVE profile's write namespace owns the fact. Flattening the
+    // unpinned legacy group to plan=null bypasses the profile gate and
+    // persists the same fact in the principal's DEFAULT namespace instead.
+    const plan = resolveScopeProfilePlan({ config, principal: "default", codingContext: null, codingOverlay: null });
+    assert.equal(plan?.writeNamespace, "shared", "the active profile writes to the shared namespace");
+    assert.ok(
+      factPath.includes(path.join("namespaces", namespaceIdentityToken("shared"))),
+      `the fact belongs to the ACTIVE profile namespace, not the default one: ${factPath}`
+    );
+    assert.equal(
+      factPath.includes(path.join("namespaces", namespaceIdentityToken("default"))),
+      false,
+      `a flattened plan=null must not write into the default namespace: ${factPath}`
+    );
   } finally {
     await model.close();
     await orchestrator?.destroy().catch(() => undefined);
