@@ -46,7 +46,7 @@ async function startModelBoundary(): Promise<{
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
+  const port = address instanceof Object ? address.port : 0;
   return {
     url: `http://127.0.0.1:${port}/v1`,
     bodies,
@@ -145,7 +145,9 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
     const names = (await readdir(drainDir)).filter((n) => n.endsWith(".json") && !n.endsWith(".lease.json"));
     assert.ok(names.length >= 1, "a claim file exists");
     for (const name of names) {
-      const body = JSON.parse(await readFile(path.join(drainDir, name), "utf8")) as { entry?: { turns?: unknown[] } };
+      // SAFETY: the claim file is this test"s own JSON tombstone; only the
+      // drained-turn count is read.
+      const body = JSON.parse(await readFile(path.join(drainDir, name), "utf8")) as { entry?: { turns?: string[] } };
       assert.equal(body.entry?.turns?.length ?? 0, 0, `claim ${name} ended as an empty tombstone`);
     }
     assert.ok(result.backlogScheduler.snapshot().counters.processed >= 1, "the scheduler counted real progress");

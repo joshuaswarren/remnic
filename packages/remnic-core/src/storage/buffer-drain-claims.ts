@@ -595,7 +595,10 @@ export class BufferDrainClaims {
     try {
       names = (await readdir(this.dir)).filter((name) => name.endsWith(".json") && !name.endsWith(".lease.json")).sort();
     } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return { entries: [] };
+      // SAFETY: readdir rejects with NodeJS system errors; only the ENOENT
+      // (no claims directory yet) case maps to an empty listing.
+      const errno = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (errno === "ENOENT") return { entries: [] };
       throw err;
     }
     const start = afterName === undefined ? 0 : names.findIndex((name) => name > afterName);

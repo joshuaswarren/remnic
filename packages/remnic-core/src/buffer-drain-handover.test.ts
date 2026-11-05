@@ -17,6 +17,8 @@ import path from "node:path";
 import test from "node:test";
 
 import type { BufferStorage } from "./buffer-persistence.js";
+import type { SessionObserverState } from "./session-observer-state.js";
+import type { TranscriptManager } from "./transcript.js";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { ClaimBufferStorage } from "./orchestration/buffer-drain-runner.js";
@@ -98,6 +100,15 @@ function makeHarness(): Harness {
     },
     cleanup: () => rmSync(stateDir, { recursive: true, force: true }),
   };
+}
+
+/**
+ * SAFETY: the harness stubs two observers this scenario never reads; the cast
+ * re-types the stub to the contract the coordinator declares.
+ */
+function asStub<T>(cause: unknown): T {
+  // SAFETY: the caller supplies the stub shape the scenario exercises.
+  return cause as T;
 }
 
 test("a claimed session's save hands over and evicts instead of writing a session file", async () => {
@@ -356,7 +367,7 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
 
     // Identity tracker: a global swap (withBufferStorage) would replace this
     // instance mid-task; the live deps read it live, exactly like selfDeps.
-    const liveHolder: { current: SmartBuffer } = { current: h.buffer };
+    const liveHolder = { current: h.buffer };
 
     // Per-key claim buffers over the SAME claim store (what the runner wires).
     const claimBufferFor = async (key: string, ownerId: string): Promise<SmartBuffer> => {
@@ -387,12 +398,7 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
       };
 
     const liveStub = makeDrainStub("sess-live", undefined);
-    const executionFor = (
-      key: string
-    ): {
-      buffer: SmartBuffer;
-      drain: ExtractionDrain;
-    } => {
+    const executionFor = (key: string) => {
       const claimBuffer = claimBuffers.get(key)!;
       const drain = new ExtractionDrain(
         {
@@ -411,17 +417,39 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
       );
       return { buffer: claimBuffer, drain };
     };
-    const deps = {
+    // SAFETY: the harness supplies exactly the members this scenario's
+    // TurnIngestionCoordinator reads; the remaining contract members are
+    // unreachable on this path.
+    const noopStorage = async () => ({ saveDroppedExtractionChunk: async () => "/dropped" });
+    const deps: TurnIngestionDeps = {
       get buffer() {
         return liveHolder.current;
       },
+      bulkImportWriteNamespace: () => "bulk-import",
       config: makeConfig(),
       extractionQueueCoordinator: realQueue,
-      extractionWindowBudgetChars: () => 500,
-      getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),
+      getStorage: async () => {
+        throw new Error("no storage on this path");
+      },
+      heartbeatObserverChains: new Map(),
+      lcmEngine: null,
+      passiveCorrectionDedup: new Set(),
+      passiveCorrectionTelemetry: {
+        detected: 0,
+        queued: 0,
+        autoApplied: 0,
+        suppressedReasonCounts: {},
+      },
+      passiveCorrectionService: () => {
+        throw new Error("passive corrections unreachable in this scenario");
+      },
       shouldQueueExtraction: () => true,
       runExtraction: liveStub,
-    } as unknown as TurnIngestionDeps;
+      queueBufferedExtraction: async () => undefined,
+      resolveMemoryIdOrHandle: () => "memory-1",
+      sessionObserver: asStub<SessionObserverState>({ turns: [], lastTurnAt: null }),
+      transcript: asStub<TranscriptManager>({ append: async () => undefined }),
+    };
     const coordinator = new TurnIngestionCoordinator(deps);
 
     const settled: Promise<void>[] = [];

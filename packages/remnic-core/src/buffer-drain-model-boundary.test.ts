@@ -150,6 +150,8 @@ async function hasFactFile(dir: string, needle: string): Promise<boolean> {
  * trusted cast point for those seams.
  */
 function asTestSeam<T>(cause: unknown): T {
+  // SAFETY: the caller supplies the locally-declared seam contract; the cast
+  // re-labels the orchestrator-private instance to that contract.
   return cause as T;
 }
 

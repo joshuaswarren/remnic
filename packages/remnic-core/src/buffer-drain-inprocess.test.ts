@@ -37,9 +37,14 @@ interface Drainer {
   cleanup(): Promise<void>;
 }
 
-async function makeDrainer(overrides: Record<string, unknown> = {}): Promise<Drainer> {
+interface DrainerOverrides {
+  namespacesEnabled?: boolean;
+  defaultNamespace?: string;
+}
+
+async function makeDrainer(overrides: DrainerOverrides = {}): Promise<Drainer> {
   const memoryDir = await mkTempMemoryDir("drain-inprocess");
-  const config = makeHarmonicLifecycleConfig(memoryDir, overrides);
+  const config = makeHarmonicLifecycleConfig(memoryDir, { ...overrides });
   const orchestrator = new Orchestrator(config);
   const calls = stubExtraction(orchestrator, (turns) => singleFactResult(`fact for ${turns[0]?.content ?? "empty"}`));
   return {
@@ -55,7 +60,7 @@ async function makeDrainer(overrides: Record<string, unknown> = {}): Promise<Dra
   };
 }
 
-function gateOnContent(calls: BufferTurn[][], content: string): { release(): void; entered(): Promise<void> } {
+function gateOnContent(calls: BufferTurn[][], content: string) {
   let release!: () => void;
   const enteredPromise = new Promise<void>((resolveEntered) => {
     const original = calls.push.bind(calls);
@@ -117,7 +122,7 @@ test("an in-process claim drain never swaps the live buffer: concurrent live sav
   }
 });
 
-const NAMESPACED: Record<string, unknown> = {
+const NAMESPACED = {
   namespacesEnabled: true,
   defaultNamespace: "default",
   principalFromSessionKeyMode: "prefix",
