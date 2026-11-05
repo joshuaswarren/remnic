@@ -6,12 +6,13 @@
 // claim retryable across cancel / dead-lease adoption.
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import test from "node:test";
 import { hostname } from "node:os";
 import path from "node:path";
+import test from "node:test";
 
-import { Orchestrator } from "./orchestrator.js";
+import { resolveNamespaceStorageRoot } from "./namespaces/storage.js";
 import { BufferDrainRunner } from "./orchestration/buffer-drain-runner.js";
+import { Orchestrator } from "./orchestrator.js";
 import type { DrainLease } from "./storage/buffer-drain-claims.js";
 import {
   cleanupDir,
@@ -21,7 +22,6 @@ import {
   singleFactResult,
   stubExtraction,
 } from "./testing/orchestrator-lite.js";
-import { resolveNamespaceStorageRoot } from "./namespaces/storage.js";
 import type { BufferTurn, PluginConfig } from "./types.js";
 
 function turn(content: string, sessionKey: string, timestamp = "2026-11-01T00:00:00.000Z"): BufferTurn {
@@ -100,13 +100,13 @@ test("an in-process claim drain never swaps the live buffer: concurrent live sav
     const persisted = await d.orchestrator.storage.loadBuffer();
     assert.ok(
       persisted.entries?.["sess-b"]?.turns.some((t) => t.content === "b2"),
-      "the concurrent live save persists through live storage",
+      "the concurrent live save persists through live storage"
     );
     const claim = await d.runner.claims.load("sess-a");
     assert.deepEqual(
       claim?.entry.turns.map((t) => t.content),
       ["a1"],
-      "the claim holds only its own session's turns",
+      "the claim holds only its own session's turns"
     );
 
     gate.release();
@@ -148,20 +148,23 @@ test("a mixed-scope claim drains each group under its exact captured scope", asy
     assert.deepEqual(
       d.calls.find((turns) => turns.some((t) => t.content === "pinned capture"))?.map((t) => t.content),
       ["pinned capture"],
-      "the pinned group extracts alone under its own scope",
+      "the pinned group extracts alone under its own scope"
     );
     assert.deepEqual(
       d.calls.find((turns) => turns.some((t) => t.content === "native one"))?.map((t) => t.content),
       ["native one"],
-      "the native group extracts alone",
+      "the native group extracts alone"
     );
     // Durable outputs land in the EXACT captured namespaces.
     const aliceRoot = await resolveNamespaceStorageRoot(d.config, "alice");
     const defaultRoot = await resolveNamespaceStorageRoot(d.config, "default");
-    assert.ok((await memoryFilesContaining(aliceRoot, "fact for pinned capture")).length > 0, "the pinned fact persists in alice");
+    assert.ok(
+      (await memoryFilesContaining(aliceRoot, "fact for pinned capture")).length > 0,
+      "the pinned fact persists in alice"
+    );
     assert.ok(
       (await memoryFilesContaining(defaultRoot, "fact for native one")).length > 0,
-      "the native fact persists in the default namespace",
+      "the native fact persists in the default namespace"
     );
   } finally {
     await d.cleanup();
@@ -190,11 +193,14 @@ test("a policy-denied group stays pending, is reported, and never blocks other g
     assert.equal(outcome.reason, "pinned_namespace_unavailable");
     assert.equal(outcome.turnsRemaining, 1, "the denied turn stays pending in the claim");
     const claim = await d.runner.claims.load("sess-denied");
-    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["pinned capture"]);
+    assert.deepEqual(
+      claim?.entry.turns.map((t) => t.content),
+      ["pinned capture"]
+    );
     const defaultRoot = await resolveNamespaceStorageRoot(d.config, "default");
     assert.ok(
       (await memoryFilesContaining(defaultRoot, "fact for native one")).length > 0,
-      "the native group drained despite the denial",
+      "the native group drained despite the denial"
     );
   } finally {
     await d.cleanup();
@@ -222,13 +228,12 @@ test("a repeatedly failing group never drops: the claim keeps every turn and the
     assert.equal(outcome.status, "failed");
     assert.equal(outcome.turnsRemaining, 2, "both turns stay as durable retryable backlog");
     const claim = await d.runner.claims.load("sess-fail");
-    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["f1", "f2"]);
-    assert.equal(existsSync(d.runner.claims.leasePathForTest("sess-fail")), false, "the lease is released for retry");
-    assert.equal(
-      existsSync(path.join(d.memoryDir, "dropped")),
-      false,
-      "no side-file recovery copy was written",
+    assert.deepEqual(
+      claim?.entry.turns.map((t) => t.content),
+      ["f1", "f2"]
     );
+    assert.equal(existsSync(d.runner.claims.leasePathForTest("sess-fail")), false, "the lease is released for retry");
+    assert.equal(existsSync(path.join(d.memoryDir, "dropped")), false, "no side-file recovery copy was written");
     // And the retry genuinely drains it.
     const retry = await d.runner.drainSession("sess-fail", { ownerId: "drain-1" });
     assert.equal(retry.status, "drained");
@@ -257,7 +262,10 @@ test("cancelling mid-drain keeps the claim retryable; a rerun finishes it", asyn
 
     const rerun = await d.runner.drainSession("sess-cancel", { ownerId: "drain-1" });
     assert.equal(rerun.status, "drained", "the rerun drains the retained claim");
-    assert.ok((await d.runner.claims.load("sess-cancel")) === null || (await d.runner.claims.load("sess-cancel"))?.entry.turns.length === 0);
+    assert.ok(
+      (await d.runner.claims.load("sess-cancel")) === null ||
+        (await d.runner.claims.load("sess-cancel"))?.entry.turns.length === 0
+    );
   } finally {
     await d.cleanup();
   }

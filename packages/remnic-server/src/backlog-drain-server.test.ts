@@ -5,14 +5,14 @@
 // no fake result shapes. The boundary records every chat completion body so
 // the ACTUAL prompt is asserted, not a stub's bookkeeping.
 import assert from "node:assert/strict";
-import test from "node:test";
-import { mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 
 import { Orchestrator, parseConfig } from "@remnic/core";
-import { startServer, type ServerResult } from "./index.js";
+import { type ServerResult, startServer } from "./index.js";
 
 const FACT = "I prefer teal dashboards for my workspace.";
 // Exact house ExtractionResult shape (singleFactResult): category "fact",
@@ -78,7 +78,13 @@ async function hasFactFile(dir: string, needle: string): Promise<boolean> {
     const child = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       if (await hasFactFile(child, needle)) return true;
-    } else if (entry.name.endsWith(".md") && (await readFile(child, "utf8").then((c) => c.includes(needle), () => false))) {
+    } else if (
+      entry.name.endsWith(".md") &&
+      (await readFile(child, "utf8").then(
+        (c) => c.includes(needle),
+        () => false
+      ))
+    ) {
       return true;
     }
   }
@@ -107,7 +113,11 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
     extractionMinUserTurns: 1,
   };
   const configPath = path.join(dir, "remnic.json");
-  await writeFile(configPath, JSON.stringify({ remnic, server: { host: "127.0.0.1", authToken: "test-token" } }), "utf8");
+  await writeFile(
+    configPath,
+    JSON.stringify({ remnic, server: { host: "127.0.0.1", authToken: "test-token" } }),
+    "utf8"
+  );
 
   // Seed BEFORE boot through the real public buffer API (native persistence).
   const seeder = new Orchestrator(parseConfig(remnic));

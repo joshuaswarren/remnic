@@ -958,14 +958,24 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
     await persistStartedPromise;
     controller.abort(new Error("shutdown"));
     const outcome = await drain;
-    console.log("MARK sequence", JSON.stringify(sequence), "outcome", outcome.status, outcome.reason, "turns", outcome.turnsRemaining, "denied", JSON.stringify(outcome.denied ?? []));
+    console.log(
+      "MARK sequence",
+      JSON.stringify(sequence),
+      "outcome",
+      outcome.status,
+      outcome.reason,
+      "turns",
+      outcome.turnsRemaining,
+      "denied",
+      JSON.stringify(outcome.denied ?? [])
+    );
 
     // The lease-loss window: releasing the lease while the gated persist is
     // still in flight (release-early) lets the closure's post-persist claim
     // write fail its ownership check, stranding already-persisted turns.
     assert.ok(
       !sequence.includes("release-early"),
-      `the lease must not be released while the queued closure is still persisting (sequence: ${JSON.stringify(sequence)})`,
+      `the lease must not be released while the queued closure is still persisting (sequence: ${JSON.stringify(sequence)})`
     );
     assert.equal(sequence[0], "persist-done", "the in-flight persist completes before any lease bookkeeping");
     assert.equal(persistCompleted, true);
