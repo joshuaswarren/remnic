@@ -6,7 +6,7 @@
  * hourly summarizer otherwise — 11 days of silent empty runs in the field.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,7 +15,7 @@ import { EngramAccessService } from "./access-service.js";
 import { HourlySummarizer } from "./summarizer.js";
 import { Orchestrator } from "./orchestrator.js";
 import { TranscriptManager } from "./transcript.js";
-import type { CodingContext, PluginConfig } from "./types.js";
+import type { CodingContext, PluginConfig, TranscriptEntry } from "./types.js";
 
 interface StubOrchestrator {
   config: PluginConfig;
@@ -248,5 +248,61 @@ test("overlapping identical observes do not double-append the same turn (#2783 r
     const entries = await readAllTranscriptLines(dir);
     assert.equal(entries.length, 1);
     assert.equal(a.transcriptPersisted !== b.transcriptPersisted, true);
+  });
+});
+
+test("observe validates transcript ownership once per append with a multi-day history", async () => {
+  await withTempDir(async (dir) => {
+    const { service, orchestrator } = makeService(dir, true);
+    const sessionKey = "agent:history-test:session";
+    const transcript = orchestrator.transcript;
+    const channelDir = path.join(dir, "transcripts", transcript.getTranscriptPath(sessionKey).dir);
+    const historyDays = 30;
+    await mkdir(channelDir, { recursive: true });
+    for (let day = 1; day <= historyDays; day++) {
+      const date = new Date(Date.UTC(2026, 8, day)).toISOString().slice(0, 10);
+      await writeFile(
+        path.join(channelDir, `${date}.jsonl`),
+        `${JSON.stringify({
+          timestamp: `${date}T12:00:00.000Z`,
+          role: "user",
+          content: `historical transcript entry ${day}`,
+          sessionKey,
+          turnId: `history-${day}`,
+        })}\n`,
+      );
+    }
+
+    const measureSizes = transcript["directoryJsonlFileSizes"].bind(transcript);
+    const scannedFileCounts: number[] = [];
+    transcript["directoryJsonlFileSizes"] = async (root, relativeDir, names) => {
+      scannedFileCounts.push(names.length);
+      return measureSizes(root, relativeDir, names);
+    };
+
+    const messages: Array<{ role: "user" | "assistant"; content: string }> = [
+      { role: "user", content: "please summarize the state of the transcript history" },
+      { role: "assistant", content: "the transcript history is complete and ordered" },
+      { role: "user", content: "now verify the ownership checks remain correct" },
+    ];
+    await service.observe({ sessionKey, messages });
+
+    assert.deepEqual(
+      scannedFileCounts,
+      [historyDays, historyDays + 1, historyDays + 1],
+      "each appended turn should do one ownership inventory for the accumulated transcript history",
+    );
+    const entries = await readAllTranscriptLines(dir);
+    assert.equal(entries.length, historyDays + messages.length);
+    const today = new Date().toISOString().slice(0, 10);
+    // SAFETY: this newly created daily file contains only TranscriptManager appends.
+    const todayEntries = (await readFile(path.join(channelDir, `${today}.jsonl`), "utf-8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as TranscriptEntry);
+    assert.deepEqual(
+      todayEntries.map((entry) => entry.content),
+      messages.map((message) => message.content),
+    );
   });
 });

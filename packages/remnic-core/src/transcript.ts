@@ -343,18 +343,24 @@ export class TranscriptManager {
     root: string,
     dir: string,
     sessionKey: string,
+    file: string,
   ): Promise<void> {
+    const cacheKey = this.directoryOwnershipCacheKey(root, dir, sessionKey);
+    const cached = this.directoryOwnershipCache.get(cacheKey);
+    if (!cached) return;
+
     try {
-      const channelDir = await resolveSafeStoragePath(root, dir);
-      const names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file));
-      const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
-      if (!fileSizes) return;
-      this.directoryOwnershipCache.set(
-        this.directoryOwnershipCacheKey(root, dir, sessionKey),
-        { status: "matches", fileSizes },
-      );
+      const filePath = await resolveSafeStoragePath(root, dir, file);
+      const fileInfo = await stat(filePath);
+      if (!fileInfo.isFile()) {
+        this.directoryOwnershipCache.delete(cacheKey);
+        return;
+      }
+      const fileSizes = new Map(cached.fileSizes);
+      fileSizes.set(file, Math.max(0, fileInfo.size));
+      this.directoryOwnershipCache.set(cacheKey, { status: "matches", fileSizes });
     } catch {
-      // Cache refresh is best-effort; write path correctness does not depend on it.
+      this.directoryOwnershipCache.delete(cacheKey);
     }
   }
 
@@ -412,7 +418,7 @@ export class TranscriptManager {
     await mkdir(channelDir, { recursive: true });
     const filePath = await resolveSafeStoragePath(this.toolUsageDir, writeDir, file);
     await appendFile(filePath, JSON.stringify(entry) + "\n", "utf-8");
-    await this.rememberDirectoryOwnership(this.toolUsageDir, writeDir, entry.sessionKey);
+    await this.rememberDirectoryOwnership(this.toolUsageDir, writeDir, entry.sessionKey, file);
   }
 
   async readToolUse(
@@ -610,7 +616,7 @@ export class TranscriptManager {
 
       const line = JSON.stringify(entry) + "\n";
       await appendFile(filePath, line, "utf-8");
-      await this.rememberDirectoryOwnership(this.transcriptsDir, writeDir, entry.sessionKey);
+      await this.rememberDirectoryOwnership(this.transcriptsDir, writeDir, entry.sessionKey, file);
       log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
     } catch (err) {
       log.error("failed to append transcript entry:", err);
