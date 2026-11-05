@@ -707,3 +707,36 @@ test("a claim creation failure is caught: failed counter, backoff, no crash", as
     await scheduler.stop();
   }
 });
+
+test("claims past the concurrency bound are re-listed on the next tick, in page order", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const claimKeys: string[] = [];
+  for (let i = 1; i <= 17; i += 1) claimKeys.push("claim-" + String(i).padStart(2, "0"));
+  const state: StubState = {
+    counts: new Map(claimKeys.map((key) => [key, { turns: 1, retainedTurns: 0 }])),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: claimKeys.map((key) => emptyOutcome(key, { turnsAtStart: 1 })),
+    drained: [],
+  };
+  const scheduler = new BacklogScheduler(makeDeps(state, queue), { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    // Two ticks with concurrency 1: page order must be preserved — the
+    // first two claims drain, one per tick, in claim order.
+    for (let tick = 1; tick <= 2; tick += 1) {
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+    }
+    const drainedKeys = state.drained.map((entry) => entry.key);
+    assert.deepEqual(drainedKeys.slice(0, 2), [claimKeys[0], claimKeys[1]], "page-order fairness: claims 1 then 2 drain before claim 17");
+    for (let tick = 3; tick <= 20; tick += 1) {
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+    }
+    assert.equal(new Set(state.drained.map((entry) => entry.key)).size, 17, "every claim drains exactly once");
+  } finally {
+    await scheduler.stop();
+  }
+});

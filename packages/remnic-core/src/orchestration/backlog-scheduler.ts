@@ -209,6 +209,7 @@ export class BacklogScheduler {
   private async tick(): Promise<void> {
     if (this.ticking || this.stopped) return;
     this.ticking = true;
+    const cursorBeforeTick = this.claimCursor;
     try {
       // stop() may land while discovery's I/O is pending: re-check before
       // submitting anything, and again per candidate.
@@ -225,7 +226,11 @@ export class BacklogScheduler {
         return;
       }
       if (this.stopped) return;
-      this.submitCandidates(candidates);
+      const dropped = this.submitCandidates(candidates);
+      // The concurrency bound stopped submission mid-page: rewind the page
+      // cursor so the unsubmitted claims are re-listed on the next tick
+      // (already-submitted ones are gated by inFlight and key backoff).
+      if (dropped) this.claimCursor = cursorBeforeTick;
     } finally {
       this.ticking = false;
     }
@@ -253,8 +258,13 @@ export class BacklogScheduler {
   }
 
   /** Submit discovery candidates within the queue's concurrency bound. */
-  private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): void {
+  private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): boolean {
+    let dropped = false;
     for (const candidate of candidates) {
+      if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) {
+        dropped = true;
+        break;
+      }
       if (!this.candidateEligible(candidate)) continue;
       // Fence the claim decision: reserve the key synchronously BEFORE the
       // async rename so no queued task for it can pass the claimed gate in
@@ -265,6 +275,7 @@ export class BacklogScheduler {
       }
       void this.submit(candidate.key, candidate.needsClaim);
     }
+    return dropped;
   }
 
   /** inFlight is the authority for "already submitted" — key state only
