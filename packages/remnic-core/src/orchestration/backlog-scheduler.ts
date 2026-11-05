@@ -38,8 +38,9 @@ import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-clai
 export interface BacklogSchedulerDeps {
   queue: Pick<ExtractionQueueCoordinator, "tryReserveKey" | "releaseKeyReservation" | "maxConcurrency">;
   claims: Pick<BufferDrainClaims, "list" | "listPage" | "claimFromSessionFile" | "isClaimed">;
-  /** Live per-key pending counts (counts only — never turn payloads). */
-  liveBufferCounts(): Map<string, { turns: number; retainedTurns: number }>;
+  /** Live per-key pending counts (counts only — never turn payloads). May be
+   *  async: hosts with a lazily-loaded buffer load it here (idempotent). */
+  liveBufferCounts(): Map<string, { turns: number; retainedTurns: number }> | Promise<Map<string, { turns: number; retainedTurns: number }>>;
   /** A fresh lease for claims this scheduler takes. */
   lease(): DrainLease;
   /** Drain one key to quiescence (BufferDrainRunner.drainSession). */
@@ -250,7 +251,7 @@ export class BacklogScheduler {
       out.push({ key: listed.key, needsClaim: false });
     }
     this.claimCursor = page.nextCursor;
-    for (const [key, counts] of this.deps.liveBufferCounts()) {
+    for (const [key, counts] of await this.deps.liveBufferCounts()) {
       if (counts.turns + counts.retainedTurns <= 0) continue;
       if (seen.has(key) || this.deps.claims.isClaimed(key)) continue;
       seen.add(key);
@@ -372,7 +373,12 @@ export function wireBacklogScheduler(orchestrator: Orchestrator, options: Backlo
     {
       queue: orchestrator.extractionQueueCoordinator,
       claims: orchestrator.storage.bufferDrainClaims(),
-      liveBufferCounts: () => orchestrator.buffer.entryCounts(),
+      liveBufferCounts: async () => {
+        // The daemon's buffer may be lazy: ensure the persisted state is in
+        // memory before counting (load is guarded/idempotent).
+        await orchestrator.buffer.load();
+        return orchestrator.buffer.entryCounts();
+      },
       lease: () => {
         const now = new Date().toISOString();
         return {
