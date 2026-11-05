@@ -169,6 +169,10 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
     for (const [index, content] of contents.entries()) {
       await orchestrator.buffer.addTurn("budget-sess", {
         role: "user",
+        // Connector-tagged: the renderer prepends a "Source: <connector>"
+        // header for these, so the conversation-only budget measure must
+        // include the same gate/margin the engine applies.
+        sourceConnector: "omp",
         content,
         timestamp: `2026-11-01T00:${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
         sessionKey: "budget-sess",
@@ -182,8 +186,6 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
     await orchestrator.buffer.save();
     assert.equal(await runner.claim("budget-sess", "drain-budget"), true);
 
-    const budgetSeam = orchestrator as unknown as { extractionWindowBudgetChars(): number };
-    console.error(`BUDGET DEBUG budget=${budgetSeam.extractionWindowBudgetChars()} modelSource=${config.modelSource} localLlm=${config.localLlmEnabled}`);
     const outcome = await runner.drainSession("budget-sess", { ownerId: "drain-budget" });
     assert.equal(outcome.status, "drained", `expected a full drain, got ${outcome.reason ?? "deferred"}`);
 

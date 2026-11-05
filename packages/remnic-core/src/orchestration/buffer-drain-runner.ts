@@ -31,6 +31,7 @@ import { ExtractionDrain } from "./extraction-drain.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import { headerConnector, renderExtractionConversation, resolveSourceConnector } from "../source-agent-qualifier.js";
+import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { Orchestrator } from "../orchestrator.js";
 
 export type DrainSessionStatus = "drained" | "deferred" | "failed" | "skipped";
@@ -197,12 +198,20 @@ export class BufferDrainRunner {
           extractionChunkDropAfterFailures: config.extractionChunkDropAfterFailures,
         },
         extractionWindowBudgetChars: () => ingestionDeps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY,
-        // Render-exact chunk sizing: the SAME renderer derivation extract()
-        // uses, so a chunk that fits here fits the model input clamp.
-        measureRenderedTurns: (turns) => renderExtractionConversation(
-          turns.map((turn) => ({ ...turn, content: turn.content.trim().slice(0, config.extractionMaxTurnChars) })),
-          headerConnector(resolveSourceConnector(turns)),
-        ).renderedConversation.length,
+        // Render-exact chunk sizing: the model clamp bounds the CONVERSATION
+        // (truncateLocalExtractionConversation), so measure exactly that —
+        // with the SAME source-classification gate extract() applies when it
+        // prepends the connector header (header margin included when the
+        // engine would render it).
+        measureRenderedTurns: (turns) => {
+          const sourceConnector = resolveMemoryLifecycleCapabilities(config).extractionScopeClassification
+            ? resolveSourceConnector(turns)
+            : undefined;
+          return renderExtractionConversation(
+            turns.map((turn) => ({ ...turn, content: turn.content.trim().slice(0, config.extractionMaxTurnChars) })),
+            headerConnector(sourceConnector),
+          ).conversation.length;
+        },
         runExtraction: (turns, runOptions) => isolatedRun.runExtraction(turns, runOptions),
         getStorage: () => ingestionDeps.getStorage(),
         buffer: claimBuffer,
