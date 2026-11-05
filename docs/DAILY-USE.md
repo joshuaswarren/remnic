@@ -4,22 +4,26 @@ This is a 30-day log from my own self-hosted Remnic daemon, one namespace, read 
 
 Scope: the detail read returns each memory's text and file path. The script keeps only the created time and the named frontmatter fields (connector, origin, source), and nothing but counts is published. The 8,601 are non-private memories: the list and detail routes exclude private memories.
 
-Window: 2026-10-06 00:00 UTC to 2026-11-05 16:00 UTC. That is 31 UTC days. The last day is partial: 16 hours, 564 writes.
+Window: 2026-10-06 00:00 UTC to 2026-11-05 16:00 UTC. That is 31 UTC days. The last day is partial: 16 hours, 564 retained memories.
 
-## Writes per day
+## Retained memories created per day
+
+This counts memories still retained when the scan reads them, grouped by created date. It is not a write-event count. A memory deleted before the scan is absent, and an update to an existing memory is not counted. The list route pages through the live store and has no snapshot read, so a memory archived during the scan can shift later rows and be missed. Every figure here is a read-time count.
 
 | Measure | Value |
 | --- | --- |
-| Memories written in the window | 8,601 |
+| Retained memories created in the window | 8,601 |
+| Days in the window | 31 |
+| Days with zero retained memories | 0 |
 | Per day, median | 168 |
 | Per day, mean | 277.5 |
 | Per day, lowest and highest | 35 and 1,394 |
 
-## Who writes
+## Who created them
 
-Each memory records its writer in `sourceConnector`. Every memory in the window was read once, by id.
+Each retained memory records the connector that created it in `sourceConnector`. Every id from the window scan was read once.
 
-| Connector | Memories |
+| Connector | Retained memories |
 | --- | --- |
 | codex | 5,092 |
 | grok-bot | 1,043 |
@@ -61,7 +65,7 @@ This route needs the daemon's configured operator principal. A token for any oth
 
 ## Commands
 
-Set `REMNIC_URL` and `REMNIC_TOKEN` from your own config. Do not publish either value. This script produced the window, write, and connector numbers above:
+Set `REMNIC_URL` and `REMNIC_TOKEN` from your own config. Do not publish either value. This script produced the window, per-day, and connector numbers above:
 
 ```python
 import collections, datetime as dt, json, os, socket, statistics, urllib.error, urllib.request
@@ -93,8 +97,10 @@ while True:
     off += 200
 
 per_day = collections.Counter(t.date().isoformat() for t in seen.values())
-days = [per_day[d] for d in sorted(per_day)]
-print("window", START.isoformat(), END.isoformat(), "memories", len(seen), "days", len(days))
+# Every UTC date in the window, so a day with no retained memories counts as zero.
+window_days = [(START + dt.timedelta(days=i)).date().isoformat() for i in range((END - START).days + 1)]
+days = [per_day.get(d, 0) for d in window_days]
+print("window", START.isoformat(), END.isoformat(), "retained memories created in window", len(seen), "days", len(days), "zero-write days", sum(1 for d in days if d == 0))
 print("per day median", statistics.median(days), "mean", round(statistics.mean(days), 1), "min", min(days), "max", max(days))
 print("partial day 2026-11-05 counted to 16:00Z:", per_day["2026-11-05"])
 
@@ -117,4 +123,4 @@ print("origin", dict(collections.Counter(r[2] for r in ok)))
 print("source where no connector", dict(collections.Counter(r[3] for r in ok if r[1] == "none")))
 ```
 
-The counts from one run: 8,601 memories, 31 days; detail status 8,304 ok and 297 `http 404`; `sourceConnector` codex 5,092, grok-bot 1,043, none 2,160, chatgpt 8, openclaw 1; `origin` connector:codex 3,537, none 4,755, unknown 12; `source` for the 2,160 with no connector as listed above.
+The counts from one run, which was the run above: 8,601 retained memories over 31 days, 0 zero-write days; detail status 8,304 ok and 297 `http 404`; `sourceConnector` codex 5,092, grok-bot 1,043, none 2,160, chatgpt 8, openclaw 1; `origin` connector:codex 3,537, none 4,755, unknown 12; `source` for the 2,160 with no connector as listed above.
