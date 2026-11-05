@@ -301,9 +301,9 @@ export class BacklogScheduler {
       // in the detached submission).
       this.counters.failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      // SAFETY: drainKey throws plain Errors; only a drain-level retry hint
-      // (turnsRemaining) may ride on them, everything else backs off default.
-      this.setBackoff(key, (err as { turnsRemaining?: number }).turnsRemaining ?? 0, message);
+      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
+      // optional chain reads the hint off Error throws only.
+      this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} submission failed: ${message}`);
     } finally {
       this.inFlight.delete(key);
@@ -346,9 +346,9 @@ export class BacklogScheduler {
     } catch (err) {
       this.counters.failed += 1;
       const message = err instanceof Error ? err.message : String(err);
-      // SAFETY: drainKey throws plain Errors; only a drain-level retry hint
-      // (turnsRemaining) may ride on them, everything else backs off default.
-      this.setBackoff(key, (err as { turnsRemaining?: number }).turnsRemaining ?? 0, message);
+      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
+      // optional chain reads the hint off Error throws only.
+      this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} threw: ${message}`);
     }
   }
