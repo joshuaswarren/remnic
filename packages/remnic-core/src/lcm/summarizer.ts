@@ -33,12 +33,25 @@ export class LcmSummarizer {
   /**
    * Run incremental summarization for a session.
    * Creates leaf nodes from unsummarized messages, then rolls up as needed.
+   *
+   * `maxLeafBatches` bounds one pass: the archive read is limited to that
+   * many complete batches, so a long backlog never loads the whole
+   * unsummarized tail into memory. Remaining batches stay durable in the
+   * archive and are picked up by the next pass.
    */
-  async summarizeIncremental(sessionId: string): Promise<number> {
+  async summarizeIncremental(
+    sessionId: string,
+    options: { maxLeafBatches?: number } = {},
+  ): Promise<number> {
     let nodesCreated = 0;
 
     // Phase 1: Create leaf nodes from unsummarized messages
-    const unsummarized = this.archive.getUnsummarizedMessages(sessionId);
+    const maxLeafBatches = options.maxLeafBatches;
+    const readLimit =
+      maxLeafBatches === undefined
+        ? undefined
+        : maxLeafBatches * this.config.leafBatchSize;
+    const unsummarized = this.archive.getUnsummarizedMessages(sessionId, readLimit);
     if (unsummarized.length >= this.config.leafBatchSize) {
       const batches = chunkArray(unsummarized, this.config.leafBatchSize);
       // Only process complete batches (leave partial for next time)

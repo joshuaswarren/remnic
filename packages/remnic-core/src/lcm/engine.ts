@@ -96,6 +96,17 @@ const EMPTY_LCM_STATS = {
   maxDepth: -1,
 } as const;
 
+/**
+ * Upper bound on leaf batches summarized by one background job. Keeps a single
+ * job's archive read and wall time bounded; leftover batches stay durable and
+ * the job re-queues itself.
+ */
+const LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB = 16;
+
+/** Retry pacing for a failed summary pass: base delay and backoff ceiling. */
+const LCM_SUMMARIZE_RETRY_BASE_MS = 500;
+const LCM_SUMMARIZE_RETRY_MAX_MS = 30_000;
+
 export class LcmEngine {
   private db: Database.Database | null = null;
   private archive: LcmArchive | null = null;
@@ -106,6 +117,17 @@ export class LcmEngine {
   private readonly config: LcmEngineConfig;
   private readonly memoryDir: string;
   private initPromise: Promise<void> | null = null;
+  private readonly summarizeRetryTimers = new Map<string, NodeJS.Timeout>();
+  private readonly summarizeRetryAttempts = new Map<string, number>();
+  /** Resolved when the session's pending retry timer has fired or been cleared. */
+  private readonly summarizeRetryWaiters = new Map<
+    string,
+    { promise: Promise<void>; resolve: () => void }
+  >();
+  /** Explicit idle waiters per session; referenced only while nonzero. */
+  private readonly summarizeRetryIdleWaiters = new Map<string, number>();
+  /** Base backoff delay; tests shrink it to keep the retry loop fast. */
+  private summarizeRetryBaseMs = LCM_SUMMARIZE_RETRY_BASE_MS;
   private readonly pendingObserveInitCounts = new Map<string, number>();
   private readonly pendingObserveInitWaiters = new Map<string, Array<() => void>>();
   private readonly pendingObserveInitIdleWaiters: Array<() => void> = [];
@@ -158,8 +180,8 @@ export class LcmEngine {
     );
     const observeQueue = new LcmWorkQueue({
       concurrency: this.config.observeConcurrency,
-      worker: async (sessionId, messages) => {
-        await this.processObserveMessages(sessionId, messages);
+      worker: async (sessionId) => {
+        await this.processSummarizeJob(sessionId);
       },
       hooks: {
         onJobStart: ({ sessionId, depth, inFlight, waitMs }) => {
@@ -200,12 +222,31 @@ export class LcmEngine {
     this.dag = dag;
     this.summarizer = summarizer;
     this.observeQueue = observeQueue;
+    this.resumeOutstandingSummaries();
     log.info("LCM engine initialized");
   }
 
   /**
-   * Enqueue messages from agent_end hook.
-   * The queue worker performs the archive append and incremental summarization.
+   * Restart resume: sessions whose durable archive still holds complete
+   * unsummarized batches get a summary job without any new observe call.
+   * Only session references are queued — the content already lives in SQLite.
+   */
+  private resumeOutstandingSummaries(): void {
+    if (!this.archive || !this.observeQueue) return;
+    const sessions = this.archive.listSessionsWithUnsummarizedTurns(
+      this.config.leafBatchSize,
+    );
+    if (sessions.length === 0) return;
+    for (const sessionId of sessions) this.observeQueue.enqueue(sessionId);
+    log.info(`LCM resume scheduled summary jobs: sessions=${sessions.length}`);
+  }
+
+  /**
+   * Archive observed messages and schedule background summarization.
+   *
+   * The archive append completes BEFORE this resolves: an accepted observe is
+   * already durable in SQLite, so a crash cannot lose it. Only the
+   * summarization is background work, and it resumes from the durable archive.
    */
   async observeMessages(
     sessionId: string,
@@ -213,53 +254,60 @@ export class LcmEngine {
   ): Promise<void> {
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
-    this.enqueueObserveMessages(normalizedSessionId, messages);
+    await this.enqueueObserveMessages(normalizedSessionId, messages);
   }
 
-  /** Enqueue an observe job without waiting for worker completion. */
-  enqueueObserveMessages(
+  /**
+   * Durably archive messages, then queue a metadata-only summary job.
+   *
+   * Rejects when the archive append fails — callers must not treat a failed
+   * archive as an accepted observation.
+   */
+  async enqueueObserveMessages(
     sessionId: string,
     messages: LcmObserveMessage[],
-  ): void {
-    if (!this.config.enabled || this.closed) return;
+  ): Promise<void> {
+    // LCM off is a feature gate (the caller reports "not archived"); a closed
+    // engine is a failure — accepting the turn and archiving nothing would
+    // acknowledge a turn the archive never stored.
+    if (!this.config.enabled) return;
+    if (this.closed) throw new Error("LCM engine is closed");
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     if (messages.length === 0) return;
 
     this.reservePendingObserveInit(normalizedSessionId);
 
-    void this.ensureInitialized()
-      .then(() => {
-        if (this.closed || !this.observeQueue) return;
-        this.observeQueue.enqueue(normalizedSessionId, messages);
-        log.debug(
-          `LCM observe enqueued: session=${normalizedSessionId}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
-        );
-      })
-      .catch((err) => {
-        if (this.closed) return;
-        log.error(
-          `LCM observe enqueue initialization error: ${err}${nativeBindingRecoveryHint(err)}`,
-        );
-      })
-      .finally(() => {
-        this.releasePendingObserveInit(normalizedSessionId);
-      });
+    try {
+      await this.ensureInitialized();
+      if (this.closed) throw new Error("LCM engine is closed");
+      if (!this.archive || !this.observeQueue) {
+        throw new Error("LCM engine is not initialized");
+      }
+
+      const archived = this.archiveObservedMessages(normalizedSessionId, messages);
+      this.observeQueue.enqueue(normalizedSessionId);
+      log.debug(
+        `LCM observe archived: session=${normalizedSessionId}, messages=${archived}, depth=${this.observeQueue.depth}, inFlight=${this.observeQueue.inFlightCount}`,
+      );
+    } catch (err) {
+      log.error(
+        `LCM observe archive failed: session=${normalizedSessionId}, error=${err}${nativeBindingRecoveryHint(err)}`,
+      );
+      throw err;
+    } finally {
+      this.releasePendingObserveInit(normalizedSessionId);
+    }
   }
 
-  private async processObserveMessages(
+  /** Append observed messages to the archive; returns the number of rows. */
+  private archiveObservedMessages(
     sessionId: string,
     messages: LcmObserveMessage[],
-  ): Promise<void> {
-    if (this.closed) return;
-    await this.ensureInitialized();
-    if (this.closed || !this.archive || !this.summarizer) return;
-
-    if (messages.length === 0) return;
-
-    const currentMax = this.archive.getMaxTurnIndex(sessionId);
+  ): number {
+    const currentMax = this.archive!.getMaxTurnIndex(sessionId);
     const { messagePartsEnabled } = this.config;
-    const newMessages = messages.map((m, i) => ({
+    const rows = messages.map((m, i) => ({
       turnIndex: currentMax + 1 + i,
       role: m.role,
       content: m.content,
@@ -268,16 +316,109 @@ export class LcmEngine {
       sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
     }));
 
-    this.archive.appendMessages(sessionId, newMessages, {
-      messagePartsEnabled,
-    });
+    this.archive!.appendMessages(sessionId, rows, { messagePartsEnabled });
+    return rows.length;
+  }
 
-    // Trigger incremental summarization inside the worker, after append.
+  /**
+   * Summarize one session's durable backlog.
+   *
+   * The pass is capped so a long backlog never holds a job open indefinitely;
+   * remaining batches stay durable and the job re-queues itself.
+   */
+  private async processSummarizeJob(sessionId: string): Promise<void> {
+    if (this.closed) return;
+    await this.ensureInitialized();
+    if (this.closed || !this.archive || !this.summarizer || !this.observeQueue)
+      return;
+
     try {
-      await this.summarizer.summarizeIncremental(sessionId);
+      await this.summarizer.summarizeIncremental(sessionId, {
+        maxLeafBatches: LCM_SUMMARIZE_MAX_LEAF_BATCHES_PER_JOB,
+      });
     } catch (err) {
-      log.debug(`LCM incremental summarization error: ${err}`);
+      // The archived turns are durable; a failed pass must not strand them
+      // until the next observe or a restart.
+      log.error(`LCM incremental summarization failed: session=${sessionId}, error=${err}`);
+      this.scheduleSummarizeRetry(sessionId);
+      return;
     }
+
+    this.clearSummarizeRetry(sessionId);
+
+    if (this.hasCompleteBatchPending(sessionId)) {
+      this.observeQueue.enqueue(sessionId);
+    }
+  }
+
+  /**
+   * Schedule a metadata-only retry for a failed summary pass.
+   *
+   * The retry keeps trying for as long as the engine is open and complete
+   * batches remain — a transient failure must never strand durable work.
+   * What is bounded is the RATE, not the ability to retry: one pending timer
+   * per session, exponential backoff capped at
+   * {@link LCM_SUMMARIZE_RETRY_MAX_MS}, and an unreferenced timer that is
+   * cleared when the engine closes.
+   */
+  private scheduleSummarizeRetry(sessionId: string): void {
+    if (this.closed || this.summarizeRetryTimers.has(sessionId)) return;
+    const attempt = (this.summarizeRetryAttempts.get(sessionId) ?? 0) + 1;
+    this.summarizeRetryAttempts.set(sessionId, attempt);
+    const delayMs = Math.min(
+      LCM_SUMMARIZE_RETRY_MAX_MS,
+      this.summarizeRetryBaseMs * 2 ** Math.min(attempt - 1, 16),
+    );
+    // The waiter makes the pending retry visible to idle waits, so a direct
+    // flush (pre-compaction) serializes with the retry instead of racing it.
+    const retry = Promise.withResolvers<void>();
+    this.summarizeRetryWaiters.set(sessionId, retry);
+    const timer = setTimeout(() => {
+      this.summarizeRetryTimers.delete(sessionId);
+      this.summarizeRetryWaiters.delete(sessionId);
+      if (this.closed) {
+        retry.resolve();
+        return;
+      }
+      if (!this.hasCompleteBatchPending(sessionId)) {
+        this.summarizeRetryAttempts.delete(sessionId);
+        retry.resolve();
+        return;
+      }
+      // Re-queue before releasing the waiter: an idle wait released by the
+      // retry must observe the queued job, never run beside it.
+      this.observeQueue?.enqueue(sessionId);
+      retry.resolve();
+    }, delayMs);
+    // Pure background: unreferenced, so a one-shot host is never kept alive
+    // by a retry loop. An explicit idle waiter (see waitForSessionObserveIdle)
+    // references it for the duration of the wait, and close() clears all.
+    timer.unref?.();
+    this.summarizeRetryTimers.set(sessionId, timer);
+  }
+
+  /** True when the session still holds a complete unsummarized batch. */
+  private hasCompleteBatchPending(sessionId: string): boolean {
+    if (!this.archive) return false;
+    return (
+      this.archive.countUnsummarizedMessages(sessionId) >=
+      this.config.leafBatchSize
+    );
+  }
+
+  /** Drop a pending retry, its attempt counter, and release idle waiters. */
+  private clearSummarizeRetry(sessionId: string): void {
+    const timer = this.summarizeRetryTimers.get(sessionId);
+    if (timer) {
+      clearTimeout(timer);
+      this.summarizeRetryTimers.delete(sessionId);
+    }
+    const waiter = this.summarizeRetryWaiters.get(sessionId);
+    if (waiter) {
+      this.summarizeRetryWaiters.delete(sessionId);
+      waiter.resolve();
+    }
+    this.summarizeRetryAttempts.delete(sessionId);
   }
 
   get observeQueueDepth(): number {
@@ -288,12 +429,22 @@ export class LcmEngine {
     return this.observeQueue?.inFlightCount ?? 0;
   }
 
-  async waitForObserveQueueIdle(): Promise<void> {
+  async waitForObserveQueueIdle(abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
+    abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle();
-    await this.observeQueue?.whenIdle();
+    for (;;) {
+      abortSignal?.throwIfAborted();
+      await this.waitForPendingObserveInitIdle(undefined, abortSignal);
+      await this.observeQueue?.whenIdle(abortSignal);
+      abortSignal?.throwIfAborted();
+      const entry = [...this.summarizeRetryWaiters.entries()][0];
+      if (!entry) return;
+      await this.awaitSummarizeRetry(entry[0], entry[1], abortSignal);
+      // A fired retry may have re-queued a session: wait for the queue again.
+    }
   }
 
   async waitForSessionObserveIdle(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
@@ -304,8 +455,42 @@ export class LcmEngine {
     await this.ensureInitialized();
     abortSignal?.throwIfAborted();
     if (this.closed) return;
-    await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
-    await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
+    // Serialize with pending summary retries: a direct flush (pre-compaction)
+    // must not run beside a retry pass for the same session.
+    for (;;) {
+      await this.waitForPendingObserveInitIdle(normalizedSessionId, abortSignal);
+      await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
+      const waiter = this.summarizeRetryWaiters.get(normalizedSessionId);
+      if (!waiter) return;
+      await this.awaitSummarizeRetry(normalizedSessionId, waiter, abortSignal);
+      // The retry fired and may have re-queued the session: wait again.
+    }
+  }
+
+  /**
+   * Park an explicit idle wait on a pending retry. While any wait is parked,
+   * the retry timer is referenced so a one-shot host cannot exit under the
+   * wait; with no waiters the timer stays unreferenced background work.
+   */
+  private async awaitSummarizeRetry(
+    sessionId: string,
+    waiter: { promise: Promise<void>; resolve: () => void },
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    const waiters = (this.summarizeRetryIdleWaiters.get(sessionId) ?? 0) + 1;
+    this.summarizeRetryIdleWaiters.set(sessionId, waiters);
+    this.summarizeRetryTimers.get(sessionId)?.ref?.();
+    try {
+      await abortOnSignal(abortSignal, waiter.promise);
+    } finally {
+      const remaining = (this.summarizeRetryIdleWaiters.get(sessionId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.summarizeRetryIdleWaiters.delete(sessionId);
+        this.summarizeRetryTimers.get(sessionId)?.unref?.();
+      } else {
+        this.summarizeRetryIdleWaiters.set(sessionId, remaining);
+      }
+    }
   }
 
   private reservePendingObserveInit(sessionId: string): void {
@@ -359,8 +544,18 @@ export class LcmEngine {
     }
 
     if (this.pendingObserveInitCounts.size === 0) return;
-    await new Promise<void>((resolve) => {
-      this.pendingObserveInitIdleWaiters.push(resolve);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (): void => {
+        abortSignal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const remaining = this.pendingObserveInitIdleWaiters.filter((waiter) => waiter !== finish);
+        this.pendingObserveInitIdleWaiters.splice(0, this.pendingObserveInitIdleWaiters.length, ...remaining);
+        reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+      };
+      this.pendingObserveInitIdleWaiters.push(finish);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -697,23 +892,25 @@ export class LcmEngine {
   }
 
   /** Clear all LCM archive and summary state for one session. */
-  async clearSession(sessionId: string): Promise<void> {
+  async clearSession(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
     if (this.closed || !this.archive || !this.dag) return;
-    await this.waitForSessionObserveIdle(normalizedSessionId);
+    await this.waitForSessionObserveIdle(normalizedSessionId, abortSignal);
+    abortSignal?.throwIfAborted();
     this.dag.deleteSession(normalizedSessionId);
     this.archive.deleteSession(normalizedSessionId);
   }
 
   /** Clear all LCM archive and summary state without closing the engine. */
-  async clearAll(): Promise<void> {
+  async clearAll(abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
     if (this.closed || !this.archive || !this.dag) return;
-    await this.waitForObserveQueueIdle();
+    await this.waitForObserveQueueIdle(abortSignal);
+    abortSignal?.throwIfAborted();
     this.dag.deleteAll();
     this.archive.deleteAll();
   }
@@ -735,6 +932,12 @@ export class LcmEngine {
   /** Close the database connection. */
   close(): void {
     this.closed = true;
+    for (const timer of this.summarizeRetryTimers.values()) clearTimeout(timer);
+    this.summarizeRetryTimers.clear();
+    this.summarizeRetryAttempts.clear();
+    for (const retry of this.summarizeRetryWaiters.values()) retry.resolve();
+    this.summarizeRetryWaiters.clear();
+    this.summarizeRetryIdleWaiters.clear();
     if (this.db) {
       this.db.close();
     }

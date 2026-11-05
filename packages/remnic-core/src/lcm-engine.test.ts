@@ -887,9 +887,18 @@ test("close prevents deferred observe work from reinitializing the engine", asyn
     await engine.ensureInitialized();
     engine.close();
 
-    await (engine as any).processObserveMessages("session-1", [
-      { role: "user", content: "should not reopen" },
-    ]);
+    // SAFETY: the private summarize job runner is called directly to prove a
+    // closed engine never reopens.
+    await (engine as any).processSummarizeJob("session-1");
+    // A closed engine must reject acceptance: acknowledging a turn it can no
+    // longer archive would claim a copy that does not exist.
+    await assert.rejects(
+      () =>
+        engine.observeMessages("session-1", [
+          { role: "user", content: "should not reopen" },
+        ]),
+      /closed/,
+    );
 
     assert.equal((engine as any).db, null);
     assert.equal((engine as any).archive, null);

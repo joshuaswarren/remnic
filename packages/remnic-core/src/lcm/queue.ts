@@ -26,13 +26,12 @@ export interface LcmWorkQueueHooks {
 
 export interface LcmWorkQueueOptions {
   concurrency?: number;
-  worker: (sessionId: string, messages: LcmObserveMessage[]) => Promise<void>;
+  worker: (sessionId: string) => Promise<void>;
   hooks?: LcmWorkQueueHooks;
 }
 
 interface PendingJob {
   sessionId: string;
-  messages: LcmObserveMessage[];
   enqueuedAt: number;
 }
 
@@ -42,13 +41,14 @@ interface PendingJob {
  * Jobs are coalesced per session while they are pending. A session can have
  * at most one in-flight job at a time, and the queue processes jobs FIFO up to
  * the configured concurrency limit.
+ *
+ * The queue carries session references only — never message payloads. Observe
+ * content is archived in SQLite before it is queued, so a pending job is a
+ * "this session has durable unsummarized turns" marker.
  */
 export class LcmWorkQueue {
   private readonly concurrency: number;
-  private readonly worker: (
-    sessionId: string,
-    messages: LcmObserveMessage[],
-  ) => Promise<void>;
+  private readonly worker: (sessionId: string) => Promise<void>;
   private readonly hooks: LcmWorkQueueHooks;
   private readonly pending = new Map<string, PendingJob>();
   private readonly inFlightSessions = new Set<string>();
@@ -63,17 +63,14 @@ export class LcmWorkQueue {
     this.hooks = options.hooks ?? {};
   }
 
-  enqueue(sessionId: string, messages: LcmObserveMessage[]): void {
-    if (messages.length === 0) return;
+  enqueue(sessionId: string): void {
+    if (sessionId.length === 0) return;
 
     const now = Date.now();
     const existing = this.pending.get(sessionId);
-    if (existing) {
-      existing.messages.push(...messages.map((message) => ({ ...message })));
-    } else {
+    if (!existing) {
       this.pending.set(sessionId, {
         sessionId,
-        messages: messages.map((message) => ({ ...message })),
         enqueuedAt: now,
       });
     }
@@ -89,10 +86,21 @@ export class LcmWorkQueue {
     return this.inFlight;
   }
 
-  async whenIdle(): Promise<void> {
+  async whenIdle(abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (this.depth === 0 && this.inFlight === 0) return;
-    await new Promise<void>((resolve) => {
-      this.idleWaiters.push(resolve);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (): void => {
+        abortSignal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const remaining = this.idleWaiters.filter((waiter) => waiter !== finish);
+        this.idleWaiters.splice(0, this.idleWaiters.length, ...remaining);
+        reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+      };
+      this.idleWaiters.push(finish);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 
@@ -162,7 +170,7 @@ export class LcmWorkQueue {
     let error: unknown;
 
     try {
-      await this.worker(job.sessionId, job.messages);
+      await this.worker(job.sessionId);
     } catch (err) {
       error = err;
     } finally {
