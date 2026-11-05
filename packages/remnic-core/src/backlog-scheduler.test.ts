@@ -11,12 +11,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
-import { BacklogScheduler, wireBacklogScheduler, type BacklogSchedulerDeps, type BacklogSchedulerOptions } from "./orchestration/backlog-scheduler.js";
+import {
+  BacklogScheduler,
+  type BacklogSchedulerDeps,
+  type BacklogSchedulerOptions,
+  wireBacklogScheduler,
+} from "./orchestration/backlog-scheduler.js";
 import type { DrainSessionOutcome } from "./orchestration/buffer-drain-runner.js";
-import type { BufferTurn } from "./types.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { Orchestrator } from "./orchestrator.js";
-import { cleanupDir, makeHarmonicLifecycleConfig, mkTempMemoryDir, singleFactResult, stubExtraction } from "./testing/orchestrator-lite.js";
+import {
+  cleanupDir,
+  makeHarmonicLifecycleConfig,
+  mkTempMemoryDir,
+  singleFactResult,
+  stubExtraction,
+} from "./testing/orchestrator-lite.js";
+import type { BufferTurn } from "./types.js";
 
 interface StubState {
   /** Live pending counts per key, as the scheduler's bounded scan sees them. */
@@ -59,7 +70,9 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
         const names = [...state.claimed].sort();
         const start = after === undefined ? 0 : names.findIndex((n) => n > after);
         const begin = start < 0 ? names.length : start;
-        const out = names.slice(begin, begin + limit).map((key) => ({ key, turnCount: state.claimTurns.get(key) ?? 0, leased: false, leaseExpired: true }));
+        const out = names
+          .slice(begin, begin + limit)
+          .map((key) => ({ key, turnCount: state.claimTurns.get(key) ?? 0, leased: false, leaseExpired: true }));
         const consumed = begin + out.length;
         return { entries: out, nextCursor: consumed < names.length ? names[consumed] : undefined };
       },
@@ -84,7 +97,15 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
 }
 
 function emptyOutcome(key: string, overrides: Partial<DrainSessionOutcome> = {}): DrainSessionOutcome {
-  return { key, status: "drained", turnsAtStart: 0, turnsRemaining: 0, persistedCount: 0, durableOutputCount: 0, ...overrides };
+  return {
+    key,
+    status: "drained",
+    turnsAtStart: 0,
+    turnsRemaining: 0,
+    persistedCount: 0,
+    durableOutputCount: 0,
+    ...overrides,
+  };
 }
 
 function turn(content: string, sessionKey: string, timestamp = "2026-11-01T00:00:00.000Z"): BufferTurn {
@@ -101,7 +122,11 @@ test("startup drains existing claims and newly buffered sessions within the queu
     claimed: new Set(["existing-claim"]),
     claimTurns: new Map([["existing-claim", 5]]),
     claimedThisRun: new Set(),
-    outcomes: [emptyOutcome("existing-claim", { turnsAtStart: 5 }), emptyOutcome("live-1", { turnsAtStart: 3 }), emptyOutcome("live-2", { turnsAtStart: 3 })],
+    outcomes: [
+      emptyOutcome("existing-claim", { turnsAtStart: 5 }),
+      emptyOutcome("live-1", { turnsAtStart: 3 }),
+      emptyOutcome("live-2", { turnsAtStart: 3 }),
+    ],
     drained: [],
   };
   const scheduler = new BacklogScheduler(makeDeps(state, queue), { pollMs: 3_600_000 });
@@ -115,9 +140,12 @@ test("startup drains existing claims and newly buffered sessions within the queu
     assert.deepEqual(
       state.drained.map((d) => d.key).sort(),
       ["existing-claim", "live-1", "live-2"],
-      "startup covers existing claims AND unclaimed buffered work",
+      "startup covers existing claims AND unclaimed buffered work"
     );
-    assert.ok(state.claimedThisRun.has("live-1") && state.claimedThisRun.has("live-2"), "unclaimed work went through the native claim");
+    assert.ok(
+      state.claimedThisRun.has("live-1") && state.claimedThisRun.has("live-2"),
+      "unclaimed work went through the native claim"
+    );
     const snap = scheduler.snapshot();
     assert.equal(snap.counters.processed, 3);
     assert.equal(snap.counters.claimed, 3);
@@ -181,7 +209,7 @@ test("new ingress consumes the tombstone and the key resumes draining", async ()
     assert.deepEqual(
       state.drained.map((d) => d.key),
       ["sess-a"],
-      "the key resumes and drains exactly once",
+      "the key resumes and drains exactly once"
     );
     assert.equal(scheduler.snapshot().counters.processed, 1);
   } finally {
@@ -210,7 +238,12 @@ test("failed and denied outcomes back off instead of busy-retrying, and are surf
   const deps = makeDeps(state, queue);
   // Frozen clock: backoff windows never elapse unless the test moves it.
   let nowMs = 1_000_000;
-  const options: BacklogSchedulerOptions = { pollMs: 3_600_000, retryBaseMs: 60_000, retryMaxMs: 900_000, now: () => nowMs };
+  const options: BacklogSchedulerOptions = {
+    pollMs: 3_600_000,
+    retryBaseMs: 60_000,
+    retryMaxMs: 900_000,
+    now: () => nowMs,
+  };
   const scheduler = new BacklogScheduler(deps, options);
   scheduler.start();
   try {
@@ -284,7 +317,7 @@ test("the in-flight bound is the queue's own maxConcurrency", async () => {
         return outcome;
       },
     },
-    { pollMs: 3_600_000 },
+    { pollMs: 3_600_000 }
   );
   scheduler.start();
   try {
@@ -336,7 +369,7 @@ test("stop aborts in-flight drains; a fresh start resumes the still-claimed back
         return emptyOutcome(key, { status: "failed", turnsRemaining: 9, reason: "aborted" });
       },
     },
-    { pollMs: 3_600_000 },
+    { pollMs: 3_600_000 }
   );
   scheduler.start();
   await scheduler.tickForTest();
@@ -358,13 +391,17 @@ test("stop aborts in-flight drains; a fresh start resumes the still-claimed back
         return outcome;
       },
     },
-    { pollMs: 3_600_000 },
+    { pollMs: 3_600_000 }
   );
   second.start();
   try {
     await second.tickForTest();
     await second.settleForTest();
-    assert.deepEqual(state.drained.map((d) => d.key), ["slow"], "a restart resumes the backlog");
+    assert.deepEqual(
+      state.drained.map((d) => d.key),
+      ["slow"],
+      "a restart resumes the backlog"
+    );
   } finally {
     await second.stop();
   }
@@ -376,7 +413,9 @@ test("a wired scheduler drains real backlog and resumes after tombstone-consumin
   const memoryDir = await mkTempMemoryDir("backlog-sched-wired");
   let orchestrator: Orchestrator | undefined;
   try {
-    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir, { extractionMinChars: 0, extractionMinUserTurns: 1 }));
+    orchestrator = new Orchestrator(
+      makeHarmonicLifecycleConfig(memoryDir, { extractionMinChars: 0, extractionMinUserTurns: 1 })
+    );
     const calls = stubExtraction(orchestrator, (turns) => singleFactResult(`fact for ${turns[0]?.content ?? "empty"}`));
     const scheduler = wireBacklogScheduler(orchestrator, { pollMs: 3_600_000 });
     try {
@@ -413,7 +452,7 @@ test("a wired scheduler drains real backlog and resumes after tombstone-consumin
       assert.deepEqual(
         calls[2]?.map((t) => t.content),
         ["wired three"],
-        "only the genuinely new turn extracts — drained turns never resurrect",
+        "only the genuinely new turn extracts — drained turns never resurrect"
       );
     } finally {
       await scheduler.stop();
@@ -461,7 +500,7 @@ test("a claim decision unsettled mid-rename keeps the key reserved until it sett
         return outcome;
       },
     },
-    { pollMs: 3_600_000 },
+    { pollMs: 3_600_000 }
   );
   scheduler.start();
   try {
@@ -472,10 +511,13 @@ test("a claim decision unsettled mid-rename keeps the key reserved until it sett
     // the reservation is held (selection skips reserved keys — proven in the
     // queue suite; here the fence is observable through the live stub too).
     assert.equal(
-      queue.enqueue(async () => {
-        liveRuns.push("live:racy");
-      }, { key: "racy" }),
-      true,
+      queue.enqueue(
+        async () => {
+          liveRuns.push("live:racy");
+        },
+        { key: "racy" }
+      ),
+      true
     );
     assert.equal(liveRuns.length, 0, "no live or drain work runs before the decision settles");
     // The decision settles: reservation released, drain runs; the live task
@@ -524,7 +566,7 @@ test("stop during a pending discovery submit: no drain runs, restart handles it"
         return emptyOutcome(key);
       },
     },
-    { pollMs: 3_600_000 },
+    { pollMs: 3_600_000 }
   );
   scheduler.start();
   const stopping = scheduler.stop();
@@ -608,7 +650,15 @@ test("a deferred outcome without a denial report backs off but never counts deni
     claimTurns: new Map(),
     claimedThisRun: new Set(),
     outcomes: [
-      { key: "deferred-1", status: "deferred", turnsAtStart: 1, turnsRemaining: 1, persistedCount: 0, durableOutputCount: 0, reason: "provider_circuit_open" },
+      {
+        key: "deferred-1",
+        status: "deferred",
+        turnsAtStart: 1,
+        turnsRemaining: 1,
+        persistedCount: 0,
+        durableOutputCount: 0,
+        reason: "provider_circuit_open",
+      },
     ],
     drained: [],
   };

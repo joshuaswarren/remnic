@@ -25,13 +25,13 @@
  * every claim retryable; a restarted daemon's scheduler adopts them.
  */
 
-import { log } from "../logger.js";
 import { hostname } from "node:os";
+import { log } from "../logger.js";
 import type { Orchestrator } from "../orchestrator.js";
-import { BufferDrainRunner } from "./buffer-drain-runner.js";
-import type { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
-import type { DrainRunnerEvent, DrainSessionOutcome } from "./buffer-drain-runner.js";
 import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-claims.js";
+import { BufferDrainRunner } from "./buffer-drain-runner.js";
+import type { DrainRunnerEvent, DrainSessionOutcome } from "./buffer-drain-runner.js";
+import type { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 
 /** What the scheduler needs from its host (structurally satisfied by the
  *  orchestrator wiring); injectable so tests drive ticks deterministically. */
@@ -40,11 +40,16 @@ export interface BacklogSchedulerDeps {
   claims: Pick<BufferDrainClaims, "list" | "listPage" | "claimFromSessionFile" | "isClaimed">;
   /** Live per-key pending counts (counts only — never turn payloads). May be
    *  async: hosts with a lazily-loaded buffer load it here (idempotent). */
-  liveBufferCounts(): Map<string, { turns: number; retainedTurns: number }> | Promise<Map<string, { turns: number; retainedTurns: number }>>;
+  liveBufferCounts():
+    | Map<string, { turns: number; retainedTurns: number }>
+    | Promise<Map<string, { turns: number; retainedTurns: number }>>;
   /** A fresh lease for claims this scheduler takes. */
   lease(): DrainLease;
   /** Drain one key to quiescence (BufferDrainRunner.drainSession). */
-  drainKey(key: string, options: { ownerId: string; signal: AbortSignal; onEvent?: (event: DrainRunnerEvent) => void }): Promise<DrainSessionOutcome>;
+  drainKey(
+    key: string,
+    options: { ownerId: string; signal: AbortSignal; onEvent?: (event: DrainRunnerEvent) => void }
+  ): Promise<DrainSessionOutcome>;
   /** Test seam: monotonic-ish clock for backoff windows. */
   now?(): number;
 }
@@ -191,9 +196,7 @@ export class BacklogScheduler {
    *  optionally excluding one still-gated key (tests). */
   async settleForTest(exclude?: string): Promise<void> {
     for (;;) {
-      const pending = [...this.inFlight.entries()]
-        .filter(([key]) => key !== exclude)
-        .map(([, entry]) => entry.settled);
+      const pending = [...this.inFlight.entries()].filter(([key]) => key !== exclude).map(([, entry]) => entry.settled);
       if (pending.length === 0) return;
       await Promise.allSettled(pending);
     }
@@ -217,7 +220,7 @@ export class BacklogScheduler {
         candidates = await this.discoverCandidates();
       } catch (err) {
         log.warn(
-          `backlog drain: discovery failed; retrying next poll: ${err instanceof Error ? err.message : String(err)}`,
+          `backlog drain: discovery failed; retrying next poll: ${err instanceof Error ? err.message : String(err)}`
         );
         return;
       }
@@ -357,7 +360,7 @@ export class BacklogScheduler {
       this.counters.processed += 1;
       this.counters.durableOutputs += outcome.durableOutputCount;
       log.info(
-        `backlog drain: ${key} drained (${outcome.turnsAtStart} turn(s), ${outcome.durableOutputCount} durable output(s))`,
+        `backlog drain: ${key} drained (${outcome.turnsAtStart} turn(s), ${outcome.durableOutputCount} durable output(s))`
       );
       return;
     }
@@ -366,7 +369,7 @@ export class BacklogScheduler {
     this.keys.set(key, this.nextKeyState(previous, outcome, denied, progressed));
     log.info(
       `backlog drain: ${key} ${outcome.status} (${outcome.turnsRemaining} turn(s) remaining` +
-        `${denied ? `, denied: ${deniedTurns}` : ""}${outcome.reason ? `, ${outcome.reason}` : ""})`,
+        `${denied ? `, denied: ${deniedTurns}` : ""}${outcome.reason ? `, ${outcome.reason}` : ""})`
     );
   }
 
@@ -374,14 +377,15 @@ export class BacklogScheduler {
   private recordNonDrainedCounters(
     previous: KeyState | undefined,
     outcome: DrainSessionOutcome,
-    deniedTurns: number,
+    deniedTurns: number
   ): void {
     if (deniedTurns > 0) {
       this.counters.denied.keys += 1;
       this.counters.denied.turns += deniedTurns;
     }
     if (outcome.status === "failed") this.counters.failed += 1;
-    else if (previous !== undefined && (previous.state === "backoff" || previous.state === "denied")) this.counters.retried += 1;
+    else if (previous !== undefined && (previous.state === "backoff" || previous.state === "denied"))
+      this.counters.retried += 1;
   }
 
   /** The post-drain key state: denial waits the full max window (its content
@@ -390,7 +394,7 @@ export class BacklogScheduler {
     previous: KeyState | undefined,
     outcome: DrainSessionOutcome,
     denied: boolean,
-    progressed: boolean,
+    progressed: boolean
   ): KeyState {
     return {
       state: denied ? "denied" : "backoff",
@@ -428,7 +432,10 @@ const SCHEDULER_LEASE_MS = 120_000;
 
 /** Wire the scheduler to an orchestrator's own queue, claim store, live buffer
  *  counts and drain runner — the daemon's single ownership point. */
-export function wireBacklogScheduler(orchestrator: Orchestrator, options: BacklogSchedulerOptions = {}): BacklogScheduler {
+export function wireBacklogScheduler(
+  orchestrator: Orchestrator,
+  options: BacklogSchedulerOptions = {}
+): BacklogScheduler {
   const ownerId = options.ownerId ?? `daemon-drain-${process.pid}`;
   const runner = new BufferDrainRunner(orchestrator);
   return new BacklogScheduler(
@@ -454,6 +461,6 @@ export function wireBacklogScheduler(orchestrator: Orchestrator, options: Backlo
       },
       drainKey: (key, drainOptions) => runner.drainSession(key, drainOptions),
     },
-    { ...options, ownerId },
+    { ...options, ownerId }
   );
 }

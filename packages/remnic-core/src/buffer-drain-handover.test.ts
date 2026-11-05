@@ -10,25 +10,25 @@
 //      claim for the drain worker.
 //   4. default-key mirror: handing over "default" clears the legacy mirror.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { hostname } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { SmartBuffer } from "./buffer.js";
-import type { ExtractionPreemptHandle } from "./orchestration/extraction-queue-coordinator.js";
-import { BufferSessionFiles } from "./storage/buffer-session-files.js";
-import { BufferDrainClaims, type DrainLease } from "./storage/buffer-drain-claims.js";
 import type { BufferStorage } from "./buffer-persistence.js";
-import type { BufferState } from "./types.js";
-import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
-import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { SmartBuffer } from "./buffer.js";
+import { parseConfig } from "./config.js";
 import { ClaimBufferStorage } from "./orchestration/buffer-drain-runner.js";
 import { ExtractionDrain } from "./orchestration/extraction-drain.js";
-import type { BufferEntryState, BufferTurn, PluginConfig } from "./types.js";
-import { parseConfig } from "./config.js";
+import type { ExtractionPreemptHandle } from "./orchestration/extraction-queue-coordinator.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
+import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
+import { BufferDrainClaims, type DrainLease } from "./storage/buffer-drain-claims.js";
+import { BufferSessionFiles } from "./storage/buffer-session-files.js";
+import type { BufferState } from "./types.js";
+import type { BufferEntryState, BufferTurn, PluginConfig } from "./types.js";
 
 function plainIo() {
   return {
@@ -88,7 +88,14 @@ function makeHarness(): Harness {
     buffer,
     claims,
     storage,
-    lease: { ownerId: "worker-1", pid: process.pid, host: hostname(), acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 },
+    lease: {
+      ownerId: "worker-1",
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    },
     cleanup: () => rmSync(stateDir, { recursive: true, force: true }),
   };
 }
@@ -99,7 +106,10 @@ test("a claimed session's save hands over and evicts instead of writing a sessio
     await h.buffer.load();
     await h.buffer.addTurn("sess-1", turn("old-1"));
     await h.buffer.addTurn("sess-1", turn("old-2"));
-    assert.ok(readdirSync(path.join(h.stateDir, "buffer")).some((name) => name.endsWith(".json")), "seeded turns persisted as a session file");
+    assert.ok(
+      readdirSync(path.join(h.stateDir, "buffer")).some((name) => name.endsWith(".json")),
+      "seeded turns persisted as a session file"
+    );
 
     const outcome = await h.claims.claimFromSessionFile("sess-1", h.lease);
     assert.equal(outcome, "claimed");
@@ -115,7 +125,7 @@ test("a claimed session's save hands over and evicts instead of writing a sessio
     assert.deepEqual(
       claim.entry.turns.map((t) => t.content),
       ["old-1", "old-2", "new-3"],
-      "the owner's newest turn merges into the claim; nothing duplicates",
+      "the owner's newest turn merges into the claim; nothing duplicates"
     );
     const topLevel = readdirSync(path.join(h.stateDir, "buffer")).filter((name) => name.endsWith(".json"));
     assert.deepEqual(topLevel, [], "a claimed session must never be written back as a session file");
@@ -129,11 +139,11 @@ test("a claimed session's save hands over and evicts instead of writing a sessio
     assert.deepEqual(
       claimAfter.entry.turns.map((t) => t.content),
       ["old-1", "old-2", "new-3", "post-eviction"],
-      "post-handover observes keep flowing into the claim",
+      "post-handover observes keep flowing into the claim"
     );
     assert.deepEqual(
       readdirSync(path.join(h.stateDir, "buffer")).filter((name) => name.endsWith(".json")),
-      [],
+      []
     );
   } finally {
     h.cleanup();
@@ -151,11 +161,14 @@ test("handover of the default key clears the legacy top-level mirror", async () 
     await h.buffer.save();
     const claim = await h.claims.load("default");
     assert.ok(claim);
-    assert.deepEqual(claim.entry.turns.map((t) => t.content), ["legacy", "legacy-2"]);
+    assert.deepEqual(
+      claim.entry.turns.map((t) => t.content),
+      ["legacy", "legacy-2"]
+    );
     // No duplicate writes: the snapshot must settle empty after handover.
     assert.deepEqual(
       readdirSync(path.join(h.stateDir, "buffer")).filter((name) => name.endsWith(".json")),
-      [],
+      []
     );
   } finally {
     h.cleanup();
@@ -203,15 +216,20 @@ function gateFixture(isClaimed: boolean) {
         void fn().catch(() => {});
         return true;
       },
-      runPreemptable: (_preempt: ExtractionPreemptHandle | undefined, _preemptable: boolean, parent: AbortSignal | undefined, fn: (signal: AbortSignal) => Promise<void>) => fn(parent ?? new AbortController().signal),
+      runPreemptable: (
+        _preempt: ExtractionPreemptHandle | undefined,
+        _preemptable: boolean,
+        parent: AbortSignal | undefined,
+        fn: (signal: AbortSignal) => Promise<void>
+      ) => fn(parent ?? new AbortController().signal),
     },
     extractionWindowBudgetChars: () => 500,
     getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),
     shouldQueueExtraction: () => true,
-    runExtraction: (async (turns: BufferTurn[]) => {
+    runExtraction: async (turns: BufferTurn[]) => {
       runs.push({ turns });
       return { status: "completed", persistedCount: 0, durableOutputCount: 0 };
-    }),
+    },
     // SAFETY: the fixture provides exactly the deps the coordinator reads
     // for the drain path (buffer, queue coordinator, budget, storage, dedupe
     // gate and runExtraction); the cast only fills the unused members.
@@ -288,8 +306,12 @@ test("the owner keeps the claim while a drain is still running on it", async () 
       extractionCount: 0,
     });
     assert.equal(saveOutcome?.status, "handed_over", "a running drain keeps its claim");
-    assert.equal(await h.claims.load("sess-1") !== null, true, "the claim survives the owner's mid-drain save");
-    assert.equal(existsSync(h.claims.leasePathForTest("sess-1")), true, "the lease survives the owner's mid-drain save");
+    assert.equal((await h.claims.load("sess-1")) !== null, true, "the claim survives the owner's mid-drain save");
+    assert.equal(
+      existsSync(h.claims.leasePathForTest("sess-1")),
+      true,
+      "the lease survives the owner's mid-drain save"
+    );
 
     // The drain finishes: everything extracted, the drainer acks (drops its
     // lease, leaving the tombstone). Only now does the owner's save consume it.
@@ -352,7 +374,8 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
     const realQueue = new ExtractionQueueCoordinator(1);
     const runs: { task: string; turns: string[]; liveAtCall: SmartBuffer }[] = [];
     const liveRuns = new Set<string>();
-    const makeDrainStub = (task: string, claimBuffer: SmartBuffer | undefined) =>
+    const makeDrainStub =
+      (task: string, claimBuffer: SmartBuffer | undefined) =>
       // Mimic extraction-run: read the turns handed over, clear them through
       // the CURRENT live instance (a swap would clear into a claim buffer).
       async (turns: BufferTurn[]): Promise<ExtractionRunResult> => {
@@ -364,7 +387,9 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
       };
 
     const liveStub = makeDrainStub("sess-live", undefined);
-    const executionFor = (key: string): {
+    const executionFor = (
+      key: string
+    ): {
       buffer: SmartBuffer;
       drain: ExtractionDrain;
     } => {
@@ -382,7 +407,7 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
           getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),
           buffer: claimBuffer,
         },
-        { dropFailedChunks: false },
+        { dropFailedChunks: false }
       );
       return { buffer: claimBuffer, drain };
     };
@@ -419,10 +444,10 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
                 skipUserTurnThreshold: true,
                 execution: executionFor(key),
                 onTaskSettled: (error) => (error ? reject(error) : resolve()),
-              },
+              }
             )
             .catch(reject);
-        }),
+        })
       );
     };
     enqueueClaimTask("sess-a", "drain-a");
@@ -437,7 +462,7 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
             onTaskSettled: (error) => (error ? reject(error) : resolve()),
           })
           .catch(reject);
-      }),
+      })
     );
     await Promise.all(settled);
 
@@ -449,18 +474,18 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
     assert.deepEqual(
       runs.find((r) => r.task === "sess-a")?.turns,
       ["a1"],
-      "task a extracted only its own claim's turns",
+      "task a extracted only its own claim's turns"
     );
     assert.deepEqual(
       runs.find((r) => r.task === "sess-b")?.turns,
       ["b1"],
-      "task b extracted only its own claim's turns",
+      "task b extracted only its own claim's turns"
     );
     assert.equal(liveRuns.has("sess-live"), true, "the live task ran through the live path");
     assert.deepEqual(
       h.buffer.getTurns("sess-live").map((t) => t.content),
       ["live-1"],
-      "the live task cleared only its queued snapshot through the live buffer",
+      "the live task cleared only its queued snapshot through the live buffer"
     );
     // Claim progress landed in the RIGHT claim files (no cross-talk), and the
     // claims' turns were extracted from the claims, not from any live copy.
@@ -469,7 +494,7 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
     assert.deepEqual(
       h.buffer.getTurns("sess-a").map((t) => t.content),
       ["a1"],
-      "the live buffer's in-memory copy is untouched by the claim drain",
+      "the live buffer's in-memory copy is untouched by the claim drain"
     );
   } finally {
     h.cleanup();
@@ -502,7 +527,7 @@ test("listPage's cursor is the LAST CONSUMED claim, so a page boundary never ski
     assert.deepEqual(
       [...seen].sort(),
       ["page-sess-a", "page-sess-b", "page-sess-c"],
-      "every page-boundary claim must be visited exactly once across rotating pages",
+      "every page-boundary claim must be visited exactly once across rotating pages"
     );
     assert.equal(seen.size, pages === 2 ? 3 : 3, "no claim repeats across the rotation");
   } finally {

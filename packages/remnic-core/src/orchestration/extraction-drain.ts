@@ -50,7 +50,11 @@ export interface ExtractionDrainDeps {
     saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly BufferTurn[]): Promise<string>;
   }>;
   buffer: {
-    dropExtractionChunk(bufferKey: string, turns: readonly BufferTurn[], options?: { allowNonPrefix?: boolean }): Promise<number>;
+    dropExtractionChunk(
+      bufferKey: string,
+      turns: readonly BufferTurn[],
+      options?: { allowNonPrefix?: boolean }
+    ): Promise<number>;
   };
 }
 
@@ -139,7 +143,7 @@ export class ExtractionDrain {
     turns: BufferTurn[],
     runOptions: DrainRunOptions,
     preemptable = false,
-    preemptHandle?: ExtractionPreemptHandle,
+    preemptHandle?: ExtractionPreemptHandle
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
     const plan = this.chunkPlan(turns, runOptions, budgetChars);
@@ -165,14 +169,15 @@ export class ExtractionDrain {
   private chunkPlan(
     turns: readonly BufferTurn[],
     runOptions: DrainRunOptions,
-    budgetChars: number,
+    budgetChars: number
   ): { singleRun: boolean; chunks: BufferTurn[][]; resumed: boolean } {
     const chunks = this.chunkable(runOptions, turns, budgetChars)
       ? this.deps.measureRenderedTurns !== undefined
         ? this.chunkByRenderedSize(turns, budgetChars)
         : chunkExtractionWindow(turns, budgetChars)
       : [];
-    const resumed = chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
+    const resumed =
+      chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
     return { singleRun: chunks.length <= 1 && !resumed, chunks, resumed };
   }
 
@@ -201,7 +206,9 @@ export class ExtractionDrain {
   private windowBelowThreshold(turns: readonly BufferTurn[], runOptions: DrainRunOptions): boolean {
     const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
     const belowChars = !runOptions.skipCharThreshold && this.windowChars(turns) < this.deps.config.extractionMinChars;
-    return (!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars;
+    return (
+      (!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars
+    );
   }
 
   /** The window qualified as a whole; its chunks must not be re-judged one by
@@ -210,7 +217,7 @@ export class ExtractionDrain {
     chunks: readonly BufferTurn[][],
     runOptions: DrainRunOptions,
     preemptable: boolean,
-    preemptHandle?: ExtractionPreemptHandle,
+    preemptHandle?: ExtractionPreemptHandle
   ): Promise<ExtractionRunResult> {
     const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
     const bufferKey = runOptions.bufferKey;
@@ -220,8 +227,15 @@ export class ExtractionDrain {
     let aggregate: ExtractionRunResult | null = null;
     for (const [position, chunk] of chunks.entries()) {
       this.qualified.set(bufferKey, chunkFingerprint(chunk.slice(0, 1)));
-      const { options: chunkOptions, preempt } = this.chunkOptionsFor(chunks, position, baseOptions, runOptions, preemptable, preemptHandle);
-      let failures = this.failureCount(bufferKey, chunk);
+      const { options: chunkOptions, preempt } = this.chunkOptionsFor(
+        chunks,
+        position,
+        baseOptions,
+        runOptions,
+        preemptable,
+        preemptHandle
+      );
+      const failures = this.failureCount(bufferKey, chunk);
       let result: ExtractionRunResult;
       try {
         result = await this.deps.runExtraction(chunk, chunkOptions);
@@ -268,7 +282,7 @@ export class ExtractionDrain {
     baseOptions: DrainRunOptions,
     runOptions: DrainRunOptions,
     preemptable: boolean,
-    preemptHandle?: ExtractionPreemptHandle,
+    preemptHandle?: ExtractionPreemptHandle
   ): { options: DrainRunOptions; preempt?: AbortController } {
     let options: DrainRunOptions = { ...baseOptions, retentionWindow: chunks.slice(0, position + 1).flat() };
     let preempt: AbortController | undefined;
@@ -276,7 +290,9 @@ export class ExtractionDrain {
       preempt = this.armChunkPreempt(preemptHandle);
       options = {
         ...options,
-        abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, preempt.signal]) : preempt.signal,
+        abortSignal: runOptions.abortSignal
+          ? AbortSignal.any([runOptions.abortSignal, preempt.signal])
+          : preempt.signal,
       };
     }
     return { options, preempt };
@@ -309,7 +325,7 @@ export class ExtractionDrain {
     dropAfter: number,
     err: unknown,
     byIdentity: boolean,
-    aggregate: ExtractionRunResult | null,
+    aggregate: ExtractionRunResult | null
   ): Promise<ExtractionRunResult> {
     failures += 1;
     if (failures < dropAfter || !this.dropFailedChunks) {
@@ -337,7 +353,7 @@ export class ExtractionDrain {
     bufferKey: string,
     chunk: readonly BufferTurn[],
     result: ExtractionRunResult,
-    aggregate: ExtractionRunResult | null,
+    aggregate: ExtractionRunResult | null
   ): { action: "continue" | "return" | "failed"; result: ExtractionRunResult; aggregate: ExtractionRunResult | null } {
     const verdict = classifyDrainResult(result);
     if (verdict === "drained") {
@@ -410,7 +426,7 @@ export class ExtractionDrain {
     chunk: readonly BufferTurn[],
     dropAfter: number,
     result: ExtractionRunResult,
-    byIdentity: boolean,
+    byIdentity: boolean
   ): Promise<boolean> {
     const reason =
       `dropped after ${dropAfter} repeated extraction failures ` +
@@ -428,7 +444,7 @@ export class ExtractionDrain {
       log.warn(`buffer[${bufferKey}]: dropped chunk no longer matches the buffer; keeping it and its failure count`);
     } catch (err) {
       log.warn(
-        `buffer[${bufferKey}]: failed to remove dropped chunk from buffer (will retry next trigger): ${describeError(err)}`,
+        `buffer[${bufferKey}]: failed to remove dropped chunk from buffer (will retry next trigger): ${describeError(err)}`
       );
     }
     return false;
@@ -439,7 +455,7 @@ export class ExtractionDrain {
   private async saveRecoveryCopy(
     bufferKey: string,
     reason: string,
-    chunk: readonly BufferTurn[],
+    chunk: readonly BufferTurn[]
   ): Promise<string | null> {
     try {
       const storage = await this.deps.getStorage();
@@ -447,7 +463,7 @@ export class ExtractionDrain {
     } catch (err) {
       // Never destroy the only buffered copy without a recovery file.
       log.warn(
-        `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`,
+        `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`
       );
       return null;
     }

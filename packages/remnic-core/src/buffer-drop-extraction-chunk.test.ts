@@ -1,14 +1,14 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import test from "node:test";
 import { SmartBuffer } from "./buffer.js";
 import { parseConfig } from "./config.js";
-import { StorageManager } from "./storage.js";
-import type { BufferTurn } from "./types.js";
 import { ExtractionDrain } from "./orchestration/extraction-drain.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
+import { StorageManager } from "./storage.js";
+import type { BufferTurn } from "./types.js";
 
 function makeTurn(sessionKey: string, content: string): BufferTurn {
   return {
@@ -20,7 +20,9 @@ function makeTurn(sessionKey: string, content: string): BufferTurn {
 }
 
 /** A real buffer on real storage; `restart()` is what a process restart would load from disk. */
-async function withBuffer(run: (buffer: SmartBuffer, restart: () => Promise<SmartBuffer>) => Promise<void>): Promise<void> {
+async function withBuffer(
+  run: (buffer: SmartBuffer, restart: () => Promise<SmartBuffer>) => Promise<void>
+): Promise<void> {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-drop-chunk-"));
   try {
     const buffer = new SmartBuffer(parseConfig({}), new StorageManager(root));
@@ -43,8 +45,15 @@ test("dropExtractionChunk removes the matched prefix and the drop survives a res
     const dropped = await buffer.dropExtractionChunk("s1", turns.slice(0, 2));
 
     assert.equal(dropped, 2);
-    assert.deepEqual(buffer.getTurns("s1").map((turn) => turn.content), ["turn three"]);
-    assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["turn three"], "what a restart loads");
+    assert.deepEqual(
+      buffer.getTurns("s1").map((turn) => turn.content),
+      ["turn three"]
+    );
+    assert.deepEqual(
+      (await restart()).getTurns("s1").map((turn) => turn.content),
+      ["turn three"],
+      "what a restart loads"
+    );
     // A drop is not an extraction: the extraction bookkeeping stays untouched.
     assert.equal(buffer.getExtractionCount("s1"), 0);
   });
@@ -77,7 +86,14 @@ test("dropExtractionChunk drops the whole matched window and a restart finds the
   });
 });
 
-const FAILED: ExtractionRunResult = { status: "skipped", reason: "empty_extraction_result", retainedBuffer: true, failureClass: "parse_empty", persistedCount: 0, durableOutputCount: 0 };
+const FAILED: ExtractionRunResult = {
+  status: "skipped",
+  reason: "empty_extraction_result",
+  retainedBuffer: true,
+  failureClass: "parse_empty",
+  persistedCount: 0,
+  durableOutputCount: 0,
+};
 const DONE: ExtractionRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
 
 /** w7K's probe on #3266: a pinned capture sits before a native group drained with clearMatchingTurns. */
@@ -85,23 +101,39 @@ async function drainBehindPinnedCapture(
   buffer: SmartBuffer,
   results: ExtractionRunResult[],
   dropAfter: number,
-  overrides: { getStorage?: () => Promise<{ saveDroppedExtractionChunk: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string> }>; runExtractionOverride?: () => Promise<ExtractionRunResult> } = {},
+  overrides: {
+    getStorage?: () => Promise<{
+      saveDroppedExtractionChunk: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string>;
+    }>;
+    runExtractionOverride?: () => Promise<ExtractionRunResult>;
+  } = {}
 ): Promise<ExtractionRunResult> {
   const pinned: BufferTurn = { ...makeTurn("s1", "pinned capture"), acceptedCapture: true };
   const native = [makeTurn("s1", "a".repeat(60)), makeTurn("s1", "b".repeat(60))];
   for (const turn of [pinned, ...native]) await buffer.addTurn("s1", turn);
   await buffer.flushPendingSave();
   const drain = new ExtractionDrain({
-    config: { extractionMinUserTurns: 1, extractionMinChars: 0, extractionMaxTurnChars: 100_000, extractionChunkDropAfterFailures: dropAfter },
+    config: {
+      extractionMinUserTurns: 1,
+      extractionMinChars: 0,
+      extractionMaxTurnChars: 100_000,
+      extractionChunkDropAfterFailures: dropAfter,
+    },
     extractionWindowBudgetChars: () => 100,
     runExtraction: async (turns, options) => {
       if (overrides.runExtractionOverride) return await overrides.runExtractionOverride();
       const result = results.shift() ?? DONE;
       // A successful run clears its chunk the way the coordinator does for a native group: by identity.
-      if (result.status === "completed") await buffer.clearAfterExtraction("s1", turns, options?.clearMatchingTurns === true ? { allowNonPrefix: true } : undefined);
+      if (result.status === "completed")
+        await buffer.clearAfterExtraction(
+          "s1",
+          turns,
+          options?.clearMatchingTurns === true ? { allowNonPrefix: true } : undefined
+        );
       return result;
     },
-    getStorage: overrides.getStorage ?? (async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" })),
+    getStorage:
+      overrides.getStorage ?? (async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" })),
     buffer,
   });
   return await drain.run(native, {
@@ -119,8 +151,16 @@ test("a dropped chunk behind a pinned capture is removed by identity, like a suc
     const result = await drainBehindPinnedCapture(buffer, [FAILED, DONE], 1);
 
     assert.equal(result.status, "completed");
-    assert.deepEqual(buffer.getTurns("s1").map((turn) => turn.content), ["pinned capture"], "the failed turn is gone, the pinned capture stays");
-    assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["pinned capture"], "and a restart agrees");
+    assert.deepEqual(
+      buffer.getTurns("s1").map((turn) => turn.content),
+      ["pinned capture"],
+      "the failed turn is gone, the pinned capture stays"
+    );
+    assert.deepEqual(
+      (await restart()).getTurns("s1").map((turn) => turn.content),
+      ["pinned capture"],
+      "and a restart agrees"
+    );
   });
 });
 
@@ -137,10 +177,16 @@ test("a failed chunk made only of deferred-retained turns can be dropped, and a 
 
     assert.equal(dropped, 2);
     assert.deepEqual(buffer.getRetainedDeferredTurns("s1"), []);
-    assert.deepEqual(buffer.getTurns("s1").map((turn) => turn.content), ["live turn"]);
+    assert.deepEqual(
+      buffer.getTurns("s1").map((turn) => turn.content),
+      ["live turn"]
+    );
     const reloaded = await restart();
     assert.deepEqual(reloaded.getRetainedDeferredTurns("s1"), [], "retained turns stay dropped after a restart");
-    assert.deepEqual(reloaded.getTurns("s1").map((turn) => turn.content), ["live turn"]);
+    assert.deepEqual(
+      reloaded.getTurns("s1").map((turn) => turn.content),
+      ["live turn"]
+    );
   });
 });
 
@@ -155,7 +201,10 @@ test("a chunk that spans retained and live turns drops both", async () => {
     const dropped = await buffer.dropExtractionChunk("s1", [...retained, live[0]!]);
 
     assert.equal(dropped, 2);
-    assert.deepEqual((await restart()).getTurns("s1").map((turn) => turn.content), ["live two"]);
+    assert.deepEqual(
+      (await restart()).getTurns("s1").map((turn) => turn.content),
+      ["live two"]
+    );
   });
 });
 
@@ -167,7 +216,11 @@ test("deferred retention across chunks of one window stays within one retention 
     for (let chunk = 0; chunk < 3; chunk++) {
       await buffer.retainDeferredTurns("s1", window.slice(chunk * 10, chunk * 10 + 10), 10, window);
     }
-    assert.equal(buffer.getRetainedDeferredTurns("s1").length, 10, "the latest chunk's retention replaces the earlier ones");
+    assert.equal(
+      buffer.getRetainedDeferredTurns("s1").length,
+      10,
+      "the latest chunk's retention replaces the earlier ones"
+    );
     assert.equal((await restart()).getRetainedDeferredTurns("s1").length, 10);
   });
 });
@@ -182,10 +235,19 @@ test("a chunk holding only some retained turns drops those and keeps the rest of
     const dropped = await buffer.dropExtractionChunk("s1", retained.slice(0, 2));
 
     assert.equal(dropped, 2);
-    assert.deepEqual(buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["retained three"]);
+    assert.deepEqual(
+      buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content),
+      ["retained three"]
+    );
     const reloaded = await restart();
-    assert.deepEqual(reloaded.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["retained three"]);
-    assert.deepEqual(reloaded.getTurns("s1").map((turn) => turn.content), ["retained three", "live turn"]);
+    assert.deepEqual(
+      reloaded.getRetainedDeferredTurns("s1").map((turn) => turn.content),
+      ["retained three"]
+    );
+    assert.deepEqual(
+      reloaded.getTurns("s1").map((turn) => turn.content),
+      ["retained three", "live turn"]
+    );
   });
 });
 
@@ -195,8 +257,14 @@ test("retention for an early chunk leaves the retained turns of a later, unproce
     await buffer.retainDeferredTurns("s1", retained);
     // Chunk 0 holds the first retained turn; nothing was deferred in it, so it clears the slot for the turns it processed.
     await buffer.retainDeferredTurns("s1", [], 0, retained.slice(0, 1));
-    assert.deepEqual(buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content), ["late retained"]);
-    assert.deepEqual((await restart()).getRetainedDeferredTurns("s1").map((turn) => turn.content), ["late retained"]);
+    assert.deepEqual(
+      buffer.getRetainedDeferredTurns("s1").map((turn) => turn.content),
+      ["late retained"]
+    );
+    assert.deepEqual(
+      (await restart()).getRetainedDeferredTurns("s1").map((turn) => turn.content),
+      ["late retained"]
+    );
   });
 });
 
@@ -209,7 +277,12 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
     let sideFiles = 0;
     const drain = new ExtractionDrain(
       {
-        config: { extractionMinUserTurns: 1, extractionMinChars: 0, extractionMaxTurnChars: 100_000, extractionChunkDropAfterFailures: 2 },
+        config: {
+          extractionMinUserTurns: 1,
+          extractionMinChars: 0,
+          extractionMaxTurnChars: 100_000,
+          extractionChunkDropAfterFailures: 2,
+        },
         extractionWindowBudgetChars: () => 100,
         runExtraction: async () => {
           throw new Error("provider down");
@@ -222,7 +295,7 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
         }),
         buffer,
       },
-      { dropFailedChunks: false },
+      { dropFailedChunks: false }
     );
 
     const runOptions = {
@@ -244,7 +317,7 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
     assert.deepEqual(
       (await restart()).getTurns("s1").map((turn) => turn.content),
       ["a".repeat(60), "b".repeat(60)],
-      "both chunks stay in the buffer as durable retryable backlog",
+      "both chunks stay in the buffer as durable retryable backlog"
     );
   });
 });
@@ -252,7 +325,11 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
 test("a failed chunk with NO recovery copy is kept as retryable backlog, not dropped", async () => {
   await withBuffer(async (buffer, restart) => {
     const result = await drainBehindPinnedCapture(buffer, [FAILED, FAILED, DONE], 1, {
-      getStorage: async () => ({ saveDroppedExtractionChunk: async () => { throw new Error("disk full"); } }),
+      getStorage: async () => ({
+        saveDroppedExtractionChunk: async () => {
+          throw new Error("disk full");
+        },
+      }),
     });
 
     // dropFailedChunk returns false: the only buffered copy stays and the
@@ -261,7 +338,7 @@ test("a failed chunk with NO recovery copy is kept as retryable backlog, not dro
     assert.deepEqual(
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
       true,
-      "the failed chunk's content stays buffered for retry",
+      "the failed chunk's content stays buffered for retry"
     );
   });
 });
@@ -277,7 +354,7 @@ test("a failing buffer removal keeps the chunk: the drop is retried next trigger
     assert.deepEqual(
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
       true,
-      "the chunk stays buffered when the buffer removal itself fails",
+      "the chunk stays buffered when the buffer removal itself fails"
     );
   });
 });
@@ -291,7 +368,7 @@ test("a chunk the buffer no longer matches is kept: nothing removed is not a dro
     assert.deepEqual(
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
       true,
-      "nothing removed means the chunk is still buffered",
+      "nothing removed means the chunk is still buffered"
     );
   });
 });
@@ -304,7 +381,7 @@ test("one failure below the drop threshold keeps the chunk (no drop, no side fil
     assert.deepEqual(
       (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
       true,
-      "the failing chunk stays buffered for the next trigger",
+      "the failing chunk stays buffered for the next trigger"
     );
   });
 });
@@ -327,7 +404,7 @@ test("a thrown chunk dropped at the threshold must not end the drain: later chun
     assert.deepEqual(
       (await restart()).getTurns("s1").filter((turn) => turn.content === "a".repeat(60)),
       [],
-      "the thrown chunk was dropped by identity",
+      "the thrown chunk was dropped by identity"
     );
   });
 });

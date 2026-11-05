@@ -18,22 +18,22 @@
  * failing chunk stays in the claim as durable retryable backlog.
  */
 
-import { BufferDrainClaims, type DrainLease } from "../storage/buffer-drain-claims.js";
-import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
-import type { BufferStorage } from "../buffer-persistence.js";
-import type { BufferTurn, BufferEntryState, BufferState, PluginConfig } from "../types.js";
-import { SmartBuffer } from "../buffer.js";
 import { hostname } from "node:os";
-import { describeError, groupTurnsByExtractionScope, type ExtractionScopeGroup } from "../buffer-turn-helpers.js";
+import type { BufferStorage } from "../buffer-persistence.js";
+import { type ExtractionScopeGroup, describeError, groupTurnsByExtractionScope } from "../buffer-turn-helpers.js";
+import { SmartBuffer } from "../buffer.js";
+import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
+import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
 import { log } from "../logger.js";
-import { selfDeps } from "./self-deps.js";
-import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingestion.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import type { Orchestrator } from "../orchestrator.js";
+import { headerConnector, renderExtractionConversation, resolveSourceConnector } from "../source-agent-qualifier.js";
+import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-claims.js";
+import type { BufferEntryState, BufferState, BufferTurn, PluginConfig } from "../types.js";
 import { ExtractionDrain } from "./extraction-drain.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
-import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
-import { headerConnector, renderExtractionConversation, resolveSourceConnector } from "../source-agent-qualifier.js";
-import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
-import type { Orchestrator } from "../orchestrator.js";
+import { selfDeps } from "./self-deps.js";
+import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingestion.js";
 
 export type DrainSessionStatus = "drained" | "deferred" | "failed" | "skipped";
 
@@ -102,7 +102,7 @@ export class ClaimBufferStorage implements BufferStorage {
     private readonly claims: BufferDrainClaims,
     private readonly key: string,
     private readonly ownerId: string,
-    private readonly entry: BufferEntryState,
+    private readonly entry: BufferEntryState
   ) {}
 
   async loadBuffer(): Promise<BufferState> {
@@ -124,7 +124,12 @@ export class ClaimBufferStorage implements BufferStorage {
   async saveBuffer(state: BufferState): Promise<void> {
     // Whole-state fallback (the claim covers one session): persist the entry.
     const entry = state.entries?.[this.key];
-    await this.claims.writeEntry(this.key, this.ownerId, entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 }, this.entry);
+    await this.claims.writeEntry(
+      this.key,
+      this.ownerId,
+      entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 },
+      this.entry
+    );
   }
 
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
@@ -137,6 +142,23 @@ export class ClaimBufferStorage implements BufferStorage {
   }
 }
 
+/** Per-invocation isolated execution context for one claim drain. */
+interface ClaimDrainExecution {
+  claimBuffer: SmartBuffer;
+  coordinator: TurnIngestionCoordinator;
+  executionDrain: ExtractionDrain;
+}
+
+/** The scopeProfileWritePlan option a scope group forwards to the queue. */
+interface GroupPlanOption {
+  scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+}
+
+/** Durable counters a drain pass contributed. */
+interface GroupCounts {
+  persistedCount: number;
+  durableOutputCount: number;
+}
 
 /** Pending turns across canonical + retained copies (the honest backlog count). */
 function pendingTurnCount(entry: BufferEntryState | undefined): number {
@@ -147,11 +169,25 @@ function pendingTurnCount(entry: BufferEntryState | undefined): number {
 /** Load one claimed session. An unclaimed key is nothing to drain. */
 async function loadClaimedSession(
   claims: BufferDrainClaims,
-  key: string,
-): Promise<{ kind: "notClaimed"; notClaimed: DrainSessionOutcome } | { kind: "claimed"; claim: { entry: BufferEntryState }; turnsAtStart: number }> {
+  key: string
+): Promise<
+  | { kind: "notClaimed"; notClaimed: DrainSessionOutcome }
+  | { kind: "claimed"; claim: { entry: BufferEntryState }; turnsAtStart: number }
+> {
   const claim = await claims.load(key);
   if (!claim) {
-    return { kind: "notClaimed", notClaimed: { key, status: "skipped", turnsAtStart: 0, turnsRemaining: 0, persistedCount: 0, durableOutputCount: 0, reason: "not_claimed" } };
+    return {
+      kind: "notClaimed",
+      notClaimed: {
+        key,
+        status: "skipped",
+        turnsAtStart: 0,
+        turnsRemaining: 0,
+        persistedCount: 0,
+        durableOutputCount: 0,
+        reason: "not_claimed",
+      },
+    };
   }
   return { kind: "claimed", claim, turnsAtStart: pendingTurnCount(claim.entry) };
 }
@@ -170,7 +206,12 @@ function busyLeaseOutcome(key: string, turnsAtStart: number): DrainSessionOutcom
 
 /** Take the lease unless this drainer already holds it. A busy lease means
  *  another drainer owns the claim — skip without touching content. */
-async function adoptLease(claims: BufferDrainClaims, key: string, ownerId: string, leaseMs: number): Promise<DrainSessionOutcome | null> {
+async function adoptLease(
+  claims: BufferDrainClaims,
+  key: string,
+  ownerId: string,
+  leaseMs: number
+): Promise<DrainSessionOutcome | null> {
   const held = await claims.adopt(key, {
     ownerId,
     pid: process.pid,
@@ -179,7 +220,7 @@ async function adoptLease(claims: BufferDrainClaims, key: string, ownerId: strin
     heartbeatAt: new Date().toISOString(),
     leaseMs,
   });
-  return held === 'busy' ? busyLeaseOutcome(key, pendingTurnCount((await claims.load(key))?.entry)) : null;
+  return held === "busy" ? busyLeaseOutcome(key, pendingTurnCount((await claims.load(key))?.entry)) : null;
 }
 
 function assembleOutcome(
@@ -187,7 +228,7 @@ function assembleOutcome(
   turnsAtStart: number,
   verdict: { status: DrainSessionStatus; reason?: string; turnsRemaining: number },
   counts: { persistedCount: number; durableOutputCount: number },
-  denied: Map<string, number>,
+  denied: Map<string, number>
 ): DrainSessionOutcome {
   const outcome: DrainSessionOutcome = {
     key,
@@ -206,7 +247,12 @@ function assembleOutcome(
  *  between the empty read and the ack — a not_empty ack means pending work
  *  exists; reload it, release OUR lease, report deferred, never a false
  *  drained. */
-async function ackEmptyClaim(claims: BufferDrainClaims, key: string, ownerId: string, turnsAtStart: number): Promise<DrainSessionOutcome> {
+async function ackEmptyClaim(
+  claims: BufferDrainClaims,
+  key: string,
+  ownerId: string,
+  turnsAtStart: number
+): Promise<DrainSessionOutcome> {
   const ackOutcome = await claims.ack(key, ownerId);
   if (ackOutcome !== "acked") {
     const reloaded = await claims.load(key);
@@ -230,20 +276,29 @@ async function ackEmptyClaim(claims: BufferDrainClaims, key: string, ownerId: st
  *  progress into a claim it no longer owns. A heartbeat that cannot be
  *  renewed is a lease that cannot be held — stop cleanly at the next chunk
  *  boundary (the next run resumes it). */
-function startLeaseHeartbeat(claims: BufferDrainClaims, key: string, ownerId: string, leaseMs: number, abort: AbortController): NodeJS.Timeout {
-  const heartbeat = setInterval(() => {
-    void claims
-      .heartbeat(key, ownerId, leaseMs)
-      .then((state) => {
-        if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
-      })
-      .catch((err: Error) => {
-        // A heartbeat that cannot be renewed is a lease that cannot be held:
-        // stop this run cleanly at the next chunk boundary (the next run
-        // resumes it).
-        abort.abort(new Error(`buffer drain: lease heartbeat failed for session ${key}: ${describeError(err)}`));
-      });
-  }, Math.max(1_000, Math.floor(leaseMs / 3)));
+function startLeaseHeartbeat(
+  claims: BufferDrainClaims,
+  key: string,
+  ownerId: string,
+  leaseMs: number,
+  abort: AbortController
+): NodeJS.Timeout {
+  const heartbeat = setInterval(
+    () => {
+      void claims
+        .heartbeat(key, ownerId, leaseMs)
+        .then((state) => {
+          if (state === "lost") abort.abort(new Error(`buffer drain: lease lost for session ${key}`));
+        })
+        .catch((err: Error) => {
+          // A heartbeat that cannot be renewed is a lease that cannot be held:
+          // stop this run cleanly at the next chunk boundary (the next run
+          // resumes it).
+          abort.abort(new Error(`buffer drain: lease heartbeat failed for session ${key}: ${describeError(err)}`));
+        });
+    },
+    Math.max(1_000, Math.floor(leaseMs / 3))
+  );
   heartbeat.unref?.();
   return heartbeat;
 }
@@ -257,8 +312,8 @@ function buildClaimExecution(
   claims: BufferDrainClaims,
   key: string,
   ownerId: string,
-  claim: { entry: BufferEntryState },
-): { claimBuffer: SmartBuffer; coordinator: TurnIngestionCoordinator; executionDrain: ExtractionDrain } {
+  claim: { entry: BufferEntryState }
+): ClaimDrainExecution {
   const claimBuffer = new SmartBuffer(orchestrator.config, new ClaimBufferStorage(claims, key, ownerId, claim.entry));
   const isolatedRun = orchestrator.extractionRunCoordinatorForBuffer(claimBuffer);
   const coordinator = new TurnIngestionCoordinator(selfDeps<TurnIngestionDeps>(orchestrator));
@@ -286,14 +341,14 @@ function buildClaimExecution(
           : undefined;
         return renderExtractionConversation(
           turns.map((turn) => ({ ...turn, content: turn.content.trim().slice(0, config.extractionMaxTurnChars) })),
-          headerConnector(sourceConnector),
+          headerConnector(sourceConnector)
         ).conversation.length;
       },
       runExtraction: (turns, runOptions) => isolatedRun.runExtraction(turns, runOptions),
       getStorage: () => ingestionDeps.getStorage(),
       buffer: claimBuffer,
     },
-    { dropFailedChunks: false },
+    { dropFailedChunks: false }
   );
   return { claimBuffer, coordinator, executionDrain };
 }
@@ -302,7 +357,7 @@ function buildClaimExecution(
  *  planless ACCEPTED group pins null (existing flush behavior); unpinned
  *  legacy groups pass NO option so runExtraction resolves the CURRENT
  *  profile. */
-function planOptionForGroup(group: ExtractionScopeGroup): { scopeProfileWritePlan?: ResolvedScopeProfilePlan | null } {
+function planOptionForGroup(group: ExtractionScopeGroup): GroupPlanOption {
   if (group.scopeProfileWritePlan !== undefined) return { scopeProfileWritePlan: group.scopeProfileWritePlan };
   if (group.turns.some((turn) => turn.acceptedCapture === true)) return { scopeProfileWritePlan: null };
   return {};
@@ -335,14 +390,16 @@ interface ScopeDrainContext {
  *  ORIGINAL coding binding before any write. Groups run sequentially (FIFO
  *  per key — the queue's same-key exclusion would serialize them anyway); a
  *  denied group never blocks or clears the other groups. */
-async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes: GroupOutcome[]; groupError?: DrainExtractionError }> {
+async function drainScopeGroups(
+  ctx: ScopeDrainContext
+): Promise<{ groupOutcomes: GroupOutcome[]; groupError?: DrainExtractionError }> {
   const groupOutcomes: GroupOutcome[] = [];
   let groupError: DrainExtractionError | undefined;
   for (const group of groupTurnsByExtractionScope(ctx.turns)) {
     if (ctx.signal.aborted) break;
     if (explicitModeDenied(group, ctx.config)) {
       log.warn(
-        `buffer drain: session ${ctx.key} denied capture_mode_explicit (${group.turns.length} ordinary turn(s) retained)`,
+        `buffer drain: session ${ctx.key} denied capture_mode_explicit (${group.turns.length} ordinary turn(s) retained)`
       );
       groupOutcomes.push({
         turns: group.turns.length,
@@ -352,10 +409,10 @@ async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes
     }
     const { promise, resolve } = Promise.withResolvers<{ error?: unknown; result?: ExtractionRunResult }>();
     let done = false;
-    const settle = (error?: unknown, result?: ExtractionRunResult): void => {
+    const settle = (cause: unknown, result?: ExtractionRunResult): void => {
       if (done) return;
       done = true;
-      resolve({ error, result });
+      resolve({ error: cause, result });
     };
     // Settlement and callback EXIT are tracked separately: the lease is
     // released only after the queued closure has fully exited.
@@ -383,7 +440,10 @@ async function drainScopeGroups(ctx: ScopeDrainContext): Promise<{ groupOutcomes
     // settlement error is already captured; a rethrow here is that error).
     await queued.catch(() => undefined);
     if (settled.error !== undefined) {
-      groupError = settled.error as DrainExtractionError;
+      // SAFETY: settle captures whatever the queued closure rejected with;
+      // every drain rejection site throws Error values, and a rejection is
+      // always a DrainExtractionError in this path.
+      groupError = settled.error as Error;
       break;
     }
     groupOutcomes.push({ turns: group.turns.length, result: settled.result });
@@ -422,7 +482,7 @@ async function settleDrainVerdict(
   ownerId: string,
   groupOutcomes: readonly GroupOutcome[],
   groupError: DrainExtractionError | undefined,
-  turnsRemaining: number,
+  turnsRemaining: number
 ): Promise<{ status: DrainSessionStatus; reason?: string; turnsRemaining: number }> {
   if (turnsRemaining === 0) return await ackOrReload(claims, key, ownerId);
   if (groupError) {
@@ -431,7 +491,8 @@ async function settleDrainVerdict(
   }
   await claims.releaseLease(key, ownerId);
   const reason =
-    groupOutcomes.find((entry) => entry.result?.reason !== undefined && DENIED_SCOPE_REASONS.has(entry.result.reason!))?.result?.reason ??
+    groupOutcomes.find((entry) => entry.result?.reason !== undefined && DENIED_SCOPE_REASONS.has(entry.result.reason!))
+      ?.result?.reason ??
     lastGroupReason(groupOutcomes) ??
     "deferred";
   return { status: "deferred", reason, turnsRemaining };
@@ -443,17 +504,17 @@ async function settleDrainVerdict(
 async function ackOrReload(
   claims: BufferDrainClaims,
   key: string,
-  ownerId: string,
+  ownerId: string
 ): Promise<{ status: DrainSessionStatus; reason?: string; turnsRemaining: number }> {
   const ackOutcome = await claims.ack(key, ownerId);
-  if (ackOutcome === 'acked') return { status: 'drained', turnsRemaining: 0 };
+  if (ackOutcome === "acked") return { status: "drained", turnsRemaining: 0 };
   const reloaded = await claims.load(key);
   const turnsRemaining = pendingTurnCount(reloaded?.entry);
   await claims.releaseLease(key, ownerId);
-  return { status: 'deferred', reason: ackOutcome === 'not_empty' ? 'ack_not_empty' : 'ack_not_owner', turnsRemaining };
+  return { status: "deferred", reason: ackOutcome === "not_empty" ? "ack_not_empty" : "ack_not_owner", turnsRemaining };
 }
 
-function groupCounts(groupOutcomes: readonly GroupOutcome[]): { persistedCount: number; durableOutputCount: number } {
+function groupCounts(groupOutcomes: readonly GroupOutcome[]): GroupCounts {
   return {
     persistedCount: groupOutcomes.reduce((sum, entry) => sum + (entry.result?.persistedCount ?? 0), 0),
     durableOutputCount: groupOutcomes.reduce((sum, entry) => sum + (entry.result?.durableOutputCount ?? 0), 0),
@@ -471,14 +532,18 @@ export interface DrainScanEntry {
  *  buffer entry. */
 async function bufferSessionListings(
   claims: BufferDrainClaims,
-  entries: Record<string, BufferEntryState>,
+  entries: Record<string, BufferEntryState>
 ): Promise<{ listings: DrainScanEntry[]; seen: Set<string> }> {
   const listings: DrainScanEntry[] = [];
   const seen = new Set<string>();
   for (const [key, entry] of Object.entries(entries)) {
     seen.add(key);
     const claim = claims.isClaimed(key) ? await claims.load(key) : null;
-    listings.push({ key, turns: claim ? pendingTurnCount(claim.entry) : pendingTurnCount(entry), claimed: claim !== null });
+    listings.push({
+      key,
+      turns: claim ? pendingTurnCount(claim.entry) : pendingTurnCount(entry),
+      claimed: claim !== null,
+    });
   }
   return { listings, seen };
 }
@@ -518,7 +583,7 @@ async function runClaimDrain(
     signal: AbortSignal;
   },
   options: BufferDrainRunnerOptions,
-  heartbeat: NodeJS.Timeout,
+  heartbeat: NodeJS.Timeout
 ): Promise<DrainSessionOutcome> {
   // An emptied claim acks here: the ack verdict is the truth (drained), or
   // live ingress merged between the read and the ack — deferred, source kept.
@@ -537,20 +602,19 @@ async function runClaimDrain(
     ctx.ownerId,
     groupOutcomes,
     groupError,
-    pendingTurnCount(remaining?.entry),
+    pendingTurnCount(remaining?.entry)
   );
   const outcome = assembleOutcome(
     ctx.key,
     ctx.turnsAtStart,
     { status, reason, turnsRemaining },
     groupCounts(groupOutcomes),
-    deniedByReason(groupOutcomes),
+    deniedByReason(groupOutcomes)
   );
   log.info(`buffer drain: session ${ctx.key} ${status} (${outcome.turnsRemaining} turn(s) remaining)`);
   options.onEvent?.({ type: "session_finished", key: ctx.key, outcome });
   return outcome;
 }
-
 
 export class BufferDrainRunner {
   constructor(private readonly orchestrator: Orchestrator) {}
@@ -568,7 +632,7 @@ export class BufferDrainRunner {
     const claims = this.claims;
     const leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
     const claimed = await loadClaimedSession(claims, key);
-    if (claimed.kind === 'notClaimed') return claimed.notClaimed;
+    if (claimed.kind === "notClaimed") return claimed.notClaimed;
     const { claim, turnsAtStart } = claimed;
     options.onEvent?.({ type: "session_started", key, turns: turnsAtStart });
 
@@ -582,7 +646,13 @@ export class BufferDrainRunner {
 
     // The claim is the buffer for this run: every successful chunk is removed
     // from it, so a kill leaves exactly the un-extracted turns.
-    const { claimBuffer, coordinator, executionDrain } = buildClaimExecution(this.orchestrator, claims, key, options.ownerId, claim);
+    const { claimBuffer, coordinator, executionDrain } = buildClaimExecution(
+      this.orchestrator,
+      claims,
+      key,
+      options.ownerId,
+      claim
+    );
     await claimBuffer.load();
 
     // The claim's turns (retained first, like the live buffer's order).
@@ -595,9 +665,21 @@ export class BufferDrainRunner {
     const heartbeat = startLeaseHeartbeat(claims, key, options.ownerId, leaseMs, abort);
     try {
       return await runClaimDrain(
-        { orchestrator: this.orchestrator, claims, key, ownerId: options.ownerId, claimBuffer, coordinator, executionDrain, turns, turnsAtStart, config: this.orchestrator.config, signal },
+        {
+          orchestrator: this.orchestrator,
+          claims,
+          key,
+          ownerId: options.ownerId,
+          claimBuffer,
+          coordinator,
+          executionDrain,
+          turns,
+          turnsAtStart,
+          config: this.orchestrator.config,
+          signal,
+        },
         options,
-        heartbeat,
+        heartbeat
       );
     } finally {
       clearInterval(heartbeat);

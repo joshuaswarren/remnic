@@ -283,7 +283,8 @@
     "packages/remnic-core/src/orchestration/fact-dedup-window.ts": "extraction-lifecycle",
     "packages/remnic-core/src/storage/profile-mutation.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/provider-breaker.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/promotion-dedup-window.ts": "extraction-lifecycle"
+    "packages/remnic-core/src/orchestration/promotion-dedup-window.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/backlog-scheduler.ts": "extraction-lifecycle"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",
