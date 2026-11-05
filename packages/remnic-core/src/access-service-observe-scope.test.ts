@@ -256,8 +256,15 @@ test("a preempted observe extraction does not block the next force-flush", async
   const key = tracker.key("session-a", "alice", "default");
   tracker.track(key, Promise.reject(preemptedExtractionError()), new AbortController());
   await tracker.wait("session-a", "alice", "default");
+  // A settled failure is no longer pending: the entry is removed on ANY
+  // settle, so the next flush is neither blocked nor failed by work that
+  // already finished. (A flush overlapping the failing extraction still
+  // surfaces its error — covered in access-observe-helpers.test.ts.)
   tracker.track(key, Promise.reject(new Error("extraction failed")), new AbortController());
-  await assert.rejects(() => tracker.wait("session-a", "alice", "default"), /extraction failed/);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setImmediate(resolve);
+  await promise;
+  await tracker.wait("session-a", "alice", "default");
 });
 
 test("cancelling a tracked extraction with a preemption reason does not block the next flush", async () => {

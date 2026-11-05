@@ -38,7 +38,7 @@ import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { bufferSessionFileName, type BufferFileIo } from "./buffer-session-files.js";
-import { bufferTurnsEqual, subtractBufferTurns } from "../buffer-turn-helpers.js";
+import { bufferTurnsEqual, mergeBufferTurnsByIdentity, subtractBufferTurns } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { BufferEntryState, BufferTurn } from "../types.js";
@@ -97,13 +97,8 @@ function emptyEntry(): BufferEntryState {
 
 /** Identity-dedupe `incoming` turns into `existing` (they are the same turns a
  * live owner still held after claiming; only genuinely NEW turns append). */
-function mergeTurns<T>(existing: T[], incoming: readonly T[], isEqual: (a: T, b: T) => boolean): T[] {
-  const merged = [...existing];
-  for (const turn of incoming) {
-    if (merged.some((kept) => isEqual(kept, turn))) continue;
-    merged.push(turn);
-  }
-  return merged;
+function mergeTurns(existing: BufferTurn[], incoming: readonly BufferTurn[]): BufferTurn[] {
+  return mergeBufferTurnsByIdentity(existing, incoming);
 }
 
 function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainClaimFile {
@@ -115,14 +110,13 @@ function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainC
   entry.turns = mergeTurns(
     subtractBufferTurns(claim.entry.turns, gone),
     subtractBufferTurns(incoming.turns, gone),
-    bufferTurnsEqual,
   );
   const retained = [
     ...subtractBufferTurns(claim.entry.retainedTurns ?? [], gone),
     ...subtractBufferTurns(incoming.retainedTurns ?? [], gone),
   ];
   // SAFETY: an empty accumulator of the same element type.
-  const dedupedRetained = mergeTurns([] as typeof retained, retained, bufferTurnsEqual);
+  const dedupedRetained = mergeTurns([], retained);
   if (dedupedRetained.length > 0) entry.retainedTurns = dedupedRetained;
   const stamps = [claim.entry.lastExtractionAt, incoming.lastExtractionAt].filter(
     (value): value is string => value !== null && value !== undefined,
@@ -489,7 +483,7 @@ export class BufferDrainClaims {
         (turn) =>
           !seenRetained.some((snapshot) => bufferTurnsEqual(snapshot, turn)) && !kept(turn),
       );
-      if (lateRetained.length > 0) next.retainedTurns = mergeTurns(entryRetained, lateRetained, bufferTurnsEqual);
+      if (lateRetained.length > 0) next.retainedTurns = mergeTurns(entryRetained, lateRetained);
       await this.writeClaimBody(key, { ...claim, entry: next, drained, drainedRetained });
     });
   }

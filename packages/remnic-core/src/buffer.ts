@@ -646,16 +646,23 @@ export class SmartBuffer {
   private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn): Promise<AddTurnMutationResult> {
     await this.loadUnlocked();
     const entry = this.entryFor(bufferKey);
-    const priorTurns = entry.turns.slice();
+    const signal = scanSignals(turn.content, this.config.highSignalPatterns);
     entry.turns.push(turn);
-    const activeTurnsSnapshot = entry.turns.map(copyBufferTurn);
-    const retainedTurnsSnapshot = (entry.retainedTurns ?? []).map(copyBufferTurn);
+    const decision = this.evaluate(entry, signal.level);
+    // Snapshots exist only for the paths that read them (`completeAddTurnOutcome`):
+    // extraction decisions assemble extractionTurns from them; a keep_buffering
+    // turn needs them solely when the surprise branch is eligible (probe present,
+    // smart mode, sub-high signal). Steady-state buffering copies nothing.
+    const snapshotsNeeded =
+      decision !== "keep_buffering" ||
+      (this.surpriseProbe !== null && this.config.triggerMode === "smart" && signal.level !== "high");
+    const priorTurns = snapshotsNeeded ? entry.turns.slice(0, -1) : [];
+    const activeTurnsSnapshot = snapshotsNeeded ? entry.turns.map(copyBufferTurn) : [];
+    const retainedTurnsSnapshot = snapshotsNeeded ? (entry.retainedTurns ?? []).map(copyBufferTurn) : [];
     if (bufferKey === "default") {
       this.state.turns = entry.turns;
     }
 
-    const signal = scanSignals(turn.content, this.config.highSignalPatterns);
-    const decision = this.evaluate(entry, signal.level);
     const turnCountInWindow = entry.turns.length;
 
     this.persistence.markDirty(bufferKey);

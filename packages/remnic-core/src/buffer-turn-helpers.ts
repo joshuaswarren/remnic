@@ -169,6 +169,68 @@ export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn
   );
 }
 
+/**
+ * Canonical identity key for a turn, injective over `bufferTurnsEqual`
+ * equality classes. Every compared field is a primitive (or the #3251 plan
+ * identity string), so set-membership replaces pairwise comparison and turn
+ * merges run O(n + m) instead of O(n × m). JSON.stringify of a string is
+ * injective (it escapes control characters), and the raw `\u0001` sentinels
+ * distinguish undefined from null — a distinction `===` makes and plain
+ * stringification would lose.
+ */
+export function bufferTurnIdentityKey(turn: BufferTurn): string {
+  const opt = (value: string | null | undefined): string =>
+    value === undefined ? "\u0001undefined" : value === null ? "\u0001null" : JSON.stringify(value);
+  const optFlag = (value: boolean | undefined): string =>
+    value === undefined ? "\u0001undefined" : String(value);
+  const ctx = turn.codingContext;
+  return JSON.stringify([
+    turn.role,
+    turn.content,
+    turn.timestamp,
+    opt(turn.sessionKey),
+    opt(turn.sessionOwnerPrincipal),
+    opt(turn.logicalSessionKey),
+    turn.providerThreadId === undefined ? "\u0001undefined" : turn.providerThreadId === null ? "\u0001null" : JSON.stringify(turn.providerThreadId),
+    opt(turn.turnFingerprint),
+    optFlag(turn.persistProcessedFingerprint),
+    opt(turn.sourceConnector),
+    opt(turn.originRole),
+    optFlag(turn.ambientCapture),
+    opt(turn.sourceValidAt),
+    optFlag(turn.acceptedCapture),
+    opt(ctx?.projectId),
+    opt(ctx?.rootPath),
+    opt(ctx?.branch),
+    opt(ctx?.defaultBranch),
+    opt(turn.writeNamespaceOverride),
+    opt(turn.principalOverride),
+    opt(turn.scopeProfileWritePlan ? scopeProfilePlanIdentity(turn.scopeProfileWritePlan) : undefined),
+  ]);
+}
+
+/**
+ * Identity-dedupe `incoming` turns into `existing` (same contract as the
+ * claim-merge `mergeTurns`): identical turns are dropped — the EXISTING
+ * entry is kept — genuinely-new turns append in arrival order, and
+ * duplicates within `incoming` collapse to their first occurrence. O(n + m)
+ * via `bufferTurnIdentityKey` membership instead of pairwise equality.
+ */
+export function mergeBufferTurnsByIdentity(
+  existing: readonly BufferTurn[],
+  incoming: readonly BufferTurn[],
+): BufferTurn[] {
+  const merged = [...existing];
+  const seen = new Set(merged.map(bufferTurnIdentityKey));
+  for (const turn of incoming) {
+    const key = bufferTurnIdentityKey(turn);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(turn);
+  }
+  return merged;
+}
+
 /** Replace only the processed snapshot; callers without one retain legacy whole-slot semantics. */
 export function selectRetainedDeferredTurns(
   existing: readonly BufferTurn[],

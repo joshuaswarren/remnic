@@ -148,12 +148,15 @@ export class PendingObserveExtractionTracker {
       controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
     };
     this.entries.set(key, entry);
+    // Any settle (success OR rejection — preemption is just one rejection
+    // kind) ends the pending entry; leaving a settled failure tracked wedged
+    // the key and kept every controller ever registered for it alive.
     void promise
       .then(() => {
         if (this.entries.get(key) === entry) this.entries.delete(key);
       })
-      .catch((error) => {
-        if (error instanceof Error && isPreemptedExtraction(error) && this.entries.get(key) === entry) this.entries.delete(key);
+      .catch(() => {
+        if (this.entries.get(key) === entry) this.entries.delete(key);
       });
   }
 
