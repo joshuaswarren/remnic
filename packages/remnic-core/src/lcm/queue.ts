@@ -86,10 +86,21 @@ export class LcmWorkQueue {
     return this.inFlight;
   }
 
-  async whenIdle(): Promise<void> {
+  async whenIdle(abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (this.depth === 0 && this.inFlight === 0) return;
-    await new Promise<void>((resolve) => {
-      this.idleWaiters.push(resolve);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (): void => {
+        abortSignal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const remaining = this.idleWaiters.filter((waiter) => waiter !== finish);
+        this.idleWaiters.splice(0, this.idleWaiters.length, ...remaining);
+        reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+      };
+      this.idleWaiters.push(finish);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 

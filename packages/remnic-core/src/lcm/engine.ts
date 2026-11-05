@@ -437,8 +437,8 @@ export class LcmEngine {
     if (this.closed) return;
     for (;;) {
       abortSignal?.throwIfAborted();
-      await this.waitForPendingObserveInitIdle();
-      await this.observeQueue?.whenIdle();
+      await this.waitForPendingObserveInitIdle(undefined, abortSignal);
+      await this.observeQueue?.whenIdle(abortSignal);
       abortSignal?.throwIfAborted();
       const entry = [...this.summarizeRetryWaiters.entries()][0];
       if (!entry) return;
@@ -544,8 +544,18 @@ export class LcmEngine {
     }
 
     if (this.pendingObserveInitCounts.size === 0) return;
-    await new Promise<void>((resolve) => {
-      this.pendingObserveInitIdleWaiters.push(resolve);
+    await new Promise<void>((resolve, reject) => {
+      const finish = (): void => {
+        abortSignal?.removeEventListener("abort", onAbort);
+        resolve();
+      };
+      const onAbort = (): void => {
+        const remaining = this.pendingObserveInitIdleWaiters.filter((waiter) => waiter !== finish);
+        this.pendingObserveInitIdleWaiters.splice(0, this.pendingObserveInitIdleWaiters.length, ...remaining);
+        reject(abortSignal?.reason instanceof Error ? abortSignal.reason : new DOMException("Aborted", "AbortError"));
+      };
+      this.pendingObserveInitIdleWaiters.push(finish);
+      abortSignal?.addEventListener("abort", onAbort, { once: true });
     });
   }
 

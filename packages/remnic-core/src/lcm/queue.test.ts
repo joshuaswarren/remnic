@@ -195,3 +195,21 @@ test("#3077 whenSessionIdle abort unregisters the waiter", async () => {
   await queue.whenIdle();
   await queue.whenSessionIdle("blocked");
 });
+
+test("whenIdle abort unregisters the waiter while a job is in flight", async () => {
+  const blocker = deferred();
+  const queue = new LcmWorkQueue({
+    concurrency: 1,
+    worker: async () => {
+      await blocker.promise;
+    },
+  });
+  queue.enqueue("blocked");
+  await Promise.resolve();
+  const abort = new AbortController();
+  const waiting = queue.whenIdle(abort.signal);
+  abort.abort();
+  await assert.rejects(waiting, (err: unknown) => err instanceof Error && err.name === "AbortError");
+  blocker.resolve();
+  await queue.whenIdle();
+});

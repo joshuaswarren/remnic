@@ -645,6 +645,53 @@ test("an aborted global idle wait releases the retry timer reference", async () 
   }
 });
 
+test("an aborted global idle wait rejects while a summary job is still in flight", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-global-idle-abort-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "unused");
+    await engine.ensureInitialized();
+
+    // SAFETY: the stub replaces the engine's own summarizer: hold the first
+    // pass in flight so the wait is parked on the observe queue, not a retry.
+    let releaseFirstPass!: () => void;
+    const firstPassBlocked = new Promise<void>((resolve) => {
+      releaseFirstPass = resolve;
+    });
+    let firstPassEntered = false;
+    const summarizer = (engine as any).summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    summarizer.summarizeIncremental = async () => {
+      firstPassEntered = true;
+      await firstPassBlocked;
+      return 1;
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "abort mid job" },
+      { role: "assistant", content: "abort mid job too" },
+    ]);
+    await eventually(
+      async () => (firstPassEntered ? true : null),
+      "the summary pass is in flight",
+    );
+
+    const abort = new AbortController();
+    const waiting = engine.waitForObserveQueueIdle(abort.signal);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    abort.abort(new Error("caller gave up"));
+    await assert.rejects(() => waiting);
+
+    releaseFirstPass();
+    engine.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 /** Spawn a real one-shot host child process with the shared engine setup.
  * The retry timer is the only handle a quiet host has left: `mode` decides
  * whether it parks an explicit global idle wait before ending its script. */
