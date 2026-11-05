@@ -559,6 +559,54 @@ test("listPage never spends its page limit on empty tombstone claims", async () 
   }
 });
 
+test("listPage bounds the claim bodies it reads per call and resumes past a long tombstone run", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    // limit 1 reads at most 8 bodies per call: eight tombstones fill the
+    // budget exactly, so the pending claim behind them needs a second page.
+    const keys = Array.from({ length: 9 }, (_, index) => `run-${index}`);
+    for (const key of keys) await h.buffer.addTurn(key, turn(`t-${key}`, key));
+    await h.buffer.save();
+    for (const key of keys) assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
+    const order = (await h.claims.list()).map((listed) => listed.key);
+    const pending = order[order.length - 1]!;
+    for (const key of order) {
+      if (key === pending) continue;
+      const loaded = await h.claims.load(key);
+      await h.claims.writeEntry(key, h.lease.ownerId, entry([]), loaded!.entry);
+      assert.equal(await h.claims.ack(key, h.lease.ownerId), "acked");
+    }
+    const first = await h.claims.listPage(undefined, 1);
+    assert.deepEqual(first.entries, [], "the scan budget is spent on tombstones: nothing listed this call");
+    assert.notEqual(first.nextCursor, undefined, "the cursor advanced past every scanned name");
+    const second = await h.claims.listPage(first.nextCursor, 1);
+    assert.deepEqual(
+      second.entries.map((listed) => listed.key),
+      [pending],
+      "the next page resumes after the scanned run and reaches the pending claim"
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("listPage returns exactly its limit when more pending claims exist", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    const keys = ["limit-a", "limit-b", "limit-c"];
+    for (const key of keys) await h.buffer.addTurn(key, turn(`t-${key}`, key));
+    await h.buffer.save();
+    for (const key of keys) assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
+    const page = await h.claims.listPage(undefined, 2);
+    assert.equal(page.entries.length, 2, "a page never exceeds its limit");
+    assert.notEqual(page.nextCursor, undefined, "a full page leaves a cursor for the remainder");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("listPage's cursor is the LAST CONSUMED claim, so a page boundary never skips one", async () => {
   const h = makeHarness();
   try {
