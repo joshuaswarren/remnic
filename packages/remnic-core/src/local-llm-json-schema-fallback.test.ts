@@ -295,8 +295,11 @@ test("request without response_format is unchanged", async () => {
 
 const schemaValidationRejection = {
   error: {
+    // Verbatim production body shape (2026-11-05): "Mismatch type" (no "ed"),
+    // JSON-escaped quotes around the schema fragment, and no mention of
+    // response_format anywhere.
     message:
-      'invalid params, Mismatch type string with value array "at index 13779: mismatched type near \\"episodeTitle\\": {\\"type\\": [\\"string\\",\\"null\\"]}"',
+      'invalid params, Mismatch type string with value array "at index 13779: \\"episodeTitle\\": {\\"type\\": [\\"string\\",\\"null\\"]}"',
   },
 };
 
@@ -400,6 +403,60 @@ test("a schema-carrying success records native and keeps sending the format", as
     assert.ok(server.requests[1].body.response_format, "structured output remains for supporting providers");
   } finally {
     await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an expired registry rejection is re-probed instead of honored forever", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer(() => ({ status: 200, body: okCompletion }));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Age the entry past the 7-day registry TTL, as a long-lived deployment
+    // would: the learned rejection must not be honored forever.
+    const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
+    const persisted = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { fetchedAt: string }>;
+    };
+    persisted.models["test-local-model"].fetchedAt = new Date(
+      Date.now() - 8 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    fs.writeFileSync(registryPath, JSON.stringify(persisted));
+
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), new ModelRegistry(memoryDir));
+    primeClient(client);
+    const result = await client.chatCompletion([{ role: "user", content: "hello" }], {
+      responseFormat,
+    });
+    assert.equal(result?.content, "done");
+    assert.ok(server.requests[0].body.response_format, "expired rejection is re-probed with the schema");
+    // The provider accepts it this time: the native record refreshes.
+    const refreshed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { structuredOutput?: string }>;
+    };
+    assert.equal(refreshed.models["test-local-model"]?.structuredOutput, "native");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a later capabilities write preserves the learned structuredOutput", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Mirrors getCachedContextWindow's LM Studio detection replacing the record.
+    registry.setCapabilities("test-local-model", {
+      maxPositionEmbeddings: 131072,
+      contextWindow: 131072,
+      supportsExtendedContext: true,
+      typicalOutputTokens: 8192,
+      source: "lmstudio",
+    });
+    assert.equal(registry.getStructuredOutput("test-local-model"), "none");
+  } finally {
     fs.rmSync(memoryDir, { recursive: true, force: true });
   }
 });

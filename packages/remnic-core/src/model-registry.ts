@@ -195,6 +195,7 @@ export class ModelRegistry {
           ...capabilities,
           modelId: normalizedId,
           source: "default",
+          structuredOutput: this.data.models[normalizedId]?.structuredOutput,
           fetchedAt: new Date().toISOString(),
         };
         this.data.models[normalizedId] = caps;
@@ -218,6 +219,9 @@ export class ModelRegistry {
     const normalizedId = this.normalizeModelId(modelId);
     const caps: ModelCapabilities = {
       ...capabilities,
+      // A replacement record (e.g. fresh LM Studio detection) must not erase
+      // a learned structuredOutput shaping.
+      structuredOutput: capabilities.structuredOutput ?? this.data.models[normalizedId]?.structuredOutput,
       modelId: normalizedId,
       fetchedAt: new Date().toISOString(),
     };

@@ -839,6 +839,12 @@ test("an open provider breaker suppresses submission: no drain, no claim read", 
     drained: [],
   };
   const deps = breakerInstrumentedDeps(state, queue);
+  const originalListPage = deps.claims.listPage;
+  let listPageCalls = 0;
+  deps.claims.listPage = async (...args) => {
+    listPageCalls += 1;
+    return originalListPage(...args);
+  };
   const scheduler = new BacklogScheduler({
     ...deps,
     breakerSnapshot: () => ({
@@ -856,6 +862,7 @@ test("an open provider breaker suppresses submission: no drain, no claim read", 
     }
     assert.equal(state.drained.length, 0, "no attempt is built while the breaker is open");
     assert.equal(deps.claimReads(), 0, "no claim is read while the breaker is open");
+    assert.equal(listPageCalls, 0, "claim discovery I/O is skipped while the breaker is open");
     assert.equal(scheduler.snapshot().counters.claimed, 0);
   } finally {
     await scheduler.stop();

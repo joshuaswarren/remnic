@@ -219,6 +219,18 @@ export class BacklogScheduler {
     this.ticking = true;
     const cursorBeforeTick = this.claimCursor;
     try {
+      // Fast bail: a breaker already open must not pay discovery I/O
+      // (listPage reads and parses claim bodies on every poll). The
+      // submitCandidates guard below still catches a breaker that opens
+      // while discovery awaits.
+      const breakerBeforeDiscovery = this.deps.breakerSnapshot?.();
+      if (
+        breakerBeforeDiscovery &&
+        breakerBeforeDiscovery.state === "open" &&
+        this.now() < breakerBeforeDiscovery.openUntilMs
+      ) {
+        return;
+      }
       // stop() may land while discovery's I/O is pending: re-check before
       // submitting anything, and again per candidate.
       // A discovery failure (EACCES/EIO on the claims dir) must not reject

@@ -229,21 +229,18 @@ export class LocalLlmClient {
     return this.config.localLlmHomeDir || readEnvVar("HOME") || os.homedir();
   }
 
-  /** False once this process saw (or the registry persists) a native
-   *  json_schema rejection for the model: those requests go out without
-   *  response_format instead of re-proving the rejection every attempt. */
+  /** False once this model is known to reject the native json_schema payload.
+   *  A registry-backed rejection honors the registry TTL: an expired entry is
+   *  re-probed instead of being honored forever. The in-memory set only
+   *  serves clients without a registry. */
   private nativeSchemaUsable(modelId: string): boolean {
-    if (this.nativeSchemaRejectedModels.has(modelId)) return false;
-    if (this.modelRegistry?.getStructuredOutput(modelId) === "none") {
-      this.nativeSchemaRejectedModels.add(modelId);
-      return false;
-    }
-    return true;
+    if (this.modelRegistry) return this.modelRegistry.getStructuredOutput(modelId) !== "none";
+    return !this.nativeSchemaRejectedModels.has(modelId);
   }
 
   private rememberNativeSchemaRejection(modelId: string): void {
-    this.nativeSchemaRejectedModels.add(modelId);
-    this.modelRegistry?.setStructuredOutput(modelId, "none");
+    if (this.modelRegistry) this.modelRegistry.setStructuredOutput(modelId, "none");
+    else this.nativeSchemaRejectedModels.add(modelId);
   }
 
   private buildRequestHeaders(base: Record<string, string> = {}): Record<string, string> {
