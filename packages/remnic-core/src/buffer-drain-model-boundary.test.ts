@@ -22,6 +22,7 @@ import path from "node:path";
 
 import { Orchestrator, parseConfig } from "./index.js";
 import { BufferDrainRunner } from "./orchestration/buffer-drain-runner.js";
+import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import type { PluginConfig } from "./types.js";
 
 interface ModelBoundary {
@@ -434,6 +435,125 @@ test("a live task queued while its session becomes claimed settles as claimed, n
     );
     assert.equal(engineCalls, 0, "the stale live snapshot must never reach the model");
     assert.equal(model.prompts.length, 0);
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a planless accepted claim group pins null: it stays unprofiled under the CURRENT profile", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-plan-null-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    // Active profile with NO writable layer (house "denied" shape): if the
+    // drain failed to pin null for this planless ACCEPTED capture, the
+    // current profile would refuse the write and the capture would strand.
+    const config: PluginConfig = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+      scopeProfiles: {
+        "denied-profile": {
+          readOrder: ["userProject"],
+          writeDefault: "userProject",
+          promotionTargets: [],
+          autoPromote: { enabled: false, targets: [], categories: [], minConfidenceTier: "speculative" },
+        },
+      },
+      defaultScopeProfile: "denied-profile",
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    // NO writeNamespaceOverride: the null pin (not an explicit-namespace
+    // override) is what keeps this capture outside the current profile gate.
+    await orchestrator.buffer.addTurn("planless-sess", {
+      role: "user",
+      content: "planless accepted capture probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "planless-sess",
+      acceptedCapture: true,
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("planless-sess", "drain-null"), true);
+
+    const outcome = await runner.drainSession("planless-sess", { ownerId: "drain-null" });
+    assert.equal(outcome.status, "drained", "the pinned null keeps the accepted capture unprofiled and writable");
+    assert.ok(model.prompts.some((p) => p.includes("planless accepted capture probe")), "the capture reached the model");
+    assert.ok(await hasFactFile(memoryDir, "planless accepted capture probe"), "the fact persisted to the pinned namespace");
+    const claim = await runner.claims.load("planless-sess");
+    assert.equal(claim?.entry.turns.length ?? 0, 0, "the claim empties after extraction");
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a pinned accepted claim group forwards its captured plan; flattening it to null loses the identity gate", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-plan-pin-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config: PluginConfig = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+      scopeProfiles: {
+        "pinned-profile": {
+          readOrder: ["userGlobal"],
+          writeDefault: "userGlobal",
+          promotionTargets: [],
+          autoPromote: { enabled: false, targets: [], categories: [], minConfidenceTier: "speculative" },
+        },
+      },
+      defaultScopeProfile: "pinned-profile",
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    // The capture pinned a plan captured under an OLDER policy: the CURRENT
+    // resolution differs, so forwarding the plan (never flattening it to
+    // null) is what lets the identity re-check refuse the scope.
+    const resolved = resolveScopeProfilePlan({ config, principal: "alice", codingContext: null, codingOverlay: null });
+    assert.ok(resolved, "the active profile resolves a plan");
+    const stalePlan = { ...resolved, writeNamespace: "stale-captured-ns" };
+
+    await orchestrator.buffer.addTurn("alice:pinned", {
+      role: "user",
+      content: "pinned plan identity probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "alice:pinned",
+      acceptedCapture: true,
+      writeNamespaceOverride: "alice",
+      principalOverride: "alice",
+      scopeProfileWritePlan: stalePlan,
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("alice:pinned", "drain-pin"), true);
+
+    const outcome = await runner.drainSession("alice:pinned", { ownerId: "drain-pin" });
+    assert.equal(outcome.status, "deferred", "a stale pinned plan is refused, not drained");
+    assert.equal(outcome.reason, "scope_profile_revoked");
+    assert.deepEqual(outcome.denied, [{ reason: "scope_profile_revoked", turns: 1 }]);
+    assert.equal(model.prompts.length, 0, "the stale-pinned scope never reaches the model");
+    assert.equal(await hasFactFile(memoryDir, "pinned plan identity probe"), false);
+    const claim = await runner.claims.load("alice:pinned");
+    assert.equal(claim?.entry.turns.length ?? 0, 1, "the denied turn stays claimed");
   } finally {
     await model.close();
     await orchestrator?.destroy().catch(() => undefined);
