@@ -1043,17 +1043,6 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
     await persistStartedPromise;
     controller.abort(new Error("shutdown"));
     const outcome = await drain;
-    console.log(
-      "MARK sequence",
-      JSON.stringify(sequence),
-      "outcome",
-      outcome.status,
-      outcome.reason,
-      "turns",
-      outcome.turnsRemaining,
-      "denied",
-      JSON.stringify(outcome.denied ?? [])
-    );
 
     // The lease-loss window: releasing the lease while the gated persist is
     // still in flight (release-early) lets the closure's post-persist claim
