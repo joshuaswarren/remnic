@@ -1,22 +1,4 @@
-/**
- * Claim-backed extraction-buffer drain (`remnic buffer drain` worker AND the
- * daemon's in-process backlog scheduler task body).
- *
- * The runner owns ONE claimed session at a time and drives it through the
- * SAME extraction pipeline the daemon uses — the same chunking
- * (`chunkExtractionWindow` + the model's input budget), the same retry /
- * provider-circuit semantics. It adds no extraction logic of its own.
- *
- * The difference is ownership: the claimed session's turns live in a drain
- * claim (a durable file), not in a live buffer. The runner wires a
- * claim-backed `SmartBuffer` into the extraction queue as the task's ISOLATED
- * execution context (no global buffer swap — the live buffer, foreground
- * observes and sibling claim drains keep their own state), and groups the
- * claim's turns by captured extraction scope so every group runs under its
- * exact namespace/principal/plan with CURRENT policy re-applied from the
- * turn's original coding binding. `dropFailedChunks: false`: a repeatedly
- * failing chunk stays in the claim as durable retryable backlog.
- */
+/** Claim-backed extraction-buffer drain (`remnic buffer drain` worker AND the */
 
 import { hostname } from "node:os";
 import type { BufferStorage } from "../buffer-persistence.js";
@@ -50,11 +32,7 @@ export interface DrainSessionOutcome {
   durableOutputCount: number;
   /** Why the session was skipped or deferred (machine-readable). */
   reason?: string;
-  /**
-   * Current-policy denials: scope groups whose authorization no longer holds.
-   * Their turns STAY in the claim (pending, never drained) and are surfaced
-   * here so operators see denied backlog instead of a silently-empty drain.
-   */
+  /** Current-policy denials: scope groups whose authorization no longer holds. */
   denied?: { reason: string; turns: number }[];
 }
 
@@ -271,11 +249,7 @@ async function ackEmptyClaim(
   return { key, status: "drained", turnsAtStart, turnsRemaining: 0, persistedCount: 0, durableOutputCount: 0 };
 }
 
-/** Keep the lease alive while a long extraction runs; a lost lease means
- *  another drainer took the claim, so this run must stop instead of writing
- *  progress into a claim it no longer owns. A heartbeat that cannot be
- *  renewed is a lease that cannot be held — stop cleanly at the next chunk
- *  boundary (the next run resumes it). */
+/** another drainer took the claim, so this run must stop instead of writing */
 function startLeaseHeartbeat(
   claims: BufferDrainClaims,
   key: string,
@@ -303,10 +277,7 @@ function startLeaseHeartbeat(
   return heartbeat;
 }
 
-/** The isolated per-task execution context: a claim-backed SmartBuffer, a
- *  coordinator bound to it, and the no-drop chunked drain. Built per
- *  invocation — the live buffer and every other drain task keep their own
- *  state, so two claim drains or a foreground observe can interleave safely. */
+/** coordinator bound to it, and the no-drop chunked drain. Built per */
 function buildClaimExecution(
   orchestrator: Orchestrator,
   claims: BufferDrainClaims,
@@ -473,11 +444,7 @@ function lastGroupReason(groupOutcomes: readonly GroupOutcome[]): string | undef
   return undefined;
 }
 
-/** Settle the drain verdict. Everything extracted: the claim is finished and
- *  the session file is gone for good — but the ack verdict is the truth (live
- *  ingress merged between our read and the ack leaves the claim non-empty:
- *  report deferred, never a false drained). A failed run and a deferred run
- *  keep the remaining turns for the next attempt. */
+/** the session file is gone for good — but the ack verdict is the truth (live */
 async function settleDrainVerdict(
   claims: BufferDrainClaims,
   key: string,

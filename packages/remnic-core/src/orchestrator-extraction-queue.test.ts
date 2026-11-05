@@ -184,7 +184,6 @@ test("logExtractionQueueFailure names the right layer (task vs processor)", asyn
   );
 });
 
-
 test("pauseAndDrain waits for accepted work after its observation timeout", async () => {
   const coordinator = createCoordinator();
   const started = Promise.withResolvers<void>();
@@ -269,7 +268,6 @@ test("a front enqueue does not abort a task that did not register as preemptable
   await coordinator.waitForIdle();
   assert.deepEqual(order, ["protected", "flush"]);
 });
-
 
 // ── Bounded-parallel queue (extractionQueueConcurrency) ─────────────────────
 

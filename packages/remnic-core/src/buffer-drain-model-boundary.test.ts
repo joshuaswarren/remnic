@@ -150,9 +150,13 @@ async function hasFactFile(dir: string, needle: string): Promise<boolean> {
  * trusted cast point for those seams.
  */
 function asTestSeam<T>(cause: unknown): T {
-  // SAFETY: the caller supplies the locally-declared seam contract; this
-  // bridge re-labels the orchestrator-private instance to that contract.
   return cause as T;
+}
+
+async function initializedOrchestrator(config: PluginConfig): Promise<Orchestrator> {
+  const orchestrator = new Orchestrator(config);
+  await orchestrator.initialize();
+  return orchestrator;
 }
 
 /** The verdict fields the drain boundary reads off an extraction result. */
@@ -365,8 +369,7 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
       // claim drain must never drop or side-file the content regardless.
       extractionChunkDropAfterFailures: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     await orchestrator.buffer.addTurn("invalid-result-sess", {
@@ -545,8 +548,7 @@ test("a planless accepted claim group pins null: it stays unprofiled under the C
       },
       defaultScopeProfile: "denied-profile",
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     // NO writeNamespaceOverride: the null pin (not an explicit-namespace
@@ -604,8 +606,7 @@ test("a pinned accepted claim group forwards its captured plan; flattening it to
       },
       defaultScopeProfile: "pinned-profile",
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     // The capture pinned a plan captured under an OLDER policy: the CURRENT
@@ -659,8 +660,7 @@ test("explicit capture mode denies ordinary backlog turns and still drains accep
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     await orchestrator.buffer.addTurn("ordinary-sess", {
@@ -723,8 +723,7 @@ test("a mixed accepted+ordinary group splits: the accepted capture drains, the o
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     // IDENTICAL scope pins (same namespace + principal), differing ONLY in
@@ -791,8 +790,7 @@ test("scan reports claimed, unclaimed, and orphaned tombstone sessions", async (
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     const turn = (key: string, content: string): BufferTurn => ({
@@ -845,8 +843,7 @@ test("drainSession skips a key with no claim, a busy lease, and an emptied claim
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
     const claims = runner.claims;
 
@@ -908,8 +905,7 @@ test("an aborted drain waits for the in-flight persist before releasing the leas
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
     });
-    orchestrator = new Orchestrator(config);
-    await orchestrator.initialize();
+    orchestrator = await initializedOrchestrator(config);
     const runner = new BufferDrainRunner(orchestrator);
 
     // The persist runs until the abort lands: the abort settles the task

@@ -231,14 +231,7 @@ export class BacklogScheduler {
     }
   }
 
-  /**
-   * Bounded discovery: ONE page of existing claims with pending turns
-   * (adopted in place), then unclaimed live keys with pending counts. The
-   * page cursor rotates across ticks, so every pending claim is visited
-   * fairly within ceil(N/page) ticks — all pending stays visible and
-   * resumable without ever materializing the whole claim corpus. Empty
-   * tombstones and claimed keys' live copies are never candidates.
-   */
+  /** Bounded discovery: ONE page of existing claims with pending turns */
   private async discoverCandidates(): Promise<{ key: string; needsClaim: boolean }[]> {
     const out: { key: string; needsClaim: boolean }[] = [];
     const seen = new Set<string>();
@@ -313,10 +306,7 @@ export class BacklogScheduler {
     }
   }
 
-  /** Claim via the native rename when needed. "empty": nothing pending
-   *  after all — the key goes quiet without a task. "claimed": ours.
-   *  "already_claimed": someone claimed meanwhile — the drain below
-   *  adopts/loads it through the native lease path. */
+  /** after all — the key goes quiet without a task. "claimed": ours. */
   private async claimForSubmit(key: string, needsClaim: boolean): Promise<boolean> {
     if (!needsClaim) return true;
     try {

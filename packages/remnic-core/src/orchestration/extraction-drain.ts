@@ -1,11 +1,4 @@
-/**
- * Chunked trigger-drain for the extraction pipeline.
- *
- * Split out of `turn-ingestion.ts`: that file is at the structural ratchet's
- * line cap (issue #1995), and the drain is a self-contained unit — it only
- * needs the host's `runExtraction`, the buffer drop, the storage side-file
- * copy and the preemption hook.
- */
+/** Chunked trigger-drain for the extraction pipeline. */
 
 import { createHash } from "node:crypto";
 import { isAbortError, preemptedExtractionError } from "../abort-error.js";
@@ -36,14 +29,7 @@ export interface ExtractionDrainDeps {
     extractionChunkDropAfterFailures: number;
   };
   extractionWindowBudgetChars?(): number;
-  /**
-   * Rendered-size oracle: the exact character count the extraction renderer
-   * produces for these turns (renderExtractionConversation — the same
-   * derivation extract() uses). When present, chunk sizing is render-aware:
-   * chunks are guaranteed to fit the model input budget AFTER rendering, so
-   * no turn can be silently truncated away by the model-input clamp.
-   * Absent → raw-content sizing (prior behavior).
-   */
+  /** Rendered-size oracle: the exact character count the extraction renderer */
   measureRenderedTurns?(turns: readonly BufferTurn[]): number;
   runExtraction(turns: BufferTurn[], options: RunOptions): Promise<ExtractionRunResult>;
   getStorage(): Promise<{
@@ -86,13 +72,7 @@ interface ChunkExecutionOptions {
 }
 
 export class ExtractionDrain {
-  /**
-   * Consecutive failed attempts on the head chunk, per buffer key. In memory on
-   * purpose (a restart re-counts from zero). Bound to the chunk's content: a
-   * count recorded for one chunk never applies to a different one, so a force
-   * flush that clears a failing chunk cannot make unrelated content inherit its
-   * failures.
-   */
+  /** Consecutive failed attempts on the head chunk, per buffer key. In memory on */
   private readonly failures = new Map<string, { fingerprint: string; count: number }>();
 
   /**
@@ -104,11 +84,7 @@ export class ExtractionDrain {
    */
   private readonly qualified = new Map<string, string>();
 
-  /**
-   * The claim drain runs with `dropFailedChunks: false`: a chunk that keeps
-   * failing stays in its claim as durable retryable backlog — no side-file
-   * recovery copy may move the original backlog aside.
-   */
+  /** The claim drain runs with `dropFailedChunks: false`: a chunk that keeps */
   private readonly dropFailedChunks: boolean;
 
   private readonly deps: ExtractionDrainDeps;
@@ -179,13 +155,7 @@ export class ExtractionDrain {
     return await this.runChunked(plan.chunks, runOptions, preemptable, preemptHandle);
   }
 
-  /**
-   * Chunking plan for one trigger-drain window. Accepted-capture groups
-   * chunk too when their turns clear by IDENTITY (clearMatchingTurns — the
-   * pinned-capture and claim-drain paths): a whole-window single run would
-   * truncate at the model budget and ack turns the model never saw. Without
-   * identity clears the single-run prefix clear stays (existing behavior).
-   */
+  /** Chunking plan for one trigger-drain window. Accepted-capture groups */
   private chunkPlan(
     turns: readonly BufferTurn[],
     runOptions: DrainRunOptions,
@@ -291,11 +261,7 @@ export class ExtractionDrain {
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
   }
 
-  /** retentionWindow: the chunks processed so far. A chunk's deferred
-   *  retention replaces theirs (retained turns do not pile up across chunks)
-   *  and leaves the retained turns of chunks not yet processed in the
-   *  buffer. The chunk-local abort leaves the outer signal untouched, so
-   *  later chunks get their own preemption registration. */
+  /** retention replaces theirs (retained turns do not pile up across chunks) */
   private chunkOptionsFor(
     chunks: readonly BufferTurn[][],
     position: number,
@@ -389,11 +355,7 @@ export class ExtractionDrain {
     return { action: "failed", result, aggregate };
   }
 
-  /** The failed-verdict tail: count the failure and either drop the chunk
-   *  (live drains, recovery copy first) or keep it as durable retryable
-   *  backlog (claim drains, dropFailedChunks: false — no-drop). No-drop
-   *  drains retain the remaining window for the next trigger (existing
-   *  behavior); the failure count still gates future drop decisions. */
+  /** (live drains, recovery copy first) or keep it as durable retryable */
   private async settleFailedChunk(args: {
     bufferKey: string;
     chunk: readonly BufferTurn[];
@@ -417,13 +379,7 @@ export class ExtractionDrain {
     return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
   }
 
-  /**
-   * Greedy chunking sized by the RENDERED conversation (the oracle the model
-   * input clamp actually enforces), not raw content sums: a chunk grows while
-   * its rendered size fits the budget, else it closes. A single oversized
-   * turn still forms its own chunk (the renderer clamps per-turn content).
-   * Render-exact, so no turn can silently fall past the model-input budget.
-   */
+  /** Greedy chunking sized by the RENDERED conversation (the oracle the model */
   private chunkByRenderedSize(turns: readonly BufferTurn[], budgetChars: number): BufferTurn[][] {
     const measure = this.deps.measureRenderedTurns!;
     const chunks: BufferTurn[][] = [];
