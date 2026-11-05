@@ -367,6 +367,8 @@ test("a learned schema rejection persists in the model registry for fresh client
       (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
       "done",
     );
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
     const persisted = JSON.parse(
       fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
     ) as { models: Record<string, { structuredOutput?: string }> };
@@ -395,6 +397,8 @@ test("a schema-carrying success records native and keeps sending the format", as
     primeClient(client);
     await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat });
     await client.chatCompletion([{ role: "user", content: "hello again" }], { responseFormat });
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
     const persisted = JSON.parse(
       fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
     ) as { models: Record<string, { structuredOutput?: string }> };
@@ -416,6 +420,8 @@ test("an expired registry rejection is re-probed instead of honored forever", as
     // Age the entry past the 7-day registry TTL, as a long-lived deployment
     // would: the learned rejection must not be honored forever.
     const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
     const persisted = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
       models: Record<string, { fetchedAt: string }>;
     };
@@ -432,6 +438,8 @@ test("an expired registry rejection is re-probed instead of honored forever", as
     assert.equal(result?.content, "done");
     assert.ok(server.requests[0].body.response_format, "expired rejection is re-probed with the schema");
     // The provider accepts it this time: the native record refreshes.
+    // SAFETY: the file above was written by ModelRegistry's own persistence;
+    // the document is an object keyed by normalized model id.
     const refreshed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
       models: Record<string, { structuredOutput?: string }>;
     };

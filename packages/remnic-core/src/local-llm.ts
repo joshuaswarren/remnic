@@ -24,6 +24,7 @@ import {
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
+import type { ResponseFormatJSONSchema } from "openai/resources/shared";
 import {
   isObjectRecord,
   orderedLocalServers,
@@ -177,6 +178,19 @@ type LocalLlmBackendState = {
  * Provides privacy-preserving, cost-effective LLM operations with
  * graceful fallback to cloud providers when local LLM is unavailable.
  */
+/** The chat-completions wire body this client builds. Optional keys are the
+ *  capability-gated additions (structured output, thinking suppression). */
+interface LocalLlmChatRequestBody {
+  model: string;
+  messages: Array<{ role: string; content: string }>;
+  temperature: number;
+  max_tokens: number;
+  stream: boolean;
+  response_format?: { type: string } | ResponseFormatJSONSchema;
+  chat_template_kwargs?: { enable_thinking: boolean };
+  reasoning_effort?: string;
+}
+
 export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
@@ -904,7 +918,7 @@ export class LocalLlmClient {
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
       const requestModel = options.model ?? this.config.localLlmModel;
-      const requestBody: Record<string, unknown> = {
+      const requestBody: LocalLlmChatRequestBody = {
         model: requestModel,
         messages,
         temperature: options.temperature ?? 0.7,
