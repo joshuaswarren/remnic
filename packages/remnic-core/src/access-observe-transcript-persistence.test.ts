@@ -293,8 +293,30 @@ test("observe validates transcript ownership once per append with a multi-day hi
       "each appended turn should do one ownership inventory for the accumulated transcript history",
     );
     const entries = await readAllTranscriptLines(dir);
-    assert.equal(entries.length, historyDays + messages.length);
+    const collisionPath = path.join(channelDir, "2026-09-01.jsonl");
+    const foreignEntry: TranscriptEntry = {
+      timestamp: "2026-09-01T13:00:00.000Z",
+      role: "user",
+      content: "belongs to a different session owner",
+      sessionKey: "agent:other-owner:session",
+      turnId: "foreign-owner",
+    };
+    await writeFile(collisionPath, `${await readFile(collisionPath, "utf-8")}${JSON.stringify(foreignEntry)}\n`);
+    await transcript.append({
+      timestamp: new Date().toISOString(),
+      role: "user",
+      content: "append only after checking changed ownership",
+      sessionKey,
+      turnId: "after-owner-change",
+    });
+    const alternateDir = path.join(dir, "transcripts", transcript.getTranscriptPath(sessionKey).alternateDir);
     const today = new Date().toISOString().slice(0, 10);
+    const alternateText = await readFile(path.join(alternateDir, `${today}.jsonl`), "utf-8");
+    assert.equal(alternateText.trim().split("\n").length, 1);
+    assert.match(alternateText, /"turnId":"after-owner-change"/);
+    const ownerEntries = await transcript.readRecent(365 * 24, sessionKey);
+    assert.ok(ownerEntries.every((entry) => entry.sessionKey === sessionKey));
+    assert.equal(entries.length, historyDays + messages.length);
     // SAFETY: this newly created daily file contains only TranscriptManager appends.
     const todayEntries = (await readFile(path.join(channelDir, `${today}.jsonl`), "utf-8"))
       .trim()
