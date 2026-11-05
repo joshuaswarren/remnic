@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import test, { mock } from "node:test";
 
 import { LocalLlmClient } from "./local-llm.js";
+import { ModelRegistry } from "./model-registry.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { parseConfig } from "./config.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
@@ -271,6 +275,145 @@ test("request without response_format is unchanged", async () => {
     assert.equal(result?.content, "done");
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].body.response_format, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+// ── Schema-validation rejections (the provider parses our json_schema) ──────
+//
+// Production signature (2026-11-05, MiniMax-M3.1-Flash via local proxy): a
+// 400 "invalid params — Mismatch type string with value array" quoting a
+// schema fragment like `"episodeTitle": {"type": ["string","null"]}`. The
+// provider accepts structured output in principle but its strict parser
+// rejects our draft-7 nullable type unions. Unlike capability rejections
+// these errors never name response_format, so nothing stripped the format,
+// every drain attempt re-sent the identical payload, and the 400 breaker
+// opened. The zod draft-7 schema legitimately contains `type` arrays
+// (nullable fields), so the provider dialect, not our request, is the
+// constraint: degrade to the pre-schema request shape and remember it.
+
+const schemaValidationRejection = {
+  error: {
+    message:
+      'invalid params, Mismatch type string with value array "at index 13779: mismatched type near \\"episodeTitle\\": {\\"type\\": [\\"string\\",\\"null\\"]}"',
+  },
+};
+
+test("a schema-validation 400 strips the format and retries without it", async () => {
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    const result = await client.chatCompletion([{ role: "user", content: "hello" }], {
+      responseFormat,
+    });
+    assert.equal(result?.content, "done");
+    assert.equal(server.requests.length, 2, "exactly one strip-and-retry");
+    assert.ok(server.requests[0].body.response_format, "the schema-shaped request went out first");
+    assert.equal(server.requests[1].body.response_format, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a rejected schema format is not re-sent on later requests", async () => {
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello again" }], { responseFormat }))?.content,
+      "done",
+    );
+    assert.equal(server.requests.length, 3, "second call sends one request, not a new 400");
+    assert.equal(
+      server.requests[2].body.response_format,
+      undefined,
+      "the learned rejection skips the format entirely",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a learned schema rejection persists in the model registry for fresh clients", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), registry);
+    primeClient(client);
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    const persisted = JSON.parse(
+      fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
+    ) as { models: Record<string, { structuredOutput?: string }> };
+    assert.equal(persisted.models["test-local-model"]?.structuredOutput, "none");
+
+    const fresh = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), new ModelRegistry(memoryDir));
+    primeClient(fresh);
+    assert.equal(
+      (await fresh.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    const formatRequests = server.requests.filter((r) => r.body.response_format);
+    assert.equal(formatRequests.length, 1, "only the first-ever request carries the format");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a schema-carrying success records native and keeps sending the format", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer(() => ({ status: 200, body: okCompletion }));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), registry);
+    primeClient(client);
+    await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat });
+    await client.chatCompletion([{ role: "user", content: "hello again" }], { responseFormat });
+    const persisted = JSON.parse(
+      fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
+    ) as { models: Record<string, { structuredOutput?: string }> };
+    assert.equal(persisted.models["test-local-model"]?.structuredOutput, "native");
+    assert.equal(server.requests.length, 2);
+    assert.ok(server.requests[1].body.response_format, "structured output remains for supporting providers");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("invalid params without schema evidence is not treated as a schema rejection", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: { error: { message: "invalid params: temperature must be between 0 and 2" } },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(server.requests.length, 1, "unrelated invalid-param errors must not strip the format");
   } finally {
     await server.close();
   }

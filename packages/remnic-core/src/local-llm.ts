@@ -189,6 +189,8 @@ export class LocalLlmClient {
   private consecutive400s: number = 0;
   private cooldownUntilMs: number = 0;
   private modelRegistry?: ModelRegistry;
+  /** Models this process saw reject the json_schema payload itself. */
+  private readonly nativeSchemaRejectedModels = new Set<string>();
   private _disableThinking: boolean = false;
   private readonly requestQueues: Record<LocalLlmRequestPriority, LocalLlmQueuedRequest[]> = {
     "recall-critical": [],
@@ -225,6 +227,23 @@ export class LocalLlmClient {
 
   private resolveHomeDir(): string {
     return this.config.localLlmHomeDir || readEnvVar("HOME") || os.homedir();
+  }
+
+  /** False once this process saw (or the registry persists) a native
+   *  json_schema rejection for the model: those requests go out without
+   *  response_format instead of re-proving the rejection every attempt. */
+  private nativeSchemaUsable(modelId: string): boolean {
+    if (this.nativeSchemaRejectedModels.has(modelId)) return false;
+    if (this.modelRegistry?.getStructuredOutput(modelId) === "none") {
+      this.nativeSchemaRejectedModels.add(modelId);
+      return false;
+    }
+    return true;
+  }
+
+  private rememberNativeSchemaRejection(modelId: string): void {
+    this.nativeSchemaRejectedModels.add(modelId);
+    this.modelRegistry?.setStructuredOutput(modelId, "none");
   }
 
   private buildRequestHeaders(base: Record<string, string> = {}): Record<string, string> {
@@ -887,19 +906,24 @@ export class LocalLlmClient {
       }
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
+      const requestModel = options.model ?? this.config.localLlmModel;
       const requestBody: Record<string, unknown> = {
-        model: options.model ?? this.config.localLlmModel,
+        model: requestModel,
         messages,
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models
         max_tokens: options.maxTokens ?? 4096,
         stream: false,
       };
-
       // Skip response_format for local LLMs - they don't support json_object type
       // The prompts already instruct the model to output JSON
-      // Only send if it's json_schema type which some local LLMs support
-      if (options.responseFormat?.type === "json_schema") {
+      // Only send if it's json_schema type which some local LLMs support,
+      // and never for a model that rejected (or persistently rejects) the
+      // schema itself — those get the pre-#3248 shape (no response_format).
+      if (
+        options.responseFormat?.type === "json_schema" &&
+        this.nativeSchemaUsable(requestModel)
+      ) {
         requestBody.response_format = options.responseFormat;
       }
 
@@ -1016,6 +1040,7 @@ export class LocalLlmClient {
             requestBody.response_format &&
             isUnsupportedJsonSchemaError(`400 ${responseBody}`)
           ) {
+            this.rememberNativeSchemaRejection(requestModel);
             // Match gateway degradation without extending this attempt's deadline.
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
@@ -1150,6 +1175,15 @@ export class LocalLlmClient {
         return null;
       }
       this.consecutive400s = 0;
+      // The final attempt carried the format and succeeded: the provider's
+      // schema dialect accepts our payload — record the capability once.
+      if (
+        requestBody.response_format &&
+        this.modelRegistry &&
+        this.modelRegistry.getStructuredOutput(requestModel) !== "native"
+      ) {
+        this.modelRegistry.setStructuredOutput(requestModel, "native");
+      }
 
       const data = JSON.parse(responseBody) as {
         choices?: Array<{

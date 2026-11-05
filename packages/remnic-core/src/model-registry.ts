@@ -19,6 +19,8 @@ export interface ModelCapabilities {
   };
   typicalOutputTokens: number;
   source: "huggingface" | "lmstudio" | "manual" | "default";
+  /** Learned structured-output shaping (see ModelRegistry.getStructuredOutput). */
+  structuredOutput?: "native" | "none";
   fetchedAt: string;
 }
 
@@ -222,6 +224,34 @@ export class ModelRegistry {
     this.data.models[normalizedId] = caps;
     this.saveRegistry();
     log.info(`ModelRegistry: stored capabilities for ${modelId}`);
+  }
+
+  /**
+   * Learned structured-output shaping for a model, persisted so fresh
+   * runtimes shape requests correctly without re-proving a rejection.
+   * Honors the cache TTL: a provider that later gains schema support is
+   * re-probed (one degraded request) after the window lapses.
+   */
+  getStructuredOutput(modelId: string): "native" | "none" | undefined {
+    const cached = this.data.models[this.normalizeModelId(modelId)];
+    if (!cached || this.isCacheExpired(cached)) return undefined;
+    return cached.structuredOutput;
+  }
+
+  /** Merge-and-persist: preserves any previously learned capabilities. */
+  setStructuredOutput(modelId: string, mode: "native" | "none"): void {
+    const normalizedId = this.normalizeModelId(modelId);
+    const base = this.data.models[normalizedId] ?? {
+      ...DEFAULT_CAPABILITIES,
+      modelId: normalizedId,
+    };
+    this.data.models[normalizedId] = {
+      ...base,
+      structuredOutput: mode,
+      fetchedAt: new Date().toISOString(),
+    };
+    this.saveRegistry();
+    log.info(`ModelRegistry: stored structuredOutput=${mode} for ${modelId}`);
   }
 
   /**

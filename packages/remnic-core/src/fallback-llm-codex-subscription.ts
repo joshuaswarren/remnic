@@ -201,7 +201,16 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   return (
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
     /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
-    /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message)
+    /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
+    // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05
+    // MiniMax-M3.1-Flash: "invalid params, Mismatch type string with value
+    // array ... \"episodeTitle\": {\"type\": [\"string\",\"null\"]}"). The
+    // provider never names response_format here; it dies parsing our payload.
+    // Degrading to the no-schema shape is the correct response to exactly
+    // this class; a bare "invalid params" without schema evidence still
+    // surfaces as a normal failure.
+    (/invalid\s+(?:params|parameters)/i.test(message) &&
+      /mismatched type|"\s*type\s*"\s*:\s*\[|json[_ ]?schema/i.test(message))
   );
 }
 
