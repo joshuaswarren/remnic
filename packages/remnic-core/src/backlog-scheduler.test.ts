@@ -708,6 +708,44 @@ test("a claim creation failure is caught: failed counter, backoff, no crash", as
   }
 });
 
+test("a discovery failure after the page cursor moved restores the cursor so the page is re-listed", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const claimKeys: string[] = [];
+  for (let i = 1; i <= 17; i += 1) claimKeys.push("claim-" + String(i).padStart(2, "0"));
+  const state: StubState = {
+    counts: new Map(claimKeys.map((key) => [key, { turns: 1, retainedTurns: 0 }])),
+    claimed: new Set(claimKeys),
+    claimTurns: new Map(claimKeys.map((key) => [key, 1])),
+    claimedThisRun: new Set(),
+    outcomes: claimKeys.map((key) => emptyOutcome(key, { turnsAtStart: 1 })),
+    drained: [],
+  };
+  const deps = makeDeps(state, queue);
+  let failLiveCounts = true;
+  deps.liveBufferCounts = () => {
+    // The page is already listed when this read fails — the cursor moved.
+    if (failLiveCounts) {
+      failLiveCounts = false;
+      throw new Error("EIO: buffer counts");
+    }
+    return state.counts;
+  };
+  const scheduler = new BacklogScheduler(deps, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    // start() detaches the first tick: it lists the page (cursor moves) and
+    // then the live-count read fails.
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    // The cursor was restored, so the SAME page is listed again and its
+    // claims drain — otherwise they wait for the cursor to wrap.
+    assert.equal(state.drained.length, 1, "the re-listed page is submitted on the next tick");
+    assert.equal(state.drained[0]?.key, claimKeys[0], "the first claim of the page drains first");
+  } finally {
+    await scheduler.stop();
+  }
+});
+
 test("claims past the concurrency bound are re-listed on the next tick, in page order", async () => {
   const queue = new ExtractionQueueCoordinator(1);
   const claimKeys: string[] = [];

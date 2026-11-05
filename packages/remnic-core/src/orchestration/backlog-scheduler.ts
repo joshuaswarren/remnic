@@ -220,6 +220,10 @@ export class BacklogScheduler {
       try {
         candidates = await this.discoverCandidates();
       } catch (err) {
+        // Discovery may have listed a page before it failed: the page cursor
+        // already moved, so restore it — otherwise those claims wait for the
+        // cursor to wrap instead of the next poll.
+        this.claimCursor = cursorBeforeTick;
         log.warn(
           `backlog drain: discovery failed; retrying next poll: ${err instanceof Error ? err.message : String(err)}`
         );
