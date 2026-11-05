@@ -1,5 +1,6 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
+import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
@@ -464,25 +465,26 @@ export class ExtractionPersistCoordinator {
             continue;
             }
           }
-          // Sealed-envelope write (issue #1989 PR2): cross-cutting fields ride
-          // the composed envelope (built above, before the dedup gate).
-          const targetPromotion = await targetStorage.writeSealedMemory(targetPromotionEnvelope, {
-            importance: options.importance,
-            lineage: [options.sourceMemoryId],
-            sourceMemoryId: options.sourceMemoryId,
-            intentGoal: options.intentGoal,
-            intentActionType: options.intentActionType,
-            intentEntityTypes: options.intentEntityTypes,
-            memoryKind: options.memoryKind,
-            // #1578 — forward bi-temporal bounds + ingestion provenance.
-            ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-            ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-            ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-            contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-            ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-            ...(options.provenance ? { provenance: options.provenance } : {}),
-            ...(options.toolScoped ? { toolScoped: true as const } : {}),
+          // Windowed destination write (PRRT_kwDORJXyws6zzdG4): the gate above
+          // ran outside the window; a twin committing meanwhile is suppressed
+          // by the in-window recheck. Contention throws fail-closed below.
+          const promotionWrite = await writePromotionUnderFactDedupWindow({
+            destination: targetStorage,
+            envelope: targetPromotionEnvelope,
+            promotion: options,
+            dedupContent,
+            rawContent,
+            toolScoped: options.toolScoped === true,
+            connector: sourceContext?.sourceConnector,
+            citationEnabled,
+            citationTemplate,
+            sameEntityGuardEnabled: false,
+            survivingAttrs: targetSurvivingAttrs,
+            supersession: { supersessionEnabled: lifecycleCaps.temporalSupersession, dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(targetStorage.dir) },
+            backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
           });
+          if (promotionWrite.suppressed) continue;
+          const targetPromotion = promotionWrite.result;
           const promotedId = targetPromotion.id;
           // #1645: if the TARGET namespace's own tombstone blocked this promotion,
           // the row lands pending_review — do NOT supersede active target memories.
@@ -860,24 +862,27 @@ export class ExtractionPersistCoordinator {
             // No same-connector active shared fact — fall through to write.
           }
         }
-        const sharedPromotion = await sharedStorage.writeSealedMemory(sharedPromotionEnvelope, {
-          importance: options.importance,
-          lineage: [options.sourceMemoryId],
-          sourceMemoryId: options.sourceMemoryId,
-          intentGoal: options.intentGoal,
-          intentActionType: options.intentActionType,
-          intentEntityTypes: options.intentEntityTypes,
-          memoryKind: options.memoryKind,
-          // #1578 — forward bi-temporal bounds + ingestion provenance.
-          ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
-          ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-          ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-          contentHashSource: options.category === "fact" ? dedupContent : rawContent,
-          // Claim-level provenance spans (issue #1575 PR 2).
-          ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
-          ...(options.provenance ? { provenance: options.provenance } : {}),
-          ...(toolScoped ? { toolScoped: true as const } : {}),
+        // Windowed destination write (PRRT_kwDORJXyws6zzdG4): the shared gate
+        // ran outside the window; a twin committing meanwhile is suppressed by
+        // the in-window recheck; contention throws fail-closed to the outer
+        // catch. Supersession rides along for the suppressed branch.
+        const sharedWrite = await writePromotionUnderFactDedupWindow({
+          destination: sharedStorage,
+          envelope: sharedPromotionEnvelope,
+          promotion: options,
+          dedupContent,
+          rawContent,
+          toolScoped,
+          connector: sourceContext?.sourceConnector,
+          citationEnabled,
+          citationTemplate,
+          sameEntityGuardEnabled: lifecycleCaps.temporalSupersession,
+          survivingAttrs: sharedSurvivingAttrs,
+          supersession: { supersessionEnabled: lifecycleCaps.temporalSupersession, dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(sharedStorage.dir) },
+          backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
         });
+        if (sharedWrite.suppressed) return promotedCopyId;
+        const sharedPromotion = sharedWrite.result;
         const promotedId = sharedPromotion.id;
         // #1645: if the shared namespace's own tombstone blocked this promotion,
         // leave the row pending_review but do NOT supersede active shared memories.
