@@ -756,8 +756,6 @@ export interface ServerResult {
   port: number;
   /** The daemon-owned extraction backlog scheduler (started, draining claims). */
   backlogScheduler: BacklogScheduler;
-  /** The orchestrator (test/ops seam: extraction stubbing, claim store access). */
-  orchestrator: Orchestrator;
   /** Stop HTTP, cancel startup work, abort deferred init, and destroy the orchestrator. */
   stop: () => Promise<void>;
   /** Cancel any pending startup-sync retry timers. Called automatically on shutdown. */
@@ -1028,7 +1026,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     log.warn(`Deferred init error: ${err}`);
   });
 
-  return { config, service, httpServer, host, port, stop, backlogScheduler: startedBacklogScheduler, orchestrator, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
+  return { config, service, httpServer, host, port, stop, backlogScheduler: startedBacklogScheduler, cancelStartupSync: () => startupSyncAbort.abort(), abortDeferredInit: () => orchestrator.abortDeferredInit() };
 }
 
 const HEALTHCHECK_TIMEOUT_MS = 5_000;

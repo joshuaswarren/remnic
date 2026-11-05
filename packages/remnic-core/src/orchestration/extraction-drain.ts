@@ -36,6 +36,15 @@ export interface ExtractionDrainDeps {
     extractionChunkDropAfterFailures: number;
   };
   extractionWindowBudgetChars?(): number;
+  /**
+   * Rendered-size oracle: the exact character count the extraction renderer
+   * produces for these turns (renderExtractionConversation — the same
+   * derivation extract() uses). When present, chunk sizing is render-aware:
+   * chunks are guaranteed to fit the model input budget AFTER rendering, so
+   * no turn can be silently truncated away by the model-input clamp.
+   * Absent → raw-content sizing (prior behavior).
+   */
+  measureRenderedTurns?(turns: readonly BufferTurn[]): number;
   runExtraction(turns: BufferTurn[], options: RunOptions): Promise<ExtractionRunResult>;
   getStorage(): Promise<{
     saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly BufferTurn[]): Promise<string>;
@@ -145,7 +154,12 @@ export class ExtractionDrain {
       (runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true)) &&
       Number.isFinite(budgetChars) &&
       budgetChars > 0;
-    const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];
+    const chunks =
+      chunkable
+        ? this.deps.measureRenderedTurns !== undefined
+          ? this.chunkByRenderedSize(turns, budgetChars)
+          : chunkExtractionWindow(turns, budgetChars)
+        : [];
     const resumed =
       chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
@@ -244,6 +258,28 @@ export class ExtractionDrain {
     }
     this.qualified.delete(bufferKey);
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
+  }
+
+  /**
+   * Greedy chunking sized by the RENDERED conversation (the oracle the model
+   * input clamp actually enforces), not raw content sums: a chunk grows while
+   * its rendered size fits the budget, else it closes. A single oversized
+   * turn still forms its own chunk (the renderer clamps per-turn content).
+   * Render-exact, so no turn can silently fall past the model-input budget.
+   */
+  private chunkByRenderedSize(turns: readonly BufferTurn[], budgetChars: number): BufferTurn[][] {
+    const measure = this.deps.measureRenderedTurns!;
+    const chunks: BufferTurn[][] = [];
+    let current: BufferTurn[] = [];
+    for (const turn of turns) {
+      if (current.length > 0 && measure([...current, turn]) > budgetChars) {
+        chunks.push(current);
+        current = [];
+      }
+      current.push(turn);
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
   }
 
   /** Side-file copy first (content survives a failed drop), then remove the failing chunk from the buffer. Never throws:

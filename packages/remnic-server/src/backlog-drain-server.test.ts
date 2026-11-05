@@ -1,115 +1,73 @@
-// Server behavioral test: booting the daemon starts the backlog scheduler and
-// a session persisted BEFORE startup drains automatically through the real
-// pipeline (claim → extraction → durable memory), with no external worker.
+// Server behavioral test: a REAL loopback OpenAI-compatible model boundary is
+// up BEFORE daemon boot; persisted backlog (seeded through the real public
+// Orchestrator buffer API before startServer) is claimed, extracted by the
+// REAL engine/renderer/queue, and durably written — no extraction seam swap,
+// no fake result shapes. The boundary records every chat completion body so
+// the ACTUAL prompt is asserted, not a stub's bookkeeping.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
+import { Orchestrator, parseConfig } from "@remnic/core";
 import { startServer, type ServerResult } from "./index.js";
 
-/** The established extraction field seam (identical to core's test helper). */
-interface ExtractionClientSeam {
-  extraction: { extract: (turns: unknown[]) => Promise<unknown> };
-}
-
-function stubExtraction(orchestrator: { extraction: unknown }, factory: (turns: { content: string }[]) => unknown): { calls: { content: string }[][] } {
-  const calls: { content: string }[][] = [];
-  const seam = orchestrator as ExtractionClientSeam;
-  // SAFETY: the field-level seam is the established test pattern; the
-  // orchestrator owns the shape.
-  seam.extraction = {
-    extract: async (turns: { content: string }[]) => {
-      calls.push(turns);
-      return { memories: [{ content: `fact for ${turns[0]?.content ?? "empty"}`, entities: [], topics: [] }], meta: {} };
-    },
-  };
-  return { calls };
-}
-
-async function waitFor(predicate: () => boolean, timeoutMs = 30_000): Promise<boolean> {
-  // Real daemon timer path (the scheduler's poll interval) — a genuine wait
-  // against the platform clock is the only honest signal here.
-  const started = Date.now();
-  while (Date.now() - started < timeoutMs) {
-    if (predicate()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  return predicate();
-}
-
-test("a booted daemon drains pre-existing backlog without any external worker", { skip: "OPEN: in-server drain does not reach the extraction seam within 60s (probe: scheduler idle, claimed=0, buffer counts correct) — investigation in handoff; do not merge without resolving" }, async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-backlog-server-"));
-  const memoryDir = path.join(dir, "memory");
-  const configPath = path.join(dir, "remnic.json");
-  await writeFile(
-    configPath,
-    JSON.stringify({
-      remnic: {
-        memoryDir,
-        openaiApiKey: "sk-test",
-        // Fail FAST against a closed local port so the pre-stub first attempt
-        // cannot hang on network I/O; the retry then uses the stub.
-        openaiBaseUrl: "http://127.0.0.1:1/v1",
-        qmdEnabled: false,
-        embeddingFallbackEnabled: false,
-        recallPlannerEnabled: false,
-        sharedContextEnabled: false,
-        localLlmEnabled: false,
-        identityContinuityEnabled: false,
-        transcriptEnabled: false,
-        hourlySummariesEnabled: false,
-        compoundingEnabled: false,
-        knowledgeIndexEnabled: false,
-        extractionMinChars: 0,
-        extractionMinUserTurns: 1,
-      },
-      server: { host: "127.0.0.1", authToken: "test-token" },
-    }),
-    "utf8",
-  );
-
-  let result: ServerResult | undefined;
-  try {
-    result = await startServer({ configPath, authToken: "test-token", allowEphemeralPort: true });
-    const { calls } = stubExtraction(result.orchestrator, () => null);
-    // A durable fact file appearing under the memory root (any namespace).
-    let factSeen = false;
-    const poller = (async () => {
-      for (let attempt = 0; attempt < 240 && !factSeen; attempt += 1) {
-        factSeen = await hasFactFile(memoryDir);
-        if (!factSeen) await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-    })();
-    // Seed through the daemon's own live buffer (correct secure I/O): the
-    // scheduler's next poll tick (≤ poll interval) discovers it in memory.
-    await result.orchestrator.buffer.addTurn("seeded", {
-      role: "user",
-      content: "the seeded backlog fact about teal dashboards",
-      timestamp: "2026-11-01T00:00:00.000Z",
-      sessionKey: "seeded",
-    });
-    await result.orchestrator.buffer.save();
-    const drained = await waitFor(() => calls.length > 0, 60_000);
-    assert.equal(drained, true, "the scheduler extracted the seeded claim");
-    assert.deepEqual(
-      calls[0]?.map((t) => t.content),
-      ["the seeded backlog fact about teal dashboards"],
-    );
-    await poller;
-    assert.equal(factSeen, true, "a durable memory exists after the drain");
-    const claims = result.orchestrator.storage.bufferDrainClaims();
-    const listed = await claims.list();
-    assert.ok(listed.every((l) => l.turnCount === 0), "the claim is an empty tombstone");
-  } finally {
-    await result?.stop().catch(() => {});
-    await rm(dir, { recursive: true, force: true });
-  }
+const FACT = "I prefer teal dashboards for my workspace.";
+// Exact house ExtractionResult shape (singleFactResult): category "fact",
+// tags array, relationships — the engine's parser + persistence expect it.
+const EXTRACTION_JSON = JSON.stringify({
+  facts: [{ category: "fact", content: FACT, confidence: 0.9, tags: [], quote: FACT }],
+  entities: [],
+  relationships: [],
+  questions: [],
+  profileUpdates: [],
 });
 
-async function hasFactFile(dir: string): Promise<boolean> {
+/** Loopback OpenAI-compatible boundary: records every completion body. */
+async function startModelBoundary(): Promise<{
+  url: string;
+  bodies: string[];
+  sawMarker(marker: string): boolean;
+  close(): Promise<void>;
+}> {
+  const bodies: string[] = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk: Buffer) => {
+      raw += chunk;
+    });
+    req.on("end", () => {
+      if (req.method === "POST") bodies.push(raw);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { role: "assistant", content: EXTRACTION_JSON } }] }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}/v1`,
+    bodies,
+    sawMarker: (marker: string) => bodies.some((body) => body.includes(marker)),
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
+async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 45_000): Promise<boolean> {
+  // Waits on the daemon's real poll interval + real pipeline — platform clock.
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (await predicate()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return await predicate();
+}
+
+async function hasFactFile(dir: string, needle: string): Promise<boolean> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });
@@ -119,10 +77,71 @@ async function hasFactFile(dir: string): Promise<boolean> {
   for (const entry of entries) {
     const child = path.join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (await hasFactFile(child)) return true;
-    } else if (entry.name.endsWith(".md") && (await readFile(child, "utf8").then((c) => c.includes("fact for"), () => false))) {
+      if (await hasFactFile(child, needle)) return true;
+    } else if (entry.name.endsWith(".md") && (await readFile(child, "utf8").then((c) => c.includes(needle), () => false))) {
       return true;
     }
   }
   return false;
 }
+
+test("a booted daemon drains persisted backlog through the real pipeline (actual prompt, durable fact, empty claim)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-backlog-server-"));
+  const memoryDir = path.join(dir, "memory");
+  const model = await startModelBoundary();
+  const remnic = {
+    memoryDir,
+    openaiApiKey: "sk-test",
+    openaiBaseUrl: model.url,
+    qmdEnabled: false,
+    embeddingFallbackEnabled: false,
+    recallPlannerEnabled: false,
+    sharedContextEnabled: false,
+    localLlmEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    compoundingEnabled: false,
+    knowledgeIndexEnabled: false,
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+  };
+  const configPath = path.join(dir, "remnic.json");
+  await writeFile(configPath, JSON.stringify({ remnic, server: { host: "127.0.0.1", authToken: "test-token" } }), "utf8");
+
+  // Seed BEFORE boot through the real public buffer API (native persistence).
+  const seeder = new Orchestrator(parseConfig(remnic));
+  try {
+    await seeder.buffer.addTurn("seeded", {
+      role: "user",
+      content: FACT,
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "seeded",
+    });
+    await seeder.buffer.save();
+  } finally {
+    await seeder.destroy().catch(() => undefined);
+  }
+
+  let result: ServerResult | undefined;
+  try {
+    result = await startServer({ configPath, authToken: "test-token", allowEphemeralPort: true });
+    const promptSeen = await waitFor(() => model.sawMarker(FACT), 45_000);
+    assert.equal(promptSeen, true, "the ACTUAL chat prompt contains the seeded marker");
+    const factSeen = await waitFor(() => hasFactFile(memoryDir, FACT), 45_000);
+    assert.ok(factSeen, "a grounded fact file was durably written");
+    // Tombstone check straight from the native claim files on disk.
+    const drainDir = path.join(memoryDir, "state", "buffer", "drain");
+    const names = (await readdir(drainDir)).filter((n) => n.endsWith(".json") && !n.endsWith(".lease.json"));
+    assert.ok(names.length >= 1, "a claim file exists");
+    for (const name of names) {
+      const body = JSON.parse(await readFile(path.join(drainDir, name), "utf8")) as { entry?: { turns?: unknown[] } };
+      assert.equal(body.entry?.turns?.length ?? 0, 0, `claim ${name} ended as an empty tombstone`);
+    }
+    assert.ok(result.backlogScheduler.snapshot().counters.processed >= 1, "the scheduler counted real progress");
+  } finally {
+    await result?.stop().catch(() => {});
+    await model.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

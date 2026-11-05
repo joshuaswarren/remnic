@@ -652,7 +652,9 @@ export class ExtractionRunCoordinator {
       explicitWriteNamespace && options.scopeProfileWritePlan === undefined
         ? null
         : scopeProfileGatePlan;
+    log.debug(`PLAN-DEBUG input plan=${JSON.stringify(options.scopeProfileWritePlan)} explicitWriteNamespace=${String(explicitWriteNamespace)} gatePlan=${JSON.stringify(scopeProfileGatePlan)}`);
     if (scopeProfileWritePlan) {
+      log.debug(`PLAN-DEBUG gate=${JSON.stringify({ profileId: scopeProfileWritePlan.profileId, writeLayer: scopeProfileWritePlan.writeLayer, writeNamespace: scopeProfileWritePlan.writeNamespace, layers: scopeProfileWritePlan.layers.map((l) => ({ id: l.id, namespace: l.namespace, writable: l.writable })) })}`);
       const selectedLayer = scopeProfileWritePlan.layers.find((layer) => layer.id === scopeProfileWritePlan.writeLayer);
       const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
         scopeProfileWritePlan.writeNamespace
@@ -963,7 +965,7 @@ export class ExtractionRunCoordinator {
       result.questions.length === 0 &&
       result.profileUpdates.length === 0
     ) {
-      log.debug("runExtraction: extraction produced no durable outputs; skipping persistence");
+      log.debug(`runExtraction: no durable outputs DEBUG facts=${JSON.stringify(result.facts)} entities=${JSON.stringify(result.entities)} keys=${JSON.stringify(Object.keys(result))}`);
       if (extractionFailure) {
         log.warn(
           "runExtraction: extraction reported failure with no durable outputs; not marking fingerprint processed",

@@ -30,6 +30,7 @@ import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingesti
 import { ExtractionDrain } from "./extraction-drain.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import { headerConnector, renderExtractionConversation, resolveSourceConnector } from "../source-agent-qualifier.js";
 import type { Orchestrator } from "../orchestrator.js";
 
 export type DrainSessionStatus = "drained" | "deferred" | "failed" | "skipped";
@@ -196,6 +197,12 @@ export class BufferDrainRunner {
           extractionChunkDropAfterFailures: config.extractionChunkDropAfterFailures,
         },
         extractionWindowBudgetChars: () => ingestionDeps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY,
+        // Render-exact chunk sizing: the SAME renderer derivation extract()
+        // uses, so a chunk that fits here fits the model input clamp.
+        measureRenderedTurns: (turns) => renderExtractionConversation(
+          turns.map((turn) => ({ ...turn, content: turn.content.trim().slice(0, config.extractionMaxTurnChars) })),
+          headerConnector(resolveSourceConnector(turns)),
+        ).renderedConversation.length,
         runExtraction: (turns, runOptions) => isolatedRun.runExtraction(turns, runOptions),
         getStorage: () => ingestionDeps.getStorage(),
         buffer: claimBuffer,
@@ -206,7 +213,28 @@ export class BufferDrainRunner {
     // The claim's turns (retained first, like the live buffer's order).
     const turns = [...(claim.entry.retainedTurns ?? []), ...claim.entry.turns];
     if (turns.length === 0) {
-      await claims.ack(key, options.ownerId);
+      // Same verdict honesty as the non-empty path: live ingress can merge
+      // between the empty read and the ack — a not_empty ack means pending
+      // work exists; reload it, release OUR lease, report deferred.
+      const ackOutcome = await claims.ack(key, options.ownerId);
+      if (ackOutcome !== "acked") {
+        const reloaded = await claims.load(key);
+        const turnsRemaining = reloaded
+          ? reloaded.entry.turns.length + (reloaded.entry.retainedTurns?.length ?? 0)
+          : 0;
+        await claims.releaseLease(key, options.ownerId);
+        const outcome: DrainSessionOutcome = {
+          key,
+          status: "deferred",
+          turnsAtStart,
+          turnsRemaining,
+          persistedCount: 0,
+          durableOutputCount: 0,
+          reason: ackOutcome === "not_empty" ? "ack_not_empty" : "ack_not_owner",
+        };
+        options.onEvent?.({ type: "session_finished", key, outcome });
+        return outcome;
+      }
       const outcome: DrainSessionOutcome = {
         key,
         status: "drained",
