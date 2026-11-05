@@ -658,6 +658,7 @@ test("an aborted global idle wait rejects while a summary job is still in flight
       releaseFirstPass = resolve;
     });
     let firstPassEntered = false;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
     const summarizer = (engine as any).summarizer as {
       summarizeIncremental: (
         sessionId: string,

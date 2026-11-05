@@ -209,7 +209,7 @@ test("whenIdle abort unregisters the waiter while a job is in flight", async () 
   const abort = new AbortController();
   const waiting = queue.whenIdle(abort.signal);
   abort.abort();
-  await assert.rejects(waiting, (err: unknown) => err instanceof Error && err.name === "AbortError");
+  await assert.rejects(waiting, { name: "AbortError" });
   blocker.resolve();
   await queue.whenIdle();
 });
