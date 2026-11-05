@@ -962,6 +962,17 @@ export class TurnIngestionCoordinator {
         return;
       }
       clearQueueWaitTimer();
+      // Execution-time claim recheck (codex review #3317): the scheduler's
+      // async claim decision may complete while this LIVE task sits queued;
+      // its turns then belong to the claim runner, and extracting the stale
+      // snapshot here would persist duplicate outputs. The enqueue-time gate
+      // plus the key reservation only park the task until the decision
+      // settles. Isolated claim tasks (options.execution) read their own
+      // claim-backed buffer and bypass this gate by construction.
+      if (
+        options.execution === undefined &&
+        skipClaimedSession(this.deps.buffer, bufferKey, (result) => settleTask(undefined, result))
+      ) return;
       try {
         // #3251 shared execution boundary for accepted captures (trigger and
         // flush drains both converge here): re-read the live buffer so a

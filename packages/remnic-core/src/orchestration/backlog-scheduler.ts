@@ -209,7 +209,18 @@ export class BacklogScheduler {
     try {
       // stop() may land while discovery's I/O is pending: re-check before
       // submitting anything, and again per candidate.
-      const candidates = await this.discoverCandidates();
+      // A discovery failure (EACCES/EIO on the claims dir) must not reject
+      // into a detached timer callback: it would be an unhandled rejection
+      // that terminates the server. Log, skip this pass, retry next poll.
+      let candidates: { key: string; needsClaim: boolean }[];
+      try {
+        candidates = await this.discoverCandidates();
+      } catch (err) {
+        log.warn(
+          `backlog drain: discovery failed; retrying next poll: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return;
+      }
       if (this.stopped) return;
       for (const candidate of candidates) {
         if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) break;

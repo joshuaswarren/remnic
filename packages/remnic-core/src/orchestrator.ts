@@ -98,6 +98,7 @@ import {
   gatewayTaskChainOptions,
 } from "./fallback-llm.js";
 import { MaintenanceScheduler } from "./orchestration/maintenance.js";
+import { ProviderCircuitBreaker } from "./orchestration/provider-breaker.js";
 import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { CompressionGuidelineCoordinator } from "./orchestration/compression-guideline-coordinator.js";
@@ -757,6 +758,16 @@ export class Orchestrator {
 
   readonly extractionQueueCoordinator: ExtractionQueueCoordinator;
   private _extractionRunCoordinator: ExtractionRunCoordinator | undefined;
+  private _providerBreaker: ProviderCircuitBreaker | undefined;
+
+  /** One breaker per orchestrator: foreground and every isolated claim-backed
+   *  drain accumulate toward the same threshold and honor each other's open
+   *  state (codex review #3317 — isolated coordinators must not reset
+   *  provider resilience). */
+  private get providerBreaker(): ProviderCircuitBreaker {
+    if (!this._providerBreaker) this._providerBreaker = new ProviderCircuitBreaker();
+    return this._providerBreaker;
+  }
 
   /** The run-coordinator deps bundle, parameterized by its buffer accessor so
    * an isolated claim-backed drain can bind its own SmartBuffer (the daemon
@@ -765,6 +776,7 @@ export class Orchestrator {
     return {
       config: this.config,
       getBuffer,
+      providerBreaker: this.providerBreaker,
       getExtraction: () => this.extraction,
       getStorageRouter: () => this.storageRouter,
       getThreading: () => this.threading,

@@ -600,13 +600,14 @@ export class BufferDrainClaims {
     }
     const start = afterName === undefined ? 0 : names.findIndex((name) => name > afterName);
     const out: DrainClaimListing[] = [];
+    // The cursor is the LAST CONSUMED entry name: the next page starts
+    // strictly after it, so the first unconsumed name is never skipped.
+    // Returning the first unconsumed name instead would make every page
+    // boundary permanently skip one claim.
     let cursor: string | undefined;
     for (let index = start < 0 ? names.length : start; index < names.length; index += 1) {
       const name = names[index]!;
-      if (out.length >= limit) {
-        cursor = name;
-        break;
-      }
+      if (out.length >= limit) break;
       const claim = await this.readClaimBodyByKey(name);
       if (!claim) continue;
       const lease = await this.readLease(claim.key);
@@ -616,8 +617,9 @@ export class BufferDrainClaims {
         leased: lease !== null,
         leaseExpired: lease !== null ? isLeaseExpired(lease) : true,
       });
+      cursor = name;
     }
-    return cursor === undefined && start + out.length < names.length ? { entries: out, nextCursor: names[start + out.length] } : { entries: out, nextCursor: cursor };
+    return { entries: out, nextCursor: cursor };
   }
 
   private async readClaimBodyByKey(name: string): Promise<DrainClaimFile | null> {
