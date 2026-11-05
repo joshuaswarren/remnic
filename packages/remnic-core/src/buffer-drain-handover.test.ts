@@ -28,6 +28,7 @@ import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coo
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { BufferDrainClaims, type DrainLease } from "./storage/buffer-drain-claims.js";
+import { bufferSessionFileName } from "./storage/buffer-session-files.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
 import type { BufferState } from "./types.js";
 import type { BufferEntryState, BufferTurn, PluginConfig } from "./types.js";
@@ -529,6 +530,15 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
   }
 });
 
+/** Claim keys in the order `listPage` scans them: sorted claim file names
+ *  (`list()` itself is directory-enumeration order, which is not sorted). */
+async function claimKeysInListPageOrder(claims: BufferDrainClaims): Promise<string[]> {
+  const keys = (await claims.list()).map((listed) => listed.key);
+  const nameOf = new Map(keys.map((key) => [key, bufferSessionFileName(key)] as const));
+  const names = [...nameOf.values()].sort();
+  return keys.sort((left, right) => names.indexOf(nameOf.get(left)!) - names.indexOf(nameOf.get(right)!));
+}
+
 test("listPage never spends its page limit on empty tombstone claims", async () => {
   const h = makeHarness();
   try {
@@ -539,7 +549,7 @@ test("listPage never spends its page limit on empty tombstone claims", async () 
     for (const key of keys) assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
     // Claim file names are hashed: the LAST claim in listing order is the one
     // left pending, so a limit counted against tombstones cannot reach it.
-    const order = (await h.claims.list()).map((listed) => listed.key);
+    const order = await claimKeysInListPageOrder(h.claims);
     const pending = order[order.length - 1]!;
     for (const key of order) {
       if (key === pending) continue;
@@ -569,7 +579,7 @@ test("listPage bounds the claim bodies it reads per call and resumes past a long
     for (const key of keys) await h.buffer.addTurn(key, turn(`t-${key}`, key));
     await h.buffer.save();
     for (const key of keys) assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
-    const order = (await h.claims.list()).map((listed) => listed.key);
+    const order = await claimKeysInListPageOrder(h.claims);
     const pending = order[order.length - 1]!;
     for (const key of order) {
       if (key === pending) continue;
