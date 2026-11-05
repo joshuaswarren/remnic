@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { EngramAccessService, type EngramAccessObserveRequest } from "./access-service.js";
+import { type EngramAccessObserveRequest, EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { CodingContext, PluginConfig } from "./types.js";
@@ -74,7 +74,7 @@ function makeBoundaryProbe(memoryDir: string): BoundaryProbe {
       options: {
         extractionMode?: string;
         onExtractionQueued?: (extraction: Promise<void>) => void;
-      } = {},
+      } = {}
     ) => {
       if (ingestBehavior.failNext) {
         const err = ingestBehavior.failNext;
@@ -111,10 +111,7 @@ test("#3251 a failed durable capture rejects the observe and never commits idemp
     const key = "accept-boundary-pi-geek-#1";
 
     probe.ingestBehavior.failNext = new Error("simulated durable capture failure");
-    await assert.rejects(
-      service.observe(observeRequest({ idempotencyKey: key })),
-      /simulated durable capture failure/,
-    );
+    await assert.rejects(service.observe(observeRequest({ idempotencyKey: key })), /simulated durable capture failure/);
     assert.equal(probe.ingestBehavior.calls.length, 0, "failed capture ingested nothing");
 
     // Retry with the SAME key must re-execute: no success reservation exists.
@@ -148,22 +145,31 @@ test("#3251 every trigger-queued extraction is tracked: a rejected one surfaces 
     await service.observe(observeRequest({}));
 
     // BOTH promises must be tracked (never last-write-wins): a scoped
-    // force-flush wait surfaces the FIRST rejection once the still-pending
-    // one settles. With the last-write-wins bug only `second` was tracked
-    // and the flush resolved cleanly.
+    // force-flush wait that overlaps the pending work surfaces the FIRST
+    // rejection once the still-pending one settles. With the last-write-wins
+    // bug only `second` was tracked and the flush resolved cleanly.
+    const flush = service.extractionForceFlush({
+      sessionKey: "pi-geek:abc123",
+      authenticatedPrincipal: "pi-geek",
+      deadlineMs: 5000,
+    });
+    // Attach the rejection expectation synchronously: the tracked chain's
+    // running slot is FIRST's promise, so the wait surfaces its failure as
+    // soon as it is reached (with the last-write-wins bug the slot would be
+    // SECOND's and the flush would resolve cleanly instead).
+    const rejection = assert.rejects(flush, /first queued extraction failed/);
+    // Let the flush park on the tracked work before settling the pending one.
+    const parked = Promise.withResolvers<void>();
+    setImmediate(parked.resolve);
+    await parked.promise;
     second.resolve();
-    await assert.rejects(
-      service.extractionForceFlush({
-        sessionKey: "pi-geek:abc123",
-        authenticatedPrincipal: "pi-geek",
-        deadlineMs: 5000,
-      }),
-      /first queued extraction failed/,
-    );
+    await rejection;
+    // (A settled key no longer re-surfaces finished failures to later flushes —
+    // covered at tracker level in access-observe-helpers.test.ts.)
     assert.deepEqual(
       unhandled.filter((reason) => reason instanceof Error && /first queued extraction failed/.test(reason.message)),
       [],
-      "tracked rejections must be handled, never crash the process",
+      "tracked rejections must be handled, never crash the process"
     );
   } finally {
     process.off("unhandledRejection", onUnhandled);

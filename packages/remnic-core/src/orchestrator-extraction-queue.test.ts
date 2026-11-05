@@ -35,6 +35,148 @@ function createCoordinator(): ExtractionQueueCoordinator {
   return new ExtractionQueueCoordinator();
 }
 
+// ── Per-key coalescing: a queued-not-started task is superseded by a newer
+// enqueue for the same key instead of stacking another full snapshot ────────
+
+test("a newer enqueue for a queued-not-started key replaces the queued task", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  coordinator.enqueue(async () => {
+    busy.resolve();
+    await releaseBusy.promise;
+  });
+  await busy.promise;
+
+  coordinator.enqueue(async () => {
+    ran.push("stale");
+  }, { key: "s1" });
+  coordinator.enqueue(async () => {
+    ran.push("fresh");
+  }, { key: "s1" });
+
+  assert.equal(coordinator.length, 1, "the stale snapshot must be replaced, not stacked");
+
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  assert.deepEqual(ran, ["fresh"], "only the newest task for the key runs");
+  assert.equal(coordinator.isProcessing, false);
+});
+
+test("coalescing keeps the superseded entry's position for other keys", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  coordinator.enqueue(async () => {
+    busy.resolve();
+    await releaseBusy.promise;
+  });
+  await busy.promise;
+
+  coordinator.enqueue(async () => {
+    ran.push("k1");
+  }, { key: "k1" });
+  coordinator.enqueue(async () => {
+    ran.push("k2-stale");
+  }, { key: "k2" });
+  coordinator.enqueue(async () => {
+    ran.push("k2-fresh");
+  }, { key: "k2" });
+  coordinator.enqueue(async () => {
+    ran.push("k3");
+  }, { key: "k3" });
+
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  assert.deepEqual(ran, ["k1", "k2-fresh", "k3"], "k2 keeps its queue slot; the newest payload wins");
+});
+
+test("a front enqueue supersedes a queued same-key task and keeps preemption", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  let preempted = false;
+  coordinator.enqueue(async (preempt) => {
+    const controller = new AbortController();
+    preempt?.arm(() => {
+      preempted = true;
+      controller.abort();
+    });
+    busy.resolve();
+    try {
+      await releaseBusy.promise;
+    } finally {
+      preempt?.disarm();
+    }
+  });
+  await busy.promise;
+
+  coordinator.enqueue(async () => {
+    ran.push("queued-stale");
+  }, { key: "s1" });
+  coordinator.enqueue(async () => {
+    ran.push("flush-fresh");
+  }, { key: "s1", front: true });
+
+  assert.equal(coordinator.length, 1, "the superseded queued task must be dropped");
+
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  assert.equal(preempted, true, "front enqueue still preempts the running automatic work");
+  assert.deepEqual(ran, ["flush-fresh"]);
+});
+
+test("keyless tasks never coalesce", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  coordinator.enqueue(async () => {
+    busy.resolve();
+    await releaseBusy.promise;
+  });
+  await busy.promise;
+
+  coordinator.enqueue(async () => {
+    ran.push("first");
+  });
+  coordinator.enqueue(async () => {
+    ran.push("second");
+  });
+  assert.equal(coordinator.length, 2, "tasks without a key are independent work");
+
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  assert.deepEqual(ran, ["first", "second"]);
+});
+
+test("a coalesced enqueue of a running key waits behind the active task", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const order: string[] = [];
+  coordinator.enqueue(async () => {
+    busy.resolve();
+    await releaseBusy.promise;
+    order.push("running");
+  }, { key: "s1" });
+  await busy.promise;
+
+  coordinator.enqueue(async () => {
+    order.push("queued-first");
+  }, { key: "s1" });
+  coordinator.enqueue(async () => {
+    order.push("queued-second");
+  }, { key: "s1" });
+
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  assert.deepEqual(order, ["running", "queued-second"]);
+});
+
 // ── Issue #549 ─────────────────────────────────────────────────────────────
 
 test("processQueue logs an AbortError task at debug, not error (#549)", async () => {

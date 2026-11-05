@@ -639,11 +639,18 @@ test("#2128: a failed observe extraction is consumed after force-flush reports i
   const failure = new Error("provider failed");
 
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
-  rejectExtraction(failure);
-  await assert.rejects(
+  // The flush parks on the pending extraction and reports its failure
+  // (identity-preserved) when it rejects; with the last-write-wins bug the
+  // failure was never tracked at all.
+  const reported = assert.rejects(
     service.extractionForceFlush({ sessionKey }),
     (error: unknown) => error === failure,
   );
+  const parked = Promise.withResolvers<void>();
+  setImmediate(parked.resolve);
+  await parked.promise;
+  rejectExtraction(failure);
+  await reported;
 
   await service.observe(observeRequest({ sessionKey, skipExtraction: false }));
   await assert.doesNotReject(() => service.extractionForceFlush({ sessionKey }));
