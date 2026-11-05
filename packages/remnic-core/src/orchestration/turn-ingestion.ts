@@ -962,7 +962,7 @@ export class TurnIngestionCoordinator {
         return;
       }
       clearQueueWaitTimer();
-      // Execution-time claim recheck (codex review #3317): the scheduler's
+      // Execution-time claim recheck (review round): the scheduler's
       // async claim decision may complete while this LIVE task sits queued;
       // its turns then belong to the claim runner, and extracting the stale
       // snapshot here would persist duplicate outputs. The enqueue-time gate

@@ -762,7 +762,7 @@ export class Orchestrator {
 
   /** One breaker per orchestrator: foreground and every isolated claim-backed
    *  drain accumulate toward the same threshold and honor each other's open
-   *  state (codex review #3317 — isolated coordinators must not reset
+   *  state (review round — isolated coordinators must not reset
    *  provider resilience). */
   private get providerBreaker(): ProviderCircuitBreaker {
     if (!this._providerBreaker) this._providerBreaker = new ProviderCircuitBreaker();

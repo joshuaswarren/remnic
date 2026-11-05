@@ -110,7 +110,7 @@ export interface ExtractionRunCoordinatorDeps {
    * Orchestrator-wide provider resilience state. Absent for a standalone
    * coordinator (own breaker); the orchestrator passes ITS breaker so every
    * isolated claim-backed drain accumulates failures toward the same
-   * threshold and honors a foreground-opened breaker (codex review #3317).
+   * threshold and honors a foreground-opened breaker (review round).
    */
   providerBreaker?: ProviderCircuitBreaker;
 }

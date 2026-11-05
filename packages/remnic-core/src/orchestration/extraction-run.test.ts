@@ -1420,7 +1420,7 @@ test("the retention window a chunk run is given reaches the buffer as the proces
   }
 });
 
-test("isolated claim drains share the orchestrator's provider breaker (codex review #3317)", async () => {
+test("isolated claim drains share the orchestrator's provider breaker (review round)", async () => {
   const harness = await makeHarness({
     extractionBreakerFailureThreshold: 1,
     extractionBreakerCooldownMs: 60_000,
