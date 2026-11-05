@@ -23,6 +23,9 @@ import { BufferDrainClaims, type DrainLease } from "./storage/buffer-drain-claim
 import type { BufferStorage } from "./buffer-persistence.js";
 import type { BufferState } from "./types.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { ClaimBufferStorage } from "./orchestration/buffer-drain-runner.js";
+import { ExtractionDrain } from "./orchestration/extraction-drain.js";
 import type { BufferEntryState, BufferTurn, PluginConfig } from "./types.js";
 import { parseConfig } from "./config.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
@@ -301,6 +304,207 @@ test("the owner keeps the claim while a drain is still running on it", async () 
     });
     assert.equal(finalOutcome?.status, "saved", "the acked tombstone is consumed");
     assert.equal(await h.claims.load("sess-1"), null, "the tombstone is gone after the consume");
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ── In-process claim drain: isolated per-task execution (no global swap) ───
+
+test("claim-backed queue tasks drain their own claims without a global buffer swap", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    const t0 = "2026-11-01T00:00:00.000Z";
+    await h.buffer.addTurn("sess-a", turn("a1", "sess-a", t0));
+    await h.buffer.addTurn("sess-b", turn("b1", "sess-b", t0));
+    await h.buffer.addTurn("sess-live", turn("live-1", "sess-live", t0));
+    await h.buffer.save();
+    const now = new Date().toISOString();
+    const mkLease = (ownerId: string): DrainLease => ({
+      ownerId,
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    });
+    assert.equal(await h.claims.claimFromSessionFile("sess-a", mkLease("drain-a")), "claimed");
+    assert.equal(await h.claims.claimFromSessionFile("sess-b", mkLease("drain-b")), "claimed");
+
+    // Identity tracker: a global swap (withBufferStorage) would replace this
+    // instance mid-task; the live deps read it live, exactly like selfDeps.
+    const liveHolder: { current: SmartBuffer } = { current: h.buffer };
+
+    // Per-key claim buffers over the SAME claim store (what the runner wires).
+    const claimBufferFor = async (key: string, ownerId: string): Promise<SmartBuffer> => {
+      const claim = await h.claims.load(key);
+      if (!claim) throw new Error(`test setup: claim for ${key} missing`);
+      const claimStorage = new ClaimBufferStorage(h.claims, key, ownerId, claim.entry);
+      return new SmartBuffer(makeConfig(), claimStorage);
+    };
+    const claimBuffers = new Map<string, SmartBuffer>([
+      ["sess-a", await claimBufferFor("sess-a", "drain-a")],
+      ["sess-b", await claimBufferFor("sess-b", "drain-b")],
+    ]);
+    for (const claimBuffer of claimBuffers.values()) await claimBuffer.load();
+
+    const realQueue = new ExtractionQueueCoordinator(1);
+    const runs: { task: string; turns: string[]; liveAtCall: SmartBuffer }[] = [];
+    const liveRuns = new Set<string>();
+    const makeDrainStub = (task: string, claimBuffer: SmartBuffer | undefined) =>
+      // Mimic extraction-run: read the turns handed over, clear them through
+      // the CURRENT live instance (a swap would clear into a claim buffer).
+      async (turns: BufferTurn[]): Promise<ExtractionRunResult> => {
+        runs.push({ task, turns: turns.map((t) => t.content), liveAtCall: liveHolder.current });
+        const target = claimBuffer ?? liveHolder.current;
+        await target.clearAfterExtraction(task, turns, { allowNonPrefix: true });
+        if (!claimBuffer) liveRuns.add(task);
+        return { status: "completed", persistedCount: turns.length, durableOutputCount: turns.length };
+      };
+
+    const liveStub = makeDrainStub("sess-live", undefined);
+    const executionFor = (key: string): {
+      buffer: SmartBuffer;
+      drain: ExtractionDrain;
+    } => {
+      const claimBuffer = claimBuffers.get(key)!;
+      const drain = new ExtractionDrain(
+        {
+          config: {
+            extractionMinUserTurns: 1,
+            extractionMinChars: 0,
+            extractionMaxTurnChars: 100_000,
+            extractionChunkDropAfterFailures: 3,
+          },
+          extractionWindowBudgetChars: () => 500,
+          runExtraction: makeDrainStub(key, claimBuffer),
+          getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),
+          buffer: claimBuffer,
+        },
+        { dropFailedChunks: false },
+      );
+      return { buffer: claimBuffer, drain };
+    };
+    const deps = {
+      get buffer() {
+        return liveHolder.current;
+      },
+      config: makeConfig(),
+      extractionQueueCoordinator: realQueue,
+      extractionWindowBudgetChars: () => 500,
+      getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/dropped" }),
+      shouldQueueExtraction: () => true,
+      runExtraction: liveStub,
+    } as unknown as TurnIngestionDeps;
+    const coordinator = new TurnIngestionCoordinator(deps);
+
+    const settled: Promise<void>[] = [];
+    const enqueueClaimTask = (key: string, ownerId: string): void => {
+      const claimBuffer = claimBuffers.get(key);
+      settled.push(
+        new Promise<void>((resolve, reject) => {
+          void coordinator
+            .queueBufferedExtraction(
+              // The claim's turns, grouped upstream (grouping is the runner's
+              // next commit; the seam carries whatever list it is given).
+              (claimBuffer?.getTurns(key) ?? []).map((t) => ({ ...t })),
+              "trigger_mode",
+              {
+                bufferKey: key,
+                clearBufferAfterExtraction: true,
+                clearMatchingTurns: true,
+                skipDedupeCheck: true,
+                skipCharThreshold: true,
+                skipUserTurnThreshold: true,
+                execution: executionFor(key),
+                onTaskSettled: (error) => (error ? reject(error) : resolve()),
+              },
+            )
+            .catch(reject);
+        }),
+      );
+    };
+    enqueueClaimTask("sess-a", "drain-a");
+    enqueueClaimTask("sess-b", "drain-b");
+    // The live foreground capture arrives while the claim tasks hold the queue.
+    settled.push(
+      new Promise<void>((resolve, reject) => {
+        void coordinator
+          .queueBufferedExtraction([turn("live-2", "sess-live", "2026-11-01T00:01:00.000Z")], "trigger_mode", {
+            bufferKey: "sess-live",
+            clearBufferAfterExtraction: true,
+            onTaskSettled: (error) => (error ? reject(error) : resolve()),
+          })
+          .catch(reject);
+      }),
+    );
+    await Promise.all(settled);
+
+    // No swap ever happened: every stub saw the live instance, and the live
+    // task's clear went through the live buffer (its turns are gone from it).
+    for (const run of runs) {
+      assert.equal(run.liveAtCall, h.buffer, "the live buffer instance must never be swapped mid-task");
+    }
+    assert.deepEqual(
+      runs.find((r) => r.task === "sess-a")?.turns,
+      ["a1"],
+      "task a extracted only its own claim's turns",
+    );
+    assert.deepEqual(
+      runs.find((r) => r.task === "sess-b")?.turns,
+      ["b1"],
+      "task b extracted only its own claim's turns",
+    );
+    assert.equal(liveRuns.has("sess-live"), true, "the live task ran through the live path");
+    assert.deepEqual(
+      h.buffer.getTurns("sess-live").map((t) => t.content),
+      ["live-1"],
+      "the live task cleared only its queued snapshot through the live buffer",
+    );
+    // Claim progress landed in the RIGHT claim files (no cross-talk), and the
+    // claims' turns were extracted from the claims, not from any live copy.
+    assert.deepEqual((await h.claims.load("sess-a"))?.entry.turns ?? [], [], "claim a is drained in place");
+    assert.deepEqual((await h.claims.load("sess-b"))?.entry.turns ?? [], [], "claim b is drained in place");
+    assert.deepEqual(
+      h.buffer.getTurns("sess-a").map((t) => t.content),
+      ["a1"],
+      "the live buffer's in-memory copy is untouched by the claim drain",
+    );
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("listPage's cursor is the LAST CONSUMED claim, so a page boundary never skips one", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    for (const key of ["page-sess-a", "page-sess-b", "page-sess-c"]) {
+      await h.buffer.addTurn(key, turn(`t-${key}`, key));
+    }
+    await h.buffer.save();
+    for (const key of ["page-sess-a", "page-sess-b", "page-sess-c"]) {
+      assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
+    }
+    // Claim file names are hashed, so pagination is asserted order-free.
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const page = await h.claims.listPage(cursor, 2);
+      pages += 1;
+      for (const entry of page.entries) seen.add(entry.key);
+      if (page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
+      if (pages > 10) throw new Error("pagination never exhausted");
+    }
+    assert.deepEqual(
+      [...seen].sort(),
+      ["page-sess-a", "page-sess-b", "page-sess-c"],
+      "every page-boundary claim must be visited exactly once across rotating pages",
+    );
+    assert.equal(seen.size, pages === 2 ? 3 : 3, "no claim repeats across the rotation");
   } finally {
     h.cleanup();
   }

@@ -332,6 +332,24 @@ export class SmartBuffer {
     return this.storage.isBufferSessionClaimed?.(key) === true;
   }
 
+  /**
+   * Per-key pending counts over the IN-MEMORY state (counts only — no turn
+   * payloads), for the daemon backlog scheduler's bounded candidate scan.
+   * The claim store's answer stays authoritative for claimed keys; callers
+   * must filter through `BufferDrainClaims.isClaimed` before treating a
+   * count here as work.
+   */
+  entryCounts(): Map<string, { turns: number; retainedTurns: number }> {
+    const out = new Map<string, { turns: number; retainedTurns: number }>();
+    const entries = this.state.entries;
+    if (entries) {
+      for (const [key, entry] of Object.entries(entries)) {
+        out.set(key, { turns: entry.turns.length, retainedTurns: entry.retainedTurns?.length ?? 0 });
+      }
+    }
+    return out;
+  }
+
   async save(): Promise<void> {
     await this.enqueueMutation(async () => this.saveUnlocked());
   }

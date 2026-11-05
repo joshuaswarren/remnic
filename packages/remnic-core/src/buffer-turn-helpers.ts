@@ -200,6 +200,12 @@ export function groupTurnsByExtractionScope(turns: BufferTurn[]): ExtractionScop
       turn.writeNamespaceOverride ?? "",
       turn.principalOverride ?? "",
       scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
+      // Accepted captures are deliberately accepted content: they must never
+      // share a scope group with ordinary turns, or a group-level capture
+      // policy (the explicit-mode gate, the planless-accepted null pin) is
+      // applied to ordinary conversation turns because `.some(acceptedCapture)`
+      // only looked at the merged group.
+      turn.acceptedCapture === true ? "accepted" : "",
       turn.codingContext?.projectId ?? "",
       turn.codingContext?.rootPath ?? "",
       turn.codingContext?.branch ?? "",

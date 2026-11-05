@@ -852,10 +852,29 @@ export class TurnIngestionCoordinator {
        */
       principalOverride?: string;
       scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+      /**
+       * Isolated per-task execution context (claim-backed backlog drain).
+       * Bound at enqueue time and read ONLY inside the enqueued closure, so
+       * the task runs against its own buffer/extraction/drain no matter
+       * which async context the coordinator's processor executes it from.
+       * Absent for live work, which keeps the shared orchestrator state.
+       */
+      execution?: {
+        /** The task's own buffer (a claim-backed SmartBuffer). */
+        buffer: SmartBuffer;
+        /**
+         * The task's own chunked drain; its deps carry the isolated
+         * runExtraction + buffer (claim tasks build one with
+         * `dropFailedChunks: false` — the no-drop backlog policy).
+         */
+        drain: ExtractionDrain;
+      };
     } = {},
   ): Promise<void> {
     const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
-    if (skipClaimedSession(this.deps.buffer, bufferKey, (result) => options.onTaskSettled?.(undefined, result))) return;
+    // The execution context owns the gate's buffer view: a claim-backed task
+    // reads its own claim (never "claimed"), not the live buffer's gate.
+    if (skipClaimedSession(options.execution?.buffer ?? this.deps.buffer, bufferKey, (result) => options.onTaskSettled?.(undefined, result))) return;
     if (
       !options.skipDedupeCheck &&
       !this.deps.shouldQueueExtraction(turnsToExtract, { bufferKey })
@@ -943,6 +962,17 @@ export class TurnIngestionCoordinator {
         return;
       }
       clearQueueWaitTimer();
+      // Execution-time claim recheck (review round): the scheduler's
+      // async claim decision may complete while this LIVE task sits queued;
+      // its turns then belong to the claim runner, and extracting the stale
+      // snapshot here would persist duplicate outputs. The enqueue-time gate
+      // plus the key reservation only park the task until the decision
+      // settles. Isolated claim tasks (options.execution) read their own
+      // claim-backed buffer and bypass this gate by construction.
+      if (
+        options.execution === undefined &&
+        skipClaimedSession(this.deps.buffer, bufferKey, (result) => settleTask(undefined, result))
+      ) return;
       try {
         // #3251 shared execution boundary for accepted captures (trigger and
         // flush drains both converge here): re-read the live buffer so a
@@ -951,8 +981,9 @@ export class TurnIngestionCoordinator {
         // WITHOUT clearing, and the plan is never retargeted.
         let effectiveTurns = turnsToExtract;
         let effectiveScopePlan = options.scopeProfileWritePlan;
+        const executionBuffer = options.execution?.buffer;
         if (effectiveTurns.some((turn) => turn.acceptedCapture === true)) {
-          const liveTurns = this.deps.buffer
+          const liveTurns = (executionBuffer ?? this.deps.buffer)
             .getTurns(bufferKey)
             .filter((live) => effectiveTurns.some((snapshotted) => bufferTurnsEqual(live, snapshotted)));
           if (liveTurns.length === 0) {
@@ -1073,7 +1104,7 @@ export class TurnIngestionCoordinator {
             effectiveScopePlan = fresh;
           }
         }
-        const result = await this.drain.run(effectiveTurns, {
+        const result = await (options.execution?.drain ?? this.drain).run(effectiveTurns, {
           clearBufferAfterExtraction:
             options.clearBufferAfterExtraction ?? true,
           clearMatchingTurns: options.clearMatchingTurns === true,

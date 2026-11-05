@@ -1492,7 +1492,10 @@ test("runExtraction skips active scope profile writes when no layer is writable"
 
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "scope_profile_no_writable_layer");
-  assert.equal(clearCalls, 1);
+  // Policy refusal (review round): the window is RETAINED, never
+  // cleared — clearing here would destroy content policy never wrote.
+  assert.equal(clearCalls, 0);
+  assert.equal(result.retainedBuffer, true);
 });
 
 test("runExtraction writes buffered turns to active scope profile write layer", async () => {

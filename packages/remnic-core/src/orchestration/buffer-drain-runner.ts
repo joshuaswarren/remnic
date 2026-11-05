@@ -1,34 +1,38 @@
 /**
- * Out-of-process extraction-buffer drain (`remnic buffer drain`).
+ * Claim-backed extraction-buffer drain (`remnic buffer drain` worker AND the
+ * daemon's in-process backlog scheduler task body).
  *
  * The runner owns ONE claimed session at a time and drives it through the
  * SAME extraction pipeline the daemon uses — the same chunking
  * (`chunkExtractionWindow` + the model's input budget), the same retry /
- * provider-circuit semantics, the same dropped-chunk side-file recovery. It
- * adds no extraction logic of its own.
+ * provider-circuit semantics. It adds no extraction logic of its own.
  *
  * The difference is ownership: the claimed session's turns live in a drain
- * claim (a durable file), not in a live buffer. So the runner wires a
- * claim-backed `SmartBuffer` into the extraction queue instead of the live
- * one. Every chunk that extracts successfully is removed from the claim
- * immediately, which makes the drain resumable: a kill at any instant
- * leaves the un-extracted turns in the claim, and the next run continues
- * from there.
- *
- * Concurrency lives in the CLI (worker processes, one session each at a
- * time): the in-process extraction queue is serial by design, so a single
- * runner never runs two sessions' extractions at once.
+ * claim (a durable file), not in a live buffer. The runner wires a
+ * claim-backed `SmartBuffer` into the extraction queue as the task's ISOLATED
+ * execution context (no global buffer swap — the live buffer, foreground
+ * observes and sibling claim drains keep their own state), and groups the
+ * claim's turns by captured extraction scope so every group runs under its
+ * exact namespace/principal/plan with CURRENT policy re-applied from the
+ * turn's original coding binding. `dropFailedChunks: false`: a repeatedly
+ * failing chunk stays in the claim as durable retryable backlog.
  */
 
-import type { BufferStorage } from "../buffer-persistence.js";
 import { BufferDrainClaims, type DrainLease } from "../storage/buffer-drain-claims.js";
+import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
+import type { BufferStorage } from "../buffer-persistence.js";
 import type { BufferEntryState, BufferState } from "../types.js";
+import { SmartBuffer } from "../buffer.js";
 import { hostname } from "node:os";
-import { describeError } from "../buffer-turn-helpers.js";
+import { describeError, groupTurnsByExtractionScope } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { selfDeps } from "./self-deps.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./turn-ingestion.js";
+import { ExtractionDrain } from "./extraction-drain.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
+import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
+import { headerConnector, renderExtractionConversation, resolveSourceConnector } from "../source-agent-qualifier.js";
+import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { Orchestrator } from "../orchestrator.js";
 
 export type DrainSessionStatus = "drained" | "deferred" | "failed" | "skipped";
@@ -46,7 +50,27 @@ export interface DrainSessionOutcome {
   durableOutputCount: number;
   /** Why the session was skipped or deferred (machine-readable). */
   reason?: string;
+  /**
+   * Current-policy denials: scope groups whose authorization no longer holds.
+   * Their turns STAY in the claim (pending, never drained) and are surfaced
+   * here so operators see denied backlog instead of a silently-empty drain.
+   */
+  denied?: { reason: string; turns: number }[];
 }
+
+/** Extraction results that mean "current policy refuses this scope": the
+ * turns are valid backlog whose captured scope is no longer writable. */
+const DENIED_SCOPE_REASONS: ReadonlySet<string> = new Set([
+  "pinned_namespace_unavailable",
+  "namespace_write_revoked",
+  "scope_profile_revoked",
+  // The resolved profile has no writable layer: the same current-policy
+  // refusal family, surfaced from inside the shared runExtraction gate.
+  "scope_profile_no_writable_layer",
+  // captureMode=explicit: ordinary buffered conversation turns never create
+  // memories; only deliberately accepted captures drain.
+  "capture_mode_explicit",
+]);
 
 export interface BufferDrainRunnerOptions {
   /** Identity of this drainer; owns the lease it takes. */
@@ -73,7 +97,7 @@ const DEFAULT_LEASE_MS = 120_000;
  * Writes are the drain's progress (what is left to extract), so every
  * successfully extracted chunk is durably removed before the next one runs.
  */
-class ClaimBufferStorage implements BufferStorage {
+export class ClaimBufferStorage implements BufferStorage {
   constructor(
     private readonly claims: BufferDrainClaims,
     private readonly key: string,
@@ -161,15 +185,72 @@ export class BufferDrainRunner {
 
     // The claim is the buffer for this run: every successful chunk is
     // removed from it, so a kill leaves exactly the un-extracted turns.
-    // The swap covers the whole extraction (its clear path reads the live
-    // buffer), so progress lands in the claim, not in a session file.
-    const claimStorage = new ClaimBufferStorage(claims, key, options.ownerId, claim.entry);
+    // The claim buffer is bound PER TASK (execution context below) — the
+    // live buffer and every other drain task keep their own state, so two
+    // claim drains or a foreground observe can interleave safely.
+    const claimBuffer = new SmartBuffer(this.orchestrator.config, new ClaimBufferStorage(claims, key, options.ownerId, claim.entry));
+    await claimBuffer.load();
+    const isolatedRun = this.orchestrator.extractionRunCoordinatorForBuffer(claimBuffer);
     const coordinator = new TurnIngestionCoordinator(selfDeps<TurnIngestionDeps>(this.orchestrator));
+    const ingestionDeps = selfDeps<TurnIngestionDeps>(this.orchestrator);
+    const config = this.orchestrator.config;
+    // No-drop: a repeatedly failing chunk stays in the claim as durable
+    // retryable backlog — never side-filed, never counted as processed.
+    const executionDrain = new ExtractionDrain(
+      {
+        config: {
+          extractionMinUserTurns: config.extractionMinUserTurns,
+          extractionMinChars: config.extractionMinChars,
+          extractionMaxTurnChars: config.extractionMaxTurnChars,
+          extractionChunkDropAfterFailures: config.extractionChunkDropAfterFailures,
+        },
+        extractionWindowBudgetChars: () => ingestionDeps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY,
+        // Render-exact chunk sizing: the model clamp bounds the CONVERSATION
+        // (truncateLocalExtractionConversation), so measure exactly that —
+        // with the SAME source-classification gate extract() applies when it
+        // prepends the connector header (header margin included when the
+        // engine would render it).
+        measureRenderedTurns: (turns) => {
+          const sourceConnector = resolveMemoryLifecycleCapabilities(config).extractionScopeClassification
+            ? resolveSourceConnector(turns)
+            : undefined;
+          return renderExtractionConversation(
+            turns.map((turn) => ({ ...turn, content: turn.content.trim().slice(0, config.extractionMaxTurnChars) })),
+            headerConnector(sourceConnector),
+          ).conversation.length;
+        },
+        runExtraction: (turns, runOptions) => isolatedRun.runExtraction(turns, runOptions),
+        getStorage: () => ingestionDeps.getStorage(),
+        buffer: claimBuffer,
+      },
+      { dropFailedChunks: false },
+    );
 
     // The claim's turns (retained first, like the live buffer's order).
     const turns = [...(claim.entry.retainedTurns ?? []), ...claim.entry.turns];
     if (turns.length === 0) {
-      await claims.ack(key, options.ownerId);
+      // Same verdict honesty as the non-empty path: live ingress can merge
+      // between the empty read and the ack — a not_empty ack means pending
+      // work exists; reload it, release OUR lease, report deferred.
+      const ackOutcome = await claims.ack(key, options.ownerId);
+      if (ackOutcome !== "acked") {
+        const reloaded = await claims.load(key);
+        const turnsRemaining = reloaded
+          ? reloaded.entry.turns.length + (reloaded.entry.retainedTurns?.length ?? 0)
+          : 0;
+        await claims.releaseLease(key, options.ownerId);
+        const outcome: DrainSessionOutcome = {
+          key,
+          status: "deferred",
+          turnsAtStart,
+          turnsRemaining,
+          persistedCount: 0,
+          durableOutputCount: 0,
+          reason: ackOutcome === "not_empty" ? "ack_not_empty" : "ack_not_owner",
+        };
+        options.onEvent?.({ type: "session_finished", key, outcome });
+        return outcome;
+      }
       const outcome: DrainSessionOutcome = {
         key,
         status: "drained",
@@ -202,61 +283,132 @@ export class BufferDrainRunner {
     }, Math.max(1_000, Math.floor(leaseMs / 3)));
     heartbeat.unref?.();
 
-    const settledResult = await this.orchestrator.withBufferStorage(claimStorage, async () => {
-      const swapTurns = this.orchestrator.buffer.getTurns(key);
+    try {
+    // Exact captured-scope grouping: each scope group keeps its own
+    // namespace/principal/plan pins, and the shared extraction boundary
+    // re-applies CURRENT authorization from the turn's ORIGINAL coding
+    // binding before any write. Groups run sequentially (FIFO per key —
+    // the queue's same-key exclusion would serialize them anyway); a
+    // denied group never blocks or clears the other groups.
+    const groupOutcomes: { turns: number; result?: ExtractionRunResult }[] = [];
+    let groupError: DrainExtractionError | undefined;
+    for (const group of groupTurnsByExtractionScope(turns)) {
+      if (signal.aborted) break;
+      // captureMode=explicit: ordinary buffered conversation turns never
+      // create memories — only deliberately accepted captures drain. The
+      // group is denied and RETAINED (visible backlog, original data
+      // untouched), never extracted or cleared.
+      if (
+        shouldSkipImplicitExtraction(config) &&
+        !group.turns.some((turn) => turn.acceptedCapture === true)
+      ) {
+        log.warn(
+          `buffer drain: session ${key} denied capture_mode_explicit (${group.turns.length} ordinary turn(s) retained)`,
+        );
+        groupOutcomes.push({
+          turns: group.turns.length,
+          result: { status: "skipped", reason: "capture_mode_explicit", persistedCount: 0, durableOutputCount: 0 },
+        });
+        continue;
+      }
       const { promise, resolve } = Promise.withResolvers<{ error?: unknown; result?: ExtractionRunResult }>();
-      let settled = false;
+      let done = false;
+      const settle = (error?: unknown, result?: ExtractionRunResult): void => {
+        if (done) return;
+        done = true;
+        resolve({ error, result });
+      };
       void coordinator
-        .queueBufferedExtraction(swapTurns, "trigger_mode", {
+        .queueBufferedExtraction(group.turns, "trigger_mode", {
           bufferKey: key,
           clearBufferAfterExtraction: true,
-          // The drain owns this session's content: the daemon's own dedupe
-          // gate must not skip it, and the thresholds do not apply to a
-          // backlog.
+          clearMatchingTurns: true,
           skipDedupeCheck: true,
           skipCharThreshold: true,
           skipUserTurnThreshold: true,
           abortSignal: signal,
-          onTaskSettled: (error, result) => {
-            if (settled) return;
-            settled = true;
-            resolve({ error, result });
-          },
+          writeNamespaceOverride: group.writeNamespaceOverride,
+          principalOverride: group.principalOverride,
+          // Plan semantics: pinned plan forwards as-is; a planless ACCEPTED
+          // group pins null (existing flush behavior); unpinned legacy groups
+          // pass NO option so runExtraction resolves the CURRENT profile.
+          ...(group.scopeProfileWritePlan !== undefined
+            ? { scopeProfileWritePlan: group.scopeProfileWritePlan }
+            : group.turns.some((turn) => turn.acceptedCapture === true)
+              ? { scopeProfileWritePlan: null }
+              : {}),
+          execution: { buffer: claimBuffer, drain: executionDrain },
+          onTaskSettled: settle,
         })
-        .catch((error: DrainExtractionError) => {
-          if (settled) return;
-          settled = true;
-          resolve({ error });
-        });
-      return await promise;
-    });
+        .catch((error: DrainExtractionError) => settle(error));
+      const settled = await promise;
+      if (settled.error !== undefined) {
+        groupError = settled.error as DrainExtractionError;
+        break;
+      }
+      groupOutcomes.push({ turns: group.turns.length, result: settled.result });
+    }
+    // Heartbeat cleared on EVERY exit path: a rejected drain must not keep
+    // renewing the lease forever.
     clearInterval(heartbeat);
     const remaining = await claims.load(key);
-    const turnsRemaining = remaining
+    let turnsRemaining = remaining
       ? remaining.entry.turns.length + (remaining.entry.retainedTurns?.length ?? 0)
       : 0;
-    const result = settledResult.result;
-    const persistedCount = result?.persistedCount ?? 0;
-    const durableOutputCount = result?.durableOutputCount ?? 0;
+    const persistedCount = groupOutcomes.reduce((sum, entry) => sum + (entry.result?.persistedCount ?? 0), 0);
+    const durableOutputCount = groupOutcomes.reduce((sum, entry) => sum + (entry.result?.durableOutputCount ?? 0), 0);
+    // Denied scope groups: policy refusals leave their turns pending (the
+    // group result's turns were NOT cleared), aggregated per reason so a
+    // drain is never reported complete while denied backlog remains.
+    const denied = new Map<string, number>();
+    for (const entry of groupOutcomes) {
+      if (entry.result?.status !== "skipped" || !DENIED_SCOPE_REASONS.has(entry.result.reason ?? "")) continue;
+      denied.set(entry.result.reason!, (denied.get(entry.result.reason!) ?? 0) + entry.turns);
+    }
 
     let status: DrainSessionStatus;
     let reason: string | undefined;
+    let acked = false;
     if (turnsRemaining === 0) {
-      // Everything extracted (or dropped with a recovery side-file): the
-      // claim is finished and the session file is gone for good.
-      await claims.ack(key, options.ownerId);
-      status = "drained";
-    } else if (settledResult.error) {
+      // Everything extracted: the claim is finished and the session file is
+      // gone for good. (Durable outputs preceded the claim clear, so an ack
+      // never references unprocessed content.) The ack verdict is the truth:
+      // live ingress merged between our read and the ack leaves the claim
+      // non-empty — report deferred, never a false drained.
+      const ackOutcome = await claims.ack(key, options.ownerId);
+      acked = ackOutcome === "acked";
+      if (acked) {
+        status = "drained";
+      } else {
+        // Not acked: the claim holds turns we did not count (live ingress
+        // merged between our read and the ack) or the lease moved. Reload
+        // the honest pending count, release OUR lease, keep the source.
+        const reloaded = await claims.load(key);
+        if (reloaded) turnsRemaining = reloaded.entry.turns.length + (reloaded.entry.retainedTurns?.length ?? 0);
+        await claims.releaseLease(key, options.ownerId);
+        status = "deferred";
+        reason = ackOutcome === "not_empty" ? "ack_not_empty" : "ack_not_owner";
+      }
+    } else if (groupError) {
       // A failed run keeps the remaining turns for the next attempt.
       await claims.releaseLease(key, options.ownerId);
       status = "failed";
-      reason = describeError(settledResult.error);
+      reason = describeError(groupError);
     } else {
-      // Deferred: provider breaker / backoff / a chunk still pending. The
-      // content stays claimed and the next run resumes it.
+      // Deferred: provider breaker / backoff / a denied or still-pending
+      // group. The content stays claimed and the next run resumes it.
       await claims.releaseLease(key, options.ownerId);
       status = "deferred";
-      reason = result?.reason ?? "deferred";
+      const deniedReason = groupOutcomes.find((entry) => entry.result?.reason !== undefined && DENIED_SCOPE_REASONS.has(entry.result.reason!))?.result?.reason;
+      let lastReason: string | undefined;
+      for (let index = groupOutcomes.length - 1; index >= 0; index -= 1) {
+        const entryReason = groupOutcomes[index]?.result?.reason;
+        if (entryReason !== undefined) {
+          lastReason = entryReason;
+          break;
+        }
+      }
+      reason = deniedReason ?? lastReason ?? "deferred";
     }
     log.info(
       `buffer drain: session ${key} ${status} (${turnsRemaining} turn(s) remaining)`,
@@ -269,9 +421,13 @@ export class BufferDrainRunner {
       persistedCount,
       durableOutputCount,
     };
+    if (denied.size > 0) outcome.denied = [...denied].map(([deniedReason, turns]) => ({ reason: deniedReason, turns }));
     if (reason !== undefined) outcome.reason = reason;
     options.onEvent?.({ type: "session_finished", key, outcome });
     return outcome;
+    } finally {
+      clearInterval(heartbeat);
+    }
   }
 
   /** Claim a session file for the drain. Returns false when it is not claimable. */

@@ -193,3 +193,52 @@ test("retention for an early chunk leaves the retained turns of a later, unproce
     assert.deepEqual((await restart()).getRetainedDeferredTurns("s1").map((turn) => turn.content), ["late retained"]);
   });
 });
+
+test("a no-drop drain retains a repeatedly failing chunk as durable retryable backlog", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const window = [makeTurn("s1", "a".repeat(60)), makeTurn("s1", "b".repeat(60))];
+    for (const turn of window) await buffer.addTurn("s1", turn);
+    await buffer.flushPendingSave();
+
+    let sideFiles = 0;
+    const drain = new ExtractionDrain(
+      {
+        config: { extractionMinUserTurns: 1, extractionMinChars: 0, extractionMaxTurnChars: 100_000, extractionChunkDropAfterFailures: 2 },
+        extractionWindowBudgetChars: () => 100,
+        runExtraction: async () => {
+          throw new Error("provider down");
+        },
+        getStorage: async () => ({
+          saveDroppedExtractionChunk: async () => {
+            sideFiles += 1;
+            return "/recovery/copy.json";
+          },
+        }),
+        buffer,
+      },
+      { dropFailedChunks: false },
+    );
+
+    const runOptions = {
+      bufferKey: "s1",
+      clearBufferAfterExtraction: true,
+      clearMatchingTurns: true,
+      skipUserTurnThreshold: false,
+      failOnExtractionFailure: false,
+      forceExtractionAttempt: false,
+    } as const;
+
+    // First window: the head chunk fails once (below the threshold) — it throws and stays.
+    await assert.rejects(() => drain.run(window, runOptions), /provider down/);
+    assert.equal(sideFiles, 0, "no recovery side-file below the threshold");
+    // Second window: the same head chunk reaches the drop threshold. The no-drop
+    // policy must RETAIN it — no side-file copy, no removal, no completion.
+    await assert.rejects(() => drain.run(window, runOptions), /provider down/);
+    assert.equal(sideFiles, 0, "a no-drop drain must never side-file a failed chunk");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").map((turn) => turn.content),
+      ["a".repeat(60), "b".repeat(60)],
+      "both chunks stay in the buffer as durable retryable backlog",
+    );
+  });
+});

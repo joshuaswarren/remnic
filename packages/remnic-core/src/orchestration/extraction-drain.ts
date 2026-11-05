@@ -36,6 +36,15 @@ export interface ExtractionDrainDeps {
     extractionChunkDropAfterFailures: number;
   };
   extractionWindowBudgetChars?(): number;
+  /**
+   * Rendered-size oracle: the exact character count the extraction renderer
+   * produces for these turns (renderExtractionConversation — the same
+   * derivation extract() uses). When present, chunk sizing is render-aware:
+   * chunks are guaranteed to fit the model input budget AFTER rendering, so
+   * no turn can be silently truncated away by the model-input clamp.
+   * Absent → raw-content sizing (prior behavior).
+   */
+  measureRenderedTurns?(turns: readonly BufferTurn[]): number;
   runExtraction(turns: BufferTurn[], options: RunOptions): Promise<ExtractionRunResult>;
   getStorage(): Promise<{
     saveDroppedExtractionChunk(bufferKey: string, reason: string, turns: readonly BufferTurn[]): Promise<string>;
@@ -71,7 +80,19 @@ export class ExtractionDrain {
    */
   private readonly qualified = new Map<string, string>();
 
-  constructor(private readonly deps: ExtractionDrainDeps) {}
+  /**
+   * The claim drain runs with `dropFailedChunks: false`: a chunk that keeps
+   * failing stays in its claim as durable retryable backlog — no side-file
+   * recovery copy may move the original backlog aside.
+   */
+  private readonly dropFailedChunks: boolean;
+
+  private readonly deps: ExtractionDrainDeps;
+
+  constructor(deps: ExtractionDrainDeps, options?: { dropFailedChunks?: boolean }) {
+    this.deps = deps;
+    this.dropFailedChunks = options?.dropFailedChunks !== false;
+  }
 
   /** Characters the coordinator would count for this window: user/assistant text, trimmed and capped per turn, context-only turns left out. */
   private windowChars(turns: readonly BufferTurn[]): number {
@@ -121,14 +142,24 @@ export class ExtractionDrain {
     preemptHandle?: ExtractionPreemptHandle,
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
+    // Accepted-capture groups chunk too when their turns clear by IDENTITY
+    // (clearMatchingTurns — the pinned-capture and claim-drain paths): a
+    // whole-window single run would truncate at the model budget and ack
+    // turns the model never saw. Without identity clears the single-run
+    // prefix clear stays (existing behavior).
     const chunkable =
       runOptions.clearBufferAfterExtraction &&
       !runOptions.forceExtractionAttempt &&
       !runOptions.failOnExtractionFailure &&
-      !turns.some((turn) => turn.acceptedCapture === true) &&
+      (runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true)) &&
       Number.isFinite(budgetChars) &&
       budgetChars > 0;
-    const chunks = chunkable ? chunkExtractionWindow(turns, budgetChars) : [];
+    const chunks =
+      chunkable
+        ? this.deps.measureRenderedTurns !== undefined
+          ? this.chunkByRenderedSize(turns, budgetChars)
+          : chunkExtractionWindow(turns, budgetChars)
+        : [];
     const resumed =
       chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
@@ -177,7 +208,7 @@ export class ExtractionDrain {
         // preemption reason the host looks for (as it does for the first chunk).
         if (isAbortError(err)) throw preempt && preempt.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
         failures += 1;
-        if (failures < dropAfter) {
+        if (failures < dropAfter || !this.dropFailedChunks) {
           this.setFailureCount(bufferKey, chunk, failures);
           throw err;
         }
@@ -209,7 +240,7 @@ export class ExtractionDrain {
         return mergeDrainResults(aggregate, result);
       }
       failures += 1;
-      if (failures >= dropAfter) {
+      if (failures >= dropAfter && this.dropFailedChunks) {
         if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result, byIdentity))) {
           // No recovery copy: keep the only buffered copy and retry later.
           this.setFailureCount(bufferKey, chunk, failures);
@@ -220,11 +251,35 @@ export class ExtractionDrain {
         continue;
       }
       this.setFailureCount(bufferKey, chunk, failures);
+      // No-drop drains keep the chunk as durable retryable backlog instead of
+      // side-filing it; the failure count still gates future drop decisions.
       // Retain the remaining window for the next trigger (existing behavior).
       return mergeDrainResults(aggregate, result);
     }
     this.qualified.delete(bufferKey);
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
+  }
+
+  /**
+   * Greedy chunking sized by the RENDERED conversation (the oracle the model
+   * input clamp actually enforces), not raw content sums: a chunk grows while
+   * its rendered size fits the budget, else it closes. A single oversized
+   * turn still forms its own chunk (the renderer clamps per-turn content).
+   * Render-exact, so no turn can silently fall past the model-input budget.
+   */
+  private chunkByRenderedSize(turns: readonly BufferTurn[], budgetChars: number): BufferTurn[][] {
+    const measure = this.deps.measureRenderedTurns!;
+    const chunks: BufferTurn[][] = [];
+    let current: BufferTurn[] = [];
+    for (const turn of turns) {
+      if (current.length > 0 && measure([...current, turn]) > budgetChars) {
+        chunks.push(current);
+        current = [];
+      }
+      current.push(turn);
+    }
+    if (current.length > 0) chunks.push(current);
+    return chunks;
   }
 
   /** Side-file copy first (content survives a failed drop), then remove the failing chunk from the buffer. Never throws:
