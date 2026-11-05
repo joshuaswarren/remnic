@@ -239,6 +239,10 @@ function parseLease(raw: string): DrainLease | null {
   };
 }
 
+/** Claim bodies `listPage` may read per requested entry: bounds one scan's
+ *  I/O even when the directory is mostly empty tombstones. */
+const LIST_PAGE_SCAN_FACTOR = 8;
+
 export class BufferDrainClaims {
   constructor(
     private readonly stateDir: string,
@@ -587,8 +591,11 @@ export class BufferDrainClaims {
    * pending turns, starting AFTER `afterName` (a raw entry name returned as
    * `nextCursor` by a previous page — file-name order is stable, so a
    * rotating cursor visits every claim fairly without ever materializing
-   * the whole directory's bodies). Names only skip; bodies are read lazily
-   * per entry and only for the page.
+   * the whole directory's bodies). Empty tombstones never count toward the
+   * limit; the number of bodies read per call is bounded separately
+   * (`LIST_PAGE_SCAN_FACTOR` per requested entry), and the cursor advances
+   * past every scanned name so a long tombstone run is crossed over several
+   * pages instead of starving the pending claims behind it.
    */
   async listPage(afterName: string | undefined, limit: number): Promise<{ entries: DrainClaimListing[]; nextCursor?: string }> {
     let names: string[];
@@ -608,19 +615,24 @@ export class BufferDrainClaims {
     // Returning the first unconsumed name instead would make every page
     // boundary permanently skip one claim.
     let cursor: string | undefined;
+    const scanBudget = Math.max(limit, 1) * LIST_PAGE_SCAN_FACTOR;
+    let scanned = 0;
     for (let index = start < 0 ? names.length : start; index < names.length; index += 1) {
+      if (out.length >= limit || scanned >= scanBudget) break;
       const name = names[index]!;
-      if (out.length >= limit) break;
+      scanned += 1;
+      cursor = name;
       const claim = await this.readClaimBodyByKey(name);
       if (!claim) continue;
+      const turnCount = claim.entry.turns.length + (claim.entry.retainedTurns?.length ?? 0);
+      if (turnCount <= 0) continue;
       const lease = await this.readLease(claim.key);
       out.push({
         key: claim.key,
-        turnCount: claim.entry.turns.length + (claim.entry.retainedTurns?.length ?? 0),
+        turnCount,
         leased: lease !== null,
         leaseExpired: lease !== null ? isLeaseExpired(lease) : true,
       });
-      cursor = name;
     }
     return { entries: out, nextCursor: cursor };
   }

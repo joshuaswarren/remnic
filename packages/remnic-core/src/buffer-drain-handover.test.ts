@@ -529,6 +529,36 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
   }
 });
 
+test("listPage never spends its page limit on empty tombstone claims", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    const keys = ["tomb-a", "tomb-b", "tomb-c", "tomb-d", "tomb-e", "tomb-pending"];
+    for (const key of keys) await h.buffer.addTurn(key, turn(`t-${key}`, key));
+    await h.buffer.save();
+    for (const key of keys) assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
+    // Claim file names are hashed: the LAST claim in listing order is the one
+    // left pending, so a limit counted against tombstones cannot reach it.
+    const order = (await h.claims.list()).map((listed) => listed.key);
+    const pending = order[order.length - 1]!;
+    for (const key of order) {
+      if (key === pending) continue;
+      const loaded = await h.claims.load(key);
+      await h.claims.writeEntry(key, h.lease.ownerId, entry([]), loaded!.entry);
+      assert.equal(await h.claims.ack(key, h.lease.ownerId), "acked");
+    }
+    const page = await h.claims.listPage(undefined, 1);
+    assert.deepEqual(
+      page.entries.map((listed) => listed.key),
+      [pending],
+      "the one pending claim is returned on the first page, past the tombstones"
+    );
+    assert.ok(page.entries.every((listed) => listed.turnCount > 0), "a page never lists an empty tombstone");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("listPage's cursor is the LAST CONSUMED claim, so a page boundary never skips one", async () => {
   const h = makeHarness();
   try {

@@ -67,7 +67,8 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
       },
       isClaimed: (key) => state.claimed.has(key) || state.claimedThisRun.has(key),
       listPage: async (after, limit) => {
-        const names = [...state.claimed].sort();
+        // Contract: listPage returns claims with pending turns only.
+        const names = [...state.claimed].filter((key) => (state.claimTurns.get(key) ?? 0) > 0).sort();
         const start = after === undefined ? 0 : names.findIndex((n) => n > after);
         const begin = start < 0 ? names.length : start;
         const out = names

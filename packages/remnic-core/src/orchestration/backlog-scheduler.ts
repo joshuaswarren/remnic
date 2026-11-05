@@ -247,7 +247,6 @@ export class BacklogScheduler {
     const pageLimit = Math.max(this.submissionLimit() * 4, 16);
     const page = await this.deps.claims.listPage(this.claimCursor, pageLimit);
     for (const listed of page.entries) {
-      if (listed.turnCount <= 0) continue;
       seen.add(listed.key);
       out.push({ key: listed.key, needsClaim: false });
     }
