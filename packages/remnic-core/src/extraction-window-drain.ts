@@ -46,22 +46,22 @@ export type DrainVerdict = "drained" | "deferred" | "failed";
 
 /**
  * Run results that deliberately RETAIN the buffer (provider breaker open,
- * per-fingerprint backoff) are deferrals, not chunk failures — counting them
- * would drop good content during a provider outage.
+ * per-fingerprint backoff, a scope policy refusal) are deferrals, not chunk
+ * failures — counting them would eventually drop good content that never got
+ * its attempt.
  */
 const DRAIN_DEFERRAL_REASONS = {
   provider_circuit_open: true,
   extraction_backoff: true,
+  scope_profile_no_writable_layer: true,
 };
 
 export function classifyDrainResult(result: ExtractionRunResult): DrainVerdict {
   if (result.status !== "skipped") return "drained";
-  // An empty result is a failure only when the run kept the window for retry;
-  // otherwise it extracted fine, found nothing durable, and cleared its turns.
-  if (result.reason === "empty_extraction_result") {
-    return result.retainedBuffer === true ? "failed" : "drained";
-  }
   if (result.reason !== undefined && result.reason in DRAIN_DEFERRAL_REASONS) return "deferred";
+  // A run that kept its window for retry did NOT consume the content: it is a
+  // chunk failure, never a drain — even when the window was retained.
+  if (result.retainedBuffer === true) return "failed";
   return "drained";
 }
 

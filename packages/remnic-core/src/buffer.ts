@@ -17,6 +17,7 @@ import { scopeProfilePlanIdentity, subtractBufferTurns } from "./buffer-turn-hel
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import type { ExtractionBufferSnapshot } from "./extraction-liveness.js";
 import {
+  bufferEntryCounts,
   bufferTurnArrayIsSuffixOfSnapshot,
   bufferTurnArraysEqual,
   bufferTurnsEqual,
@@ -27,6 +28,7 @@ import {
   matchingQueuedExtractionPrefixLength,
   probeWithTimeout,
   selectRetainedDeferredTurns,
+  type BufferEntryCounts,
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
@@ -330,6 +332,12 @@ export class SmartBuffer {
   /** Sync gate for the extraction queue: is this session claimed by a buffer drain? */
   isSessionClaimed(key: string): boolean {
     return this.storage.isBufferSessionClaimed?.(key) === true;
+  }
+
+  /** Per-key pending counts over the IN-MEMORY state (counts only — no turn
+   *  payloads), for the daemon backlog scheduler's bounded candidate scan. */
+  entryCounts(): Map<string, BufferEntryCounts> {
+    return bufferEntryCounts(this.state);
   }
 
   async save(): Promise<void> {

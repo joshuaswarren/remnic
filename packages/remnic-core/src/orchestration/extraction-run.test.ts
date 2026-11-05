@@ -24,6 +24,7 @@ import {
 } from "./extraction-run.js";
 import { StorageManager } from "../storage.js";
 import { parseConfig } from "../config.js";
+import { ProviderCircuitBreaker } from "./provider-breaker.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { ThreadingManager } from "../threading.js";
 import type { BufferTurn, ExtractionResult, ExtractionFailureClass, PluginConfig } from "../types.js";
@@ -102,6 +103,7 @@ interface Harness {
     fn: ExtractionRunCoordinatorDeps["recordProcessedExtractionFingerprint"],
   ) => void;
   recordedProcessedCount: () => number;
+  makeDeps: () => ExtractionRunCoordinatorDeps;
   run: (
     coord: ExtractionRunCoordinator,
     content: string,
@@ -233,6 +235,7 @@ async function makeHarness(overrides: Record<string, unknown> = {}): Promise<Har
       persistHandler = fn;
     },
     recordedProcessedCount: () => recordedProcessedCount,
+    makeDeps,
     passiveCapture: () => passiveCapture,
     run: async (coord, content, opts = {}) => {
       const result = await coord.runExtraction(makeTurns(content), {
@@ -1414,5 +1417,43 @@ test("the retention window a chunk run is given reaches the buffer as the proces
     assert.deepEqual(seen[0], chunk, "without a window the run keeps naming its own turns");
   } finally {
     await h.cleanup();
+  }
+});
+
+test("isolated claim drains share the orchestrator's provider breaker (review round)", async () => {
+  const harness = await makeHarness({
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 60_000,
+  });
+  try {
+    // extractionRunCoordinatorForBuffer builds a fresh coordinator per claim
+    // drain; the ORCHESTRATOR-wide breaker must be the one they all consult.
+    const shared = new ProviderCircuitBreaker();
+    const makeIsolated = () =>
+      new ExtractionRunCoordinator({ ...harness.makeDeps(), providerBreaker: shared });
+    harness.setRespond(() => ({
+      facts: [],
+      profileUpdates: [],
+      entities: [],
+      questions: [],
+      extractionFailure: "provider down",
+      extractionFailureClass: "provider_retryable",
+    }));
+
+    // The first failing attempt opens the SHARED breaker.
+    const first = await harness.run(makeIsolated(), "breaker-share");
+    assert.equal(first.reason, "empty_extraction_result");
+
+    // A DIFFERENT isolated coordinator (a fresh claim drain) must observe the
+    // opened breaker instead of re-calling the failing provider. Distinct
+    // fingerprint, so only the breaker can suppress this attempt.
+    const second = await harness.run(makeIsolated(), "breaker-share-2");
+    assert.equal(
+      second.reason,
+      "provider_circuit_open",
+      "a fresh isolated drain must honor the orchestrator-wide breaker instead of hammering the failing provider",
+    );
+  } finally {
+    await harness.cleanup();
   }
 });

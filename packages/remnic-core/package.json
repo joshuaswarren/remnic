@@ -1900,6 +1900,16 @@
       "remnic-source": "./src/orchestration/maintenance.ts",
       "import": "./dist/orchestration/maintenance.js"
     },
+    "./orchestration/backlog-scheduler": {
+      "types": "./dist/orchestration/backlog-scheduler.d.ts",
+      "remnic-source": "./src/orchestration/backlog-scheduler.ts",
+      "import": "./dist/orchestration/backlog-scheduler.js"
+    },
+    "./orchestration/backlog-scheduler.js": {
+      "types": "./dist/orchestration/backlog-scheduler.d.ts",
+      "remnic-source": "./src/orchestration/backlog-scheduler.ts",
+      "import": "./dist/orchestration/backlog-scheduler.js"
+    },
     "./orchestration/buffer-drain-runner": {
       "types": "./dist/orchestration/buffer-drain-runner.d.ts",
       "remnic-source": "./src/orchestration/buffer-drain-runner.ts",

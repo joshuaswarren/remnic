@@ -79,6 +79,13 @@ export class ExtractionQueueCoordinator {
   private accepting = true;
   /** Buffer keys with a task currently running (per-key exclusion). */
   private readonly activeKeys = new Set<string>();
+  /**
+   * Buffer keys with a claim DECISION in flight (daemon backlog scheduler).
+   * A reservation is taken synchronously BEFORE the async claim/decision so
+   * no queued task for the key can start past the gate while the decision is
+   * unsettled; selection skips reserved keys until release.
+   */
+  private readonly reservedKeys = new Set<string>();
   /** Preempt slots of the currently running tasks, keyed by slot identity. */
   private readonly preemptSlots = new Map<object, PreemptSlot>();
   private preemptSeq = 0;
@@ -131,6 +138,44 @@ export class ExtractionQueueCoordinator {
       this.wake?.();
     }
     return true;
+  }
+
+  /**
+   * Synchronously reserve `key` so no task for it starts until the key's
+   * owner (the backlog scheduler's claim decision) settles and releases.
+   * Returns false when the key is active, queued, or already reserved —
+   * single-threaded JS makes this check+add atomic.
+   */
+  tryReserveKey(key: string): boolean {
+    if (this.activeKeys.has(key) || this.reservedKeys.has(key)) return false;
+    if (this.queue.some((entry) => entry.key === key)) return false;
+    this.reservedKeys.add(key);
+    // The processor may be parked with ONLY reserved entries left: restart
+    // it so selection is re-evaluated (it will skip the reserved key).
+    if (!this.processing && this.queue.length > 0) {
+      this.processing = true;
+      this.processQueue().catch((err) => {
+        this.logExtractionQueueFailure(err, "processor");
+        this.processing = false;
+      });
+    }
+    return true;
+  }
+
+  /** Settle a reservation: the key's decision is made and enqueued work (if
+   * any) now carries the key authority itself. Idempotent; wakes a parked
+   * processor waiting only on this release. */
+  releaseKeyReservation(key: string): void {
+    if (!this.reservedKeys.delete(key)) return;
+    if (this.queue.length > 0 && !this.processing) {
+      this.processing = true;
+      this.processQueue().catch((err) => {
+        this.logExtractionQueueFailure(err, "processor");
+        this.processing = false;
+      });
+    } else {
+      this.wake?.();
+    }
   }
 
   preemptRunning(preferredKey?: string): void {
@@ -200,7 +245,10 @@ export class ExtractionQueueCoordinator {
         }
         // Park until a task settles OR a new task is enqueued. A queued task
         // whose key is still held always implies an in-flight task holding
-        // it, so inFlight is non-empty here whenever the loop must wait.
+        // it, so inFlight is non-empty here whenever the loop must wait. A
+        // queued task behind a RESERVATION (no in-flight holder) leaves the
+        // loop instead; releaseKeyReservation and enqueue restart the
+        // processor when it is not running.
         if (inFlight.size === 0) break;
         const { promise: wakePromise, resolve: wake } = Promise.withResolvers<void>();
         this.wake = wake;
@@ -215,11 +263,11 @@ export class ExtractionQueueCoordinator {
     }
   }
 
-  /** Take the next queue entry whose key is not already running (FIFO within a key). */
+  /** Take the next queue entry whose key is not already running or reserved (FIFO within a key). */
   private takeRunnable(): QueueEntry | undefined {
     for (let index = 0; index < this.queue.length; index += 1) {
       const entry = this.queue[index];
-      if (entry.key !== undefined && this.activeKeys.has(entry.key)) continue;
+      if (entry.key !== undefined && (this.activeKeys.has(entry.key) || this.reservedKeys.has(entry.key))) continue;
       this.queue.splice(index, 1);
       if (entry.key !== undefined) this.activeKeys.add(entry.key);
       return entry;
