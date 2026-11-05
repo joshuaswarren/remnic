@@ -32,6 +32,7 @@ import type { BufferDrainClaims, DrainLease } from "../storage/buffer-drain-clai
 import { BufferDrainRunner } from "./buffer-drain-runner.js";
 import type { DrainRunnerEvent, DrainSessionOutcome } from "./buffer-drain-runner.js";
 import type { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
+import type { ProviderBreakerSnapshot } from "./provider-breaker.js";
 
 /** What the scheduler needs from its host (structurally satisfied by the
  *  orchestrator wiring); injectable so tests drive ticks deterministically. */
@@ -50,6 +51,13 @@ export interface BacklogSchedulerDeps {
     key: string,
     options: { ownerId: string; signal: AbortSignal; onEvent?: (event: DrainRunnerEvent) => void }
   ): Promise<DrainSessionOutcome>;
+  /** Shared provider circuit-breaker snapshot (the same instance the run
+   *  coordinator gates attempts on). While OPEN inside its cooldown window
+   *  the scheduler skips submission entirely — claims stay durable, and the
+   *  breaker's single half-open probe (one attempt through once the window
+   *  lapses) keeps recovery automatic. Optional: hosts without a breaker
+   *  never skip. */
+  breakerSnapshot?(): ProviderBreakerSnapshot;
   /** Test seam: monotonic-ish clock for backoff windows. */
   now?(): number;
 }
@@ -211,6 +219,18 @@ export class BacklogScheduler {
     this.ticking = true;
     const cursorBeforeTick = this.claimCursor;
     try {
+      // Fast bail: a breaker already open must not pay discovery I/O
+      // (listPage reads and parses claim bodies on every poll). The
+      // submitCandidates guard below still catches a breaker that opens
+      // while discovery awaits.
+      const breakerBeforeDiscovery = this.deps.breakerSnapshot?.();
+      if (
+        breakerBeforeDiscovery &&
+        breakerBeforeDiscovery.state === "open" &&
+        this.now() < breakerBeforeDiscovery.openUntilMs
+      ) {
+        return;
+      }
       // stop() may land while discovery's I/O is pending: re-check before
       // submitting anything, and again per candidate.
       // A discovery failure (EACCES/EIO on the claims dir) must not reject
@@ -269,6 +289,15 @@ export class BacklogScheduler {
 
   /** Submit discovery candidates within the queue's concurrency bound. */
   private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): boolean {
+    // Breaker-open churn guard: a full attempt reads the claim, rebuilds the
+    // buffer/coordinator and re-renders chunks before the breaker fails it
+    // fast — pure heap pressure per poll during a provider stall. Skip while
+    // the window is open; once it lapses, submissions resume and the
+    // breaker's half-open probe runs as usual.
+    const breaker = this.deps.breakerSnapshot?.();
+    if (breaker && breaker.state === "open" && this.now() < breaker.openUntilMs) {
+      return true;
+    }
     let dropped = false;
     for (const candidate of candidates) {
       if (this.stopped || this.inFlight.size >= this.submissionLimit()) {
@@ -475,6 +504,9 @@ export function wireBacklogScheduler(
         };
       },
       drainKey: (key, drainOptions) => runner.drainSession(key, drainOptions),
+      // The orchestrator's one shared provider breaker (foreground and every
+      // claim-backed drain accumulate toward the same threshold).
+      breakerSnapshot: () => orchestrator.getExtractionResilienceStatus().breaker,
     },
     { ...options, ownerId }
   );

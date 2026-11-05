@@ -24,6 +24,7 @@ import {
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
+import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import {
   isObjectRecord,
   orderedLocalServers,
@@ -189,6 +190,7 @@ export class LocalLlmClient {
   private consecutive400s: number = 0;
   private cooldownUntilMs: number = 0;
   private modelRegistry?: ModelRegistry;
+  private readonly nativeSchemaGate = new NativeSchemaGate(() => this.modelRegistry);
   private _disableThinking: boolean = false;
   private readonly requestQueues: Record<LocalLlmRequestPriority, LocalLlmQueuedRequest[]> = {
     "recall-critical": [],
@@ -887,21 +889,16 @@ export class LocalLlmClient {
       }
 
       const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
-      const requestBody: Record<string, unknown> = {
-        model: options.model ?? this.config.localLlmModel,
+      const requestModel = options.model ?? this.config.localLlmModel;
+      const requestBody: LocalLlmChatRequestBody = {
+        model: requestModel,
         messages,
         temperature: options.temperature ?? 0.7,
         // Use max_tokens consistent with cloud models
         max_tokens: options.maxTokens ?? 4096,
         stream: false,
       };
-
-      // Skip response_format for local LLMs - they don't support json_object type
-      // The prompts already instruct the model to output JSON
-      // Only send if it's json_schema type which some local LLMs support
-      if (options.responseFormat?.type === "json_schema") {
-        requestBody.response_format = options.responseFormat;
-      }
+      this.nativeSchemaGate.attach(requestBody, options, requestModel);
 
       // Suppress thinking/reasoning for operations that benefit from terse,
       // structured output. Thinking-capable models (Qwen 3.5, Gemma 4,
@@ -1016,6 +1013,7 @@ export class LocalLlmClient {
             requestBody.response_format &&
             isUnsupportedJsonSchemaError(`400 ${responseBody}`)
           ) {
+            this.nativeSchemaGate.rememberRejection(requestModel);
             // Match gateway degradation without extending this attempt's deadline.
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
@@ -1150,6 +1148,7 @@ export class LocalLlmClient {
         return null;
       }
       this.consecutive400s = 0;
+      this.nativeSchemaGate.recordSuccess(requestBody, requestModel);
 
       const data = JSON.parse(responseBody) as {
         choices?: Array<{

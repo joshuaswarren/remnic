@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import type { AddressInfo } from "node:net";
+import { join } from "node:path";
 import test, { mock } from "node:test";
 
 import { LocalLlmClient } from "./local-llm.js";
+import { ModelRegistry } from "./model-registry.js";
+import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { parseConfig } from "./config.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
@@ -271,6 +276,316 @@ test("request without response_format is unchanged", async () => {
     assert.equal(result?.content, "done");
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].body.response_format, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+// ── Schema-validation rejections (the provider parses our json_schema) ──────
+//
+// Production signature (2026-11-05, MiniMax-M3.1-Flash via local proxy): a
+// 400 "invalid params — Mismatch type string with value array" quoting a
+// schema fragment like `"episodeTitle": {"type": ["string","null"]}`. The
+// provider accepts structured output in principle but its strict parser
+// rejects our draft-7 nullable type unions. Unlike capability rejections
+// these errors never name response_format, so nothing stripped the format,
+// every drain attempt re-sent the identical payload, and the 400 breaker
+// opened. The zod draft-7 schema legitimately contains `type` arrays
+// (nullable fields), so the provider dialect, not our request, is the
+// constraint: degrade to the pre-schema request shape and remember it.
+
+const schemaValidationRejection = {
+  error: {
+    // Verbatim production body shape (2026-11-05): "Mismatch type" (no "ed"),
+    // JSON-escaped quotes around the schema fragment, and no mention of
+    // response_format anywhere.
+    message:
+      'invalid params, Mismatch type string with value array "at index 13779: \\"episodeTitle\\": {\\"type\\": [\\"string\\",\\"null\\"]}"',
+  },
+};
+
+test("a schema-validation 400 strips the format and retries without it", async () => {
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    const result = await client.chatCompletion([{ role: "user", content: "hello" }], {
+      responseFormat,
+    });
+    assert.equal(result?.content, "done");
+    assert.equal(server.requests.length, 2, "exactly one strip-and-retry");
+    assert.ok(server.requests[0].body.response_format, "the schema-shaped request went out first");
+    assert.equal(server.requests[1].body.response_format, undefined);
+  } finally {
+    await server.close();
+  }
+});
+
+test("a rejected schema format is not re-sent on later requests", async () => {
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello again" }], { responseFormat }))?.content,
+      "done",
+    );
+    assert.equal(server.requests.length, 3, "second call sends one request, not a new 400");
+    assert.equal(
+      server.requests[2].body.response_format,
+      undefined,
+      "the learned rejection skips the format entirely",
+    );
+  } finally {
+    await server.close();
+  }
+});
+
+test("a learned schema rejection persists in the model registry for fresh clients", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: schemaValidationRejection }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), registry);
+    primeClient(client);
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(
+      fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
+    ) as { models: Record<string, { structuredOutput?: string }> };
+    assert.equal(persisted.models["test-local-model"]?.structuredOutput, "none");
+
+    const fresh = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), new ModelRegistry(memoryDir));
+    primeClient(fresh);
+    assert.equal(
+      (await fresh.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    const formatRequests = server.requests.filter((r) => r.body.response_format);
+    assert.equal(formatRequests.length, 1, "only the first-ever request carries the format");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a schema-carrying success records native and keeps sending the format", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer(() => ({ status: 200, body: okCompletion }));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), registry);
+    primeClient(client);
+    await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat });
+    await client.chatCompletion([{ role: "user", content: "hello again" }], { responseFormat });
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(
+      fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
+    ) as { models: Record<string, { structuredOutput?: string }> };
+    assert.equal(persisted.models["test-local-model"]?.structuredOutput, "native");
+    assert.equal(server.requests.length, 2);
+    assert.ok(server.requests[1].body.response_format, "structured output remains for supporting providers");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an expired registry rejection is re-probed instead of honored forever", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer(() => ({ status: 200, body: okCompletion }));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Age the entry past the 7-day registry TTL, as a long-lived deployment
+    // would: the learned rejection must not be honored forever.
+    const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { fetchedAt: string }>;
+    };
+    persisted.models["test-local-model"].fetchedAt = new Date(
+      Date.now() - 8 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    fs.writeFileSync(registryPath, JSON.stringify(persisted));
+
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), new ModelRegistry(memoryDir));
+    primeClient(client);
+    const result = await client.chatCompletion([{ role: "user", content: "hello" }], {
+      responseFormat,
+    });
+    assert.equal(result?.content, "done");
+    assert.ok(server.requests[0].body.response_format, "expired rejection is re-probed with the schema");
+    // The provider accepts it this time: the native record refreshes.
+    // SAFETY: the file above was written by ModelRegistry's own persistence;
+    // the document is an object keyed by normalized model id.
+    const refreshed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { structuredOutput?: string }>;
+    };
+    assert.equal(refreshed.models["test-local-model"]?.structuredOutput, "native");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a later capabilities write preserves the learned structuredOutput", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Mirrors getCachedContextWindow's LM Studio detection replacing the record.
+    registry.setCapabilities("test-local-model", {
+      maxPositionEmbeddings: 131072,
+      contextWindow: 131072,
+      supportsExtendedContext: true,
+      typicalOutputTokens: 8192,
+      source: "lmstudio",
+    });
+    assert.equal(registry.getStructuredOutput("test-local-model"), "none");
+  } finally {
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an expired structuredOutput decision is not renewed by a capability refresh", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Age the learned decision past the registry TTL exactly as a long-lived
+    // deployment would.
+    const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { fetchedAt: string }>;
+    };
+    persisted.models["test-local-model"].fetchedAt = new Date(
+      Date.now() - 8 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    fs.writeFileSync(registryPath, JSON.stringify(persisted));
+    // The refresh happens in a process that loaded the AGED state from disk
+    // (a restart or another runtime sharing the memory dir).
+    const refreshedRegistry = new ModelRegistry(memoryDir);
+    refreshedRegistry.setCapabilities("test-local-model", {
+      maxPositionEmbeddings: 131072,
+      contextWindow: 131072,
+      supportsExtendedContext: true,
+      typicalOutputTokens: 8192,
+      source: "lmstudio",
+    });
+    assert.equal(
+      refreshedRegistry.getStructuredOutput("test-local-model"),
+      undefined,
+      "an expired decision must not be renewed into a fresh record — the re-probe stays due",
+    );
+  } finally {
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a stale in-flight schema success does not overwrite a current rejection", () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const gate = new NativeSchemaGate(() => registry);
+    // Two schema-bearing requests attach before either settles.
+    const body: LocalLlmChatRequestBody = {
+      model: "test-local-model",
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0.1,
+      max_tokens: 16,
+      stream: false,
+    };
+    gate.attach(body, { responseFormat }, "test-local-model");
+    // The rejection settles first: "none" is the newest evidence.
+    gate.rememberRejection("test-local-model");
+    // The older in-flight success settles last: it must not flip the
+    // decision back, or later requests re-send the rejected schema.
+    gate.recordSuccess(body, "test-local-model");
+    assert.equal(registry.getStructuredOutput("test-local-model"), "none");
+    // A fresh success with no rejection standing still records native.
+    const otherBody: LocalLlmChatRequestBody = { ...body, model: "other-model" };
+    const freshGate = new NativeSchemaGate(() => registry);
+    freshGate.attach(otherBody, { responseFormat }, "other-model");
+    freshGate.recordSuccess(otherBody, "other-model");
+    assert.equal(registry.getStructuredOutput("other-model"), "native");
+  } finally {
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("invalid params without schema evidence is not treated as a schema rejection", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: { error: { message: "invalid params: temperature must be between 0 and 2" } },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(server.requests.length, 1, "unrelated invalid-param errors must not strip the format");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an echoed format name inside an unrelated invalid-param error does not strip", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: {
+      error: {
+        message: "invalid params: quota exceeded; request included response_format json_schema",
+      },
+    },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(server.requests.length, 1, "an echo of the format name is not schema-rejection evidence");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a type mismatch on an unrelated parameter does not strip the schema", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: { error: { message: "invalid params: mismatch type for temperature, expected number" } },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(
+      server.requests.length,
+      1,
+      "no schema fragment quoted: the mismatch is not evidence our schema was rejected",
+    );
   } finally {
     await server.close();
   }

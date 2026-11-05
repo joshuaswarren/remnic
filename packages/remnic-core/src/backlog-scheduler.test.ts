@@ -804,3 +804,107 @@ test("claims past the concurrency bound are re-listed on the next tick, in page 
     await scheduler.stop();
   }
 });
+
+// ── Provider-breaker churn guard ────────────────────────────────────────────
+//
+// While the shared provider breaker is OPEN inside its cooldown, a full
+// submission reads the claim, rebuilds the buffer/coordinator and re-renders
+// chunks before the breaker fails the attempt fast — pure heap pressure per
+// poll. The scheduler must skip submission entirely; when the window lapses,
+// submissions resume and the breaker's own half-open probe keeps recovery
+// automatic.
+
+function breakerInstrumentedDeps(
+  state: StubState,
+  queue: ExtractionQueueCoordinator,
+): BacklogSchedulerDeps & { claimReads(): number } {
+  const deps = makeDeps(state, queue);
+  const originalClaim = deps.claims.claimFromSessionFile;
+  let claimReads = 0;
+  deps.claims.claimFromSessionFile = async (key, lease) => {
+    claimReads += 1;
+    return originalClaim(key, lease);
+  };
+  return { ...deps, claimReads: () => claimReads };
+}
+
+test("an open provider breaker suppresses submission: no drain, no claim read", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["live-open", { turns: 4, retainedTurns: 0 }]]),
+    claimed: new Set(["pending-claim"]),
+    claimTurns: new Map([["pending-claim", 7]]),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const deps = breakerInstrumentedDeps(state, queue);
+  const originalListPage = deps.claims.listPage;
+  let listPageCalls = 0;
+  deps.claims.listPage = async (...args) => {
+    listPageCalls += 1;
+    return originalListPage(...args);
+  };
+  const scheduler = new BacklogScheduler({
+    ...deps,
+    breakerSnapshot: () => ({
+      state: "open",
+      openUntilMs: Date.now() + 300_000,
+      consecutiveFailures: 5,
+      lastReason: "provider 400s",
+    }),
+  }, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    for (let tick = 1; tick <= 2; tick += 1) {
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+    }
+    assert.equal(state.drained.length, 0, "no attempt is built while the breaker is open");
+    assert.equal(deps.claimReads(), 0, "no claim is read while the breaker is open");
+    assert.equal(listPageCalls, 0, "claim discovery I/O is skipped while the breaker is open");
+    assert.equal(scheduler.snapshot().counters.claimed, 0);
+  } finally {
+    await scheduler.stop();
+  }
+});
+
+test("a lapsed breaker window resumes submission and drains the backlog", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["live-open", { turns: 4, retainedTurns: 0 }]]),
+    claimed: new Set(["pending-claim"]),
+    claimTurns: new Map([["pending-claim", 7]]),
+    claimedThisRun: new Set(),
+    outcomes: [
+      emptyOutcome("pending-claim", { turnsAtStart: 7 }),
+      emptyOutcome("live-open", { turnsAtStart: 4 }),
+    ],
+    drained: [],
+  };
+  const deps = breakerInstrumentedDeps(state, queue);
+  // Window already lapsed: the next submission IS the half-open probe path.
+  const scheduler = new BacklogScheduler({
+    ...deps,
+    breakerSnapshot: () => ({
+      state: "open",
+      openUntilMs: Date.now() - 1,
+      consecutiveFailures: 5,
+      lastReason: "provider 400s",
+    }),
+  }, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    assert.deepEqual(
+      state.drained.map((entry) => entry.key).sort(),
+      ["live-open", "pending-claim"],
+      "a lapsed window lets submissions (the probe path) through"
+    );
+  } finally {
+    await scheduler.stop();
+  }
+});

@@ -201,7 +201,16 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   return (
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
     /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
-    /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message)
+    /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
+    // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05
+    // MiniMax-M3.1-Flash: "invalid params, Mismatch type string with value
+    // array ... \"episodeTitle\": {\"type\": [\"string\",\"null\"]}"). The
+    // provider never names response_format here; it dies parsing our payload.
+    // Evidence is the observed signature only — a quoted (JSON-escaped)
+    // type-array fragment. A generic "mismatch type" naming an unrelated
+    // parameter, or a bare echo of the format name, is not enough to degrade.
+    (/invalid\s+(?:params|parameters)/i.test(message) &&
+      /\\{0,4}"\s{0,8}type\s{0,8}\\{0,4}"\s{0,8}:\s{0,8}\[/.test(message))
   );
 }
 
