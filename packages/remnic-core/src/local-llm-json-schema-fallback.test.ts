@@ -8,6 +8,7 @@ import test, { mock } from "node:test";
 
 import { LocalLlmClient } from "./local-llm.js";
 import { ModelRegistry } from "./model-registry.js";
+import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { parseConfig } from "./config.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
@@ -506,6 +507,37 @@ test("an expired structuredOutput decision is not renewed by a capability refres
   }
 });
 
+test("a stale in-flight schema success does not overwrite a current rejection", () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const gate = new NativeSchemaGate(() => registry);
+    // Two schema-bearing requests attach before either settles.
+    const body: LocalLlmChatRequestBody = {
+      model: "test-local-model",
+      messages: [{ role: "user", content: "hello" }],
+      temperature: 0.1,
+      max_tokens: 16,
+      stream: false,
+    };
+    gate.attach(body, { responseFormat }, "test-local-model");
+    // The rejection settles first: "none" is the newest evidence.
+    gate.rememberRejection("test-local-model");
+    // The older in-flight success settles last: it must not flip the
+    // decision back, or later requests re-send the rejected schema.
+    gate.recordSuccess(body, "test-local-model");
+    assert.equal(registry.getStructuredOutput("test-local-model"), "none");
+    // A fresh success with no rejection standing still records native.
+    const otherBody: LocalLlmChatRequestBody = { ...body, model: "other-model" };
+    const freshGate = new NativeSchemaGate(() => registry);
+    freshGate.attach(otherBody, { responseFormat }, "other-model");
+    freshGate.recordSuccess(otherBody, "other-model");
+    assert.equal(registry.getStructuredOutput("other-model"), "native");
+  } finally {
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("invalid params without schema evidence is not treated as a schema rejection", async () => {
   const server = await startRecordingServer(() => ({
     status: 400,
@@ -535,6 +567,25 @@ test("an echoed format name inside an unrelated invalid-param error does not str
     primeClient(client);
     assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
     assert.equal(server.requests.length, 1, "an echo of the format name is not schema-rejection evidence");
+  } finally {
+    await server.close();
+  }
+});
+
+test("a type mismatch on an unrelated parameter does not strip the schema", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: { error: { message: "invalid params: mismatch type for temperature, expected number" } },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(
+      server.requests.length,
+      1,
+      "no schema fragment quoted: the mismatch is not evidence our schema was rejected",
+    );
   } finally {
     await server.close();
   }

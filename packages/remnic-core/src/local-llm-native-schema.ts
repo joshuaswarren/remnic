@@ -60,15 +60,19 @@ export class NativeSchemaGate {
     }
   }
 
-  /** A schema-carrying 200: persist the native capability once. */
+  /** A schema-carrying 200: persist the native capability once. A CURRENT
+   *  "none" stands — that success is stale in-flight evidence from before the
+   *  rejection, and overwriting it would make later requests re-send the
+   *  rejected schema. */
   recordSuccess(requestBody: LocalLlmChatRequestBody, modelId: string): void {
     const registry = this.registry();
     if (
-      requestBody.response_format &&
-      registry &&
-      registry.getStructuredOutput(modelId) !== "native"
+      !requestBody.response_format ||
+      !registry ||
+      registry.getStructuredOutput(modelId) !== undefined
     ) {
-      registry.setStructuredOutput(modelId, "native");
+      return;
     }
+    registry.setStructuredOutput(modelId, "native");
   }
 }

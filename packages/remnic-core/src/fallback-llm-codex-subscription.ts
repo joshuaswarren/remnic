@@ -205,13 +205,12 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
     // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05
     // MiniMax-M3.1-Flash: "invalid params, Mismatch type string with value
     // array ... \"episodeTitle\": {\"type\": [\"string\",\"null\"]}"). The
-    // provider never names response_format here; it dies parsing our payload
-    // ("Mismatch type", not "mismatched type"; the fragment's quotes are
-    // JSON-escaped in the raw body). The evidence must be schema-SHAPE
-    // evidence: a bare echo of the format name inside an unrelated
-    // invalid-params error is not enough to degrade.
+    // provider never names response_format here; it dies parsing our payload.
+    // Evidence is the observed signature only — a quoted (JSON-escaped)
+    // type-array fragment. A generic "mismatch type" naming an unrelated
+    // parameter, or a bare echo of the format name, is not enough to degrade.
     (/invalid\s+(?:params|parameters)/i.test(message) &&
-      /mismatch(?:ed)?\s+type|\\?"\s*type\s*\\?"\s*:\s*\[/i.test(message))
+      /\\{0,4}"\s{0,8}type\s{0,8}\\{0,4}"\s{0,8}:\s{0,8}\[/.test(message))
   );
 }
 
