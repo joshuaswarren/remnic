@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -590,6 +591,168 @@ test("an aborted idle wait releases the retry timer reference and close clears e
     assert.equal(internals.summarizeRetryWaiters.size, 0, "close resolves retry waiters");
     assert.equal(internals.summarizeRetryIdleWaiters.size, 0, "close clears idle-waiter counts");
     assert.equal(internals.db, null, "close does not reinitialize the engine");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+/** Spawn a real one-shot host child process with the shared engine setup.
+ * The retry timer is the only handle a quiet host has left: `mode` decides
+ * whether it parks an explicit global idle wait before ending its script. */
+function spawnOneShotHost(
+  memoryDir: string,
+  mode: "global-idle" | "background",
+  moduleUrl: (name: string) => string,
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  const childSource = [
+    // Child is a spawned `node -e` script receiving module URLs via argv:
+    // static imports are impossible for runtime-selected specifiers here.
+    `const [engineUrl, configUrl, memoryDir, mode] = process.argv.slice(1);`,
+    `const { LcmEngine } = await import(engineUrl);`,
+    `const { parseConfig } = await import(configUrl);`,
+    `const engine = new LcmEngine(parseConfig({`,
+    `  memoryDir, lcmEnabled: true, lcmLeafBatchSize: 2, lcmRollupFanIn: 2,`,
+    `  lcmFreshTailTurns: 16, lcmMaxDepth: 5, lcmDeterministicMaxTokens: 512,`,
+    `  lcmTelemetryPrefilterEnabled: false, lcmArchiveRetentionDays: 90,`,
+    `  lcmRecallBudgetShare: 0.15, lcmObserveConcurrency: 1, messagePartsEnabled: false,`,
+    `}), async () => "host summary");`,
+    `await engine.ensureInitialized();`,
+    `engine.summarizeRetryBaseMs = 150;`,
+    // SAFETY: stub replaces the engine's own summarizer. "global-idle" fails
+    // exactly once so a genuine retry pass runs against the real archive;
+    // "background" fails forever so a wrongly referenced timer would keep
+    // the host alive on an endless retry loop.
+    `const summarizer = engine.summarizer;`,
+    `if (mode === "global-idle") {`,
+    `  const realSummarize = summarizer.summarizeIncremental.bind(summarizer);`,
+    `  let failedOnce = false;`,
+    `  summarizer.summarizeIncremental = async (sessionId, options) => {`,
+    `    if (!failedOnce) { failedOnce = true; throw new Error("transient summary failure"); }`,
+    `    return realSummarize(sessionId, options);`,
+    `  };`,
+    `} else {`,
+    `  summarizer.summarizeIncremental = async () => { throw new Error("permanent summary failure"); };`,
+    `}`,
+    `await engine.enqueueObserveMessages("session-1", [`,
+    `  { role: "user", content: "one-shot host" },`,
+    `  { role: "assistant", content: "one-shot host too" },`,
+    `]);`,
+    // Wait (referenced) until the failed pass really left a retry pending.
+    `for (let i = 0; i < 200 && engine.summarizeRetryTimers.size === 0; i++) {`,
+    `  await new Promise((resolve) => setTimeout(resolve, 10));`,
+    `}`,
+    `if (engine.summarizeRetryTimers.size === 0) {`,
+    `  process.stdout.write("NO_RETRY_PENDING\\n");`,
+    `  process.exit(5);`,
+    `}`,
+    `if (mode === "background") {`,
+    // No explicit wait: the unreferenced retry is pure background work and
+    // must not keep the host alive. Natural exit proves it.
+    `  process.stdout.write("RETRY_PENDING_NO_WAITER\\n");`,
+    `} else {`,
+    `  process.on("beforeExit", () => {`,
+    `    process.stdout.write("PREMATURE_EXIT_UNDER_WAIT\\n");`,
+    `    process.exitCode = 3;`,
+    `  });`,
+    `  const startedAt = Date.now();`,
+    `  await engine.waitForObserveQueueIdle();`,
+    `  if (Date.now() - startedAt < 100) {`,
+    `    process.stdout.write("WAIT_RETURNED_EARLY " + (Date.now() - startedAt) + "\\n");`,
+    `    process.exit(4);`,
+    `  }`,
+    `  const summary = await engine.describeContext("session-1", 0, 1);`,
+    `  if (summary?.depth !== 0) {`,
+    `    process.stdout.write("RETRY_WORK_MISSING " + String(summary?.depth) + "\\n");`,
+    `    process.exit(6);`,
+    `  }`,
+    `  process.stdout.write("GLOBAL_IDLE_RESOLVED\\n");`,
+    `  process.exit(0);`,
+    `}`,
+    "",
+  ].join("\n");
+  const child = spawn(
+    process.execPath,
+    [
+      "--import", "tsx", "-e", childSource,
+      moduleUrl("./lcm/engine.js"),
+      moduleUrl("./config.js"),
+      memoryDir,
+      mode,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const { promise, resolve, reject } = Promise.withResolvers<{
+    code: number | null;
+    stdout: string;
+    stderr: string;
+  }>();
+  // A one-shot host must settle in seconds; a wrongly referenced retry loop
+  // never exits, so the deadline kill is part of the assertion.
+  const deadline = setTimeout(() => {
+    child.kill("SIGKILL");
+    reject(new Error(`one-shot host (${mode}) did not exit within 10s; stderr: ${stderr || "(empty)"}`));
+  }, 10_000);
+  child.on("error", (err) => {
+    clearTimeout(deadline);
+    reject(err);
+  });
+  child.on("close", (code) => {
+    clearTimeout(deadline);
+    resolve({ code, stdout, stderr });
+  });
+  return promise;
+}
+
+// EXCEPTION (real timers): this test exercises genuine event-loop liveness —
+// whether a real unref'd retry timer keeps a one-shot host alive. Fake timers
+// cannot represent unref/ref or event-loop exhaustion, so real wall-clock
+// backoff (150ms) is the subject under test, not an accidental delay.
+test("a one-shot host survives a pending summary retry only while an idle wait is parked on it", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-host-"));
+  try {
+    const moduleUrl = (name: string) => new URL(name, import.meta.url).href;
+
+    // Parked on the global idle wait: the host must stay alive while the
+    // retry timer pends, the retry must really fire and finish the work,
+    // and only then may the host exit.
+    const startedAt = Date.now();
+    const idleHost = await spawnOneShotHost(dir, "global-idle", moduleUrl);
+    assert.equal(
+      idleHost.code,
+      0,
+      `host parked on global idle must exit cleanly; stderr: ${idleHost.stderr || "(empty)"}`,
+    );
+    assert.ok(
+      idleHost.stdout.includes("GLOBAL_IDLE_RESOLVED"),
+      `global idle wait must resolve via the retry; got: ${idleHost.stdout}`,
+    );
+    assert.ok(
+      !idleHost.stdout.includes("PREMATURE_EXIT_UNDER_WAIT"),
+      "host must not exit under the parked global idle wait",
+    );
+    assert.ok(
+      Date.now() - startedAt >= 100,
+      "the global idle wait must span the real retry backoff",
+    );
+
+    // No idle wait: the pending retry stays unreferenced background work and
+    // the host must still exit promptly (the previous referenced-timer bug).
+    const backgroundHost = await spawnOneShotHost(dir, "background", moduleUrl);
+    assert.equal(
+      backgroundHost.code,
+      0,
+      `host with no idle waiter must not be kept alive by the retry; stderr: ${backgroundHost.stderr || "(empty)"}`,
+    );
+    assert.ok(
+      backgroundHost.stdout.includes("RETRY_PENDING_NO_WAITER"),
+      `expected a pending retry at exit; got: ${backgroundHost.stdout}`,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

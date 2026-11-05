@@ -436,9 +436,9 @@ export class LcmEngine {
     for (;;) {
       await this.waitForPendingObserveInitIdle();
       await this.observeQueue?.whenIdle();
-      const waiter = [...this.summarizeRetryWaiters.values()][0];
-      if (!waiter) return;
-      await waiter.promise;
+      const entry = [...this.summarizeRetryWaiters.entries()][0];
+      if (!entry) return;
+      await this.awaitSummarizeRetry(entry[0], entry[1]);
       // A fired retry may have re-queued a session: wait for the queue again.
     }
   }
@@ -458,23 +458,34 @@ export class LcmEngine {
       await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
       const waiter = this.summarizeRetryWaiters.get(normalizedSessionId);
       if (!waiter) return;
-      // While an explicit wait is parked on this retry, keep the timer
-      // referenced so the host does not exit under it; abort releases it.
-      const waiters = (this.summarizeRetryIdleWaiters.get(normalizedSessionId) ?? 0) + 1;
-      this.summarizeRetryIdleWaiters.set(normalizedSessionId, waiters);
-      this.summarizeRetryTimers.get(normalizedSessionId)?.ref?.();
-      try {
-        await abortOnSignal(abortSignal, waiter.promise);
-      } finally {
-        const remaining = (this.summarizeRetryIdleWaiters.get(normalizedSessionId) ?? 1) - 1;
-        if (remaining <= 0) {
-          this.summarizeRetryIdleWaiters.delete(normalizedSessionId);
-          this.summarizeRetryTimers.get(normalizedSessionId)?.unref?.();
-        } else {
-          this.summarizeRetryIdleWaiters.set(normalizedSessionId, remaining);
-        }
-      }
+      await this.awaitSummarizeRetry(normalizedSessionId, waiter, abortSignal);
       // The retry fired and may have re-queued the session: wait again.
+    }
+  }
+
+  /**
+   * Park an explicit idle wait on a pending retry. While any wait is parked,
+   * the retry timer is referenced so a one-shot host cannot exit under the
+   * wait; with no waiters the timer stays unreferenced background work.
+   */
+  private async awaitSummarizeRetry(
+    sessionId: string,
+    waiter: { promise: Promise<void>; resolve: () => void },
+    abortSignal?: AbortSignal,
+  ): Promise<void> {
+    const waiters = (this.summarizeRetryIdleWaiters.get(sessionId) ?? 0) + 1;
+    this.summarizeRetryIdleWaiters.set(sessionId, waiters);
+    this.summarizeRetryTimers.get(sessionId)?.ref?.();
+    try {
+      await abortOnSignal(abortSignal, waiter.promise);
+    } finally {
+      const remaining = (this.summarizeRetryIdleWaiters.get(sessionId) ?? 1) - 1;
+      if (remaining <= 0) {
+        this.summarizeRetryIdleWaiters.delete(sessionId);
+        this.summarizeRetryTimers.get(sessionId)?.unref?.();
+      } else {
+        this.summarizeRetryIdleWaiters.set(sessionId, remaining);
+      }
     }
   }
 
