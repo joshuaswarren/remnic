@@ -7,12 +7,9 @@ import { isDailyFileDatedBefore, resolveSafeStoragePath } from "./storage-paths.
 import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
+import { refreshTranscriptDirectoryOwnershipCache, type DirectoryOwnershipCacheEntry } from "./transcript-ownership-cache.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
-type DirectoryOwnershipCacheEntry = {
-  status: "empty" | "matches";
-  fileSizes: Map<string, number>;
-};
 
 /**
  * De-duplicate JSONL lines collected across multiple read-back candidate
@@ -339,30 +336,6 @@ export class TranscriptManager {
     return fileSizes;
   }
 
-  private async rememberDirectoryOwnership(
-    root: string,
-    dir: string,
-    sessionKey: string,
-    file: string,
-  ): Promise<void> {
-    const cacheKey = this.directoryOwnershipCacheKey(root, dir, sessionKey);
-    const cached = this.directoryOwnershipCache.get(cacheKey);
-    if (!cached) return;
-
-    try {
-      const filePath = await resolveSafeStoragePath(root, dir, file);
-      const fileInfo = await stat(filePath);
-      if (!fileInfo.isFile()) {
-        this.directoryOwnershipCache.delete(cacheKey);
-        return;
-      }
-      const fileSizes = new Map(cached.fileSizes);
-      fileSizes.set(file, Math.max(0, fileInfo.size));
-      this.directoryOwnershipCache.set(cacheKey, { status: "matches", fileSizes });
-    } catch {
-      this.directoryOwnershipCache.delete(cacheKey);
-    }
-  }
 
   private async getSessionStorageFiles(
     root: string,
@@ -418,7 +391,13 @@ export class TranscriptManager {
     await mkdir(channelDir, { recursive: true });
     const filePath = await resolveSafeStoragePath(this.toolUsageDir, writeDir, file);
     await appendFile(filePath, JSON.stringify(entry) + "\n", "utf-8");
-    await this.rememberDirectoryOwnership(this.toolUsageDir, writeDir, entry.sessionKey, file);
+    await refreshTranscriptDirectoryOwnershipCache(
+      this.directoryOwnershipCache,
+      this.directoryOwnershipCacheKey(this.toolUsageDir, writeDir, entry.sessionKey),
+      this.toolUsageDir,
+      writeDir,
+      file,
+    );
   }
 
   async readToolUse(
@@ -616,7 +595,13 @@ export class TranscriptManager {
 
       const line = JSON.stringify(entry) + "\n";
       await appendFile(filePath, line, "utf-8");
-      await this.rememberDirectoryOwnership(this.transcriptsDir, writeDir, entry.sessionKey, file);
+      await refreshTranscriptDirectoryOwnershipCache(
+        this.directoryOwnershipCache,
+        this.directoryOwnershipCacheKey(this.transcriptsDir, writeDir, entry.sessionKey),
+        this.transcriptsDir,
+        writeDir,
+        file,
+      );
       log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
     } catch (err) {
       log.error("failed to append transcript entry:", err);
