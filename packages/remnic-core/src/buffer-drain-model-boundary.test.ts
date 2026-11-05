@@ -560,3 +560,67 @@ test("a pinned accepted claim group forwards its captured plan; flattening it to
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("explicit capture mode denies ordinary backlog turns and still drains accepted captures", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-explicit-mode-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      captureMode: "explicit",
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    await orchestrator.buffer.addTurn("ordinary-sess", {
+      role: "user",
+      content: "ordinary explicit-mode probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "ordinary-sess",
+    });
+    await orchestrator.buffer.addTurn("accepted-sess", {
+      role: "user",
+      content: "accepted explicit-mode probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "accepted-sess",
+      acceptedCapture: true,
+      writeNamespaceOverride: "alice",
+      principalOverride: "alice",
+    });
+    await orchestrator.buffer.save();
+
+    // Ordinary conversation backlog: denied, retained, never extracted.
+    assert.equal(await runner.claim("ordinary-sess", "drain-explicit"), true);
+    const ordinary = await runner.drainSession("ordinary-sess", { ownerId: "drain-explicit" });
+    assert.equal(ordinary.status, "deferred", "explicit mode keeps ordinary turns pending");
+    assert.deepEqual(ordinary.denied, [{ reason: "capture_mode_explicit", turns: 1 }]);
+    const ordinaryClaim = await runner.claims.load("ordinary-sess");
+    assert.equal(ordinaryClaim?.entry.turns[0]?.content, "ordinary explicit-mode probe");
+
+    // A deliberately accepted capture still drains under explicit mode.
+    assert.equal(await runner.claim("accepted-sess", "drain-explicit"), true);
+    const accepted = await runner.drainSession("accepted-sess", { ownerId: "drain-explicit" });
+    assert.equal(accepted.status, "drained", "accepted captures drain under explicit mode");
+    assert.ok(await hasFactFile(memoryDir, "accepted explicit-mode probe"), "the accepted capture persisted");
+
+    // The ordinary scope never reached the model.
+    assert.equal(
+      model.prompts.some((p) => p.includes("ordinary explicit-mode probe")),
+      false,
+      "ordinary turns must not be extracted in explicit mode",
+    );
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

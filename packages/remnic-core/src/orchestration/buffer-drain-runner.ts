@@ -19,6 +19,7 @@
  */
 
 import { BufferDrainClaims, type DrainLease } from "../storage/buffer-drain-claims.js";
+import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
 import type { BufferStorage } from "../buffer-persistence.js";
 import type { BufferEntryState, BufferState } from "../types.js";
 import { SmartBuffer } from "../buffer.js";
@@ -66,6 +67,9 @@ const DENIED_SCOPE_REASONS: ReadonlySet<string> = new Set([
   // The resolved profile has no writable layer: the same current-policy
   // refusal family, surfaced from inside the shared runExtraction gate.
   "scope_profile_no_writable_layer",
+  // captureMode=explicit: ordinary buffered conversation turns never create
+  // memories; only deliberately accepted captures drain.
+  "capture_mode_explicit",
 ]);
 
 export interface BufferDrainRunnerOptions {
@@ -290,6 +294,23 @@ export class BufferDrainRunner {
     let groupError: DrainExtractionError | undefined;
     for (const group of groupTurnsByExtractionScope(turns)) {
       if (signal.aborted) break;
+      // captureMode=explicit: ordinary buffered conversation turns never
+      // create memories — only deliberately accepted captures drain. The
+      // group is denied and RETAINED (visible backlog, original data
+      // untouched), never extracted or cleared.
+      if (
+        shouldSkipImplicitExtraction(config) &&
+        !group.turns.some((turn) => turn.acceptedCapture === true)
+      ) {
+        log.warn(
+          `buffer drain: session ${key} denied capture_mode_explicit (${group.turns.length} ordinary turn(s) retained)`,
+        );
+        groupOutcomes.push({
+          turns: group.turns.length,
+          result: { status: "skipped", reason: "capture_mode_explicit", persistedCount: 0, durableOutputCount: 0 },
+        });
+        continue;
+      }
       const { promise, resolve } = Promise.withResolvers<{ error?: unknown; result?: ExtractionRunResult }>();
       let done = false;
       const settle = (error?: unknown, result?: ExtractionRunResult): void => {
