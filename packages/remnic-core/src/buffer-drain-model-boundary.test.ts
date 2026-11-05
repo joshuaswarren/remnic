@@ -23,7 +23,7 @@ import path from "node:path";
 import { Orchestrator, parseConfig } from "./index.js";
 import { BufferDrainRunner } from "./orchestration/buffer-drain-runner.js";
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
-import type { PluginConfig } from "./types.js";
+import type { BufferTurn, PluginConfig } from './types.js';
 
 interface ModelBoundary {
   url: string;
@@ -691,6 +691,112 @@ test("a mixed accepted+ordinary group splits: the accepted capture drains, the o
     );
   } finally {
     await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("scan reports claimed, unclaimed, and orphaned tombstone sessions", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-scan-"));
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    const turn = (key: string, content: string): BufferTurn => ({
+      role: "user",
+      content,
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: key,
+    });
+    await orchestrator.buffer.addTurn("scan-unclaimed", turn("scan-unclaimed", "unclaimed body"));
+    await orchestrator.buffer.addTurn("scan-claimed", turn("scan-claimed", "claimed body"));
+    await orchestrator.buffer.save();
+
+    const before = await runner.scan();
+    assert.deepEqual(before.find((entry) => entry.key === "scan-unclaimed"), { key: "scan-unclaimed", turns: 1, claimed: false });
+
+    assert.equal(await runner.claim("scan-claimed", "scan-owner"), true);
+    const claimed = await runner.scan();
+    const claimedEntry = claimed.find((entry) => entry.key === "scan-claimed");
+    assert.equal(claimedEntry?.claimed, true, "a claimed session reports claimed");
+    assert.equal(claimedEntry?.turns, 1);
+
+    // Draining the claimed session leaves an ack tombstone: still listed so
+    // an operator sees the drained claim exists (the live copy is gone).
+    await runner.drainSession("scan-claimed", { ownerId: "scan-owner" });
+    const after = await runner.scan();
+    assert.ok(
+      after.some((entry) => entry.key === "scan-claimed"),
+      "the claimed key stays visible across the scan",
+    );
+    assert.ok(after.some((entry) => entry.key === "scan-unclaimed"));
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("drainSession skips a key with no claim, a busy lease, and an emptied claim", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-skip-paths-"));
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+    const claims = runner.claims;
+
+    // Not claimed: nothing to drain.
+    const notClaimed = await runner.drainSession("ghost-sess", { ownerId: "drain-skips" });
+    assert.equal(notClaimed.status, "skipped");
+    assert.equal(notClaimed.reason, "not_claimed");
+
+    // Busy: another drainer holds the lease.
+    await orchestrator.buffer.addTurn("busy-sess", {
+      role: "user",
+      content: "busy body",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "busy-sess",
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("busy-sess", "first-owner"), true);
+    const busy = await runner.drainSession("busy-sess", { ownerId: "second-owner" });
+    assert.equal(busy.status, "skipped");
+    assert.equal(busy.reason, "claimed_by_another_drain");
+    assert.equal(busy.turnsRemaining, 1);
+
+    // Emptied claim: the ack verdict is honored (drained). The emptied entry
+    // is written by the CURRENT lease holder (first-owner).
+    const claimsEntry = await claims.load("busy-sess");
+    await claims.writeEntry(
+      "busy-sess",
+      "first-owner",
+      { ...claimsEntry!.entry, turns: [], retainedTurns: undefined, lastExtractionAt: new Date().toISOString(), extractionCount: (claimsEntry!.entry.extractionCount ?? 0) + 1 },
+      claimsEntry!.entry,
+    );
+    await claims.releaseLease("busy-sess", "first-owner");
+    const emptied = await runner.drainSession("busy-sess", { ownerId: "second-owner" });
+    assert.equal(emptied.status, "drained", "an emptied claim acks cleanly");
+  } finally {
     await orchestrator?.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true });
   }

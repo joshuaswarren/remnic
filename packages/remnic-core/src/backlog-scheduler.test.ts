@@ -568,3 +568,61 @@ test("a discovery failure must not reject into the detached tick; the next poll 
     await scheduler.stop();
   }
 });
+
+test("a thrown drain leaves the claim intact, counts failed, and backs off", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["throwing-1", { turns: 2, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const deps = makeDeps(state, queue);
+  deps.drainKey = async (key) => {
+    state.drained.push({ key, outcome: emptyOutcome(key) });
+    throw new Error("provider exploded");
+  };
+  const scheduler = new BacklogScheduler(deps, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    assert.equal(state.drained.length, 1, "the drain attempt ran");
+    const snapshot = scheduler.snapshot();
+    assert.equal(snapshot.counters.failed, 1, "a thrown drain counts failed");
+    const keyState = snapshot.keys.find((entry) => entry.key === "throwing-1");
+    assert.equal(keyState?.state, "backoff", "the key backs off for a later attempt");
+    assert.equal(state.claimTurns.get("throwing-1"), 2, "the claim content is intact in the store");
+  } finally {
+    await scheduler.stop();
+  }
+});
+
+test("a deferred outcome without a denial report backs off but never counts denied", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["deferred-1", { turns: 1, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [
+      { key: "deferred-1", status: "deferred", turnsAtStart: 1, turnsRemaining: 1, persistedCount: 0, durableOutputCount: 0, reason: "provider_circuit_open" },
+    ],
+    drained: [],
+  };
+  const scheduler = new BacklogScheduler(makeDeps(state, queue), { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    const snapshot = scheduler.snapshot();
+    const keyState = snapshot.keys.find((entry) => entry.key === "deferred-1");
+    assert.equal(keyState?.state, "backoff", "a provider deferral is a backoff, not a denial");
+    assert.deepEqual(snapshot.counters.denied, { keys: 0, turns: 0 }, "no denied turns without a denial report");
+    assert.equal(snapshot.counters.failed, 0);
+  } finally {
+    await scheduler.stop();
+  }
+});

@@ -81,7 +81,12 @@ const FAILED: ExtractionRunResult = { status: "skipped", reason: "empty_extracti
 const DONE: ExtractionRunResult = { status: "completed", persistedCount: 1, durableOutputCount: 1 };
 
 /** w7K's probe on #3266: a pinned capture sits before a native group drained with clearMatchingTurns. */
-async function drainBehindPinnedCapture(buffer: SmartBuffer, results: ExtractionRunResult[], dropAfter: number): Promise<ExtractionRunResult> {
+async function drainBehindPinnedCapture(
+  buffer: SmartBuffer,
+  results: ExtractionRunResult[],
+  dropAfter: number,
+  overrides: { getStorage?: () => Promise<{ saveDroppedExtractionChunk: (bufferKey: string, reason: string, turns: readonly BufferTurn[]) => Promise<string> }> } = {},
+): Promise<ExtractionRunResult> {
   const pinned: BufferTurn = { ...makeTurn("s1", "pinned capture"), acceptedCapture: true };
   const native = [makeTurn("s1", "a".repeat(60)), makeTurn("s1", "b".repeat(60))];
   for (const turn of [pinned, ...native]) await buffer.addTurn("s1", turn);
@@ -95,7 +100,7 @@ async function drainBehindPinnedCapture(buffer: SmartBuffer, results: Extraction
       if (result.status === "completed") await buffer.clearAfterExtraction("s1", turns, options?.clearMatchingTurns === true ? { allowNonPrefix: true } : undefined);
       return result;
     },
-    getStorage: async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" }),
+    getStorage: overrides.getStorage ?? (async () => ({ saveDroppedExtractionChunk: async () => "/recovery/copy.json" })),
     buffer,
   });
   return await drain.run(native, {
@@ -239,6 +244,66 @@ test("a no-drop drain retains a repeatedly failing chunk as durable retryable ba
       (await restart()).getTurns("s1").map((turn) => turn.content),
       ["a".repeat(60), "b".repeat(60)],
       "both chunks stay in the buffer as durable retryable backlog",
+    );
+  });
+});
+
+test("a failed chunk with NO recovery copy is kept as retryable backlog, not dropped", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const result = await drainBehindPinnedCapture(buffer, [FAILED, FAILED, DONE], 1, {
+      getStorage: async () => ({ saveDroppedExtractionChunk: async () => { throw new Error("disk full"); } }),
+    });
+
+    // dropFailedChunk returns false: the only buffered copy stays and the
+    // drain stops on that chunk (later chunks are not acked past it).
+    assert.notEqual(result.status, "completed", "no silent drop without a recovery copy");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
+      true,
+      "the failed chunk's content stays buffered for retry",
+    );
+  });
+});
+
+test("a failing buffer removal keeps the chunk: the drop is retried next trigger", async () => {
+  await withBuffer(async (buffer, restart) => {
+    buffer.dropExtractionChunk = async () => {
+      throw new Error("buffer busy");
+    };
+    const result = await drainBehindPinnedCapture(buffer, [FAILED, FAILED, DONE], 2);
+
+    assert.notEqual(result.status, "completed");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
+      true,
+      "the chunk stays buffered when the buffer removal itself fails",
+    );
+  });
+});
+
+test("a chunk the buffer no longer matches is kept: nothing removed is not a drop", async () => {
+  await withBuffer(async (buffer, restart) => {
+    buffer.dropExtractionChunk = async () => 0;
+    const result = await drainBehindPinnedCapture(buffer, [FAILED, FAILED, DONE], 1);
+
+    assert.notEqual(result.status, "completed");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
+      true,
+      "nothing removed means the chunk is still buffered",
+    );
+  });
+});
+
+test("one failure below the drop threshold keeps the chunk (no drop, no side file)", async () => {
+  await withBuffer(async (buffer, restart) => {
+    const result = await drainBehindPinnedCapture(buffer, [FAILED, DONE], 3);
+
+    assert.notEqual(result.status, "completed", "a single failure below the threshold retains the window");
+    assert.deepEqual(
+      (await restart()).getTurns("s1").some((turn) => turn.content === "a".repeat(60)),
+      true,
+      "the failing chunk stays buffered for the next trigger",
     );
   });
 });

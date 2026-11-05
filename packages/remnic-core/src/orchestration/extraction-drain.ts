@@ -142,43 +142,77 @@ export class ExtractionDrain {
     preemptHandle?: ExtractionPreemptHandle,
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
-    // Accepted-capture groups chunk too when their turns clear by IDENTITY
-    // (clearMatchingTurns — the pinned-capture and claim-drain paths): a
-    // whole-window single run would truncate at the model budget and ack
-    // turns the model never saw. Without identity clears the single-run
-    // prefix clear stays (existing behavior).
-    const chunkable =
-      runOptions.clearBufferAfterExtraction &&
-      !runOptions.forceExtractionAttempt &&
-      !runOptions.failOnExtractionFailure &&
-      (runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true)) &&
-      Number.isFinite(budgetChars) &&
-      budgetChars > 0;
-    const chunks =
-      chunkable
-        ? this.deps.measureRenderedTurns !== undefined
-          ? this.chunkByRenderedSize(turns, budgetChars)
-          : chunkExtractionWindow(turns, budgetChars)
-        : [];
-    const resumed =
-      chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
+    const plan = this.chunkPlan(turns, runOptions, budgetChars);
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
     // chunk, so its failures still count toward the drop threshold.
-    if (chunks.length <= 1 && !resumed) return await this.deps.runExtraction(turns, runOptions);
+    if (plan.singleRun) return await this.deps.runExtraction(turns, runOptions);
     // Eligibility (minimum user turns and characters) belongs to the whole
     // window: a window that never qualified keeps the single-run path, which
     // judges it exactly as before.
-    if (!resumed) {
-      const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
-      const belowChars = !runOptions.skipCharThreshold && this.windowChars(turns) < this.deps.config.extractionMinChars;
-      if ((!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars) {
-        return await this.deps.runExtraction(turns, runOptions);
-      }
+    if (!plan.resumed && this.windowBelowThreshold(turns, runOptions)) {
+      return await this.deps.runExtraction(turns, runOptions);
     }
-    // The window qualified as a whole; its chunks must not be re-judged one by
-    // one (an assistant-only or short chunk would be cleared unextracted).
-    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
+    return await this.runChunked(plan.chunks, runOptions, preemptable, preemptHandle);
+  }
 
+  /**
+   * Chunking plan for one trigger-drain window. Accepted-capture groups
+   * chunk too when their turns clear by IDENTITY (clearMatchingTurns — the
+   * pinned-capture and claim-drain paths): a whole-window single run would
+   * truncate at the model budget and ack turns the model never saw. Without
+   * identity clears the single-run prefix clear stays (existing behavior).
+   */
+  private chunkPlan(
+    turns: readonly BufferTurn[],
+    runOptions: DrainRunOptions,
+    budgetChars: number,
+  ): { singleRun: boolean; chunks: BufferTurn[][]; resumed: boolean } {
+    const chunks = this.chunkable(runOptions, turns, budgetChars)
+      ? this.deps.measureRenderedTurns !== undefined
+        ? this.chunkByRenderedSize(turns, budgetChars)
+        : chunkExtractionWindow(turns, budgetChars)
+      : [];
+    const resumed = chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
+    return { singleRun: chunks.length <= 1 && !resumed, chunks, resumed };
+  }
+
+  /** Automatic chunking needs a clearable window, no fail-closed/forced
+   *  caller, and a real budget to chunk against. */
+  private chunkable(runOptions: DrainRunOptions, turns: readonly BufferTurn[], budgetChars: number): boolean {
+    return (
+      runOptions.clearBufferAfterExtraction &&
+      !runOptions.forceExtractionAttempt &&
+      !runOptions.failOnExtractionFailure &&
+      this.identityCleared(runOptions, turns) &&
+      Number.isFinite(budgetChars) &&
+      budgetChars > 0
+    );
+  }
+
+  /** A native group clears its turns by identity (a pinned capture can sit
+   *  in front); a drop must find them the same way. */
+  private identityCleared(runOptions: DrainRunOptions, turns: readonly BufferTurn[]): boolean {
+    return runOptions.clearMatchingTurns === true || !turns.some((turn) => turn.acceptedCapture === true);
+  }
+
+  /** Eligibility (minimum user turns and characters) belongs to the whole
+   *  window: a window that never qualified keeps the single-run path, which
+   *  judges it exactly as before. */
+  private windowBelowThreshold(turns: readonly BufferTurn[], runOptions: DrainRunOptions): boolean {
+    const windowUserTurns = turns.filter((turn) => turn.role === "user").length;
+    const belowChars = !runOptions.skipCharThreshold && this.windowChars(turns) < this.deps.config.extractionMinChars;
+    return (!runOptions.skipUserTurnThreshold && windowUserTurns < this.deps.config.extractionMinUserTurns) || belowChars;
+  }
+
+  /** The window qualified as a whole; its chunks must not be re-judged one by
+   *  one (an assistant-only or short chunk would be cleared unextracted). */
+  private async runChunked(
+    chunks: readonly BufferTurn[][],
+    runOptions: DrainRunOptions,
+    preemptable: boolean,
+    preemptHandle?: ExtractionPreemptHandle,
+  ): Promise<ExtractionRunResult> {
+    const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
     const bufferKey = runOptions.bufferKey;
     // A native group clears its turns by identity (a pinned capture can sit in front); a drop must find them the same way.
     const byIdentity = runOptions.clearMatchingTurns === true;
@@ -186,78 +220,162 @@ export class ExtractionDrain {
     let aggregate: ExtractionRunResult | null = null;
     for (const [position, chunk] of chunks.entries()) {
       this.qualified.set(bufferKey, chunkFingerprint(chunk.slice(0, 1)));
-      // retentionWindow: the chunks processed so far. A chunk's deferred retention replaces theirs (retained turns do not pile
-      // up across chunks) and leaves the retained turns of chunks not yet processed in the buffer.
-      let chunkOptions: DrainRunOptions = { ...baseOptions, retentionWindow: chunks.slice(0, position + 1).flat() };
-      let preempt: AbortController | undefined;
-      if (preemptable && position > 0) {
-        const local = new AbortController();
-        preempt = local;
-        preemptHandle?.arm(() => local.abort(preemptedExtractionError()));
-        chunkOptions = {
-          ...chunkOptions,
-          abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, local.signal]) : local.signal,
-        };
-      }
+      const { options: chunkOptions, preempt } = this.chunkOptionsFor(chunks, position, baseOptions, runOptions, preemptable, preemptHandle);
       let failures = this.failureCount(bufferKey, chunk);
       let result: ExtractionRunResult;
       try {
         result = await this.deps.runExtraction(chunk, chunkOptions);
       } catch (err) {
-        // The chunk-local abort leaves the outer signal untouched, so hand back the
-        // preemption reason the host looks for (as it does for the first chunk).
-        if (isAbortError(err)) throw preempt && preempt.signal.aborted && !runOptions.abortSignal?.aborted ? preempt.signal.reason : err;
-        failures += 1;
-        if (failures < dropAfter || !this.dropFailedChunks) {
-          this.setFailureCount(bufferKey, chunk, failures);
-          throw err;
-        }
-        // A chunk that keeps throwing is dropped like one that keeps failing,
-        // so later chunks are not stuck behind it.
-        const thrown: ExtractionRunResult = {
-          status: "skipped",
-          reason: `thrown: ${describeError(err)}`,
-          persistedCount: 0,
-          durableOutputCount: 0,
-        };
-        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity))) {
-          this.setFailureCount(bufferKey, chunk, failures);
-          throw err;
-        }
-        this.setFailureCount(bufferKey, chunk, 0);
+        this.rethrowChunkAbort(err, preempt, runOptions.abortSignal?.aborted === true);
+        return await this.settleThrownChunk(bufferKey, chunk, failures, dropAfter, err, byIdentity, aggregate);
+      }
+      const settled = this.settleVerdict(bufferKey, chunk, result, aggregate);
+      if (settled.action === "continue") {
+        aggregate = settled.result;
         continue;
       }
-      const verdict = classifyDrainResult(result);
-      if (verdict === "drained") {
-        this.setFailureCount(bufferKey, chunk, 0);
-        aggregate = mergeDrainResults(aggregate, result);
+      if (settled.action === "return") return settled.result;
+      const failed = await this.settleFailedChunk({
+        bufferKey,
+        chunk,
+        failures,
+        dropAfter,
+        result: settled.result,
+        byIdentity,
+        aggregate: settled.aggregate,
+      });
+      if (failed.action === "continue") {
+        aggregate = failed.result;
         continue;
       }
-      // Provider breaker/backoff retention: keep everything for retry.
-      if (verdict === "deferred") return mergeDrainResults(aggregate, result);
-      // An outage or a bad key is not the chunk's fault: keep the chunk and do not count toward dropping it.
-      if (result.failureClass === "provider_retryable" || result.failureClass === "auth_config") {
-        return mergeDrainResults(aggregate, result);
-      }
-      failures += 1;
-      if (failures >= dropAfter && this.dropFailedChunks) {
-        if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, result, byIdentity))) {
-          // No recovery copy: keep the only buffered copy and retry later.
-          this.setFailureCount(bufferKey, chunk, failures);
-          return mergeDrainResults(aggregate, result);
-        }
-        this.setFailureCount(bufferKey, chunk, 0);
-        aggregate = mergeDrainResults(aggregate, result);
-        continue;
-      }
-      this.setFailureCount(bufferKey, chunk, failures);
-      // No-drop drains keep the chunk as durable retryable backlog instead of
-      // side-filing it; the failure count still gates future drop decisions.
-      // Retain the remaining window for the next trigger (existing behavior).
-      return mergeDrainResults(aggregate, result);
+      return failed.result;
     }
     this.qualified.delete(bufferKey);
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
+  }
+
+  /** retentionWindow: the chunks processed so far. A chunk's deferred
+   *  retention replaces theirs (retained turns do not pile up across chunks)
+   *  and leaves the retained turns of chunks not yet processed in the
+   *  buffer. The chunk-local abort leaves the outer signal untouched, so
+   *  later chunks get their own preemption registration. */
+  private chunkOptionsFor(
+    chunks: readonly BufferTurn[][],
+    position: number,
+    baseOptions: DrainRunOptions,
+    runOptions: DrainRunOptions,
+    preemptable: boolean,
+    preemptHandle?: ExtractionPreemptHandle,
+  ): { options: DrainRunOptions; preempt?: AbortController } {
+    let options: DrainRunOptions = { ...baseOptions, retentionWindow: chunks.slice(0, position + 1).flat() };
+    let preempt: AbortController | undefined;
+    if (preemptable && position > 0) {
+      preempt = this.armChunkPreempt(preemptHandle);
+      options = {
+        ...options,
+        abortSignal: runOptions.abortSignal ? AbortSignal.any([runOptions.abortSignal, preempt.signal]) : preempt.signal,
+      };
+    }
+    return { options, preempt };
+  }
+
+  /** A chunk-local abort controller so a fail-closed flush can abort the
+   *  next chunk instead of waiting behind the whole window. */
+  private armChunkPreempt(preemptHandle?: ExtractionPreemptHandle): AbortController {
+    const local = new AbortController();
+    preemptHandle?.arm(() => local.abort(preemptedExtractionError()));
+    return local;
+  }
+
+  /** An abort error is rethrown (the chunk-local abort leaves the outer
+   *  signal untouched, so the host gets the preemption reason it looks for,
+   *  as it does for the first chunk). */
+  private rethrowChunkAbort(err: unknown, preempt: AbortController | undefined, outerAborted: boolean): void {
+    if (!isAbortError(err)) return;
+    throw preempt && preempt.signal.aborted && !outerAborted ? preempt.signal.reason : err;
+  }
+
+  /** A chunk whose extraction THREW: count the failure; below the drop
+   *  threshold (or on a no-drop drain) rethrow so the window is retained;
+   *  at the threshold a chunk that keeps throwing is dropped like one that
+   *  keeps failing, so later chunks are not stuck behind it. */
+  private async settleThrownChunk(
+    bufferKey: string,
+    chunk: readonly BufferTurn[],
+    failures: number,
+    dropAfter: number,
+    err: unknown,
+    byIdentity: boolean,
+    aggregate: ExtractionRunResult | null,
+  ): Promise<ExtractionRunResult> {
+    failures += 1;
+    if (failures < dropAfter || !this.dropFailedChunks) {
+      this.setFailureCount(bufferKey, chunk, failures);
+      throw err;
+    }
+    const thrown: ExtractionRunResult = {
+      status: "skipped",
+      reason: `thrown: ${describeError(err)}`,
+      persistedCount: 0,
+      durableOutputCount: 0,
+    };
+    if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity))) {
+      this.setFailureCount(bufferKey, chunk, failures);
+      throw err;
+    }
+    this.setFailureCount(bufferKey, chunk, 0);
+    return mergeDrainResults(aggregate, thrown);
+  }
+
+  /** Map one chunk result to the drain-loop action: drained chunks continue
+   *  to the next chunk; breaker/backoff retention and provider faults keep
+   *  everything for retry without counting a chunk failure. */
+  private settleVerdict(
+    bufferKey: string,
+    chunk: readonly BufferTurn[],
+    result: ExtractionRunResult,
+    aggregate: ExtractionRunResult | null,
+  ): { action: "continue" | "return" | "failed"; result: ExtractionRunResult; aggregate: ExtractionRunResult | null } {
+    const verdict = classifyDrainResult(result);
+    if (verdict === "drained") {
+      this.setFailureCount(bufferKey, chunk, 0);
+      return { action: "continue", result: mergeDrainResults(aggregate, result), aggregate };
+    }
+    // Provider breaker/backoff retention: keep everything for retry.
+    if (verdict === "deferred") return { action: "return", result: mergeDrainResults(aggregate, result), aggregate };
+    // An outage or a bad key is not the chunk's fault: keep the chunk and do not count toward dropping it.
+    if (result.failureClass === "provider_retryable" || result.failureClass === "auth_config") {
+      return { action: "return", result: mergeDrainResults(aggregate, result), aggregate };
+    }
+    return { action: "failed", result, aggregate };
+  }
+
+  /** The failed-verdict tail: count the failure and either drop the chunk
+   *  (live drains, recovery copy first) or keep it as durable retryable
+   *  backlog (claim drains, dropFailedChunks: false — no-drop). No-drop
+   *  drains retain the remaining window for the next trigger (existing
+   *  behavior); the failure count still gates future drop decisions. */
+  private async settleFailedChunk(args: {
+    bufferKey: string;
+    chunk: readonly BufferTurn[];
+    failures: number;
+    dropAfter: number;
+    result: ExtractionRunResult;
+    byIdentity: boolean;
+    aggregate: ExtractionRunResult | null;
+  }): Promise<{ action: "continue" | "return"; result: ExtractionRunResult }> {
+    const failures = args.failures + 1;
+    if (failures >= args.dropAfter && this.dropFailedChunks) {
+      if (!(await this.dropFailedChunk(args.bufferKey, args.chunk, args.dropAfter, args.result, args.byIdentity))) {
+        // No recovery copy: keep the only buffered copy and retry later.
+        this.setFailureCount(args.bufferKey, args.chunk, failures);
+        return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
+      }
+      this.setFailureCount(args.bufferKey, args.chunk, 0);
+      return { action: "continue", result: mergeDrainResults(args.aggregate, args.result) };
+    }
+    this.setFailureCount(args.bufferKey, args.chunk, failures);
+    return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
   }
 
   /**
@@ -294,17 +412,9 @@ export class ExtractionDrain {
     const reason =
       `dropped after ${dropAfter} repeated extraction failures ` +
       `(last result: status=${result.status} reason=${result.reason ?? "n/a"})`;
-    try {
-      const storage = await this.deps.getStorage();
-      const path = await storage.saveDroppedExtractionChunk(bufferKey, reason, chunk);
-      log.warn(`buffer[${bufferKey}]: dropping ${chunk.length} turns — ${reason}; copy saved to ${path}`);
-    } catch (err) {
-      // Never destroy the only buffered copy without a recovery file.
-      log.warn(
-        `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`,
-      );
-      return false;
-    }
+    const copyPath = await this.saveRecoveryCopy(bufferKey, reason, chunk);
+    if (copyPath === null) return false;
+    log.warn(`buffer[${bufferKey}]: dropping ${chunk.length} turns — ${reason}; copy saved to ${copyPath}`);
     try {
       const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk, { allowNonPrefix: byIdentity });
       if (dropped > 0) {
@@ -319,5 +429,24 @@ export class ExtractionDrain {
       );
     }
     return false;
+  }
+
+  /** The recovery side-file copy for a dropped chunk. null = the copy could
+   *  not be written — the caller must keep the only buffered copy. */
+  private async saveRecoveryCopy(
+    bufferKey: string,
+    reason: string,
+    chunk: readonly BufferTurn[],
+  ): Promise<string | null> {
+    try {
+      const storage = await this.deps.getStorage();
+      return await storage.saveDroppedExtractionChunk(bufferKey, reason, chunk);
+    } catch (err) {
+      // Never destroy the only buffered copy without a recovery file.
+      log.warn(
+        `buffer[${bufferKey}]: could not save the dropped-chunk recovery copy; keeping the chunk in the buffer: ${describeError(err)}`,
+      );
+      return null;
+    }
   }
 }

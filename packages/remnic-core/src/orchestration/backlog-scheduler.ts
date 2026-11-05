@@ -222,22 +222,7 @@ export class BacklogScheduler {
         return;
       }
       if (this.stopped) return;
-      for (const candidate of candidates) {
-        if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) break;
-        // inFlight is the authority for "already submitted" — key state only
-        // exists once an outcome landed (backoff/denied gating below).
-        if (this.inFlight.has(candidate.key)) continue;
-        const state = this.keys.get(candidate.key);
-        if (state && this.now() < state.nextAttemptMs) continue;
-        // Fence the claim decision: reserve the key synchronously BEFORE the
-        // async rename so no queued task for it can pass the claimed gate in
-        // the meantime. Release happens when the decision settles.
-        if (candidate.needsClaim) {
-          if (!this.deps.queue.tryReserveKey(candidate.key)) continue;
-          this.reserved.add(candidate.key);
-        }
-        void this.submit(candidate.key, candidate.needsClaim);
-      }
+      this.submitCandidates(candidates);
     } finally {
       this.ticking = false;
     }
@@ -271,6 +256,30 @@ export class BacklogScheduler {
     return out;
   }
 
+  /** Submit discovery candidates within the queue's concurrency bound. */
+  private submitCandidates(candidates: { key: string; needsClaim: boolean }[]): void {
+    for (const candidate of candidates) {
+      if (!this.candidateEligible(candidate)) continue;
+      // Fence the claim decision: reserve the key synchronously BEFORE the
+      // async rename so no queued task for it can pass the claimed gate in
+      // the meantime. Release happens when the decision settles.
+      if (candidate.needsClaim) {
+        if (!this.deps.queue.tryReserveKey(candidate.key)) continue;
+        this.reserved.add(candidate.key);
+      }
+      void this.submit(candidate.key, candidate.needsClaim);
+    }
+  }
+
+  /** inFlight is the authority for "already submitted" — key state only
+   *  exists once an outcome landed (backoff/denied gating below). */
+  private candidateEligible(candidate: { key: string; needsClaim: boolean }): boolean {
+    if (this.stopped || this.inFlight.size >= this.deps.queue.maxConcurrency) return false;
+    if (this.inFlight.has(candidate.key)) return false;
+    const state = this.keys.get(candidate.key);
+    return !(state && this.now() < state.nextAttemptMs);
+  }
+
   /** Claim (when needed), then drain one key; the reservation spans the async
    *  claim decision, the queue entry carries the key afterwards. */
   private async submit(key: string, needsClaim: boolean): Promise<void> {
@@ -278,42 +287,54 @@ export class BacklogScheduler {
     const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
     this.inFlight.set(key, { controller, settled });
     try {
-      if (needsClaim) {
-        try {
-          const outcome = await this.deps.claims.claimFromSessionFile(key, this.deps.lease());
-          if (outcome === "empty") {
-            // Nothing pending after all: the key goes quiet without a task.
-            this.keys.delete(key);
-            return;
-          }
-          // "claimed": ours. "already_claimed": someone claimed meanwhile —
-          // the drain below adopts/loads it through the native lease path.
-        } finally {
-          this.reserved.delete(key);
-          this.deps.queue.releaseKeyReservation(key);
-        }
-      }
+      if (!(await this.claimForSubmit(key, needsClaim))) return;
       // Stopped between the claim decision and the task: leave the claim
       // with its lease (it expires; the next start adopts) — never drain.
       if (this.stopped) return;
-      this.counters.claimed += 1;
-      const outcome = await this.deps.drainKey(key, {
-        ownerId: this.options.ownerId,
-        signal: controller.signal,
-      });
-      this.applyOutcome(key, outcome);
-    } catch (err) {
-      // drainKey reports failures as outcomes; a thrown error still means
-      // the claim content is intact — count it failed and back off.
-      this.counters.failed += 1;
-      const message = err instanceof Error ? err.message : String(err);
-      this.setBackoff(key, (err as { turnsRemaining?: number })?.turnsRemaining ?? 0, message);
-      log.warn(`backlog drain: ${key} threw: ${message}`);
+      await this.drainClaimedKey(key, controller.signal);
     } finally {
       this.inFlight.delete(key);
       this.reserved.delete(key);
       this.deps.queue.releaseKeyReservation(key);
       settle();
+    }
+  }
+
+  /** Claim via the native rename when needed. "empty": nothing pending
+   *  after all — the key goes quiet without a task. "claimed": ours.
+   *  "already_claimed": someone claimed meanwhile — the drain below
+   *  adopts/loads it through the native lease path. */
+  private async claimForSubmit(key: string, needsClaim: boolean): Promise<boolean> {
+    if (!needsClaim) return true;
+    try {
+      const outcome = await this.deps.claims.claimFromSessionFile(key, this.deps.lease());
+      if (outcome === "empty") {
+        this.keys.delete(key);
+        return false;
+      }
+      return true;
+    } finally {
+      this.reserved.delete(key);
+      this.deps.queue.releaseKeyReservation(key);
+    }
+  }
+
+  /** Drain one claimed key. drainKey reports failures as outcomes; a thrown
+   *  error still means the claim content is intact — count it failed and
+   *  back off. */
+  private async drainClaimedKey(key: string, signal: AbortSignal): Promise<void> {
+    this.counters.claimed += 1;
+    try {
+      const outcome = await this.deps.drainKey(key, {
+        ownerId: this.options.ownerId,
+        signal,
+      });
+      this.applyOutcome(key, outcome);
+    } catch (err) {
+      this.counters.failed += 1;
+      const message = err instanceof Error ? err.message : String(err);
+      this.setBackoff(key, (err as { turnsRemaining?: number })?.turnsRemaining ?? 0, message);
+      log.warn(`backlog drain: ${key} threw: ${message}`);
     }
   }
 
@@ -332,26 +353,48 @@ export class BacklogScheduler {
       );
       return;
     }
+    this.recordNonDrainedCounters(previous, outcome, deniedTurns);
+    const denied = deniedTurns > 0 && outcome.turnsRemaining > 0;
+    this.keys.set(key, this.nextKeyState(previous, outcome, denied, progressed));
+    log.info(
+      `backlog drain: ${key} ${outcome.status} (${outcome.turnsRemaining} turn(s) remaining` +
+        `${denied ? `, denied: ${deniedTurns}` : ""}${outcome.reason ? `, ${outcome.reason}` : ""})`,
+    );
+  }
+
+  /** Denied backlog counters for a non-drained outcome. */
+  private recordNonDrainedCounters(
+    previous: KeyState | undefined,
+    outcome: DrainSessionOutcome,
+    deniedTurns: number,
+  ): void {
     if (deniedTurns > 0) {
       this.counters.denied.keys += 1;
       this.counters.denied.turns += deniedTurns;
     }
     if (outcome.status === "failed") this.counters.failed += 1;
     else if (previous !== undefined && (previous.state === "backoff" || previous.state === "denied")) this.counters.retried += 1;
-    const denied = deniedTurns > 0 && outcome.turnsRemaining > 0;
-    const state: KeyState = {
+  }
+
+  /** The post-drain key state: denial waits the full max window (its content
+   *  is valid but currently unauthorized); progress resets the exponent. */
+  private nextKeyState(
+    previous: KeyState | undefined,
+    outcome: DrainSessionOutcome,
+    denied: boolean,
+    progressed: boolean,
+  ): KeyState {
+    return {
       state: denied ? "denied" : "backoff",
-      // Progress resets the exponent; denial waits the full max window.
       nextAttemptMs: this.now() + this.backoffMs(previous, progressed && !denied),
       turnsRemaining: outcome.turnsRemaining,
       reason: outcome.reason,
-      backoffExponent: denied || !progressed ? (previous?.backoffExponent ?? 0) + 1 : 0,
+      backoffExponent: this.nextBackoffExponent(denied, progressed, previous),
     };
-    this.keys.set(key, state);
-    log.info(
-      `backlog drain: ${key} ${outcome.status} (${outcome.turnsRemaining} turn(s) remaining` +
-        `${denied ? `, denied: ${deniedTurns}` : ""}${outcome.reason ? `, ${outcome.reason}` : ""})`,
-    );
+  }
+
+  private nextBackoffExponent(denied: boolean, progressed: boolean, previous: KeyState | undefined): number {
+    return denied || !progressed ? (previous?.backoffExponent ?? 0) + 1 : 0;
   }
 
   private backoffMs(previous: KeyState | undefined, progressed: boolean): number {
