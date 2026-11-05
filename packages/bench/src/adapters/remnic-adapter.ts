@@ -2937,7 +2937,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           await Promise.race([
             (async () => {
               await withBenchPhaseAbort(
-                engine.waitForObserveQueueIdle(),
+                engine.waitForObserveQueueIdle(abortController.signal),
                 control,
                 "drain",
               );

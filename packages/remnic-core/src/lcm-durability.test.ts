@@ -596,6 +596,55 @@ test("an aborted idle wait releases the retry timer reference and close clears e
   }
 });
 
+test("an aborted global idle wait releases the retry timer reference", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-abort-global-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "unused");
+    await engine.ensureInitialized();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 60_000;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    summarizer.summarizeIncremental = async () => {
+      throw new Error("permanent summary failure");
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "abort the global wait" },
+      { role: "assistant", content: "abort the global wait too" },
+    ]);
+    await eventually(
+      async () => (internals.summarizeRetryTimers.size > 0 ? true : null),
+      "a summary retry is pending",
+    );
+
+    const abort = new AbortController();
+    const waiting = engine.waitForObserveQueueIdle(abort.signal);
+    await eventually(
+      async () => (internals.summarizeRetryIdleWaiters.get("session-1") === 1 ? true : null),
+      "the global idle wait is parked on the retry and holds a reference",
+    );
+
+    abort.abort(new Error("caller gave up"));
+    await assert.rejects(() => waiting);
+    assert.equal(internals.summarizeRetryIdleWaiters.size, 0, "abort releases the global idle-waiter reference");
+
+    engine.close();
+    assert.equal(internals.summarizeRetryTimers.size, 0, "close clears pending retries");
+    assert.equal(internals.summarizeRetryWaiters.size, 0, "close resolves retry waiters");
+    assert.equal(internals.summarizeRetryIdleWaiters.size, 0, "close clears idle-waiter counts");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 /** Spawn a real one-shot host child process with the shared engine setup.
  * The retry timer is the only handle a quiet host has left: `mode` decides
  * whether it parks an explicit global idle wait before ending its script. */

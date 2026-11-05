@@ -429,16 +429,20 @@ export class LcmEngine {
     return this.observeQueue?.inFlightCount ?? 0;
   }
 
-  async waitForObserveQueueIdle(): Promise<void> {
+  async waitForObserveQueueIdle(abortSignal?: AbortSignal): Promise<void> {
+    abortSignal?.throwIfAborted();
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
+    abortSignal?.throwIfAborted();
     if (this.closed) return;
     for (;;) {
+      abortSignal?.throwIfAborted();
       await this.waitForPendingObserveInitIdle();
       await this.observeQueue?.whenIdle();
+      abortSignal?.throwIfAborted();
       const entry = [...this.summarizeRetryWaiters.entries()][0];
       if (!entry) return;
-      await this.awaitSummarizeRetry(entry[0], entry[1]);
+      await this.awaitSummarizeRetry(entry[0], entry[1], abortSignal);
       // A fired retry may have re-queued a session: wait for the queue again.
     }
   }
@@ -878,23 +882,25 @@ export class LcmEngine {
   }
 
   /** Clear all LCM archive and summary state for one session. */
-  async clearSession(sessionId: string): Promise<void> {
+  async clearSession(sessionId: string, abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return;
     await this.ensureInitialized();
     if (this.closed || !this.archive || !this.dag) return;
-    await this.waitForSessionObserveIdle(normalizedSessionId);
+    await this.waitForSessionObserveIdle(normalizedSessionId, abortSignal);
+    abortSignal?.throwIfAborted();
     this.dag.deleteSession(normalizedSessionId);
     this.archive.deleteSession(normalizedSessionId);
   }
 
   /** Clear all LCM archive and summary state without closing the engine. */
-  async clearAll(): Promise<void> {
+  async clearAll(abortSignal?: AbortSignal): Promise<void> {
     if (!this.config.enabled || this.closed) return;
     await this.ensureInitialized();
     if (this.closed || !this.archive || !this.dag) return;
-    await this.waitForObserveQueueIdle();
+    await this.waitForObserveQueueIdle(abortSignal);
+    abortSignal?.throwIfAborted();
     this.dag.deleteAll();
     this.archive.deleteAll();
   }
