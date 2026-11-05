@@ -124,6 +124,8 @@ export class LcmEngine {
     string,
     { promise: Promise<void>; resolve: () => void }
   >();
+  /** Explicit idle waiters per session; referenced only while nonzero. */
+  private readonly summarizeRetryIdleWaiters = new Map<string, number>();
   /** Base backoff delay; tests shrink it to keep the retry loop fast. */
   private summarizeRetryBaseMs = LCM_SUMMARIZE_RETRY_BASE_MS;
   private readonly pendingObserveInitCounts = new Map<string, number>();
@@ -388,9 +390,10 @@ export class LcmEngine {
       this.observeQueue?.enqueue(sessionId);
       retry.resolve();
     }, delayMs);
-    // close() clears every pending retry timer, so the process never waits
-    // on shutdown for one; keep the timer referenced so short-lived hosts
-    // still fire it.
+    // Pure background: unreferenced, so a one-shot host is never kept alive
+    // by a retry loop. An explicit idle waiter (see waitForSessionObserveIdle)
+    // references it for the duration of the wait, and close() clears all.
+    timer.unref?.();
     this.summarizeRetryTimers.set(sessionId, timer);
   }
 
@@ -455,7 +458,22 @@ export class LcmEngine {
       await this.observeQueue?.whenSessionIdle(normalizedSessionId, abortSignal) ?? Promise.resolve();
       const waiter = this.summarizeRetryWaiters.get(normalizedSessionId);
       if (!waiter) return;
-      await abortOnSignal(abortSignal, waiter.promise);
+      // While an explicit wait is parked on this retry, keep the timer
+      // referenced so the host does not exit under it; abort releases it.
+      const waiters = (this.summarizeRetryIdleWaiters.get(normalizedSessionId) ?? 0) + 1;
+      this.summarizeRetryIdleWaiters.set(normalizedSessionId, waiters);
+      this.summarizeRetryTimers.get(normalizedSessionId)?.ref?.();
+      try {
+        await abortOnSignal(abortSignal, waiter.promise);
+      } finally {
+        const remaining = (this.summarizeRetryIdleWaiters.get(normalizedSessionId) ?? 1) - 1;
+        if (remaining <= 0) {
+          this.summarizeRetryIdleWaiters.delete(normalizedSessionId);
+          this.summarizeRetryTimers.get(normalizedSessionId)?.unref?.();
+        } else {
+          this.summarizeRetryIdleWaiters.set(normalizedSessionId, remaining);
+        }
+      }
       // The retry fired and may have re-queued the session: wait again.
     }
   }
@@ -892,6 +910,7 @@ export class LcmEngine {
     this.summarizeRetryAttempts.clear();
     for (const retry of this.summarizeRetryWaiters.values()) retry.resolve();
     this.summarizeRetryWaiters.clear();
+    this.summarizeRetryIdleWaiters.clear();
     if (this.db) {
       this.db.close();
     }

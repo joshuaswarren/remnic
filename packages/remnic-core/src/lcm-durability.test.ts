@@ -479,3 +479,118 @@ test("pre-compaction flush serializes with a pending summary retry", async () =>
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("no summary pass starts while a retry is pending for the session", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-order-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "ordered summary");
+    await engine.ensureInitialized();
+    // Seed the archive directly: the backlog exists before any observe.
+    await ensureLcmStateDir(dir);
+    const seedDb = openLcmDatabase(dir);
+    const seedArchive = new LcmArchive(seedDb);
+    seedArchive.appendMessage("session-1", 0, "user", "order seed one");
+    seedArchive.appendMessage("session-1", 1, "assistant", "order seed two");
+    seedDb.close();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 150;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    const realSummarize = summarizer.summarizeIncremental.bind(summarizer);
+    let failures = 0;
+    const passOrder: Array<"background" | "direct" | "retry"> = [];
+    summarizer.summarizeIncremental = async (
+      sessionId: string,
+      options?: { maxLeafBatches?: number },
+    ) => {
+      // A pass that starts while this session's retry timer is still pending
+      // is either the armed retry or a racy direct flush; the flush must not
+      // start until the retry has fired.
+      const retryPending = internals.summarizeRetryTimers.has(sessionId);
+      const label: (typeof passOrder)[number] =
+        failures === 0 ? "background" : retryPending ? "direct" : "retry";
+      passOrder.push(label);
+      failures += 1;
+      if (failures === 1) throw new Error("transient summary failure");
+      return realSummarize(sessionId, options);
+    };
+
+    // The background pass fails and arms a 150ms retry; compaction starts
+    // inside that window.
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "ordering one" },
+      { role: "assistant", content: "ordering two" },
+    ]);
+    await engine.preCompactionFlush("session-1");
+    await engine.waitForObserveQueueIdle();
+
+    // The flush must serialize behind the armed retry, never start while the
+    // retry timer is pending: no "direct" label may appear. The retry pass
+    // covers both seeded batches; the flush pass then finds nothing left.
+    assert.deepEqual(passOrder, ["background", "retry", "retry"]);
+    assert.deepEqual(leafRanges(dir, "session-1"), [
+      [0, 1],
+      [2, 3],
+    ]);
+    engine.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an aborted idle wait releases the retry timer reference and close clears everything", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "engram-lcm-retry-abort-"));
+  try {
+    const engine = new LcmEngine(createConfig(dir), async () => "unused");
+    await engine.ensureInitialized();
+
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
+    const internals = engine as any;
+    internals.summarizeRetryBaseMs = 60_000;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
+    const summarizer = internals.summarizer as {
+      summarizeIncremental: (
+        sessionId: string,
+        options?: { maxLeafBatches?: number },
+      ) => Promise<number>;
+    };
+    summarizer.summarizeIncremental = async () => {
+      throw new Error("permanent summary failure");
+    };
+
+    await engine.enqueueObserveMessages("session-1", [
+      { role: "user", content: "abort the wait" },
+      { role: "assistant", content: "abort the wait too" },
+    ]);
+    await eventually(
+      async () => (internals.summarizeRetryTimers.size > 0 ? true : null),
+      "a summary retry is pending",
+    );
+
+    const abort = new AbortController();
+    const waiting = engine.waitForSessionObserveIdle("session-1", abort.signal);
+    await eventually(
+      async () => (internals.summarizeRetryIdleWaiters.get("session-1") === 1 ? true : null),
+      "the idle wait is parked on the retry and holds a reference",
+    );
+
+    abort.abort(new Error("caller gave up"));
+    await assert.rejects(() => waiting);
+    assert.equal(internals.summarizeRetryIdleWaiters.size, 0, "abort releases the idle-waiter reference");
+
+    engine.close();
+    assert.equal(internals.summarizeRetryTimers.size, 0, "close clears pending retries");
+    assert.equal(internals.summarizeRetryWaiters.size, 0, "close resolves retry waiters");
+    assert.equal(internals.summarizeRetryIdleWaiters.size, 0, "close clears idle-waiter counts");
+    assert.equal(internals.db, null, "close does not reinitialize the engine");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
