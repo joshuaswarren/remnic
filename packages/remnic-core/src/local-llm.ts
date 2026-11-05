@@ -24,7 +24,7 @@ import {
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
 } from "./local-llm-helpers.js";
-import type { ResponseFormatJSONSchema } from "openai/resources/shared";
+import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import {
   isObjectRecord,
   orderedLocalServers,
@@ -178,19 +178,6 @@ type LocalLlmBackendState = {
  * Provides privacy-preserving, cost-effective LLM operations with
  * graceful fallback to cloud providers when local LLM is unavailable.
  */
-/** The chat-completions wire body this client builds. Optional keys are the
- *  capability-gated additions (structured output, thinking suppression). */
-interface LocalLlmChatRequestBody {
-  model: string;
-  messages: Array<{ role: string; content: string }>;
-  temperature: number;
-  max_tokens: number;
-  stream: boolean;
-  response_format?: { type: string } | ResponseFormatJSONSchema;
-  chat_template_kwargs?: { enable_thinking: boolean };
-  reasoning_effort?: string;
-}
-
 export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
@@ -203,8 +190,7 @@ export class LocalLlmClient {
   private consecutive400s: number = 0;
   private cooldownUntilMs: number = 0;
   private modelRegistry?: ModelRegistry;
-  /** Models this process saw reject the json_schema payload itself. */
-  private readonly nativeSchemaRejectedModels = new Set<string>();
+  private readonly nativeSchemaGate = new NativeSchemaGate(() => this.modelRegistry);
   private _disableThinking: boolean = false;
   private readonly requestQueues: Record<LocalLlmRequestPriority, LocalLlmQueuedRequest[]> = {
     "recall-critical": [],
@@ -241,20 +227,6 @@ export class LocalLlmClient {
 
   private resolveHomeDir(): string {
     return this.config.localLlmHomeDir || readEnvVar("HOME") || os.homedir();
-  }
-
-  /** False once this model is known to reject the native json_schema payload.
-   *  A registry-backed rejection honors the registry TTL: an expired entry is
-   *  re-probed instead of being honored forever. The in-memory set only
-   *  serves clients without a registry. */
-  private nativeSchemaUsable(modelId: string): boolean {
-    if (this.modelRegistry) return this.modelRegistry.getStructuredOutput(modelId) !== "none";
-    return !this.nativeSchemaRejectedModels.has(modelId);
-  }
-
-  private rememberNativeSchemaRejection(modelId: string): void {
-    if (this.modelRegistry) this.modelRegistry.setStructuredOutput(modelId, "none");
-    else this.nativeSchemaRejectedModels.add(modelId);
   }
 
   private buildRequestHeaders(base: Record<string, string> = {}): Record<string, string> {
@@ -926,17 +898,7 @@ export class LocalLlmClient {
         max_tokens: options.maxTokens ?? 4096,
         stream: false,
       };
-      // Skip response_format for local LLMs - they don't support json_object type
-      // The prompts already instruct the model to output JSON
-      // Only send if it's json_schema type which some local LLMs support,
-      // and never for a model that rejected (or persistently rejects) the
-      // schema itself — those get the pre-#3248 shape (no response_format).
-      if (
-        options.responseFormat?.type === "json_schema" &&
-        this.nativeSchemaUsable(requestModel)
-      ) {
-        requestBody.response_format = options.responseFormat;
-      }
+      this.nativeSchemaGate.attach(requestBody, options, requestModel);
 
       // Suppress thinking/reasoning for operations that benefit from terse,
       // structured output. Thinking-capable models (Qwen 3.5, Gemma 4,
@@ -1051,7 +1013,7 @@ export class LocalLlmClient {
             requestBody.response_format &&
             isUnsupportedJsonSchemaError(`400 ${responseBody}`)
           ) {
-            this.rememberNativeSchemaRejection(requestModel);
+            this.nativeSchemaGate.rememberRejection(requestModel);
             // Match gateway degradation without extending this attempt's deadline.
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
@@ -1186,15 +1148,7 @@ export class LocalLlmClient {
         return null;
       }
       this.consecutive400s = 0;
-      // The final attempt carried the format and succeeded: the provider's
-      // schema dialect accepts our payload — record the capability once.
-      if (
-        requestBody.response_format &&
-        this.modelRegistry &&
-        this.modelRegistry.getStructuredOutput(requestModel) !== "native"
-      ) {
-        this.modelRegistry.setStructuredOutput(requestModel, "native");
-      }
+      this.nativeSchemaGate.recordSuccess(requestBody, requestModel);
 
       const data = JSON.parse(responseBody) as {
         choices?: Array<{
