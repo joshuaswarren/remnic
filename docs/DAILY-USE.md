@@ -2,7 +2,7 @@
 
 This is a 30-day log from my own self-hosted Remnic daemon, one namespace, read over its HTTP API. Each number below has the command that produced it. Rows marked **Not measured** say why.
 
-Scope: counts and metadata only. The commands read each memory's created time and its connector and source fields. No memory content is read or published.
+Scope: the detail read returns each memory's text and file path. The script keeps only the created time and the named frontmatter fields (connector, origin, source), and nothing but counts is published. The 8,601 are non-private memories: the list and detail routes exclude private memories.
 
 Window: 2026-10-06 00:00 UTC to 2026-11-05 16:00 UTC. That is 31 UTC days. The last day is partial: 16 hours, 564 writes.
 
@@ -43,12 +43,12 @@ The `origin` field gives a different split: connector:codex 3,537, none 4,755, u
 
 ## Recall latency
 
-**30-day median and p90: Not measured,** for the same reason as recalls per day. The figures below cover recalls since the restart, read at 16:39 UTC. The buffer held 15 recalls, all with the full recall plan.
+**30-day median and p90: Not measured,** for the same reason as recalls per day. The figures below are a snapshot of recalls since the restart, read at 16:39 UTC. The buffer is live, so a later read differs. The buffer held 15 recalls, all with the full recall plan. Their totals in milliseconds, sorted: 6,177; 8,597; 11,517; 35,683; 47,072; 55,127; 60,621; 61,019; 61,428; 62,123; 63,113; 66,730; 68,235; 68,258; 68,505.
 
-- Median: 61.0 s (the 8th of 15 values, sorted).
+- Median: 61.0 s (the 8th of 15 values).
 - p90: 68.3 s (nearest rank, the 14th of 15 values).
 
-`total` in each record is wall-clock milliseconds from the start of the recall function to the end of the recall. It includes every phase in the record: entity retrieval, knowledge index, harmonic retrieval, QMD search, and the post-processing steps.
+`total` in each record is wall-clock milliseconds from the start of the recall function to the timing summary near the end of the recall. Later work, such as the episodic-context step, is not in it. Early-return paths record `total` at their own return.
 
 Command:
 
