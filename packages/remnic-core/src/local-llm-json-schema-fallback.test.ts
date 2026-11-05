@@ -469,6 +469,43 @@ test("a later capabilities write preserves the learned structuredOutput", async 
   }
 });
 
+test("an expired structuredOutput decision is not renewed by a capability refresh", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    registry.setStructuredOutput("test-local-model", "none");
+    // Age the learned decision past the registry TTL exactly as a long-lived
+    // deployment would.
+    const registryPath = join(memoryDir, ".registry", "model-capabilities.json");
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(fs.readFileSync(registryPath, "utf8")) as {
+      models: Record<string, { fetchedAt: string }>;
+    };
+    persisted.models["test-local-model"].fetchedAt = new Date(
+      Date.now() - 8 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    fs.writeFileSync(registryPath, JSON.stringify(persisted));
+    // The refresh happens in a process that loaded the AGED state from disk
+    // (a restart or another runtime sharing the memory dir).
+    const refreshedRegistry = new ModelRegistry(memoryDir);
+    refreshedRegistry.setCapabilities("test-local-model", {
+      maxPositionEmbeddings: 131072,
+      contextWindow: 131072,
+      supportsExtendedContext: true,
+      typicalOutputTokens: 8192,
+      source: "lmstudio",
+    });
+    assert.equal(
+      refreshedRegistry.getStructuredOutput("test-local-model"),
+      undefined,
+      "an expired decision must not be renewed into a fresh record — the re-probe stays due",
+    );
+  } finally {
+    fs.rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("invalid params without schema evidence is not treated as a schema rejection", async () => {
   const server = await startRecordingServer(() => ({
     status: 400,
@@ -479,6 +516,25 @@ test("invalid params without schema evidence is not treated as a schema rejectio
     primeClient(client);
     assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
     assert.equal(server.requests.length, 1, "unrelated invalid-param errors must not strip the format");
+  } finally {
+    await server.close();
+  }
+});
+
+test("an echoed format name inside an unrelated invalid-param error does not strip", async () => {
+  const server = await startRecordingServer(() => ({
+    status: 400,
+    body: {
+      error: {
+        message: "invalid params: quota exceeded; request included response_format json_schema",
+      },
+    },
+  }));
+  try {
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }));
+    primeClient(client);
+    assert.equal(await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }), null);
+    assert.equal(server.requests.length, 1, "an echo of the format name is not schema-rejection evidence");
   } finally {
     await server.close();
   }

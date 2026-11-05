@@ -195,7 +195,9 @@ export class ModelRegistry {
           ...capabilities,
           modelId: normalizedId,
           source: "default",
-          structuredOutput: this.data.models[normalizedId]?.structuredOutput,
+          // Reachable only with a missing or expired cached record, so any
+          // learned structuredOutput is stale here — leave it unset and let
+          // getStructuredOutput's freshness rules drive the re-probe.
           fetchedAt: new Date().toISOString(),
         };
         this.data.models[normalizedId] = caps;
@@ -217,11 +219,15 @@ export class ModelRegistry {
    */
   setCapabilities(modelId: string, capabilities: Omit<ModelCapabilities, "modelId" | "fetchedAt">): void {
     const normalizedId = this.normalizeModelId(modelId);
+    const previous = this.data.models[normalizedId];
     const caps: ModelCapabilities = {
       ...capabilities,
-      // A replacement record (e.g. fresh LM Studio detection) must not erase
-      // a learned structuredOutput shaping.
-      structuredOutput: capabilities.structuredOutput ?? this.data.models[normalizedId]?.structuredOutput,
+      // A replacement record (e.g. fresh LM Studio detection) must not erase a
+      // learned structuredOutput shaping — but an EXPIRED decision must not be
+      // renewed either: drop it so the re-probe stays due.
+      structuredOutput:
+        capabilities.structuredOutput ??
+        (previous && !this.isCacheExpired(previous) ? previous.structuredOutput : undefined),
       modelId: normalizedId,
       fetchedAt: new Date().toISOString(),
     };

@@ -207,11 +207,11 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
     // array ... \"episodeTitle\": {\"type\": [\"string\",\"null\"]}"). The
     // provider never names response_format here; it dies parsing our payload
     // ("Mismatch type", not "mismatched type"; the fragment's quotes are
-    // JSON-escaped in the raw body). Degrading to the no-schema shape is the
-    // correct response to exactly this class; a bare "invalid params" without
-    // schema evidence still surfaces as a normal failure.
+    // JSON-escaped in the raw body). The evidence must be schema-SHAPE
+    // evidence: a bare echo of the format name inside an unrelated
+    // invalid-params error is not enough to degrade.
     (/invalid\s+(?:params|parameters)/i.test(message) &&
-      /mismatch(?:ed)?\s+type|\\?"\s*type\s*\\?"\s*:\s*\[|json[_ ]?schema/i.test(message))
+      /mismatch(?:ed)?\s+type|\\?"\s*type\s*\\?"\s*:\s*\[/i.test(message))
   );
 }
 
