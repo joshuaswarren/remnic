@@ -112,29 +112,14 @@ export class ExtractionQueueCoordinator {
   }
 
   /**
-   * Enqueue a task and start the processor when capacity is free. This is
-   * the production entry point — the orchestrator's `queueBufferedExtraction`
-   * builds each task closure and hands it here with its buffer key.
-   *
-   * Per-key coalescing: a queued-not-started task for key K is superseded by
-   * a newer enqueue for K instead of stacking another full turn snapshot
-   * behind it (extraction reads live state at run time, so the newest
-   * closure is the authoritative one). Keyless tasks are independent work
-   * and never coalesce.
+   * Enqueue a task and start the processor when capacity is free. Each task
+   * keeps its own captured work and settlement; keyed tasks serialize behind
+   * other tasks for that key. A front task may jump the queue but does not
+   * discard queued work.
    */
   enqueue(task: ExtractionQueueTask, options?: ExtractionQueueEnqueueOptions): boolean {
     if (!this.accepting) return false;
     const key = options?.key;
-    if (key !== undefined) {
-      const queuedAt = this.queue.findIndex((entry) => entry.key === key);
-      if (!options?.front && queuedAt >= 0) {
-        this.queue[queuedAt] = { run: task, key };
-        return true;
-      }
-      if (options?.front && queuedAt >= 0) {
-        this.queue.splice(queuedAt, 1);
-      }
-    }
     const entry: QueueEntry = { run: task, key };
     if (options?.front) {
       this.preemptRunning(options.key);

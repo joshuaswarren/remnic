@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { queueBufferedCaptureScopeGroups } from "./orchestration/extraction-task-queueing.js";
 import { ExtractionQueueCoordinator, type ExtractionPreemptHandle, type ExtractionQueueTask } from "./orchestration/extraction-queue-coordinator.js";
 import { initLogger, type LoggerBackend } from "./logger.js";
 import { abortError } from "./abort-error.js";
+
+import type { BufferTurn } from "./types.js";
 
 interface LogEntry {
   level: "info" | "warn" | "error" | "debug";
@@ -35,10 +38,9 @@ function createCoordinator(): ExtractionQueueCoordinator {
   return new ExtractionQueueCoordinator();
 }
 
-// ── Per-key coalescing: a queued-not-started task is superseded by a newer
-// enqueue for the same key instead of stacking another full snapshot ────────
+// ── Per-key FIFO: queued tasks retain their own captured scope and settlement ─
 
-test("a newer enqueue for a queued-not-started key replaces the queued task", async () => {
+test("same-key queued tasks both run in FIFO order", async () => {
   const coordinator = createCoordinator();
   const busy = Promise.withResolvers<void>();
   const releaseBusy = Promise.withResolvers<void>();
@@ -56,15 +58,15 @@ test("a newer enqueue for a queued-not-started key replaces the queued task", as
     ran.push("fresh");
   }, { key: "s1" });
 
-  assert.equal(coordinator.length, 1, "the stale snapshot must be replaced, not stacked");
+  assert.equal(coordinator.length, 2, "same-key tasks remain queued independently");
 
   releaseBusy.resolve();
   assert.equal(await coordinator.waitForIdle(5_000), true);
-  assert.deepEqual(ran, ["fresh"], "only the newest task for the key runs");
+  assert.deepEqual(ran, ["stale", "fresh"], "each caller's task runs in FIFO order");
   assert.equal(coordinator.isProcessing, false);
 });
 
-test("coalescing keeps the superseded entry's position for other keys", async () => {
+test("same-key tasks keep their FIFO positions relative to other keys", async () => {
   const coordinator = createCoordinator();
   const busy = Promise.withResolvers<void>();
   const releaseBusy = Promise.withResolvers<void>();
@@ -90,10 +92,10 @@ test("coalescing keeps the superseded entry's position for other keys", async ()
 
   releaseBusy.resolve();
   assert.equal(await coordinator.waitForIdle(5_000), true);
-  assert.deepEqual(ran, ["k1", "k2-fresh", "k3"], "k2 keeps its queue slot; the newest payload wins");
+  assert.deepEqual(ran, ["k1", "k2-stale", "k2-fresh", "k3"]);
 });
 
-test("a front enqueue supersedes a queued same-key task and keeps preemption", async () => {
+test("a front enqueue preserves queued same-key work and keeps preemption", async () => {
   const coordinator = createCoordinator();
   const busy = Promise.withResolvers<void>();
   const releaseBusy = Promise.withResolvers<void>();
@@ -121,15 +123,15 @@ test("a front enqueue supersedes a queued same-key task and keeps preemption", a
     ran.push("flush-fresh");
   }, { key: "s1", front: true });
 
-  assert.equal(coordinator.length, 1, "the superseded queued task must be dropped");
+  assert.equal(coordinator.length, 2, "front work does not discard queued same-key work");
 
   releaseBusy.resolve();
   assert.equal(await coordinator.waitForIdle(5_000), true);
   assert.equal(preempted, true, "front enqueue still preempts the running automatic work");
-  assert.deepEqual(ran, ["flush-fresh"]);
+  assert.deepEqual(ran, ["flush-fresh", "queued-stale"]);
 });
 
-test("keyless tasks never coalesce", async () => {
+test("keyless tasks remain independent", async () => {
   const coordinator = createCoordinator();
   const busy = Promise.withResolvers<void>();
   const releaseBusy = Promise.withResolvers<void>();
@@ -153,7 +155,7 @@ test("keyless tasks never coalesce", async () => {
   assert.deepEqual(ran, ["first", "second"]);
 });
 
-test("a coalesced enqueue of a running key waits behind the active task", async () => {
+test("same-key enqueues behind an active task retain both queued tasks in FIFO order", async () => {
   const coordinator = createCoordinator();
   const busy = Promise.withResolvers<void>();
   const releaseBusy = Promise.withResolvers<void>();
@@ -174,7 +176,7 @@ test("a coalesced enqueue of a running key waits behind the active task", async 
 
   releaseBusy.resolve();
   assert.equal(await coordinator.waitForIdle(5_000), true);
-  assert.deepEqual(order, ["running", "queued-second"]);
+  assert.deepEqual(order, ["running", "queued-first", "queued-second"]);
 });
 
 // ── Issue #549 ─────────────────────────────────────────────────────────────
@@ -626,4 +628,59 @@ test("tryReserveKey refuses active and queued keys, and releases idempotently", 
 
   assert.equal(queue.tryReserveKey("s1"), true, "a settled key reserves again");
   queue.releaseKeyReservation("s1");
+});
+
+test("same-key capture scope groups both run and settle their caller promises", async () => {
+  const coordinator = createCoordinator();
+  const busy = Promise.withResolvers<void>();
+  const releaseBusy = Promise.withResolvers<void>();
+  const ran: string[] = [];
+  const extractions: Promise<void>[] = [];
+
+  coordinator.enqueue(async () => {
+    busy.resolve();
+    await releaseBusy.promise;
+  });
+  await busy.promise;
+
+  const acceptedTurns: BufferTurn[] = [
+    {
+      role: "user",
+      content: "scope A",
+      timestamp: "2026-11-05T00:00:00.000Z",
+      sessionKey: "s1",
+      acceptedCapture: true,
+      writeNamespaceOverride: "namespace-a",
+      principalOverride: "principal-a",
+    },
+    {
+      role: "user",
+      content: "scope B",
+      timestamp: "2026-11-05T00:00:01.000Z",
+      sessionKey: "s1",
+      acceptedCapture: true,
+      writeNamespaceOverride: "namespace-b",
+      principalOverride: "principal-b",
+    },
+  ];
+  queueBufferedCaptureScopeGroups(
+    async (_turns, _reason, options) => {
+      const accepted = coordinator.enqueue(async () => {
+        const namespace = options?.writeNamespaceOverride;
+        assert.ok(namespace);
+        ran.push(namespace);
+        options?.onTaskSettled?.();
+      }, { key: options?.bufferKey });
+      if (!accepted) throw new Error("queue unexpectedly rejected extraction");
+    },
+    acceptedTurns,
+    "s1",
+    { onExtractionQueued: (promise) => extractions.push(promise) },
+  );
+
+  assert.equal(extractions.length, 2, "each captured scope has its own completion promise");
+  releaseBusy.resolve();
+  assert.equal(await coordinator.waitForIdle(5_000), true);
+  await Promise.all(extractions);
+  assert.deepEqual(ran, ["namespace-a", "namespace-b"]);
 });
