@@ -708,6 +708,31 @@ test("a claim creation failure is caught: failed counter, backoff, no crash", as
   }
 });
 
+test("a zero concurrency limit disables submissions (the documented '0 disables' contract)", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const state: StubState = {
+    counts: new Map([["live-1", { turns: 1, retainedTurns: 0 }]]),
+    claimed: new Set(["live-1"]),
+    claimTurns: new Map([["live-1", 1]]),
+    claimedThisRun: new Set(),
+    outcomes: [emptyOutcome("live-1", { turnsAtStart: 1 })],
+    drained: [],
+  };
+  // A queue that reports a zero limit: the scheduler must submit nothing
+  // rather than treat the limit as "one slot".
+  Object.defineProperty(queue, "maxConcurrency", { get: () => 0 });
+  const scheduler = new BacklogScheduler(makeDeps(state, queue), { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    assert.equal(state.drained.length, 0, "a zero limit submits nothing");
+    assert.equal(state.outcomes.length, 1, "the pending outcome is untouched");
+  } finally {
+    await scheduler.stop();
+  }
+});
+
 test("a discovery failure after the page cursor moved restores the cursor so the page is re-listed", async () => {
   const queue = new ExtractionQueueCoordinator(1);
   const claimKeys: string[] = [];
