@@ -46,6 +46,7 @@
     "packages/remnic-core/src/namespaces/storage.ts",
     "packages/remnic-core/src/orchestration/**",
     "packages/remnic-core/src/orchestration/buffer-drain-gate.ts",
+    "packages/remnic-core/src/orchestration/backlog-scheduler.ts",
     "packages/remnic-core/src/orchestration/buffer-drain-runner.ts",
     "packages/remnic-core/src/orchestration/buffer-swap.ts",
     "packages/remnic-core/src/orchestration/compression-guideline-coordinator.ts",
