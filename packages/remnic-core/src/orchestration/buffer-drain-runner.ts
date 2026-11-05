@@ -63,6 +63,9 @@ const DENIED_SCOPE_REASONS: ReadonlySet<string> = new Set([
   "pinned_namespace_unavailable",
   "namespace_write_revoked",
   "scope_profile_revoked",
+  // The resolved profile has no writable layer: the same current-policy
+  // refusal family, surfaced from inside the shared runExtraction gate.
+  "scope_profile_no_writable_layer",
 ]);
 
 export interface BufferDrainRunnerOptions {

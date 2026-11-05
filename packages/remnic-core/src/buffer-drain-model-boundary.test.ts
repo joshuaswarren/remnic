@@ -7,9 +7,12 @@
 //      budget: every source marker (early/middle/last) must appear in the
 //      actual chat inputs and every request must respect the budget the
 //      drain chunked on — no truncate-and-ack.
-//   2. Legacy unpinned native claim groups under an ACTIVE scope profile:
-//      the CURRENT profile resolution must apply (fact lands in the profile
-//      layer's namespace), which a flattened plan=null would skip.
+//   2. Legacy unpinned native claim groups under an ACTIVE scope profile
+//      whose write layer is unwritable: the CURRENT profile gate must refuse
+//      the write (a flattened plan=null would bypass it and persist) and the
+//      canonical turns stay claimed.
+//   3. A malformed/null extraction result is a retained failure: the claim's
+//      canonical turns survive repeated attempts above the drop threshold.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
@@ -19,7 +22,6 @@ import path from "node:path";
 
 import { Orchestrator, parseConfig } from "./index.js";
 import { BufferDrainRunner } from "./orchestration/buffer-drain-runner.js";
-import { resolveNamespaceStorageRoot } from "./namespaces/storage.js";
 import type { PluginConfig } from "./types.js";
 
 interface ModelBoundary {
@@ -224,7 +226,7 @@ test("a large pinned accepted claim group sends every turn to the ACTUAL chat in
   }
 });
 
-test("legacy unpinned claim groups resolve the CURRENT scope profile through the real model boundary", async () => {
+test("legacy unpinned claim groups refuse under an active profile with no writable layer and retain their claim", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-profile-legacy-"));
   const model = await startModelBoundary();
   let orchestrator: Orchestrator | undefined;
@@ -240,19 +242,19 @@ test("legacy unpinned claim groups resolve the CURRENT scope profile through the
       workspaceDir: path.join(memoryDir, "workspace"),
       extractionMinChars: 0,
       extractionMinUserTurns: 1,
-      // House scope-profile fixture (access-observe-replay-durability shape):
-      // an ACTIVE profile whose userGlobal layer routes writes to the
-      // principal's own namespace — only resolvable when the drain passes NO
-      // plan (undefined), not a flattened null.
+      // House scope-profile fixture (orchestrator-flush "no writable layer"
+      // shape): an ACTIVE profile whose write layer cannot resolve —
+      // userProject without any project context is unwritable. The current
+      // policy therefore REFUSES this scope's write.
       scopeProfiles: {
-        "legacy-profile": {
-          readOrder: ["userGlobal"],
-          writeDefault: "userGlobal",
+        "denied-profile": {
+          readOrder: ["userProject"],
+          writeDefault: "userProject",
           promotionTargets: [],
           autoPromote: { enabled: false, targets: [], categories: [], minConfidenceTier: "speculative" },
         },
       },
-      defaultScopeProfile: "legacy-profile",
+      defaultScopeProfile: "denied-profile",
     });
     orchestrator = new Orchestrator(config);
     // The real daemon initializes before serving; the model-input budget
@@ -270,28 +272,168 @@ test("legacy unpinned claim groups resolve the CURRENT scope profile through the
     assert.equal(await runner.claim("alice:legacy", "drain-legacy"), true);
 
     const outcome = await runner.drainSession("alice:legacy", { ownerId: "drain-legacy" });
-    assert.equal(outcome.status, "drained", `unpinned legacy group must drain under current policy (${outcome.reason ?? ""})`);
 
-    // The ACTUAL model prompt carried the turn (boundary-recorded), and the
-    // fact landed under the CURRENT profile layer's namespace for the session
-    // principal — reachable only via the resolution path (undefined plan),
-    // proving null-coercion did not flatten profile gating.
-    assert.ok(
-      model.prompts.some((p) => p.includes("legacy unpinned profile probe")),
-      "the turn reached the actual chat input",
+    // Current policy refuses the scope: the drain must NOT flatten the
+    // legacy group to plan=null (which would bypass the profile gate and
+    // write the fact into the principal's default namespace) — it must
+    // refuse, keep the canonical turn in the claim, and report the denial.
+    assert.equal(outcome.status, "deferred", `a denied scope is pending backlog, not drained (${outcome.reason ?? ""})`);
+    assert.equal(outcome.reason, "scope_profile_no_writable_layer");
+    assert.deepEqual(outcome.denied, [{ reason: "scope_profile_no_writable_layer", turns: 1 }]);
+
+    // The refusal happens at the policy gate, before any model call — a
+    // flattened plan=null WOULD have called the model and persisted.
+    assert.equal(model.prompts.length, 0, "the denied scope must never reach the model");
+    assert.equal(await hasFactFile(memoryDir, "legacy unpinned profile probe"), false, "a refused scope writes no fact anywhere");
+
+    // Canonical data untouched: the turn stays claimed and pending.
+    const claim = await runner.claims.load("alice:legacy");
+    assert.equal(claim?.entry.turns.length ?? 0, 1, "the denied turn stays in the claim");
+    assert.equal(claim?.entry.turns[0]?.content, "legacy unpinned profile probe");
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed extraction result keeps the canonical claim turns above the failure threshold", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-invalid-result-"));
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+      // Drive the malformed attempts ABOVE the drop threshold: the no-drop
+      // claim drain must never drop or side-file the content regardless.
+      extractionChunkDropAfterFailures: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    await orchestrator.buffer.addTurn("invalid-result-sess", {
+      role: "user",
+      content: "malformed model output probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "invalid-result-sess",
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("invalid-result-sess", "drain-invalid"), true);
+
+    // The actual run boundary receives null and malformed collection results
+    // from the extractor — both real failure shapes the shared callee must
+    // retain (never clear). The engine field is orchestrator-private; the
+    // stub goes through this named test seam.
+    const extractorResults: unknown[] = [null, { facts: "not-an-array", entities: [], questions: [], profileUpdates: [] }, null];
+    const extractionSeam = orchestrator as unknown as { extraction: { extract: () => Promise<unknown> } };
+    extractionSeam.extraction = { extract: async () => extractorResults.shift() };
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const outcome = await runner.drainSession("invalid-result-sess", { ownerId: "drain-invalid" });
+      assert.notEqual(outcome.status, "drained", `attempt ${attempt}: a failed extraction is not a drain`);
+      assert.equal(outcome.reason, "invalid_extraction_result", `attempt ${attempt}: the failure reason surfaces`);
+      const claim = await runner.claims.load("invalid-result-sess");
+      assert.equal(claim?.entry.turns.length ?? 0, 1, `attempt ${attempt}: the canonical turn stays in the claim`);
+      assert.equal(claim?.entry.turns[0]?.content, "malformed model output probe", `attempt ${attempt}: content intact`);
+    }
+    // No-drop: no recovery side file may move the content aside.
+    await assert.rejects(() => readdir(path.join(memoryDir, "state", "dropped")), { code: "ENOENT" });
+    assert.equal(await hasFactFile(memoryDir, "malformed model output probe"), false);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a live task queued while its session becomes claimed settles as claimed, never extracting the stale snapshot", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-claim-race-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+      extractionQueueConcurrency: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+
+    let engineCalls = 0;
+    const extractionSeam = orchestrator as unknown as { extraction: { extract: () => Promise<unknown> } };
+    extractionSeam.extraction = {
+      extract: async () => {
+        engineCalls += 1;
+        return { facts: [], profileUpdates: [], entities: [], questions: [] };
+      },
+    };
+
+    const probe = {
+      role: "user" as const,
+      content: "claim race probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "race-sess",
+    };
+    await orchestrator.buffer.addTurn("race-sess", probe);
+    await orchestrator.buffer.save();
+
+    // Occupy the queue's only slot, then enqueue the LIVE task behind it: the
+    // enqueue-time claim gate passes (the session is unclaimed) and the task
+    // waits. While it waits, the scheduler's claim decision completes.
+    let releaseBarrier: () => void = () => undefined;
+    // A KEYED task occupies the concurrency-1 slot: raw tasks bypass the slot,
+    // which would let the live task start before the claim decision.
+    void orchestrator.extractionQueueCoordinator.enqueue(
+      async () => {
+        await new Promise<void>((done) => {
+          releaseBarrier = done;
+        });
+      },
+      { key: "race-barrier" },
     );
-    const aliceRoot = await resolveNamespaceStorageRoot(config, "alice");
-    // The ACTIVE profile gate resolved from the ORIGINAL undefined plan and
-    // routed the write through the profile's userGlobal layer. Under this
-    // fixture that layer's namespace is the default base namespace (verified
-    // against extraction-run plan logging) — the persisted fact IS the
-    // profile-resolved outcome, and a flattened plan=null would have skipped
-    // the gate entirely.
-    assert.ok(
-      await hasFactFile(memoryDir, "legacy unpinned profile probe"),
-      "the grounded fact persisted through the profile-gated pipeline",
+
+    const settled = Promise.withResolvers<{ reason?: string }>();
+    // Test seam: enqueueing a LIVE buffered extraction directly is the only
+    // way to interleave it with the claim decision; the coordinator method is
+    // orchestrator-private.
+    const queueSeam = orchestrator as unknown as {
+      queueBufferedExtraction: (
+        turns: unknown[],
+        reason: string,
+        options: { bufferKey: string; skipDedupeCheck: boolean; clearBufferAfterExtraction: boolean; onTaskSettled: (error?: unknown, result?: { reason?: string }) => void },
+      ) => Promise<void>;
+    };
+    void queueSeam
+      .queueBufferedExtraction([probe], "trigger_mode", {
+        bufferKey: "race-sess",
+        skipDedupeCheck: true,
+        clearBufferAfterExtraction: true,
+        onTaskSettled: (error, result) => settled.resolve({ reason: result?.reason }),
+      })
+      .catch(() => undefined);
+    const runner = new BufferDrainRunner(orchestrator);
+    assert.equal(await runner.claim("race-sess", "race-owner"), true, "the scheduler's claim decision completes while the live task waits");
+
+    releaseBarrier();
+    const settledResult = await settled.promise;
+    assert.equal(
+      settledResult.reason,
+      "claimed_by_buffer_drain",
+      "the queued live task must re-apply the claim gate at execution time",
     );
-    void aliceRoot;
+    assert.equal(engineCalls, 0, "the stale live snapshot must never reach the model");
+    assert.equal(model.prompts.length, 0);
   } finally {
     await model.close();
     await orchestrator?.destroy().catch(() => undefined);

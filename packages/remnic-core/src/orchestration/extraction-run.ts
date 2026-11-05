@@ -106,6 +106,13 @@ export interface ExtractionRunCoordinatorDeps {
     fingerprint: string,
     preloadedMeta?: Awaited<ReturnType<StorageManager["loadMeta"]>>
   ) => Promise<void>;
+  /**
+   * Orchestrator-wide provider resilience state. Absent for a standalone
+   * coordinator (own breaker); the orchestrator passes ITS breaker so every
+   * isolated claim-backed drain accumulates failures toward the same
+   * threshold and honors a foreground-opened breaker (codex review #3317).
+   */
+  providerBreaker?: ProviderCircuitBreaker;
 }
 
 // Recall/extraction abort helpers live in orchestrator-helpers.ts since
@@ -151,9 +158,11 @@ export class ExtractionRunCoordinator {
   // backoff still throttles, so a restart can't resurrect the hot loop.
   private readonly extractionRetryState = new Map<string, Map<string, ExtractionRetryStateEntry>>();
   private readonly hydratedRetryNamespaces = new Set<string>();
-  private readonly providerBreaker = new ProviderCircuitBreaker();
+  private readonly providerBreaker: ProviderCircuitBreaker;
 
-  constructor(private readonly deps: ExtractionRunCoordinatorDeps) {}
+  constructor(private readonly deps: ExtractionRunCoordinatorDeps) {
+    this.providerBreaker = deps.providerBreaker ?? new ProviderCircuitBreaker();
+  }
 
   private get config(): PluginConfig {
     return this.deps.config;
@@ -652,9 +661,7 @@ export class ExtractionRunCoordinator {
       explicitWriteNamespace && options.scopeProfileWritePlan === undefined
         ? null
         : scopeProfileGatePlan;
-    log.debug(`PLAN-DEBUG input plan=${JSON.stringify(options.scopeProfileWritePlan)} explicitWriteNamespace=${String(explicitWriteNamespace)} gatePlan=${JSON.stringify(scopeProfileGatePlan)}`);
     if (scopeProfileWritePlan) {
-      log.debug(`PLAN-DEBUG gate=${JSON.stringify({ profileId: scopeProfileWritePlan.profileId, writeLayer: scopeProfileWritePlan.writeLayer, writeNamespace: scopeProfileWritePlan.writeNamespace, layers: scopeProfileWritePlan.layers.map((l) => ({ id: l.id, namespace: l.namespace, writable: l.writable })) })}`);
       const selectedLayer = scopeProfileWritePlan.layers.find((layer) => layer.id === scopeProfileWritePlan.writeLayer);
       const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
         scopeProfileWritePlan.writeNamespace
@@ -663,10 +670,14 @@ export class ExtractionRunCoordinator {
         log.warn(
           `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable inside the profile read stack`
         );
-        await clearBuffer();
+        // Policy refusal (same family as namespace_write_revoked): the window
+        // stays in the buffer/claim pending a later attempt. Clearing here
+        // would destroy content policy never wrote — the claim drain would
+        // erase denied backlog and ack it as drained.
         return {
           status: "skipped",
           reason: "scope_profile_no_writable_layer",
+          retainedBuffer: true,
           persistedCount: 0,
           durableOutputCount: 0,
         };
@@ -856,10 +867,13 @@ export class ExtractionRunCoordinator {
       if (options.failOnExtractionFailure) {
         throw new Error("extraction failed: invalid_extraction_result");
       }
-      await clearBuffer();
+      // Actual extraction failure: the window is retained for a retry (same
+      // no-drop contract as a recorded provider failure), never destroyed.
       return {
         status: "skipped",
         reason: "invalid_extraction_result",
+        retainedBuffer: true,
+        failureClass: "parse_empty",
         persistedCount: 0,
         durableOutputCount: 0,
       };
@@ -880,10 +894,13 @@ export class ExtractionRunCoordinator {
       if (options.failOnExtractionFailure) {
         throw new Error("extraction failed: invalid_extraction_result");
       }
-      await clearBuffer();
+      // Actual extraction failure: the window is retained for a retry (same
+      // no-drop contract as a recorded provider failure), never destroyed.
       return {
         status: "skipped",
         reason: "invalid_extraction_result",
+        retainedBuffer: true,
+        failureClass: "parse_empty",
         persistedCount: 0,
         durableOutputCount: 0,
       };
@@ -965,7 +982,7 @@ export class ExtractionRunCoordinator {
       result.questions.length === 0 &&
       result.profileUpdates.length === 0
     ) {
-      log.debug(`runExtraction: no durable outputs DEBUG facts=${JSON.stringify(result.facts)} entities=${JSON.stringify(result.entities)} keys=${JSON.stringify(Object.keys(result))}`);
+      log.debug("runExtraction: extraction produced no durable outputs; skipping persistence");
       if (extractionFailure) {
         log.warn(
           "runExtraction: extraction reported failure with no durable outputs; not marking fingerprint processed",
