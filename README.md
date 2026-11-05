@@ -525,6 +525,7 @@ The complete, organized docs hub lives at **[docs/README.md](docs/README.md)**. 
 
 - **Start here:** [Quickstart](docs/guides/quickstart.md) - [Getting started](docs/getting-started.md) - [CLI reference](docs/cli.md)
 - [Accessibility](ACCESSIBILITY.md) covers helpful features, privacy controls, testing limits, and feedback.
+- [How I use Remnic every day](docs/DAILY-USE.md) is a 30-day write log with recent recall timing, the command behind each number, and what is not measured.
 - **Connect your tools:** [Connector setup](docs/integration/connector-setup.md) - [ChatGPT](docs/integration/chatgpt.md) - [Plugins index](docs/plugins/README.md) - [Deployment topologies](docs/integration/deployment-topologies.md)
 - **Configure:** [Config reference](docs/config-reference.md) - [Search backends](docs/search-backends.md) - [Local LLM](docs/guides/local-llm.md) - [Cost control](docs/guides/cost-control.md)
 - **Operate:** [Operations](docs/operations.md) - [Retention policy](docs/retention-policy.md) - [Import / export](docs/import-export.md) - [Standalone server](docs/guides/standalone-server.md)
