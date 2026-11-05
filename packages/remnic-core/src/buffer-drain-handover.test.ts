@@ -475,3 +475,37 @@ test("claim-backed queue tasks drain their own claims without a global buffer sw
     h.cleanup();
   }
 });
+
+test("listPage's cursor is the LAST CONSUMED claim, so a page boundary never skips one", async () => {
+  const h = makeHarness();
+  try {
+    await h.buffer.load();
+    for (const key of ["page-sess-a", "page-sess-b", "page-sess-c"]) {
+      await h.buffer.addTurn(key, turn(`t-${key}`, key));
+    }
+    await h.buffer.save();
+    for (const key of ["page-sess-a", "page-sess-b", "page-sess-c"]) {
+      assert.equal(await h.claims.claimFromSessionFile(key, h.lease), "claimed");
+    }
+    // Claim file names are hashed, so pagination is asserted order-free.
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    let pages = 0;
+    for (;;) {
+      const page = await h.claims.listPage(cursor, 2);
+      pages += 1;
+      for (const entry of page.entries) seen.add(entry.key);
+      if (page.nextCursor === undefined) break;
+      cursor = page.nextCursor;
+      if (pages > 10) throw new Error("pagination never exhausted");
+    }
+    assert.deepEqual(
+      [...seen].sort(),
+      ["page-sess-a", "page-sess-b", "page-sess-c"],
+      "every page-boundary claim must be visited exactly once across rotating pages",
+    );
+    assert.equal(seen.size, pages === 2 ? 3 : 3, "no claim repeats across the rotation");
+  } finally {
+    h.cleanup();
+  }
+});

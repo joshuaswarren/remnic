@@ -535,3 +535,36 @@ test("stop during a pending discovery submit: no drain runs, restart handles it"
   assert.equal(scheduler.snapshot().inFlight.length, 0);
   void entered;
 });
+
+test("a discovery failure must not reject into the detached tick; the next poll retries", async () => {
+  const queue = new ExtractionQueueCoordinator(2);
+  const state: StubState = {
+    counts: new Map([["live-1", { turns: 1, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [emptyOutcome("live-1", { turnsAtStart: 1 })],
+    drained: [],
+  };
+  const deps = makeDeps(state, queue);
+  let failures = 0;
+  deps.claims.listPage = async () => {
+    failures += 1;
+    if (failures === 1) throw Object.assign(new Error("EACCES: claims dir"), { code: "EACCES" });
+    return { entries: [] };
+  };
+  const scheduler = new BacklogScheduler(deps, { pollMs: 3_600_000 });
+  scheduler.start();
+  try {
+    // start() detaches the first tick: a discovery failure must be caught and
+    // logged, never surface as an unhandled rejection that kills the server.
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    // The scheduler is still alive: the next poll discovers and drains.
+    await scheduler.tickForTest();
+    await scheduler.settleForTest();
+    assert.equal(state.drained.length, 1, "the scheduler recovers on the next poll");
+  } finally {
+    await scheduler.stop();
+  }
+});
