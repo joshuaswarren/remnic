@@ -65,6 +65,26 @@ function chunkFingerprint(chunk: readonly BufferTurn[]): string {
   return hash.digest("hex");
 }
 
+/** The chunking decision for one trigger-drain window. */
+interface ChunkPlan {
+  singleRun: boolean;
+  chunks: BufferTurn[][];
+  resumed: boolean;
+}
+
+/** The drain-loop action for one chunk result. */
+interface ChunkVerdict {
+  action: "continue" | "return" | "failed";
+  result: ExtractionRunResult;
+  aggregate: ExtractionRunResult | null;
+}
+
+/** Per-chunk run options plus the chunk-local preemption controller. */
+interface ChunkExecutionOptions {
+  options: DrainRunOptions;
+  preempt?: AbortController;
+}
+
 export class ExtractionDrain {
   /**
    * Consecutive failed attempts on the head chunk, per buffer key. In memory on
@@ -170,7 +190,7 @@ export class ExtractionDrain {
     turns: readonly BufferTurn[],
     runOptions: DrainRunOptions,
     budgetChars: number
-  ): { singleRun: boolean; chunks: BufferTurn[][]; resumed: boolean } {
+  ): ChunkPlan {
     const chunks = this.chunkable(runOptions, turns, budgetChars)
       ? this.deps.measureRenderedTurns !== undefined
         ? this.chunkByRenderedSize(turns, budgetChars)
@@ -283,7 +303,7 @@ export class ExtractionDrain {
     runOptions: DrainRunOptions,
     preemptable: boolean,
     preemptHandle?: ExtractionPreemptHandle
-  ): { options: DrainRunOptions; preempt?: AbortController } {
+  ): ChunkExecutionOptions {
     let options: DrainRunOptions = { ...baseOptions, retentionWindow: chunks.slice(0, position + 1).flat() };
     let preempt: AbortController | undefined;
     if (preemptable && position > 0) {
@@ -309,9 +329,9 @@ export class ExtractionDrain {
   /** An abort error is rethrown (the chunk-local abort leaves the outer
    *  signal untouched, so the host gets the preemption reason it looks for,
    *  as it does for the first chunk). */
-  private rethrowChunkAbort(err: unknown, preempt: AbortController | undefined, outerAborted: boolean): void {
-    if (!isAbortError(err)) return;
-    throw preempt && preempt.signal.aborted && !outerAborted ? preempt.signal.reason : err;
+  private rethrowChunkAbort(cause: unknown, preempt: AbortController | undefined, outerAborted: boolean): void {
+    if (!isAbortError(cause)) return;
+    throw preempt && preempt.signal.aborted && !outerAborted ? preempt.signal.reason : cause;
   }
 
   /** A chunk whose extraction THREW: count the failure; below the drop
@@ -323,24 +343,24 @@ export class ExtractionDrain {
     chunk: readonly BufferTurn[],
     failures: number,
     dropAfter: number,
-    err: unknown,
+    cause: unknown,
     byIdentity: boolean,
     aggregate: ExtractionRunResult | null
   ): Promise<ExtractionRunResult> {
     failures += 1;
     if (failures < dropAfter || !this.dropFailedChunks) {
       this.setFailureCount(bufferKey, chunk, failures);
-      throw err;
+      throw cause;
     }
     const thrown: ExtractionRunResult = {
       status: "skipped",
-      reason: `thrown: ${describeError(err)}`,
+      reason: `thrown: ${describeError(cause)}`,
       persistedCount: 0,
       durableOutputCount: 0,
     };
     if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity))) {
       this.setFailureCount(bufferKey, chunk, failures);
-      throw err;
+      throw cause;
     }
     this.setFailureCount(bufferKey, chunk, 0);
     return mergeDrainResults(aggregate, thrown);
@@ -354,7 +374,7 @@ export class ExtractionDrain {
     chunk: readonly BufferTurn[],
     result: ExtractionRunResult,
     aggregate: ExtractionRunResult | null
-  ): { action: "continue" | "return" | "failed"; result: ExtractionRunResult; aggregate: ExtractionRunResult | null } {
+  ): ChunkVerdict {
     const verdict = classifyDrainResult(result);
     if (verdict === "drained") {
       this.setFailureCount(bufferKey, chunk, 0);

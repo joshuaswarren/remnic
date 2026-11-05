@@ -842,6 +842,14 @@ export class TurnIngestionCoordinator {
       abortSignal?: AbortSignal;
       /** Automatic buffered work only. Replay and import must not set this. */
       preemptable?: boolean;
+      /**
+       * Invoked when the queued closure has FULLY exited (after settlement).
+       * Settlement can fire before the closure exits — e.g. an abort listener
+       * settles while persistence is still in flight — so callers that
+       * release resources on settlement (claim leases) can use this to wait
+       * for the actual task exit first.
+       */
+      onTaskExit?: () => void;
       /** Fail-closed force-flush only. Not implied by failOnExtractionFailure. */
       preemptRunning?: boolean;
       writeNamespaceOverride?: string;
@@ -952,7 +960,8 @@ export class TurnIngestionCoordinator {
     if (settled) return;
     const preemptable = options.preemptable === true && options.preemptRunning !== true;
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
-      await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
+      try {
+        await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -1130,9 +1139,13 @@ export class TurnIngestionCoordinator {
         }
       }
       });
+      } finally {
+        options.onTaskExit?.();
+      }
     }, { front: options.preemptRunning === true, key: bufferKey });
     if (!accepted) {
       settleTask(new Error("extraction queue is stopped"));
+      options.onTaskExit?.();
       return;
     }
 

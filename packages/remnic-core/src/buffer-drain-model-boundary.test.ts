@@ -892,3 +892,91 @@ test("drainSession skips a key with no claim, a busy lease, and an emptied claim
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("an aborted drain waits for the in-flight persist before releasing the lease", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "drain-abort-persist-"));
+  const model = await startModelBoundary();
+  let orchestrator: Orchestrator | undefined;
+  try {
+    const config = parseConfig({
+      ...NAMESPACED_FIXTURE,
+      memoryDir,
+      openaiApiKey: "sk-test",
+      openaiBaseUrl: model.url,
+      qmdEnabled: false,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      extractionMinChars: 0,
+      extractionMinUserTurns: 1,
+    });
+    orchestrator = new Orchestrator(config);
+    await orchestrator.initialize();
+    const runner = new BufferDrainRunner(orchestrator);
+
+    // The persist runs until the abort lands: the abort settles the task
+    // (abort listener) while the persist is still in flight.
+    let persistStarted: () => void = () => undefined;
+    let persistCompleted = false;
+    const sequence: string[] = [];
+    const persistStartedPromise = new Promise<void>((resolve) => {
+      persistStarted = resolve;
+    });
+    const persistSeam = asTestSeam<{
+      persistExtraction: (...cause: unknown[]) => Promise<{
+        persistedIds: string[];
+        memoryPathById: Map<string, string>;
+        deferredCount: number;
+        pendingReviewIds: string[];
+      }>;
+    }>(orchestrator);
+    persistSeam.persistExtraction = async () => {
+      persistStarted();
+      await new Promise<void>((resolve) => setTimeout(resolve, 150));
+      persistCompleted = true;
+      sequence.push("persist-done");
+      return { persistedIds: ["persisted-1"], memoryPathById: new Map(), deferredCount: 0, pendingReviewIds: [] };
+    };
+
+    // Releasing the lease while the gated persist is still in flight is
+    // exactly the lease-loss window under review.
+    const claimsStore = runner.claims;
+    const realRelease = claimsStore.releaseLease.bind(claimsStore);
+    claimsStore.releaseLease = async (leaseKey: string, ownerId: string) => {
+      sequence.push(persistCompleted ? "release" : "release-early");
+      return realRelease(leaseKey, ownerId);
+    };
+
+    await orchestrator.buffer.addTurn("abort-persist-sess", {
+      role: "user",
+      content: "abort persist probe",
+      timestamp: "2026-11-01T00:00:00.000Z",
+      sessionKey: "abort-persist-sess",
+      acceptedCapture: true,
+      writeNamespaceOverride: "alice",
+      principalOverride: "alice",
+    });
+    await orchestrator.buffer.save();
+    assert.equal(await runner.claim("abort-persist-sess", "drain-abort"), true);
+
+    const controller = new AbortController();
+    const drain = runner.drainSession("abort-persist-sess", { ownerId: "drain-abort", signal: controller.signal });
+    await persistStartedPromise;
+    controller.abort(new Error("shutdown"));
+    const outcome = await drain;
+    console.log("MARK sequence", JSON.stringify(sequence), "outcome", outcome.status, outcome.reason, "turns", outcome.turnsRemaining, "denied", JSON.stringify(outcome.denied ?? []));
+
+    // The lease-loss window: releasing the lease while the gated persist is
+    // still in flight (release-early) lets the closure's post-persist claim
+    // write fail its ownership check, stranding already-persisted turns.
+    assert.ok(
+      !sequence.includes("release-early"),
+      `the lease must not be released while the queued closure is still persisting (sequence: ${JSON.stringify(sequence)})`,
+    );
+    assert.equal(sequence[0], "persist-done", "the in-flight persist completes before any lease bookkeeping");
+    assert.equal(persistCompleted, true);
+    assert.notEqual(outcome.reason, "not_claimed", "the drain accounted for the aborted session");
+  } finally {
+    await model.close();
+    await orchestrator?.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

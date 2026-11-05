@@ -407,16 +407,19 @@ async function drainScopeGroups(
       });
       continue;
     }
-    const { promise, resolve } = Promise.withResolvers<{ error?: unknown; result?: ExtractionRunResult }>();
+    const settleGate = Promise.withResolvers<{ cause?: unknown; result?: ExtractionRunResult }>();
     let done = false;
-    const settle = (cause: unknown, result?: ExtractionRunResult): void => {
+    const onSettle = (cause: unknown, result?: ExtractionRunResult): void => {
       if (done) return;
       done = true;
-      resolve({ error: cause, result });
+      settleGate.resolve({ cause, result });
     };
     // Settlement and callback EXIT are tracked separately: the lease is
-    // released only after the queued closure has fully exited.
-    const queued = ctx.coordinator
+    // released only after BOTH the queued closure settled and fully exited
+    // (an abort settles through its listener while the closure may still be
+    // persisting).
+    const exited = Promise.withResolvers<void>();
+    void ctx.coordinator
       .queueBufferedExtraction(group.turns, "trigger_mode", {
         bufferKey: ctx.key,
         clearBufferAfterExtraction: true,
@@ -432,18 +435,17 @@ async function drainScopeGroups(
         principalOverride: group.principalOverride,
         ...planOptionForGroup(group),
         execution: { buffer: ctx.claimBuffer, drain: ctx.executionDrain },
-        onTaskSettled: settle,
+        onTaskSettled: (error, result) => settleGate.resolve({ cause: error, result }),
+        onTaskExit: () => exited.resolve(),
       })
-      .catch((error: DrainExtractionError) => settle(error));
-    const settled = await promise;
-    // Wait for the callback EXIT before the caller releases the lease (the
-    // settlement error is already captured; a rethrow here is that error).
-    await queued.catch(() => undefined);
-    if (settled.error !== undefined) {
+      .catch((cause: DrainExtractionError) => onSettle(cause));
+    const [verdict] = await Promise.all([settleGate.promise, exited.promise]);
+    const settled = verdict;
+    if (settled.cause !== undefined) {
       // SAFETY: settle captures whatever the queued closure rejected with;
       // every drain rejection site throws Error values, and a rejection is
       // always a DrainExtractionError in this path.
-      groupError = settled.error as Error;
+      groupError = settled.cause as Error;
       break;
     }
     groupOutcomes.push({ turns: group.turns.length, result: settled.result });
