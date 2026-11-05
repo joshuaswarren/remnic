@@ -1,8 +1,10 @@
 # How I use Remnic every day
 
-This is a 30-day log from my own self-hosted Remnic deployment, one namespace, read over its HTTP API. Every number below comes from the command shown next to it. Rows marked **Not measured** say why.
+This is a 30-day log from my own self-hosted Remnic daemon, one namespace, read over its HTTP API. Each number below has the command that produced it. Rows marked **Not measured** say why.
 
-Window: 2026-10-06 to 2026-11-05, UTC. That is 31 calendar days. Nov 5 was still in progress when I measured.
+Scope: counts and metadata only. The commands read each memory's created time and its connector and source fields. No memory content is read or published.
+
+Window: 2026-10-06 00:00 UTC to 2026-11-05 16:00 UTC. That is 31 UTC days. The last day is partial: 16 hours, 564 writes.
 
 ## Writes per day
 
@@ -13,91 +15,106 @@ Window: 2026-10-06 to 2026-11-05, UTC. That is 31 calendar days. Nov 5 was still
 | Per day, mean | 277.5 |
 | Per day, lowest and highest | 35 and 1,394 |
 
-Command (pages the namespace newest first, stops at the window start, counts by created date):
+## Who writes
 
-```python
-import collections, datetime as dt, json, os, statistics, urllib.request
+Each memory records its writer in `sourceConnector`. Every memory in the window was read once, by id.
 
-BASE, TOKEN = os.environ["REMNIC_URL"], os.environ["REMNIC_TOKEN"]
+| Connector | Memories |
+| --- | --- |
+| codex | 5,092 |
+| grok-bot | 1,043 |
+| chatgpt | 8 |
+| openclaw | 1 |
+| No connector field | 2,160 |
+| Detail read returned HTTP 404 | 297 |
+| **Total** | **8,601** |
 
-def get(path):
-    req = urllib.request.Request(BASE + path, headers={"Authorization": "Bearer " + TOKEN})
-    return json.loads(urllib.request.urlopen(req, timeout=180).read())
+The 2,160 with no connector come from the `source` field: wearable:limitless 1,211, wearable:omi 663, wearable:bee 261, correction-contract 14, extraction 11.
 
-now = dt.datetime.now(dt.timezone.utc)
-start = (now - dt.timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
-per_day, ids, off = collections.Counter(), [], 0
-while True:
-    page = get(f"/engram/v1/memories?namespace=generalist&limit=200&offset={off}&sort=created_desc")
-    if not page["memories"]:
-        break
-    done = False
-    for m in page["memories"]:
-        t = dt.datetime.fromisoformat(m["created"].replace("Z", "+00:00"))
-        if t < start:
-            done = True
-            break
-        per_day[t.date().isoformat()] += 1
-        ids.append(m["id"])
-    if done:
-        break
-    off += 200
-days = [per_day[d] for d in sorted(per_day)]
-print(len(ids), len(days), statistics.median(days), round(statistics.mean(days), 1), min(days), max(days))
-```
+The 297 HTTP 404 rows are memories the list call returned and the detail call then failed to find. The cause is **Not measured**.
+
+The `origin` field gives a different split: connector:codex 3,537, none 4,755, unknown 12. This log uses `sourceConnector`. The two fields do not agree, so do not add them together.
+
+**Recalls by agent or connector, with counts: Not measured.** Recall timing records have no caller field, and the API has no per-caller recall count.
 
 ## Recalls per day
 
-**Not measured.** The HTTP API keeps no per-day recall log. The recall timing buffer holds the last 50 recalls and clears on restart, so it cannot give a 30-day count.
+**Not measured.** The HTTP API keeps no per-day recall log. The recall timing buffer holds the last 50 recalls and clears when the daemon restarts. The daemon last restarted at 2026-11-05 15:06 UTC, so the buffer cannot give a 30-day count.
 
 ## Recall latency
 
-**Not measured over 30 days,** for the same reason. The buffer covers only the period since the last restart. When I read it, it held 8 recalls, all with the full recall plan. Their total times in milliseconds were 6,177; 35,683; 47,072; 55,127; 61,019; 66,730; 68,235; 68,505.
+**30-day median and p90: Not measured,** for the same reason as recalls per day. The figures below cover recalls since the restart, read at 16:39 UTC. The buffer held 15 recalls, all with the full recall plan.
 
-- Median: 58.1 s (mean of the 4th and 5th values).
-- p90: 68.5 s (nearest rank).
+- Median: 61.0 s (the 8th of 15 values, sorted).
+- p90: 68.3 s (nearest rank, the 14th of 15 values).
+
+`total` in each record is wall-clock milliseconds from the start of the recall function to the end of the recall. It includes every phase in the record: entity retrieval, knowledge index, harmonic retrieval, QMD search, and the post-processing steps.
 
 Command:
 
 ```bash
 curl -s -H "Authorization: Bearer $REMNIC_TOKEN" "$REMNIC_URL/engram/v1/recall/timings" \
-  | jq '[.records[].timingsMs.total] | sort'
+  | jq -c '{generatedAt, processStartedAt, count, totals: ([.records[].timingsMs.total] | sort)}'
 ```
 
-## Who writes
+This route needs the daemon's configured operator principal. A token for any other principal gets HTTP 403.
 
-Each memory records the connector that wrote it in `sourceConnector`. I read that field for every memory in the window.
+## Commands
 
-| Source | Memories |
-| --- | --- |
-| codex | 5,090 |
-| grok-bot | 1,043 |
-| chatgpt | 8 |
-| openclaw | 1 |
-| No connector field | 2,160 |
-| Detail read failed | 299 |
-| **Total** | **8,601** |
-
-The 2,160 with no connector are wearable and extraction writes: wearable:limitless 1,211, wearable:omi 663, wearable:bee 261, correction-contract 14, extraction 11. The 299 failed reads were 297 HTTP 404 responses and 2 timeouts.
-
-The `origin` field gives a different split (connector:codex 3,535). I counted `sourceConnector` only.
-
-**Recall calls by agent or connector, with counts: Not measured.** Recall timing records carry no caller field, and the API exposes no per-caller recall count.
-
-Command (one detail read per memory in the window, two at a time; about 23 minutes for 8,601 reads):
+Set `REMNIC_URL` and `REMNIC_TOKEN` from your own config. Do not publish either value. This script produced the window, write, and connector numbers above:
 
 ```python
+import collections, datetime as dt, json, os, socket, statistics, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-def connector(mid):
+BASE, TOKEN = os.environ["REMNIC_URL"], os.environ["REMNIC_TOKEN"]
+START = dt.datetime(2026, 10, 6, tzinfo=dt.timezone.utc)
+END = dt.datetime(2026, 11, 5, 16, 0, tzinfo=dt.timezone.utc)
+
+def get(path):
+    req = urllib.request.Request(BASE + path, headers={"Authorization": "Bearer " + TOKEN})
+    return json.loads(urllib.request.urlopen(req, timeout=180).read())
+
+# Newest first. Offset paging can repeat a row when a write lands mid-scan, so keep ids in a dict.
+seen, off = {}, 0
+while True:
+    page = get(f"/engram/v1/memories?namespace=generalist&limit=200&offset={off}&sort=created_desc")["memories"]
+    if not page:
+        break
+    old = False
+    for m in page:
+        t = dt.datetime.fromisoformat(m["created"].replace("Z", "+00:00"))
+        if t < START:
+            old = True
+        elif t < END:
+            seen[m["id"]] = t
+    if old:
+        break
+    off += 200
+
+per_day = collections.Counter(t.date().isoformat() for t in seen.values())
+days = [per_day[d] for d in sorted(per_day)]
+print("window", START.isoformat(), END.isoformat(), "memories", len(seen), "days", len(days))
+print("per day median", statistics.median(days), "mean", round(statistics.mean(days), 1), "min", min(days), "max", max(days))
+print("partial day 2026-11-05 counted to 16:00Z:", per_day["2026-11-05"])
+
+def detail(mid):
     try:
         fm = get(f"/engram/v1/memories/{mid}?namespace=generalist")["memory"]["frontmatter"]
-        return fm.get("sourceConnector") or "none"
-    except Exception:
-        return "failed"
+        return ("ok", fm.get("sourceConnector") or "none", fm.get("origin") or "none", fm.get("source") or "none")
+    except urllib.error.HTTPError as e:
+        return (f"http {e.code}", None, None, None)
+    except Exception as e:
+        kind = "timeout" if isinstance(e, (TimeoutError, socket.timeout)) or "timed out" in str(e) else "other"
+        return (kind, None, None, None)
 
 with ThreadPoolExecutor(2) as ex:
-    print(collections.Counter(ex.map(connector, ids)))
+    res = list(ex.map(detail, list(seen)))
+ok = [r for r in res if r[0] == "ok"]
+print("detail status", dict(collections.Counter(r[0] for r in res)))
+print("sourceConnector", dict(collections.Counter(r[1] for r in ok)))
+print("origin", dict(collections.Counter(r[2] for r in ok)))
+print("source where no connector", dict(collections.Counter(r[3] for r in ok if r[1] == "none")))
 ```
 
-Run both snippets after the first script with the same `REMNIC_URL` and `REMNIC_TOKEN` from your own config. Do not publish either value.
+The counts from one run: 8,601 memories, 31 days; detail status 8,304 ok and 297 `http 404`; `sourceConnector` codex 5,092, grok-bot 1,043, none 2,160, chatgpt 8, openclaw 1; `origin` connector:codex 3,537, none 4,755, unknown 12; `source` for the 2,160 with no connector as listed above.
