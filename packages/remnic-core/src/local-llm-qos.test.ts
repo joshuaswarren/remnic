@@ -337,3 +337,62 @@ test("LocalLlmClient resolves queued work to null when request execution throws"
 
   assert.equal(result, null);
 });
+
+test("LocalLlmClient includes queue wait in the exhausted-abort warning", async () => {
+  const logs: string[] = [];
+  initLogger(
+    {
+      info(msg: string) {
+        logs.push(`info:${msg}`);
+      },
+      warn(msg: string) {
+        logs.push(`warn:${msg}`);
+      },
+      error(msg: string) {
+        logs.push(`error:${msg}`);
+      },
+      debug(msg: string) {
+        logs.push(`debug:${msg}`);
+      },
+    },
+    true,
+  );
+
+  const originalNow = Date.now;
+  let now = originalNow();
+  Date.now = () => now;
+  const client = new LocalLlmClient(createConfig());
+  client["isAvailable"] = true;
+  client["lastHealthCheck"] = Date.now();
+  const originalFetch = globalThis.fetch;
+  const holderResponse = Promise.withResolvers<Response>();
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    if (calls === 1) return await holderResponse.promise;
+    throw new DOMException("request aborted", "AbortError");
+  };
+
+  try {
+    const holder = client.chatCompletion(
+      [{ role: "user", content: "hold" }],
+      { operation: "queue-holder", priority: "background" },
+    );
+    await tick();
+    const summarize = client.chatCompletion(
+      [{ role: "user", content: "summarize" }],
+      { operation: "lcm-summarize", priority: "background" },
+    );
+    now += 50;
+    holderResponse.resolve(okResponse("held"));
+    await holder;
+    assert.equal(await summarize, null);
+    assert.match(
+      logs.join("\n"),
+      /local LLM request aborted after \d+ attempt\(s\): op=lcm-summarize timeoutMs=\d+ model=test-local-model promptChars=\d+ durationMs=\d+ waitMs=50/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    Date.now = originalNow;
+  }
+});
