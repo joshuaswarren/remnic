@@ -529,10 +529,25 @@ export class BufferDrainClaims {
     return "acked";
   }
 
-  /** The turns a drain already extracted for `key` (tombstone content). */
+  /** Turns durably extracted from either active or retained claim backlog. */
   async drainedTurns(key: string): Promise<BufferTurn[]> {
     const claim = await this.readClaimBody(key);
-    return claim?.drained ?? [];
+    return claim ? mergeBufferTurnsByIdentity(claim.drained ?? [], claim.drainedRetained ?? []) : [];
+  }
+
+  /** Return only this lease owner's identity-matched progress, fenced against takeover. */
+  async drainedTurnsForOwner(key: string, ownerId: string): Promise<BufferTurn[] | null> {
+    return await withHeldFileLock(
+      this.lockFileFor(key),
+      { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) throw new Error(`buffer drain claim for ${key} is busy; cannot reconcile progress`);
+        const lease = await this.readLease(key);
+        if (!lease || lease.ownerId !== ownerId) return null;
+        const claim = await this.readClaimBody(key);
+        return claim ? mergeBufferTurnsByIdentity(claim.drained ?? [], claim.drainedRetained ?? []) : null;
+      }
+    );
   }
 
   /**
