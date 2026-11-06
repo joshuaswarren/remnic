@@ -496,6 +496,34 @@ test("stats report per-task holders and unshared equivalent separately from node
   assert.equal(stats.unsharedEquivalentRefs, 6, "3 tasks x 2-turn chain without sharing");
 });
 
+test("released ancestors reachable via base are counted exactly once", async () => {
+  // Main stats-defect shape: admit [a], admit [a,b], release the first node.
+  // The first node is out of the bucket but still reachable through the
+  // second node's base, so both turn references are retained while only one
+  // direct tail remains — bucket-node sums under-reported this (tailRefs=1).
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const a = registry.admit("k", [makeTurn("a")]);
+  const b = registry.admit("k", [makeTurn("a"), makeTurn("b")]);
+  registry.release(a);
+  const stats = registry.stats();
+  assert.equal(stats.queuedNodes, 1, "one registered node");
+  assert.equal(stats.queuedTailRefs, 2, "both reachable turn references counted");
+  assert.equal(stats.queuedReachableDepth, 2, "released ancestor still reachable via base");
+  assert.equal(stats.queuedHolders, 1, "one outstanding task");
+  assert.equal(stats.unsharedEquivalentRefs, 2, "1 task x 2-turn window");
+  assert.equal(stats.queuedTotalRefs, 2, "per-node window basis");
+  // Sibling nodes sharing a base chain: shared ancestors count once in the
+  // reachable tail set but once per node in the per-task window basis.
+  const c = registry.admit("k", [makeTurn("a"), makeTurn("b"), makeTurn("c")]);
+  assert.equal(c.base, b, "chains onto the queued sibling");
+  const siblingStats = registry.stats();
+  assert.equal(siblingStats.queuedTailRefs, 3, "shared ancestors counted once");
+  assert.equal(siblingStats.unsharedEquivalentRefs, 5, "2 + 3 per-task windows");
+  registry.release(b);
+  registry.release(c);
+  assert.equal(registry.stats().queuedTailRefs, 0, "all reachable slots released with the chain");
+});
+
 test("10,000-deep queued chain materializes without stack overflow", async () => {
   const registry = new ExtractionSnapshotSharingRegistry();
   const depth = 10_000;

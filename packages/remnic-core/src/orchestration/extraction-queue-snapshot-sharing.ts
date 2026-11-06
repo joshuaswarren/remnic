@@ -106,15 +106,18 @@ export interface SnapshotChain {
 export interface SnapshotSharingStats {
   /** Distinct content chains registered (not task count — see queuedHolders). */
   queuedNodes: number;
-  /** Reference slots retained across queued snapshots (the O(N²) term on main). */
+  /** Σ per-node window lengths over registered nodes. Sibling nodes sharing
+   * a base chain count that base once per node (per-task window basis). */
   queuedTotalRefs: number;
-  /** Distinct reference slots (what sharing actually retains). */
+  /** Distinct turn references REACHABLE from queued nodes, counting
+   * released ancestors reached through `base` exactly once (visited-set). */
   queuedTailRefs: number;
   /** Longest base chain reachable from a queued node (must stay bounded). */
   queuedReachableDepth: number;
   /** Outstanding tasks holding nodes (per-task, not per-node). */
   queuedHolders: number;
-  /** What retention would be WITHOUT sharing: Σ chain total × holders. */
+  /** What retention would be WITHOUT sharing: Σ per-node window length ×
+   * holders (each outstanding task would carry its own full window). */
   unsharedEquivalentRefs: number;
 }
 
@@ -223,21 +226,29 @@ export class ExtractionSnapshotSharingRegistry {
 
   /** Proof seam: what the queue retains right now. */
   stats(): SnapshotSharingStats {
+    // Reachability-accurate accounting: a released ancestor can remain
+    // reachable through a queued descendant's `base`, so bucket-node sums
+    // under-report. Walk each chain once with a visited set of nodes.
+    const visited = new Set<SnapshotChain>();
     let queuedNodes = 0;
-    let queuedTotalRefs = 0;
     let queuedTailRefs = 0;
     let queuedReachableDepth = 0;
     let queuedHolders = 0;
     let unsharedEquivalentRefs = 0;
+    let queuedTotalRefs = 0;
     for (const list of this.buckets.values()) {
       for (const node of list) {
         queuedNodes += 1;
-        queuedTotalRefs += node.total;
-        queuedTailRefs += node.tail.length;
-        queuedHolders += node.holders;
         unsharedEquivalentRefs += node.total * node.holders;
+        queuedTotalRefs += node.total;
         let depth = 0;
-        for (let walk: SnapshotChain | undefined = node; walk; walk = walk.base) depth += 1;
+        for (let walk: SnapshotChain | undefined = node; walk; walk = walk.base) {
+          depth += 1;
+          if (visited.has(walk)) continue;
+          visited.add(walk);
+          queuedTailRefs += walk.tail.length;
+          queuedHolders += walk.holders;
+        }
         if (depth > queuedReachableDepth) queuedReachableDepth = depth;
       }
     }
