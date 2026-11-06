@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- Buffer drain claims preserve duplicate turn occurrences across extraction progress, stale-buffer reconciliation, and claim reloads. Lease progress and release operations also verify the full process identity under the claim mutation lock so a replaced owner cannot write progress or remove a successor's lease.
+
 ## [v10.0.67] — 2026-11-04
 
 ### Added

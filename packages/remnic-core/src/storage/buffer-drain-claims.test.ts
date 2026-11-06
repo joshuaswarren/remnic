@@ -147,6 +147,43 @@ test("mergeIntoClaim appends unseen turns and dedupes turns already claimed", as
   }
 });
 
+test("claim merge and reload preserve duplicate occurrence counts after partial extraction", async () => {
+  const s = setup();
+  try {
+    const same = turn("duplicate pending turn");
+    s.seedSession("sess-1", entry([same, same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const initial = await s.claims.load("sess-1");
+    assert.ok(initial);
+
+    await s.claims.writeEntry("sess-1", "worker-1", entry([same]), initial.entry);
+    assert.deepEqual(await s.claims.drainedTurns("sess-1"), { turns: [same], retainedTurns: [] });
+    await s.claims.mergeIntoClaim("sess-1", entry([same, same]));
+
+    const reloaded = new BufferDrainClaims(s.stateDir, plainIo());
+    assert.deepEqual((await reloaded.load("sess-1"))?.entry.turns, [same]);
+    assert.deepEqual(await reloaded.drainedTurns("sess-1"), { turns: [same], retainedTurns: [] });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("claim merge and reload retain every pending duplicate occurrence", async () => {
+  const s = setup();
+  try {
+    const initial = turn("initial pending turn");
+    const duplicate = turn("new duplicate", "2026-11-01T00:01:00.000Z");
+    s.seedSession("sess-1", entry([initial]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([initial, duplicate, duplicate]));
+
+    const reloaded = new BufferDrainClaims(s.stateDir, plainIo());
+    assert.deepEqual((await reloaded.load("sess-1"))?.entry.turns, [initial, duplicate, duplicate]);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("mergeIntoClaim also dedupes retainedTurns", async () => {
   const s = setup();
   try {
@@ -243,6 +280,31 @@ test("adopt rejects a reused owner id from a different process identity", async 
 
     assert.equal(outcome, "busy");
     assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, process.pid);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("reused owner IDs cannot authorize stale operations from another process", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("pending")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("reused-owner")), "claimed");
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    const replacement = { ...makeLease("reused-owner"), pid: process.pid + 1 };
+    writeFileSync(s.claims.leasePathForTest("sess-1"), JSON.stringify(replacement));
+
+    await assert.rejects(
+      s.claims.writeEntry("sess-1", "reused-owner", entry([]), claim.entry),
+      /no longer owned/,
+    );
+    assert.equal(await s.claims.heartbeat("sess-1", "reused-owner", 60_000), "lost");
+    assert.equal(await s.claims.ack("sess-1", "reused-owner"), "busy");
+    await s.claims.releaseLease("sess-1", "reused-owner");
+    assert.equal(await s.claims.drainedTurnsForOwner("sess-1", "reused-owner"), null);
+    assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, replacement.pid);
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns, [turn("pending")]);
   } finally {
     s.cleanup();
   }
