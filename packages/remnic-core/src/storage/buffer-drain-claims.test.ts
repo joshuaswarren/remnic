@@ -5,10 +5,10 @@ import { hostname } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { BufferDrainClaims, type DrainLease } from "./buffer-drain-claims.js";
+import { BufferDrainClaims, type AckOutcome, type DrainLease } from "./buffer-drain-claims.js";
 import { BufferSessionFiles, bufferSessionFileName } from "./buffer-session-files.js";
 import type { BufferEntryState } from "../types.js";
-
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 /** Plain-file BufferFileIo double: claims logic is file-atomic, not crypto-aware. */
 function plainIo() {
   return {
@@ -24,6 +24,7 @@ function plainIo() {
     },
   };
 }
+
 
 function turn(content: string, timestamp = "2026-11-01T00:00:00.000Z") {
   return { role: "user" as const, content, timestamp, sessionKey: "sess-1" };
@@ -160,6 +161,24 @@ test("mergeIntoClaim also dedupes retainedTurns", async () => {
   }
 });
 
+test("mergeIntoClaim preserves retained work when the same identity drained from active turns", async () => {
+  const s = setup();
+  try {
+    const same = turn("source identity");
+    s.seedSession("sess-1", entry([same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const claimed = await s.claims.load("sess-1");
+    assert.ok(claimed);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), claimed.entry);
+
+    await s.claims.mergeIntoClaim("sess-1", { ...entry([]), retainedTurns: [same] });
+
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.retainedTurns, [same]);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("writeEntry replaces the claim content; ack keeps a tombstone the owner consumes", async () => {
   const s = setup();
   try {
@@ -207,6 +226,78 @@ test("a tombstone subtracts only its original list when a stale entry has an ide
     assert.deepEqual(persisted.retainedTurns, [same], "an identical retained occurrence is not removed by active provenance");
   } finally {
     s.cleanup();
+  }
+});
+
+test("adopt rejects a reused owner id from a different process identity", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    const original = { ...makeLease("reused-owner"), pid: process.pid };
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", original), "claimed");
+
+    const outcome = await s.claims.adopt("sess-1", {
+      ...makeLease("reused-owner"),
+      pid: process.pid + 1,
+    });
+
+    assert.equal(outcome, "busy");
+    assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, process.pid);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("releaseLease preserves a replacement lease acquired under the claim lock", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-release-race-"));
+  const claims = new BufferDrainClaims(stateDir, plainIo());
+  const key = "sess-1";
+  const sessionPath = path.join(stateDir, "buffer", bufferSessionFileName(key));
+  const claimPath = path.join(stateDir, "buffer", "drain", bufferSessionFileName(key));
+  let release: Promise<void> | undefined;
+  try {
+    mkdirSync(path.dirname(sessionPath), { recursive: true });
+    writeFileSync(sessionPath, JSON.stringify({ key, ...entry([turn("a")]) }));
+    assert.equal(await claims.claimFromSessionFile(key, makeLease("owner-one")), "claimed");
+
+    await withHeldFileLock(`${claimPath}.lock`, { staleMs: 5_000 }, async (acquired) => {
+      assert.equal(acquired, true);
+      release = claims.releaseLease(key, "owner-one");
+      writeFileSync(claims.leasePathForTest(key), JSON.stringify(makeLease("owner-two")));
+    });
+    await release;
+
+    assert.equal(JSON.parse(readFileSync(claims.leasePathForTest(key), "utf8")).ownerId, "owner-two");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("ack preserves a replacement lease acquired under the claim lock", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-ack-race-"));
+  const claims = new BufferDrainClaims(stateDir, plainIo());
+  const key = "sess-1";
+  const sessionPath = path.join(stateDir, "buffer", bufferSessionFileName(key));
+  const claimPath = path.join(stateDir, "buffer", "drain", bufferSessionFileName(key));
+  let ack: Promise<AckOutcome> | undefined;
+  try {
+    mkdirSync(path.dirname(sessionPath), { recursive: true });
+    writeFileSync(sessionPath, JSON.stringify({ key, ...entry([turn("a")]) }));
+    assert.equal(await claims.claimFromSessionFile(key, makeLease("owner-one")), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    await claims.writeEntry(key, "owner-one", entry([]), claimed.entry);
+
+    await withHeldFileLock(`${claimPath}.lock`, { staleMs: 5_000 }, async (acquired) => {
+      assert.equal(acquired, true);
+      ack = claims.ack(key, "owner-one");
+      writeFileSync(claims.leasePathForTest(key), JSON.stringify(makeLease("owner-two")));
+    });
+    await ack;
+
+    assert.equal(JSON.parse(readFileSync(claims.leasePathForTest(key), "utf8")).ownerId, "owner-two");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });
 

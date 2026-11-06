@@ -52,6 +52,7 @@ export interface BufferSessionSaveOutcome {
 }
 
 export interface DrainLease {
+  /** Unique fencing token for one scheduler/process identity; never reuse it after restart. */
   ownerId: string;
   pid: number;
   /** Host the owner runs on: a takeover may only judge liveness on that host. */
@@ -103,17 +104,14 @@ function mergeTurns(existing: BufferTurn[], incoming: readonly BufferTurn[]): Bu
 
 function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainClaimFile {
   const entry = emptyEntry();
-  // Turns already extracted stay out of the pending entry even when the
-  // owner's incoming copy is stale and still carries them (either tombstone
-  // list counts — a turn in either one left the claim for good).
-  const gone = [...(claim.drained ?? []), ...(claim.drainedRetained ?? [])];
+  // Each tombstone applies only to the list from which the turn was extracted.
   entry.turns = mergeTurns(
-    subtractBufferTurns(claim.entry.turns, gone),
-    subtractBufferTurns(incoming.turns, gone),
+    subtractBufferTurns(claim.entry.turns, claim.drained ?? []),
+    subtractBufferTurns(incoming.turns, claim.drained ?? []),
   );
   const retained = [
-    ...subtractBufferTurns(claim.entry.retainedTurns ?? [], gone),
-    ...subtractBufferTurns(incoming.retainedTurns ?? [], gone),
+    ...subtractBufferTurns(claim.entry.retainedTurns ?? [], claim.drainedRetained ?? []),
+    ...subtractBufferTurns(incoming.retainedTurns ?? [], claim.drainedRetained ?? []),
   ];
   // SAFETY: an empty accumulator of the same element type.
   const dedupedRetained = mergeTurns([], retained);
@@ -375,20 +373,20 @@ export class BufferDrainClaims {
       async (acquired) => {
         if (!acquired) return "busy";
         const existing = await this.readLease(key);
+        if (existing?.ownerId === lease.ownerId) {
+          if (existing.pid !== lease.pid || existing.host !== lease.host) return "busy";
+          // Reuse the token only from the same process identity.
+          await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
+          return "adopted";
+        }
         if (existing && !isLeaseExpired(existing)) {
-          if (existing.ownerId === lease.ownerId) {
-            // The same drainer already holds it: renew the lease.
-            await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
-            return "adopted";
-          }
           if (isOwnerAlive(existing)) return "busy";
           // The owner died without releasing the claim (killed worker):
           // take it over now instead of waiting for the lease to expire.
           await unlink(this.leaseFileFor(key)).catch(() => {});
         } else if (existing) {
           // Expired lease: clear it before the exclusive create. We hold the
-          // lock, so no concurrent adopter can interleave its own
-          // unlink/create between these steps.
+          // lock, so no concurrent adopter can interleave its own unlink/create.
           await unlink(this.leaseFileFor(key)).catch(() => {});
         }
         try {
@@ -504,9 +502,16 @@ export class BufferDrainClaims {
 
   /** Give the key back (content stays; the next run resumes it). */
   async releaseLease(key: string, ownerId: string): Promise<void> {
-    const lease = await this.readLease(key);
-    if (!lease || lease.ownerId !== ownerId) return;
-    await unlink(this.leaseFileFor(key)).catch(() => {});
+    await withHeldFileLock(
+      this.lockFileFor(key),
+      { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) return;
+        const lease = await this.readLease(key);
+        if (!lease || lease.ownerId !== ownerId) return;
+        await unlink(this.leaseFileFor(key)).catch(() => {});
+      },
+    );
   }
 
   /**
@@ -514,19 +519,24 @@ export class BufferDrainClaims {
    * extract. Non-empty claims stay (deferred content is never dropped here).
    */
   async ack(key: string, ownerId: string): Promise<AckOutcome> {
-    const lease = await this.readLease(key);
-    if (!lease || lease.ownerId !== ownerId) return "busy";
-    const claim = await this.readClaimBody(key);
-    if (!claim) {
-      await unlink(this.leaseFileFor(key)).catch(() => {});
-      return "acked";
-    }
-    if (claim.entry.turns.length > 0 || (claim.entry.retainedTurns?.length ?? 0) > 0) return "not_empty";
-    // Keep the (empty) claim file as a TOMBSTONE: a live buffer owner that
-    // still holds a stale copy subtracts the drained turns instead of
-    // writing them back. The owner consumes the tombstone on its next save.
-    await unlink(this.leaseFileFor(key)).catch(() => {});
-    return "acked";
+    return await withHeldFileLock(
+      this.lockFileFor(key),
+      { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
+      async (acquired) => {
+        if (!acquired) return "busy";
+        const lease = await this.readLease(key);
+        if (!lease || lease.ownerId !== ownerId) return "busy";
+        const claim = await this.readClaimBody(key);
+        if (!claim) {
+          await unlink(this.leaseFileFor(key)).catch(() => {});
+          return "acked";
+        }
+        if (claim.entry.turns.length > 0 || (claim.entry.retainedTurns?.length ?? 0) > 0) return "not_empty";
+        // Keep the empty claim as a tombstone until its live owner consumes it.
+        await unlink(this.leaseFileFor(key)).catch(() => {});
+        return "acked";
+      },
+    );
   }
 
   /** Return extracted identities with their active/retained provenance intact. */
