@@ -20,9 +20,17 @@
  *   node --expose-gc ./node_modules/.bin/tsx scripts/measure-extraction-queue-retention.ts
  */
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { SmartBuffer } from "../packages/remnic-core/src/buffer.js";
 import type { BufferState } from "../packages/remnic-core/src/types.js";
+import type { CorrectionService } from "../packages/remnic-core/src/correction/correction-service.js";
+import type { StorageManager } from "../packages/remnic-core/src/index.js";
+import { SessionObserverState } from "../packages/remnic-core/src/session-observer-state.js";
+import { TranscriptManager } from "../packages/remnic-core/src/transcript.js";
+import { queueBufferedCaptureScopeGroups } from "../packages/remnic-core/src/orchestration/extraction-task-queueing.js";
 import { ExtractionQueueCoordinator } from "../packages/remnic-core/src/orchestration/extraction-queue-coordinator.js";
 import {
   TurnIngestionCoordinator,
@@ -102,15 +110,31 @@ async function pumpAndMeasure(turnCount: number, turnBytes: number): Promise<Sam
   globalWithGc.gc?.();
   globalWithGc.gc?.();
   const whileQueued = process.memoryUsage();
+  // Verified-accumulation assertions: the gate keeps the drain blocked, so
+  // the first task runs synchronously and every later trigger must still be
+  // queued. If these fail the workload is not exercising the stall shape and
+  // its numbers are void.
+  assert.equal(queue.length, turnCount - 1, "blocked drain: all but the first task stay queued");
+  assert.equal(queue.isProcessing, true, "first task holds the worker");
+  const verifiedStats = coordinator.snapshotSharing?.stats();
+  if (verifiedStats) {
+    assert.equal(verifiedStats.queuedNodes, turnCount, "one chain node per accepted trigger");
+    assert.equal(verifiedStats.queuedTailRefs, turnCount, "distinct refs equal the union while stalled");
+    assert.equal(verifiedStats.queuedTotalRefs, (turnCount * (turnCount + 1)) / 2, "unshared refs equal the prefix-snapshot sum");
+  }
   console.log(`  queueLen=${queue.length} heapUsed=${(whileQueued.heapUsed / 1e6).toFixed(1)}MB heapTotal=${(whileQueued.heapTotal / 1e6).toFixed(1)}MB rss=${(whileQueued.rss / 1e6).toFixed(1)}MB`);
   const growthMb = (whileQueued.heapUsed - before) / 1e6;
-  const stats = coordinator.snapshotSharing?.stats() ?? { queuedNodes: 0, queuedTailRefs: 0, queuedTotalRefs: 0 };
+  const stats = verifiedStats ?? { queuedNodes: 0, queuedTailRefs: 0, queuedTotalRefs: 0 };
   openGate();
   await queue.waitForIdle(120_000);
   globalWithGc.gc?.();
   const after = process.memoryUsage().heapUsed;
 
   const residualMb = (after - before) / 1e6;
+  const drainedStats = coordinator.snapshotSharing?.stats();
+  if (drainedStats) {
+    assert.equal(drainedStats.queuedNodes, 0, "registry empties after the drain");
+  }
   console.log(
     `turns=${String(turnCount).padStart(5)}  heapGrowthWhileQueued=${growthMb.toFixed(1)}MB  ` +
       `refs: distinct=${stats.queuedTailRefs} unshared=${stats.queuedTotalRefs} nodes=${stats.queuedNodes}  ` +
@@ -136,3 +160,101 @@ const tailExponent = Math.log2(last.tailRefs / first.tailRefs) / doublings;
 console.log(
   `scaling exponents 250→2000: heap=${heapExponent.toFixed(2)}  unsharedRefs=${refExponent.toFixed(2)}  distinctRefs=${tailExponent.toFixed(2)}`,
 );
+
+// ── Buffered observe ingress (the accepted-capture path production memory
+// pressure rides): real SmartBuffer seeded with pinned accepted turns, each
+// observe re-enqueues the unchanged accepted group through
+// queueBufferedCaptureScopeGroups exactly as repeated observes of an
+// unchanged buffer do. Durability promises stay pending while the drain is
+// blocked; verified-accumulation assertions apply here too.
+{
+  const gc = (globalThis as { gc?: () => void }).gc;
+  gc?.();
+  const observeDepth = 300;
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-ingress-"));
+  const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 });
+  const buffer = new SmartBuffer(
+    parseConfig({ triggerMode: "every_n", bufferMaxTurns: 10_000, bufferSaveDebounceMs: 0, memoryDir }),
+    storage,
+  );
+  const queue = new ExtractionQueueCoordinator(1);
+  const { promise: gate, resolve: openGate } = Promise.withResolvers<void>();
+  let coordinatorRef: TurnIngestionCoordinator | undefined;
+  const config = parseConfig({
+    triggerMode: "every_n",
+    bufferMaxTurns: 10_000,
+    memoryDir,
+    namespacesEnabled: true,
+    namespacePolicies: [{ name: "ns-observe", readPrincipals: ["*"], writePrincipals: ["principal-observe"] }],
+  });
+  // SAFETY: every TurnIngestionDeps member is present with a stub; the
+  // assertion bridges throwing stubs to the dependency interface.
+  const deps = {
+    buffer,
+    config,
+    getStorage: async (): Promise<StorageManager> => {
+      throw new Error("unexpected getStorage");
+    },
+    bulkImportWriteNamespace: () => "default",
+    extractionQueueCoordinator: queue,
+    heartbeatObserverChains: new Map<string, Promise<void>>(),
+    lcmEngine: null,
+    passiveCorrectionDedup: new Set<string>(),
+    passiveCorrectionService: (): CorrectionService => {
+      throw new Error("unexpected passiveCorrectionService");
+    },
+    passiveCorrectionTelemetry: { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} },
+    queueBufferedExtraction: (
+      ...args: Parameters<TurnIngestionDeps["queueBufferedExtraction"]>
+    ): Promise<void> => {
+      const coordinator = coordinatorRef;
+      assert.ok(coordinator, "coordinator missing");
+      return coordinator.queueBufferedExtraction(...args);
+    },
+    resolveMemoryIdOrHandle: () => {
+      throw new Error("unexpected resolveMemoryIdOrHandle");
+    },
+    runExtraction: async () => {
+      await gate;
+      return { status: "completed" as const, persistedCount: 0, durableOutputCount: 0 };
+    },
+    sessionObserver: new SessionObserverState({ memoryDir, debounceMs: 0, bands: [] }),
+    shouldQueueExtraction: () => true,
+    transcript: new TranscriptManager(config),
+  } as TurnIngestionDeps;
+  const coordinator = new TurnIngestionCoordinator(deps);
+  coordinatorRef = coordinator;
+
+  const acceptedGroup: BufferTurn[] = [
+    { role: "user", content: `${"z".repeat(2048)}#accepted`, timestamp: "2026-08-17T00:00:00.000Z", sessionKey: "observe", acceptedCapture: true, writeNamespaceOverride: "ns-observe", principalOverride: "principal-observe" },
+    { role: "assistant", content: `${"z".repeat(2048)}#accepted-reply`, timestamp: "2026-08-17T00:00:01.000Z", sessionKey: "observe", acceptedCapture: true, writeNamespaceOverride: "ns-observe", principalOverride: "principal-observe" },
+  ];
+  for (const turn of acceptedGroup) await buffer.addTurn("observe", turn);
+  const heapBefore = process.memoryUsage().heapUsed;
+  const durability: Promise<void>[] = [];
+  for (let observe = 1; observe <= observeDepth; observe += 1) {
+    queueBufferedCaptureScopeGroups(
+      coordinator.queueBufferedExtraction.bind(coordinator),
+      acceptedGroup,
+      "observe",
+      { onExtractionQueued: (promise) => durability.push(promise) },
+    );
+  }
+  assert.equal(queue.length, observeDepth - 1, "observe ingress: all but the first group stay queued");
+  assert.equal(queue.isProcessing, true, "first observe group holds the worker");
+  assert.equal(durability.length, observeDepth, "every observe holds a durability promise");
+  const observeStats = coordinator.snapshotSharing.stats();
+  assert.equal(observeStats.queuedNodes, observeDepth, "one chain node per accepted observe");
+  assert.equal(observeStats.queuedTailRefs, acceptedGroup.length, "identical accepted groups share fully");
+  assert.equal(observeStats.queuedTotalRefs, acceptedGroup.length * observeDepth, "unshared equals per-observe copies");
+  gc?.();
+  const observeQueued = process.memoryUsage().heapUsed;
+  console.log(
+    `observeIngress depth=${observeDepth}  heapGrowthWhileQueued=${((observeQueued - heapBefore) / 1e6).toFixed(1)}MB  ` +
+      `refs: distinct=${observeStats.queuedTailRefs} unshared=${observeStats.queuedTotalRefs}`,
+  );
+  openGate();
+  await queue.waitForIdle(120_000);
+  await Promise.allSettled(durability);
+  assert.equal(coordinator.snapshotSharing.stats().queuedNodes, 0, "registry empties after observe drain");
+}
