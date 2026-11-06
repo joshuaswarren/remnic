@@ -20,7 +20,7 @@
  *   node --expose-gc ./node_modules/.bin/tsx scripts/measure-extraction-queue-retention.ts
  */
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
@@ -140,6 +140,7 @@ async function pumpAndMeasure(turnCount: number, turnBytes: number): Promise<Sam
       `refs: distinct=${stats.queuedTailRefs} unshared=${stats.queuedTotalRefs} nodes=${stats.queuedNodes}  ` +
       `residualAfterDrain=${residualMb.toFixed(1)}MB`,
   );
+  rmSync(memoryDir, { recursive: true, force: true });
   return { turns: turnCount, heapGrowthMb: growthMb, tailRefs: stats.queuedTailRefs, totalRefs: stats.queuedTotalRefs };
 }
 
@@ -161,12 +162,13 @@ console.log(
   `scaling exponents 250→2000: heap=${heapExponent.toFixed(2)}  unsharedRefs=${refExponent.toFixed(2)}  distinctRefs=${tailExponent.toFixed(2)}`,
 );
 
-// ── Buffered observe ingress (the accepted-capture path production memory
-// pressure rides): real SmartBuffer seeded with pinned accepted turns, each
-// observe re-enqueues the unchanged accepted group through
-// queueBufferedCaptureScopeGroups exactly as repeated observes of an
-// unchanged buffer do. Durability promises stay pending while the drain is
-// blocked; verified-accumulation assertions apply here too.
+// ── Accepted-capture QUEUE path only (queueBufferedCaptureScopeGroups with
+// namespace-pinned acceptedCapture turns, repeated observes of an unchanged
+// buffer). NOT end-to-end observe evidence: this workload excludes the
+// access-observe admission surface (addTurnBounded, acceptance boundary,
+// ReplayAdmissionRefusedError) and PendingObserveExtractionTracker — the
+// tracker retention term HeapRepro measured lives there and is OUT OF SCOPE
+// for these numbers.
 {
   // SAFETY: gc is only defined under node --expose-gc; absent means noisier
   // heap numbers.
@@ -252,11 +254,12 @@ console.log(
   gc?.();
   const observeQueued = process.memoryUsage().heapUsed;
   console.log(
-    `observeIngress depth=${observeDepth}  heapGrowthWhileQueued=${((observeQueued - heapBefore) / 1e6).toFixed(1)}MB  ` +
+    `acceptedCaptureQueuePath depth=${observeDepth}  heapGrowthWhileQueued=${((observeQueued - heapBefore) / 1e6).toFixed(1)}MB  ` +
       `refs: distinct=${observeStats.queuedTailRefs} unshared=${observeStats.queuedTotalRefs}`,
   );
   openGate();
   await queue.waitForIdle(120_000);
   await Promise.allSettled(durability);
   assert.equal(coordinator.snapshotSharing.stats().queuedNodes, 0, "registry empties after observe drain");
+  rmSync(memoryDir, { recursive: true, force: true });
 }
