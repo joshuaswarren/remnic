@@ -28,6 +28,7 @@ import {
   singleFactResult,
   stubExtraction,
 } from "./testing/orchestrator-lite.js";
+import type { DrainLease } from "./storage/buffer-drain-claims.js";
 import type { BufferTurn } from "./types.js";
 
 interface StubState {
@@ -645,6 +646,119 @@ test("same-key accepted ingress during extraction survives owner-fenced reconcil
   }
 });
 
+
+
+test("active-only claim tombstones preserve identical retained copies through live save", async () => {
+  const memoryDir = await mkTempMemoryDir("buffer-reconcile-retained-provenance");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const key = "retained-session";
+    const source = turn("same source identity", key);
+    const newer = {
+      ...turn("new live turn", key, "2026-11-04T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+    };
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const now = new Date().toISOString();
+    const lease: DrainLease = {
+      ownerId: "retained-owner",
+      pid: process.pid,
+      host: "test",
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    };
+
+    await buffer.addTurn(key, source);
+    await buffer.retainDeferredTurns(key, [source]);
+    assert.deepEqual(buffer.getTurns(key), [source, source]);
+    assert.equal(await claims.claimFromSessionFile(key, lease), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    assert.deepEqual(claimed.entry, {
+      turns: [source],
+      retainedTurns: [source],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    await claims.writeEntry(key, lease.ownerId, { turns: [], lastExtractionAt: null, extractionCount: 0 }, claimed.entry);
+    assert.deepEqual(await claims.drainedTurns(key), { turns: [source], retainedTurns: [] });
+    assert.equal(await claims.ack(key, lease.ownerId), "acked");
+
+    // A new same-key save consumes the tombstone through BufferSessionFiles.
+    assert.notEqual(await buffer.addTurnBounded(key, newer), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.deepEqual(buffer.getTurns(key), [source, newer]);
+    assert.deepEqual(buffer.getRetainedDeferredTurns(key), [source]);
+    const persisted = await orchestrator.storage.loadBuffer();
+    assert.deepEqual(persisted.entries?.[key]?.turns, [newer]);
+    assert.deepEqual(persisted.entries?.[key]?.retainedTurns, [source]);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+test("a lease takeover after the drained snapshot cannot erase newer scoped ingress", async () => {
+  const memoryDir = await mkTempMemoryDir("backlog-takeover-reconcile");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const key = "takeover-session";
+    const oldTurn: BufferTurn = {
+      ...turn("old drained turn", key),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+    };
+    const newerTurn: BufferTurn = {
+      ...turn("new accepted turn", key, "2026-11-03T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+      principalOverride: "new-owner-principal",
+    };
+    const lease = (ownerId: string): DrainLease => {
+      const now = new Date().toISOString();
+      return { ownerId, pid: process.pid, host: "test", acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 };
+    };
+
+    assert.notEqual(await buffer.addTurnBounded(key, oldTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.equal(await claims.claimFromSessionFile(key, lease("owner-one")), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    await claims.writeEntry(
+      key,
+      "owner-one",
+      { turns: [], lastExtractionAt: null, extractionCount: 0 },
+      claimed.entry
+    );
+    const ownerOneSnapshot = await claims.drainedTurnsForOwner(key, "owner-one");
+    assert.deepEqual(ownerOneSnapshot, { turns: [oldTurn], retainedTurns: [] });
+    assert.ok(ownerOneSnapshot);
+
+    // Simulate takeover after the old owner's fenced read but before its
+    // serialized live-buffer mutation. Progress is monotonic and identities
+    // are list-specific, so applying this snapshot cannot erase newer work.
+    await claims.releaseLease(key, "owner-one");
+    assert.equal(await claims.adopt(key, lease("owner-two")), "adopted");
+    assert.notEqual(await buffer.addTurnBounded(key, newerTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    await buffer.reconcileDrainedTurns(key, ownerOneSnapshot);
+    assert.deepEqual(buffer.getTurns(key), [], "the old in-memory entry remains handed to the claim");
+
+    const afterIngress = await claims.load(key);
+    assert.deepEqual(afterIngress?.entry.turns, [newerTurn]);
+    assert.equal(afterIngress?.entry.turns[0]?.principalOverride, "new-owner-principal");
+    assert.equal(afterIngress?.entry.turns[0]?.writeNamespaceOverride, orchestrator.config.defaultNamespace);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
 test("a claim decision unsettled mid-rename keeps the key reserved until it settles", async () => {
   const queue = new ExtractionQueueCoordinator(1);
   const state: StubState = {
