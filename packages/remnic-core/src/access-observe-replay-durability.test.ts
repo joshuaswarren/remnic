@@ -413,8 +413,10 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
     // (buffer.ts), each holding an accepted, durably pending capture. The
     // seed turns are PINNED accepted captures — cap pressure must refuse new
     // captures, never evict these (#3251 eviction guard; the pre-existing
-    // `default` mirror entry also occupies the entries map).
-    for (let index = 0; index < 200; index += 1) {
+    // `default` mirror entry also occupies the entries map). 199 seeds +
+    // `default` = 200 entries: the reachable cap boundary (durable ingress
+    // refuses a 200th seed once pinned entries fill the cap).
+    for (let index = 0; index < 199; index += 1) {
       const key = `seed-${index}`;
       await buffer.addTurn(key, {
         role: "user",
@@ -452,7 +454,7 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
     assert.equal(queued.length, 0, "refused capture must not queue extraction");
 
     const snapshot = await buffer.getBufferSnapshot();
-    assert.equal(snapshot.bufferedSessionCount, 200, "refusal must not evict accepted captures");
+    assert.equal(snapshot.bufferedSessionCount, 199, "refusal must not evict accepted captures");
     assert.ok(
       buffer.getTurns("seed-0").some((turn) => turn.content.includes("accepted seed capture 0")),
     );

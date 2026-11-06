@@ -41,6 +41,21 @@ export interface AddTurnOutcome {
   extractionTurns?: BufferTurn[];
 }
 
+/**
+ * Raised when a NEW live-capture session cannot be admitted because the
+ * session-entry cap is full of non-evictable backlog. The turn was never
+ * accepted; the request is retryable once extraction drains an entry.
+ */
+export class BufferAdmissionRefusedError extends Error {
+  constructor(bufferKey: string, maxSessionEntries: number) {
+    super(
+      `buffer[${bufferKey}]: live capture refused at the session-entry cap (${maxSessionEntries}); ` +
+        "buffered backlog is no longer evicted to admit new sessions — retry after extraction frees an entry",
+    );
+    this.name = "BufferAdmissionRefusedError";
+  }
+}
+
 export interface RetainedTurnCleanupOptions {
   abortSignal?: AbortSignal;
   deadlineMs?: number;
@@ -228,15 +243,23 @@ export class SmartBuffer {
     });
     for (const key of evicted) delete entries[key];
     this.persistence.markEvicted(evicted);
-    if (evicted.length > 0) {
-      // Loud degradation (extraction hot-loop hardening, Step 7): buffer
-      // pressure during a provider outage is bounded and expected, but must
-      // be observable, not silent.
-      log.warn(
-        `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
-          `past the session-entry cap (${this.maxSessionEntries}); buffered turn data for those sessions was dropped`,
-      );
-    }
+  }
+
+  /**
+   * Live-admission bound (#1908 policy, backlog-safe): a NEW session enters
+   * only while under the cap or when an EMPTY entry can be reclaimed. Buffered
+   * backlog is never dropped for a live capture — the caller refuses instead.
+   */
+  private canAdmitNewEntryUnlocked(bufferKey: string): boolean {
+    const entries = this.state.entries ?? {};
+    const count = Object.keys(entries).length;
+    if (count < this.maxSessionEntries) return true;
+    // Probe post-admission (as if this key had landed): admission is safe
+    // exactly when an EMPTY entry could then be reclaimed.
+    return selectEvictedBufferKeys(entries, [bufferKey], Math.max(0, count - 1), {
+      activityAt: (entry) => this.entryActivityAt(entry),
+      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+    }).length > 0;
   }
 
   private async loadUnlocked(): Promise<void> {
@@ -518,12 +541,12 @@ export class SmartBuffer {
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 
-  /** Free one slot for an accepted capture via the native eviction policy (COS-244c). */
+  /** Free one slot only when an empty entry can be reclaimed. */
   private makeRoomForEntryUnlocked(): void {
     const entries = this.state.entries ?? {};
     const target = Math.max(0, this.maxSessionEntries - 1);
     const pinned = Object.keys(entries).filter((k) => k === "default" || this.entryHoldsAcceptedCapture(entries[k]));
-    if (pinned.length <= target) this.pruneEntries([], target); // evict only if it frees a slot
+    if (pinned.length <= target) this.pruneEntries([], target);
   }
 
   private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
@@ -534,7 +557,13 @@ export class SmartBuffer {
     bufferKey: string,
     turn: BufferTurn,
   ): Promise<AddTurnOutcome> {
-    const mutation = await this.enqueueMutation(() => this.recordTurnUnlocked(bufferKey, turn));
+    const mutation = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      if (this.peekEntry(bufferKey) === null && !this.canAdmitNewEntryUnlocked(bufferKey)) {
+        throw new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries);
+      }
+      return this.recordTurnUnlocked(bufferKey, turn);
+    });
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 

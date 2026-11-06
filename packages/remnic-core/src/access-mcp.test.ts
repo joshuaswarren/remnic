@@ -105,6 +105,42 @@ function makeToolRequest(name: string, args: Record<string, unknown> = {}): Reco
     },
   };
 }
+test("MCP reports buffer admission refusal as retryable and does not return success", async () => {
+  let attempts = 0;
+  const refusal = new Error("buffer at session-entry cap");
+  refusal.name = "ReplayAdmissionRefusedError";
+  const service = {
+    ...makeMockService(),
+    observe: async () => {
+      attempts += 1;
+      if (attempts === 1) throw refusal;
+      return { ok: true };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+  const request = makeToolRequest("engram.observe", {
+    sessionKey: "capacity-test-session",
+    messages: [{ role: "user", content: "retry me" }],
+  });
+
+  const refused = await server.handleRequest(request);
+  const refusedResult = refused as {
+    result?: {
+      isError?: boolean;
+      structuredContent?: { code?: string; retryable?: boolean };
+    };
+  };
+  assert.equal(refusedResult.result?.isError, true, "refused admission must not be acknowledged as success");
+  assert.deepEqual(refusedResult.result?.structuredContent, {
+    code: "buffer_admission_refused",
+    retryable: true,
+  }, JSON.stringify(refused));
+
+  const retried = await server.handleRequest(request);
+  assert.equal((retried as { result?: { isError?: boolean } }).result?.isError, false);
+  assert.equal(attempts, 2, "the same request can be retried after capacity is available");
+});
+
 
 // ──────────────────────────────────────────────────────────────────────────
 // Finding 2 (#396 new): invalid MCP briefing format values must be rejected

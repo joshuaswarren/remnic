@@ -10,11 +10,10 @@ export interface BufferEvictionHooks {
 }
 
 /**
- * Pick the keys to evict so `entries` returns to `maxCount`: the oldest empty
- * sessions first; retained failed extractions (#1908) keep their turns, so if
- * empty entries alone cannot reach the cap the oldest NON-empty sessions go
- * too rather than growing unboundedly. "default", the retained keys and
- * entries holding an accepted capture are never chosen.
+ * Pick empty entries to evict so `entries` returns to `maxCount`. Backlog
+ * (active or retained turns) is never evicted; admission must refuse when
+ * empty entries cannot free a slot. "default", retained keys and entries
+ * holding an accepted capture are never chosen.
  */
 export function selectEvictedBufferKeys(
   entries: Readonly<Record<string, BufferEntryState>>,
@@ -35,17 +34,12 @@ export function selectEvictedBufferKeys(
   const candidates = keys.filter(
     (key) => key !== "default" && !retainKeys.includes(key) && !hooks.holdsAcceptedCapture(entries[key]),
   );
+  // Backlog = active turns OR retained retry turns (#1908); only an entry
+  // holding neither counts as empty.
   const emptyRemovable = candidates
-    .filter((key) => (entries[key]?.turns.length ?? 0) === 0)
+    .filter((key) => (entries[key]?.turns.length ?? 0) === 0 && (entries[key]?.retainedTurns?.length ?? 0) === 0)
     .sort(byOldestActivity);
 
   const removableCount = Math.max(0, keys.length - maxCount);
-  const evicted = emptyRemovable.slice(0, removableCount);
-  if (evicted.length < removableCount) {
-    const nonEmptyRemovable = candidates
-      .filter((key) => (entries[key]?.turns.length ?? 0) > 0)
-      .sort(byOldestActivity);
-    return evicted.concat(nonEmptyRemovable.slice(0, removableCount - evicted.length));
-  }
-  return evicted;
+  return emptyRemovable.slice(0, removableCount);
 }

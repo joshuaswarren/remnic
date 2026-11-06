@@ -2403,11 +2403,17 @@ export class EngramMcpServer {
         // Preserve the original AbortError so HTTP can silently end a dead socket.
         if (isAbortError(err)) throw err;
         const message = err instanceof Error ? err.message : String(err);
+        const admissionBackpressure =
+          err instanceof Error &&
+          (err.name === "ReplayAdmissionRefusedError" || err.name === "BufferAdmissionRefusedError");
         return {
           jsonrpc: "2.0",
           id,
           result: {
             content: [{ type: "text", text: message }],
+            ...(admissionBackpressure
+              ? { structuredContent: { code: "buffer_admission_refused", retryable: true } }
+              : {}),
             isError: true,
           },
         };

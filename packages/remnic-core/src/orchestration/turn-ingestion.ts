@@ -18,7 +18,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { abortError, isPreemptedExtraction } from "../abort-error.js";
-import { SmartBuffer } from "../buffer.js";
+import { SmartBuffer, type AddTurnOutcome } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import type { CorrectionService } from "../correction/correction-service.js";
