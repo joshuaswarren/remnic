@@ -142,11 +142,9 @@ export class PendingObserveExtractionTracker {
           if (rejected) throw rejected.reason;
         })
       : extraction;
-    const entry = {
-      promise,
-      running: previous?.running ?? extraction,
-      controllers: new Set(previous ? [...previous.controllers, controller] : [controller]),
-    };
+    const controllers = previous?.controllers ?? new Set<AbortController>();
+    controllers.add(controller);
+    const entry = { promise, running: previous?.running ?? extraction, controllers };
     this.entries.set(key, entry);
     // Any settle (success OR rejection — preemption is just one rejection
     // kind) ends the pending entry; leaving a settled failure tracked wedged
@@ -201,7 +199,9 @@ export class PendingObserveExtractionTracker {
         (principal !== undefined && entryPrincipal !== (principal ?? "")) ||
         (namespace !== undefined && entryNamespace !== (namespace ?? ""))
       ) continue;
-      for (const controller of entry.controllers) controller.abort(reason);
+      // Snapshot: an abort listener may track() synchronously; iterating the
+      // shared live set would abort that new admission or never terminate.
+      for (const controller of [...entry.controllers]) controller.abort(reason);
     }
   }
 
