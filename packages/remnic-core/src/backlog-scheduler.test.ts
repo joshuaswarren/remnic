@@ -784,8 +784,8 @@ test("ambiguous identical active and retained turns remain pending after cross-l
       { turns: [same], retainedTurns: [same], lastExtractionAt: null, extractionCount: 0 },
       "both original source-list occurrences remain pending when provenance is ambiguous",
     );
-    assert.equal(await claims.ack(key, lease.ownerId), "not_empty");
-    await buffer.reconcileDrainedTurns(key, drained!);
+    assert.ok(drained);
+    await buffer.save({ key, drained });
     assert.deepEqual(buffer.getTurns(key), [same, same]);
   } finally {
     await orchestrator?.destroy().catch(() => undefined);
@@ -892,7 +892,7 @@ test("a lease takeover after the drained snapshot cannot erase newer scoped ingr
     assert.equal(await claims.adopt(key, lease("owner-two")), "adopted");
     assert.notEqual(await buffer.addTurnBounded(key, newerTurn), null);
     await buffer.flushPendingSave({ throwOnFailure: true });
-    await buffer.reconcileDrainedTurns(key, ownerOneSnapshot);
+    await buffer.save({ key, drained: ownerOneSnapshot });
     assert.deepEqual(buffer.getTurns(key), [], "the old in-memory entry remains handed to the claim");
 
     const afterIngress = await claims.load(key);
