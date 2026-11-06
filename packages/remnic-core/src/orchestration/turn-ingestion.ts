@@ -44,11 +44,8 @@ import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../typ
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
 import { ExtractionDrain } from "./extraction-drain.js";
 import { skipClaimedSession } from "./buffer-drain-gate.js";
-import {
-  queueBufferedCaptureScopeGroups,
-  type CaptureScopeGroupQueueOptions,
-  type ExtractionTaskExecutionContext,
-} from "./extraction-task-queueing.js";
+import { queueBufferedCaptureScopeGroups, type CaptureScopeGroupQueueOptions, type ExtractionTaskExecutionContext } from "./extraction-task-queueing.js";
+import { automaticSnapshotSharingEligible, ExtractionSnapshotSharingRegistry, materializeChain, type SnapshotChain } from "./extraction-queue-snapshot-sharing.js";
 import { resolveScopeProfilePlan, type ResolvedScopeProfilePlan, hasExplicitNamespacePolicy } from "../namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay, combineNamespaces } from "../coding/coding-namespace.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal } from "../namespaces/principal.js";
@@ -166,6 +163,8 @@ function isFlushPlanRecoveryTurn(
 
 export class TurnIngestionCoordinator {
   private readonly drain: ExtractionDrain; // chunked trigger-drain (extraction-drain.ts)
+  /** Queued automatic-snapshot chains: bounded-queue retention via structural sharing. */
+  readonly snapshotSharing = new ExtractionSnapshotSharingRegistry();
   constructor(private readonly deps: TurnIngestionDeps) {
     this.drain = new ExtractionDrain(deps);
   }
@@ -902,6 +901,15 @@ export class TurnIngestionCoordinator {
     }
     if (settled) return;
     const preemptable = options.preemptable === true && options.preemptRunning !== true;
+    const sharingNode =
+      automaticSnapshotSharingEligible(options) && turnsToExtract.length > 0
+        ? this.snapshotSharing.admit(bufferKey, turnsToExtract)
+        : undefined;
+    // Discriminated source so the task closure never captures the caller's
+    // snapshot array when sharing: a textual reference would retain every
+    // overlapping copy and defeat the bound.
+    const queuedTurnsSource: { chain: SnapshotChain } | { direct: BufferTurn[] } =
+      sharingNode ? { chain: sharingNode } : { direct: turnsToExtract };
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
       try {
         await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
@@ -931,7 +939,10 @@ export class TurnIngestionCoordinator {
         // concurrent drain that already took these turns skips the LLM work,
         // and re-resolve a pinned plan against CURRENT config — revoke skips
         // WITHOUT clearing, and the plan is never retargeted.
-        let effectiveTurns = turnsToExtract;
+        let effectiveTurns =
+          "chain" in queuedTurnsSource
+            ? materializeChain(queuedTurnsSource.chain)
+            : queuedTurnsSource.direct;
         let effectiveScopePlan = options.scopeProfileWritePlan;
         const executionBuffer = options.execution?.buffer;
         if (effectiveTurns.some((turn) => turn.acceptedCapture === true)) {
@@ -1083,10 +1094,12 @@ export class TurnIngestionCoordinator {
       }
       });
       } finally {
+        if (sharingNode) this.snapshotSharing.release(sharingNode);
         options.onTaskExit?.();
       }
     }, { front: options.preemptRunning === true, key: bufferKey });
     if (!accepted) {
+      if (sharingNode) this.snapshotSharing.release(sharingNode);
       settleTask(new Error("extraction queue is stopped"));
       options.onTaskExit?.();
       return;
