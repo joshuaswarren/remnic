@@ -32,7 +32,7 @@ import { EngramAccessService } from "./access-service.js";
 import { SmartBuffer } from "./buffer.js";
 import { ExtractionDeadlineError } from "./orchestration/extraction-run.js";
 import { runExtractionDeferRetention } from "./orchestration/extraction-run-helpers.js";
-import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
+import { ReplayAdmissionRefusedError, TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
@@ -378,6 +378,87 @@ test("#3251 buffered observe append is durable before accept: a failed save reje
     await cleanupDir(memoryDir);
   }
 });
+test("#3251 multi-session refusal is atomic: earlier sessions are not partially accepted", async () => {
+  const config = parseConfig({
+    bufferMaxSessions: 3,
+    bufferMaxTurns: 100,
+    triggerMode: "every_n",
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+  });
+  const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
+  const occupied = makeReplayTurn("occupied", "existing backlog");
+  await buffer.addTurn("occupied", {
+    role: occupied.role,
+    content: occupied.content,
+    timestamp: occupied.timestamp,
+    sessionKey: occupied.sessionKey,
+  });
+  const coordinator = makeTurnIngestionDouble(config, buffer, []);
+
+  await assert.rejects(
+    coordinator.ingestReplayBatch(
+      [
+        makeReplayTurn("fresh-a", "first in batch"),
+        makeReplayTurn("fresh-b", "second in batch"),
+      ],
+      bufferedObserveOptions({ writeNamespaceOverride: "default", sessionOwnerPrincipal: "alice" }),
+    ),
+    ReplayAdmissionRefusedError,
+  );
+
+  assert.equal(buffer.getTurns("fresh-a").length, 0, "refused batch must not durably accept its first session");
+  assert.equal(buffer.getTurns("fresh-b").length, 0, "refused batch must not durably accept its second session");
+  assert.equal(buffer.getTurns("occupied").length, 1, "pre-existing backlog remains intact");
+});
+
+test("#3251 partial durable batch retry resumes by fingerprint without duplicate turns", async () => {
+  class CrashStorage {
+    durable: BufferState = { turns: [], lastExtractionAt: null, extractionCount: 0 };
+    writes = 0;
+    failAfterFirstWrite = true;
+
+    async loadBuffer(): Promise<BufferState> {
+      return structuredClone(this.durable);
+    }
+    async saveBuffer(state: BufferState): Promise<void> {
+      this.writes += 1;
+      if (this.failAfterFirstWrite && this.writes > 1) throw new Error("simulated second-session write failure");
+      this.durable = structuredClone(state);
+    }
+  }
+
+  const config = parseConfig({
+    bufferMaxSessions: 4,
+    bufferMaxTurns: 100,
+    bufferSaveDebounceMs: 0,
+    triggerMode: "every_n",
+    extractionMinChars: 1_000_000,
+    extractionMinUserTurns: 1000,
+  });
+  const storage = new CrashStorage();
+  const batch = [
+    makeReplayTurn("retry-a", "first durable session"),
+    makeReplayTurn("retry-b", "second durable session"),
+  ];
+  const firstBuffer = new SmartBuffer(config, storage);
+  const firstAttempt = makeTurnIngestionDouble(config, firstBuffer, []);
+  await assert.rejects(
+    firstAttempt.ingestReplayBatch(batch, bufferedObserveOptions({ writeNamespaceOverride: "default" })),
+    /simulated second-session write failure/,
+  );
+  assert.equal(storage.durable.entries?.["retry-a"]?.turns.length, 1, "first session really reached durable storage");
+  assert.equal(storage.durable.entries?.["retry-b"], undefined, "failed session was not persisted");
+
+  storage.failAfterFirstWrite = false;
+  const recoveredBuffer = new SmartBuffer(config, storage);
+  const retry = makeTurnIngestionDouble(config, recoveredBuffer, []);
+  await retry.ingestReplayBatch(batch, bufferedObserveOptions({ writeNamespaceOverride: "default" }));
+
+  assert.equal(recoveredBuffer.getTurns("retry-a").length, 1, "retry deduplicated the already durable turn");
+  assert.equal(recoveredBuffer.getTurns("retry-b").length, 1, "retry admitted the session that did not persist");
+});
+
 
 test("#3251 durable observe admission is bounded: at the entry cap a new session is refused, not evicted", async () => {
   // Real SmartBuffer + real coordinator, NO Orchestrator background actors —
@@ -413,8 +494,10 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
     // (buffer.ts), each holding an accepted, durably pending capture. The
     // seed turns are PINNED accepted captures — cap pressure must refuse new
     // captures, never evict these (#3251 eviction guard; the pre-existing
-    // `default` mirror entry also occupies the entries map).
-    for (let index = 0; index < 200; index += 1) {
+    // `default` mirror entry also occupies the entries map). 199 seeds +
+    // `default` = 200 entries: the reachable cap boundary (durable ingress
+    // refuses a 200th seed once pinned entries fill the cap).
+    for (let index = 0; index < 199; index += 1) {
       const key = `seed-${index}`;
       await buffer.addTurn(key, {
         role: "user",
@@ -452,7 +535,7 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
     assert.equal(queued.length, 0, "refused capture must not queue extraction");
 
     const snapshot = await buffer.getBufferSnapshot();
-    assert.equal(snapshot.bufferedSessionCount, 200, "refusal must not evict accepted captures");
+    assert.equal(snapshot.bufferedSessionCount, 199, "refusal must not evict accepted captures");
     assert.ok(
       buffer.getTurns("seed-0").some((turn) => turn.content.includes("accepted seed capture 0")),
     );

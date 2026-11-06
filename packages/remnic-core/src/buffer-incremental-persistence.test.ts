@@ -22,7 +22,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { SmartBuffer } from "./buffer.js";
+import { SmartBuffer, BufferAdmissionRefusedError } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import { StorageManager } from "./storage.js";
 import type { BufferEntryState, BufferState, BufferTurn } from "./types.js";
@@ -161,34 +161,28 @@ test("clearAfterExtraction persists the cleared session state", async () => {
   assert.equal(record?.entry.extractionCount, 1);
 });
 
-test("evicted sessions get their files deleted", async () => {
+test("empty evicted sessions get their files deleted", async () => {
   const storage = new IncrementalStorage(emptyState());
-  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 200 }), storage);
+  const buffer = new SmartBuffer(parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }), storage);
 
-  // normalizeState always materializes a "default" entry, so 198 seeded
-  // sessions + default = 199; new-session reaches exactly 200 (the
-  // addTurnBounded cap). One more UNBOUNDED addTurn pushes to 201 and
-  // pruneEntries evicts the oldest non-default session (s0).
-  for (let i = 0; i < 198; i++) {
-    const key = `s${i}`;
-    await buffer.addTurnBounded(key, makeTurn(key, `content ${i}`));
-  }
+  // Clear one persisted entry to make it genuinely empty. Accepted-capture
+  // admission may reclaim this slot, but never a session with buffered turns.
+  await buffer.addTurn("empty-old", makeTurn("empty-old", "will be extracted"));
+  await buffer.flushPendingSave();
+  await buffer.clearAfterExtraction("empty-old");
+  await buffer.addTurnBounded("native-1", makeTurn("native-1", "native 1"));
+  await buffer.addTurnBounded("native-2", makeTurn("native-2", "native 2"));
   await buffer.flushPendingSave();
 
-  const outcome = await buffer.addTurnBounded("new-session", makeTurn("new-session", "fresh"));
-  assert.notEqual(outcome, null, "addTurnBounded refused below capacity");
-  await buffer.addTurn("overflow", makeTurn("overflow", "one too many"));
-  // The evicted key's file deletion lands on the next persist, like any
-  // other buffered state change.
+  const accepted = await buffer.addTurnBounded("accepted", {
+    ...makeTurn("accepted", "durable accepted"),
+    acceptedCapture: true,
+  });
+  assert.notEqual(accepted, null, "empty entry should be reclaimed to admit accepted capture");
   await buffer.flushPendingSave();
-  assert.ok(storage.deleted.includes("s0"), "oldest session was not evicted under capacity pressure");
-  assert.ok(
-    storage.deleted.length > 0,
-    "capacity pressure evicted entries without deleting their session files",
-  );
-  for (const key of storage.deleted) {
-    assert.equal(storage.sessions.has(key), false, `evicted session ${key} still has a file record`);
-  }
+  assert.ok(storage.deleted.includes("empty-old"), "reclaimed empty entry's file was not deleted");
+  assert.equal(buffer.getTurns("native-1").length, 1);
+  assert.equal(buffer.getTurns("native-2").length, 1);
 });
 
 test("the default entry cap leaves headroom for live sessions during backlog drains (#3303)", async () => {
@@ -273,9 +267,7 @@ test("legacy-only storage keeps the whole-state saveBuffer behavior", async () =
   assert.equal(storage.lastSaved?.entries?.["thread-b"]?.turns[0]?.content, "beta");
 });
 
-test("durable capture at the entry cap evicts native entries instead of refusing (COS-244c)", async () => {
-  // Stalled extraction left the cap full of native (non-accepted)
-  // sessions; addTurnBounded refused every new accepted session.
+test("durable capture at the entry cap is refused without evicting native backlog (COS-244c)", async () => {
   const storage = new IncrementalStorage(emptyState());
   const buffer = new SmartBuffer(
     parseConfig({ triggerMode: "every_n", bufferMaxTurns: 100, bufferMaxSessions: 4 }),
@@ -286,17 +278,13 @@ test("durable capture at the entry cap evicts native entries instead of refusing
   await buffer.flushPendingSave();
 
   const accepted = (key: string): BufferTurn => ({ ...makeTurn(key, "accepted"), acceptedCapture: true });
-  for (let i = 0; i < 3; i++) {
-    const outcome = await buffer.addTurnBounded(`accepted-${i}`, accepted(`accepted-${i}`));
-    assert.notEqual(outcome, null, `accepted-${i} refused while native entries were evictable`);
-  }
+  assert.equal(await buffer.addTurnBounded("accepted-0", accepted("accepted-0")), null);
   await buffer.flushPendingSave();
-  assert.ok(storage.deleted.includes("native-0"), "oldest native entry was not evicted");
-
-  // Accepted work is still never evicted: with only accepted entries left the
-  // cap refuses rather than dropping accepted captures.
-  assert.equal(await buffer.addTurnBounded("accepted-3", accepted("accepted-3")), null);
-  for (let i = 0; i < 3; i++) assert.ok(!storage.deleted.includes(`accepted-${i}`));
+  assert.equal(storage.deleted.length, 0, "accepted refusal must not evict native session files");
+  for (let i = 0; i < 3; i++) {
+    assert.ok(buffer.getTurns(`native-${i}`).some((turn) => turn.content === `native ${i}`));
+  }
+  assert.equal(buffer.getTurns("accepted-0").length, 0, "refused capture was never accepted");
 });
 
 test("at-cap admission evicts nothing when eviction cannot free a slot (COS-244c)", async () => {

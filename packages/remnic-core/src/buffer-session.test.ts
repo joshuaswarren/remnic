@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SmartBuffer } from "./buffer.js";
+import { SmartBuffer, BufferAdmissionRefusedError } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import type { BufferSurpriseProbe } from "./buffer.js";
 import type { BufferState, BufferTurn } from "./types.js";
@@ -642,13 +642,14 @@ test("getTurns prepends retained deferred turns before live turns", async () => 
   assert.equal(all[1]?.content, "new live turn");
 });
 
-test("SmartBuffer prefers pruning empty entries and bounds pending-turn buffers at the cap (#1908 policy)", async () => {
+test("SmartBuffer refuses new sessions instead of dropping backlog at the cap (#1908 policy)", async () => {
   // Pre-#1908 this contract was "never prune non-empty entries". With retry
   // retention (failed extractions keep their turns), unbounded non-empty
   // growth during a provider outage would eventually OOM the daemon — the
-  // documented policy (#1908 step 7) is: retain up to MAX_BUFFER_ENTRY_COUNT
-  // session entries, then prune the OLDEST sessions with a loud warning.
-  // Empty entries are still evicted first.
+  // documented policy (#1908 step 7) bounds the ENTRY COUNT, not by dropping
+  // buffered turns: a NEW session is refused (retryable backpressure) when
+  // only non-empty backlog fills the cap. Empty entries are still evicted
+  // first, and already-admitted sessions keep buffering.
   const entries = Object.fromEntries(
     Array.from({ length: 205 }, (_, index) => [
       `thread-${index}`,
@@ -674,21 +675,32 @@ test("SmartBuffer prefers pruning empty entries and bounds pending-turn buffers 
   });
   const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0, bufferMaxSessions: 200 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
 
-  await buffer.addTurn("active-thread", makeTurn("active-thread", "pending memory"));
+  await assert.rejects(
+    buffer.addTurn("active-thread", makeTurn("active-thread", "pending memory")),
+    BufferAdmissionRefusedError,
+    "a new session must be refused while only non-empty backlog fills the cap",
+  );
+
+  // Already-admitted sessions keep buffering; the save reflects the
+  // post-refusal state: nothing was evicted, nothing refused was buffered.
+  await buffer.addTurn("thread-204", makeTurn("thread-204", "another turn"));
+  assert.equal(buffer.getTurns("thread-204").length, 2);
 
   const persistedKeys = Object.keys(storage.saved?.entries ?? {});
-  assert.ok(persistedKeys.length <= 201, `bounded at the cap plus default (got ${persistedKeys.length})`);
+  assert.ok(persistedKeys.length <= 206, `entry count stays at the seeded cap state (got ${persistedKeys.length})`);
   assert.ok(persistedKeys.includes("default"), "default entry never pruned");
-  assert.ok(persistedKeys.includes("active-thread"), "the just-written key is retained");
-  assert.ok(!persistedKeys.includes("thread-0"), "oldest pending entry pruned once over the cap");
+  assert.ok(persistedKeys.includes("thread-0"), "oldest backlog keeps its turns for extraction");
   assert.ok(persistedKeys.includes("thread-204"), "newest pending entry survives");
+  assert.ok(!persistedKeys.includes("active-thread"), "the refused turn was never buffered");
 });
 
-test("pruneEntries evicts oldest NON-empty session entries past the cap (#1908 retry-retention bound)", async () => {
+test("pruneEntries never evicts non-empty backlog; live admission is refused past the cap (#1908 retry-retention bound)", async () => {
   // Retained failed extractions keep their turns in the buffer, so during a
   // provider outage non-empty entries can exceed MAX_BUFFER_ENTRY_COUNT (200).
-  // The cap is the documented bound: the oldest non-empty sessions must be
-  // evicted (loudly) rather than growing without bound (codex review).
+  // The cap is still the documented bound: buffered turn data is never the
+  // release valve — a NEW session is refused (retryable backpressure) until
+  // extraction drains an entry, so the daemon cannot OOM on unbounded growth
+  // and no buffered turn is dropped (codex review).
   const entries: NonNullable<BufferState["entries"]> = {};
   for (let i = 0; i < 210; i += 1) {
     const at = new Date(1_700_000_000_000 + i * 60_000).toISOString();
@@ -701,13 +713,17 @@ test("pruneEntries evicts oldest NON-empty session entries past the cap (#1908 r
   const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0, entries });
   const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0, bufferMaxSessions: 200 }), storage as unknown as ConstructorParameters<typeof SmartBuffer>[1]);
   await buffer.load();
-  await buffer.addTurn("session-newest", makeTurn("session-newest", "new turn"));
+  await assert.rejects(
+    buffer.addTurn("session-newest", makeTurn("session-newest", "new turn")),
+    BufferAdmissionRefusedError,
+    "live admission refuses rather than evicting oldest non-empty backlog",
+  );
 
   const savedKeys = Object.keys(storage.saved?.entries ?? {});
-  assert.ok(savedKeys.length <= 200, `entries bounded at MAX_BUFFER_ENTRY_COUNT (got ${savedKeys.length})`);
-  assert.ok(savedKeys.includes("session-newest"), "the just-written key is retained");
-  assert.equal(buffer.getTurns("session-000").length, 0, "oldest non-empty entry was evicted");
+  assert.ok(savedKeys.length <= 211, `entries bounded at MAX_BUFFER_ENTRY_COUNT plus default (got ${savedKeys.length})`);
+  assert.equal(buffer.getTurns("session-000").length, 1, "oldest non-empty entry keeps its turn for extraction");
   assert.ok(buffer.getTurns("session-209").length > 0, "newest pre-existing entry survives");
+  assert.ok(!savedKeys.includes("session-newest"), "the refused turn was never buffered");
 });
 
 // ---------------------------------------------------------------------------
