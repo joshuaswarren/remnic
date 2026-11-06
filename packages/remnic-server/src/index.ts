@@ -17,7 +17,7 @@ import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner
 } from "@remnic/core";
 import type { BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
-import { shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
+import { logShutdownPhase, shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { probeAuthenticatedLiveness } from "./liveness-probe.js";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
@@ -939,7 +939,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
       supportPassportRuntime.close();
       orchestrator.abortDeferredInit();
       try {
-        await originalStop();
+        await logShutdownPhase("listener-closure", originalStop);
       } finally {
         try {
           await readinessTask;
