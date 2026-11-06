@@ -591,3 +591,100 @@ test("parseConfig rejects invalid qmd version and integer config values", () => 
     /qmdGpuBackend must be one of/,
   );
 });
+
+type RecordedDaemonCall = { tool: string; args: Record<string, unknown>; signal?: AbortSignal };
+
+function fakeDaemonSession(supportsAdditionalSearches: boolean, calls: RecordedDaemonCall[]) {
+  return {
+    probeAdditionalSearchesIfDue: () => {},
+    supportsAdditionalSearches: () => supportsAdditionalSearches,
+    callTool: async (tool: string, args: Record<string, unknown>, _timeoutMs?: number, signal?: AbortSignal) => {
+      calls.push({ tool, args, signal });
+      return { structuredContent: { results: [] } };
+    },
+  };
+}
+
+function daemonTestClient(strategy?: "hybrid" | "lex-vec" | "lex") {
+  const client = new QmdClient("memories", 5, strategy ? { qmdSearchStrategy: strategy } : undefined);
+  const calls: RecordedDaemonCall[] = [];
+  const internals = client as unknown as {
+    available: boolean;
+    daemonAvailable: boolean;
+    qmdCapabilities: unknown;
+    daemonSession: unknown;
+  };
+  internals.available = true;
+  internals.daemonAvailable = true;
+  internals.qmdCapabilities = resolveQmdCapabilities("qmd 2.5.3");
+  return { client, calls, internals };
+}
+
+test("capable daemon gets plain query plus deterministic HyDE, never legacy searches", async () => {
+  const { client, calls, internals } = daemonTestClient();
+  internals.daemonSession = fakeDaemonSession(true, calls);
+  await client.search("deploy hermes service", "memories", 5, {
+    intent: "troubleshoot deploys", rerank: false, explain: true,
+  });
+  assert.equal(calls.length, 1);
+  const args = calls[0]?.args ?? {};
+  assert.equal(args.query, "deploy hermes service");
+  assert.deepEqual(args.additionalSearches, [{ type: "hyde", query: "A relevant Remnic memory for troubleshoot deploys would answer: deploy hermes service" }]);
+  assert.equal("searches" in args, false);
+  assert.deepEqual(args.collections, ["memories"]);
+  assert.equal(args.limit, 5);
+  assert.equal(args.intent, "troubleshoot deploys");
+  assert.equal(args.rerank, false);
+  assert.equal(args.explain, true);
+});
+
+test("global capable search omits collection filters", async () => {
+  const { client, calls, internals } = daemonTestClient();
+  internals.daemonSession = fakeDaemonSession(true, calls);
+  await client.searchGlobal("deploy hermes service", 5);
+  const args = calls[0]?.args ?? {};
+  assert.equal(args.query, "deploy hermes service");
+  assert.deepEqual(args.additionalSearches, [{ type: "hyde", query: "A relevant Remnic memory would answer: deploy hermes service" }]);
+  assert.equal("searches" in args, false);
+  assert.equal("collections" in args, false);
+});
+
+test("explicit structured searches remain unchanged on a capable daemon", async () => {
+  const { client, calls, internals } = daemonTestClient();
+  internals.daemonSession = fakeDaemonSession(true, calls);
+  await client.search("deploy hermes service", "memories", 5, {
+    structuredSearches: [{ type: "lex", query: "explicit query" }],
+  });
+  const args = calls[0]?.args ?? {};
+  assert.deepEqual(args.searches, [{ type: "lex", query: "explicit query" }]);
+  assert.equal("query" in args, false);
+  assert.equal("additionalSearches" in args, false);
+});
+
+test("lex-vec and lex strategies retain legacy plans on capable daemons", async () => {
+  for (const strategy of ["lex-vec", "lex"] as const) {
+    const { client, calls, internals } = daemonTestClient(strategy);
+    internals.daemonSession = fakeDaemonSession(true, calls);
+    await client.search("strategy query", "memories", 5);
+    const args = calls[0]?.args ?? {};
+    assert.equal("query" in args, false);
+    assert.equal("additionalSearches" in args, false);
+    assert.deepEqual(args.searches, strategy === "lex"
+      ? [{ type: "lex", query: "strategy query" }]
+      : [{ type: "lex", query: "strategy query" }, { type: "vec", query: "strategy query" }]);
+  }
+});
+
+test("unadvertised additionalSearches keeps the exact legacy hybrid plan", async () => {
+  const { client, calls, internals } = daemonTestClient();
+  internals.daemonSession = fakeDaemonSession(false, calls);
+  await client.search("deploy hermes service", "memories", 5, { intent: "troubleshoot deploys" });
+  const args = calls[0]?.args ?? {};
+  assert.equal("query" in args, false);
+  assert.equal("additionalSearches" in args, false);
+  assert.deepEqual(args.searches, [
+    { type: "lex", query: "deploy hermes service" },
+    { type: "vec", query: "deploy hermes service" },
+    { type: "hyde", query: "A relevant Remnic memory for troubleshoot deploys would answer: deploy hermes service" },
+  ]);
+});
