@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 /**
  * PendingObserveExtractionTracker settle hygiene — issue: `track`'s settle
  * callback only removed the pending entry when the extraction SUCCEEDED or
@@ -92,31 +94,59 @@ function rejectingAfter(controller: AbortController): Promise<void> {
   return promise;
 }
 
-// Runs in CI (the root test runner exposes gc) and locally with
-// NODE_OPTIONS=--expose-gc; skips under a bare tsx --test invocation.
-// SAFETY: Node defines globalThis.gc as () => void only under --expose-gc
-// and leaves it absent otherwise, so `{ gc?: () => void }` is exhaustive.
-const { gc: gcFn } = globalThis as { gc?: () => void };
-test(
-  "retained heap stays bounded across overlapping stalled tracks",
-  { skip: gcFn === undefined && "needs --expose-gc" },
-  () => {
-    const tracker = new PendingObserveExtractionTracker();
-    const key = tracker.key("session-a", "alice", "default");
-    gcFn();
-    const before = process.memoryUsage().heapUsed;
-    const tracks = 4000;
-    for (let i = 0; i < tracks; i++) {
-      tracker.track(key, stalled(), new AbortController());
-    }
-    gcFn();
-    const retained = process.memoryUsage().heapUsed - before;
-    assert.ok(
-      retained < 32 * 1024 * 1024,
-      `retained ${(retained / 1048576).toFixed(1)}MB for ${tracks} tracks; quadratic controller-set copies keep dead generations alive`,
-    );
-  },
-);
+// Runs the retention loop in one short-lived child process with --expose-gc,
+// so CI exercises it without exposing gc to the whole test tree. The
+// assertion keeps a wide margin (4.2MB measured post-fix vs 212.8MB pre-fix
+// at the same track count), not a fixed runner heap limit.
+function drain(stream: NodeJS.ReadableStream): Promise<string> {
+  return new Promise((resolve) => {
+    const chunks: string[] = [];
+    stream.on("data", (chunk) => chunks.push(String(chunk)));
+    stream.on("end", () => resolve(chunks.join("")));
+  });
+}
+
+async function retainedHeapInChild(): Promise<number> {
+  const trackerSource = fileURLToPath(new URL("./access-observe-helpers.js", import.meta.url));
+  const child = spawn(
+    process.execPath,
+    [
+      "--expose-gc",
+      "--input-type=module",
+      "--import",
+      "tsx",
+      "-e",
+      `import { pathToFileURL } from "node:url";
+const { PendingObserveExtractionTracker } = await import(pathToFileURL(process.argv.at(-1)));
+gc();
+const before = process.memoryUsage().heapUsed;
+const tracker = new PendingObserveExtractionTracker();
+const key = tracker.key("session-a", "alice", "default");
+for (let i = 0; i < 4000; i++) tracker.track(key, new Promise(() => {}), new AbortController());
+gc();
+console.log(JSON.stringify(process.memoryUsage().heapUsed - before));`,
+      trackerSource,
+    ],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const [stdout, stderr, code] = await Promise.all([
+    drain(child.stdout),
+    drain(child.stderr),
+    new Promise<number | null>((resolve) => child.on("close", resolve)),
+  ]);
+  assert.equal(code, 0, `retention child failed (${code}): ${stderr.slice(0, 400)}`);
+  const lastLine = stdout.trim().split("\n").at(-1);
+  assert.ok(lastLine !== undefined, `retention child printed no output: ${stderr.slice(0, 400)}`);
+  return JSON.parse(lastLine);
+}
+
+test("retained heap stays bounded across overlapping stalled tracks", { timeout: 15000 }, async () => {
+  const retained = await retainedHeapInChild();
+  assert.ok(
+    retained < 32 * 1024 * 1024,
+    `retained ${(retained / 1048576).toFixed(1)}MB for 4000 tracks; quadratic controller-set copies keep dead generations alive`,
+  );
+});
 
 test("cancel still aborts every distinct controller across overlapping tracks", () => {
   const tracker = new PendingObserveExtractionTracker();
