@@ -81,8 +81,8 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
       },
     },
     liveBufferCounts: () => state.counts,
-    lease: () => ({
-      ownerId: "daemon-drain-test",
+    lease: (ownerId) => ({
+      ownerId,
       pid: process.pid,
       host: "test",
       acquiredAt: new Date().toISOString(),
@@ -114,6 +114,50 @@ function emptyOutcome(key: string, overrides: Partial<DrainSessionOutcome> = {})
 function turn(content: string, sessionKey: string, timestamp = "2026-11-01T00:00:00.000Z"): BufferTurn {
   return { role: "user", content, timestamp, sessionKey };
 }
+
+test("scheduler instances use distinct lease tokens through claim and drain", async () => {
+  const issuedOwners: string[] = [];
+  const drainedOwners: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const key = `token-session-${attempt}`;
+    const queue = new ExtractionQueueCoordinator(1);
+    const state: StubState = {
+      counts: new Map([[key, { turns: 1, retainedTurns: 0 }]]),
+      claimed: new Set(),
+      claimTurns: new Map(),
+      claimedThisRun: new Set(),
+      outcomes: [emptyOutcome(key)],
+      drained: [],
+    };
+    const deps = makeDeps(state, queue);
+    deps.lease = (ownerId) => {
+      issuedOwners.push(ownerId);
+      return {
+        ownerId,
+        pid: process.pid,
+        host: "test",
+        acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        leaseMs: 60_000,
+      };
+    };
+    deps.drainKey = async (_drainKey, drainOptions) => {
+      drainedOwners.push(drainOptions.ownerId);
+      return emptyOutcome(key);
+    };
+    const scheduler = new BacklogScheduler(deps, { ownerId: "shared-label", pollMs: 3_600_000 });
+    scheduler.start();
+    try {
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+    } finally {
+      await scheduler.stop();
+    }
+  }
+
+  assert.notEqual(issuedOwners[0], issuedOwners[1]);
+  assert.deepEqual([...new Set(drainedOwners)], [...new Set(issuedOwners)]);
+});
 
 test("startup drains existing claims and newly buffered sessions within the queue's concurrency", async () => {
   const queue = new ExtractionQueueCoordinator(2);
