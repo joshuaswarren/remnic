@@ -53,6 +53,9 @@ process.env.NODE_OPTIONS = appendNodeOption(
   process.env.NODE_OPTIONS,
   "--conditions=remnic-source",
 );
+// Expose gc to test children so heap-retention regressions can force full
+// collections; only the tracker retention test consumes globalThis.gc.
+process.env.NODE_OPTIONS = appendNodeOption(process.env.NODE_OPTIONS, "--expose-gc");
 
 // Sandbox TMPDIR for this run (#2083). os.tmpdir() reads TMPDIR/TMP/TEMP on
 // each call and child test processes inherit process.env, so pointing all

@@ -92,21 +92,24 @@ function rejectingAfter(controller: AbortController): Promise<void> {
   return promise;
 }
 
-// Needs --expose-gc (e.g. NODE_OPTIONS=--expose-gc); CI's root test runner
-// does not set it, so this skips there and the behavioral tests carry it.
+// Runs in CI (the root test runner exposes gc) and locally with
+// NODE_OPTIONS=--expose-gc; skips under a bare tsx --test invocation.
+// SAFETY: Node defines globalThis.gc as () => void only under --expose-gc
+// and leaves it absent otherwise, so `{ gc?: () => void }` is exhaustive.
+const { gc: gcFn } = globalThis as { gc?: () => void };
 test(
   "retained heap stays bounded across overlapping stalled tracks",
-  { skip: typeof gc !== "function" && "needs --expose-gc" },
+  { skip: gcFn === undefined && "needs --expose-gc" },
   () => {
     const tracker = new PendingObserveExtractionTracker();
     const key = tracker.key("session-a", "alice", "default");
-    gc();
+    gcFn();
     const before = process.memoryUsage().heapUsed;
     const tracks = 4000;
     for (let i = 0; i < tracks; i++) {
       tracker.track(key, stalled(), new AbortController());
     }
-    gc();
+    gcFn();
     const retained = process.memoryUsage().heapUsed - before;
     assert.ok(
       retained < 32 * 1024 * 1024,
