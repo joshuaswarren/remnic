@@ -51,6 +51,51 @@ function isTimeoutMessage(message: string): boolean {
   return message.toLowerCase().includes("timed out");
 }
 
+/** Post-handshake capability probe budget; tools/list is metadata-only. */
+const QMD_TOOLS_LIST_TIMEOUT_MS = 1_000;
+
+
+/** Number of bounded retries after a tools/list timeout. */
+const QMD_CAPABILITY_MAX_RETRIES = 2;
+const QMD_CAPABILITY_RETRY_DELAY_MS = 500;
+const QMD_CAPABILITY_REPROBE_COOLDOWN_MS = 2_000;
+
+/**
+ * Return true for a validated support schema, false for a valid old schema,
+ * and null for malformed or incomplete tools/list data.
+ */
+function parseAdditionalSearchesCapability(result: unknown): boolean | null {
+  if (!result || typeof result !== "object" || !("tools" in result) || !Array.isArray(result.tools)) return null;
+  const queryTool = result.tools.find(
+    (tool: unknown) =>
+      tool && typeof tool === "object" && "name" in tool && tool.name === "query" && "inputSchema" in tool
+  );
+  if (!queryTool || typeof queryTool !== "object" || !("inputSchema" in queryTool)) return null;
+  const schema: unknown = queryTool.inputSchema;
+  if (!schema || typeof schema !== "object" || Array.isArray(schema) || !("type" in schema) || schema.type !== "object" || !("properties" in schema)) return null;
+  const properties: unknown = schema.properties;
+  if (!properties || typeof properties !== "object" || Array.isArray(properties)) return null;
+  if (!("additionalSearches" in properties)) return false;
+  if (!("query" in properties)) return null;
+  const query: unknown = properties.query;
+  if (!query || typeof query !== "object" || !("type" in query) || query.type !== "string") return null;
+  const additionalSearches: unknown = properties.additionalSearches;
+  if (!additionalSearches || typeof additionalSearches !== "object" || Array.isArray(additionalSearches)) return null;
+  if (!("type" in additionalSearches) || additionalSearches.type !== "array" || !("items" in additionalSearches)) return null;
+  const items: unknown = additionalSearches.items;
+  if (!items || typeof items !== "object" || Array.isArray(items) || !("type" in items) || items.type !== "object" || !("properties" in items)) return null;
+  const itemProperties: unknown = items.properties;
+  if (!itemProperties || typeof itemProperties !== "object" || Array.isArray(itemProperties)) return null;
+  if (!("type" in itemProperties) || !("query" in itemProperties)) return null;
+  const searchType: unknown = itemProperties.type;
+  const searchQuery: unknown = itemProperties.query;
+  if (!searchType || typeof searchType !== "object" || !("type" in searchType) || searchType.type !== "string" || !("enum" in searchType) || !Array.isArray(searchType.enum)) return null;
+  if (!["lex", "vec", "hyde"].every((type) => searchType.enum.includes(type))) return null;
+  if (!searchQuery || typeof searchQuery !== "object" || !("type" in searchQuery) || searchQuery.type !== "string") return null;
+  if (!("maxLength" in searchQuery) || typeof searchQuery.maxLength !== "number" || searchQuery.maxLength < 320) return null;
+  return true;
+}
+
 /**
  * One `qmd mcp` child and its JSON-RPC session.
  *
@@ -67,6 +112,10 @@ function isTimeoutMessage(message: string): boolean {
 export class QmdDaemonSession {
   private child: CommandChildProcess | null = null;
   private initialized = false;
+  private additionalSearchesAdvertised = false;
+  private capabilityDiscoveryPromise: Promise<void> | null = null;
+  private capabilitySchemaResolved = false;
+  private lastCapabilityProbeAtMs = 0;
   private buffer = "";
   private startPromise: Promise<boolean> | null = null;
   private pendingRequests = new Map<number, PendingRequest>();
@@ -157,6 +206,8 @@ export class QmdDaemonSession {
         }
         this.sendNotification("notifications/initialized");
         this.initialized = true;
+        void this.discoverToolCapabilities(this.child);
+        if (!this.child || this.child.killed || !this.initialized) return false;
         log.info("QMD mcp: stdio session initialized");
         return true;
       } catch (err) {
@@ -174,6 +225,63 @@ export class QmdDaemonSession {
       }
     })();
     return this.startPromise;
+  }
+
+  /**
+   * Best-effort capability discovery after the handshake: read the real
+   * tools/list inputSchema instead of guessing versions. Any failure leaves
+   * the capability off so the legacy structured path stays intact.
+   */
+  private discoverToolCapabilities(child: CommandChildProcess | null): Promise<void> {
+    if (!child || this.child !== child || child.killed) return Promise.resolve();
+    if (this.capabilityDiscoveryPromise) return this.capabilityDiscoveryPromise;
+    const probe = Promise.resolve().then(async () => {
+      this.lastCapabilityProbeAtMs = Date.now();
+      try {
+        const result = await this.sendRequest("tools/list", {}, QMD_TOOLS_LIST_TIMEOUT_MS);
+        if (this.child !== child) return;
+        const capability = parseAdditionalSearchesCapability(result);
+        this.capabilitySchemaResolved = capability !== null;
+        this.additionalSearchesAdvertised = capability === true;
+        this.capabilityRetryCount = 0;
+      } catch (err) {
+        if (this.child !== child) return;
+        const message = err instanceof Error ? err.message : String(err);
+        log.debug(`QMD mcp: tools/list capability probe failed, using legacy searches: ${message}`);
+        if (isTimeoutMessage(message)) this.scheduleCapabilityRetry(child);
+      }
+    });
+    this.capabilityDiscoveryPromise = probe;
+    void probe.finally(() => {
+      if (this.capabilityDiscoveryPromise === probe) this.capabilityDiscoveryPromise = null;
+    });
+    return probe;
+  }
+
+  private scheduleCapabilityRetry(child: CommandChildProcess): void {
+    if (this.capabilityRetryCount >= QMD_CAPABILITY_MAX_RETRIES || this.capabilityRetryTimer) return;
+    this.capabilityRetryCount += 1;
+    this.capabilityRetryTimer = setTimeout(() => {
+      this.capabilityRetryTimer = null;
+      if (this.child === child && this.initialized && !child.killed) {
+        void this.discoverToolCapabilities(child);
+      }
+    }, QMD_CAPABILITY_RETRY_DELAY_MS);
+  }
+
+  /** Start a best-effort, rate-limited capability probe without delaying search. */
+  probeAdditionalSearchesIfDue(): void {
+    const child = this.child;
+    if (!child || child.killed || !this.initialized || this.additionalSearchesAdvertised || this.capabilitySchemaResolved) return;
+    if (this.capabilityDiscoveryPromise || this.capabilityRetryTimer) return;
+    if (Date.now() - this.lastCapabilityProbeAtMs < QMD_CAPABILITY_REPROBE_COOLDOWN_MS) return;
+    this.lastCapabilityProbeAtMs = Date.now();
+    void this.discoverToolCapabilities(child);
+  }
+
+  /** True while the live child's validated tools/list advertises query.additionalSearches. */
+  supportsAdditionalSearches(): boolean {
+    return this.additionalSearchesAdvertised;
   }
 
   /** Call an MCP tool and return the parsed result. */
@@ -353,6 +461,13 @@ export class QmdDaemonSession {
       target.kill("SIGTERM");
     }
     this.initialized = false;
+    this.additionalSearchesAdvertised = false;
+    this.capabilitySchemaResolved = false;
+    this.lastCapabilityProbeAtMs = 0;
+    clearTimeout(this.capabilityRetryTimer);
+    this.capabilityRetryTimer = null;
+    this.capabilityRetryCount = 0;
+    this.capabilityDiscoveryPromise = null;
     for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timer);
       pending.cleanup();

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- QMD MCP clients inspect the live `query` input schema and, when it advertises `additionalSearches`, fuse the default hybrid query with deterministic HyDE in one daemon request. Older or malformed servers, explicit structured searches, and lex-only strategies keep their existing request shape.
+
 ## [v10.0.67] — 2026-11-04
 
 ### Added

@@ -1930,18 +1930,40 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = Date.now();
     const v2 = this.isQmdV2();
+    if (v2) this.daemonSession.probeAdditionalSearchesIfDue();
     try {
       let args: Record<string, unknown>;
       if (v2) {
-        // QMD v2: query tool expects { searches: [...], collections?: [...] }
-        // The MCP tool is structured-only in 2.x; use lex+vec+hyde by default
-        // to exercise QMD's RRF + rerank path and let callers override when
-        // they have stronger query-document structure. Operators on CPU-only
-        // models can downgrade the plan via qmdSearchStrategy (issue #1335).
-        const searches = buildDefaultStructuredSearches(query, options, this.qmdSearchStrategy);
-        args = { searches, limit: maxResults };
-        if (collection) {
-          args.collections = [collection];
+        const trimmedQuery = query.trim();
+        const fuseAdditionalSearches =
+          trimmedQuery.length > 0 &&
+          this.qmdSearchStrategy === "hybrid" &&
+          normalizeStructuredSearches(options?.structuredSearches).length === 0 &&
+          this.daemonSession.supportsAdditionalSearches();
+        if (fuseAdditionalSearches) {
+          // QMD draft #1107: the server expands the plain query itself (lex +
+          // vec + model-generated HyDE) and fuses our deterministic HyDE via
+          // additionalSearches into one RRF/rerank pass. The legacy `searches`
+          // key must never ride along with `query`.
+          args = {
+            query: trimmedQuery,
+            additionalSearches: [{ type: "hyde", query: buildSyntheticHydeQuery(trimmedQuery, options?.intent) }],
+            limit: maxResults,
+          };
+          if (collection) {
+            args.collections = [collection];
+          }
+        } else {
+          // QMD v2: query tool expects { searches: [...], collections?: [...] }
+          // The MCP tool is structured-only in 2.x; use lex+vec+hyde by default
+          // to exercise QMD's RRF + rerank path and let callers override when
+          // they have stronger query-document structure. Operators on CPU-only
+          // models can downgrade the plan via qmdSearchStrategy (issue #1335).
+          const searches = buildDefaultStructuredSearches(query, options, this.qmdSearchStrategy);
+          args = { searches, limit: maxResults };
+          if (collection) {
+            args.collections = [collection];
+          }
         }
         this.addResolvedSearchOptionsToMcpArgs(args, options);
       } else {
