@@ -32,7 +32,7 @@ const PHASE_SEQUENCE = [
   "shutdown-phase-end phase=orchestrator-drain-flush-dispose durationMs=",
 ];
 
-function installRecordingLogger(): { lines: string[] } {
+function installRecordingLogger() {
   const lines: string[] = [];
   // core's fmt() prefixes every line with "remnic: "; strip it so assertions
   // match the bare marker text.
@@ -157,7 +157,8 @@ test("gated stop prints the listener phase start while unresolved and its end af
     assertPhaseSequence(lines);
   } finally {
     socket?.destroy();
-    await result?.stop().catch(() => {});
+    // Bounded: a wedged stop must not hang the test harness either.
+    await withTestDeadline(result?.stop().catch(() => {}) ?? Promise.resolve(), 15_000).catch(() => {});
     quietLogger();
     await rm(dir, { recursive: true, force: true });
   }
@@ -188,7 +189,8 @@ test("normal request activity logs no shutdown-phase markers; they appear only o
       "stop emits the listener-closure start marker",
     );
   } finally {
-    await result?.stop().catch(() => {});
+    // Bounded: a wedged stop must not hang the test harness either.
+    await withTestDeadline(result?.stop().catch(() => {}) ?? Promise.resolve(), 15_000).catch(() => {});
     quietLogger();
     await rm(dir, { recursive: true, force: true });
   }
@@ -196,9 +198,10 @@ test("normal request activity logs no shutdown-phase markers; they appear only o
 
 test("a scheduler-phase failure logs failure without the error payload and still runs destroy and finish", async () => {
   const { lines } = installRecordingLogger();
+  // SAFETY: partial test double — shutdownBacklogDrain only calls stop().
   const scheduler = {
     stop: () => Promise.reject(new Error("SECRET-SCHED-7")),
-  } as unknown as BacklogScheduler;
+  } as BacklogScheduler;
   let destroyed = false;
   let finished = false;
   await assert.rejects(
@@ -235,7 +238,8 @@ test("a scheduler-phase failure logs failure without the error payload and still
 
 test("a destroy-phase failure logs failure without the error payload and still runs finish", async () => {
   const { lines } = installRecordingLogger();
-  const scheduler = { stop: () => Promise.resolve() } as unknown as BacklogScheduler;
+  // SAFETY: partial test double — shutdownBacklogDrain only calls stop().
+  const scheduler = { stop: () => Promise.resolve() } as BacklogScheduler;
   let finished = false;
   await assert.rejects(
     shutdownBacklogDrain(
@@ -270,5 +274,28 @@ test("logShutdownPhase keeps the resolved value and passes it through", async ()
   installRecordingLogger();
   const value = await logShutdownPhase("listener-closure", async () => 41 + 1);
   assert.equal(value, 42, "the phase helper must be pass-through");
+  quietLogger();
+});
+
+test("a throwing logger backend cannot control the phase: success stays success, the original error survives", async () => {
+  const throwing: LoggerBackend = {
+    info: () => {
+      throw new Error("logger down");
+    },
+    warn: () => {
+      throw new Error("logger down");
+    },
+    error: () => {
+      throw new Error("logger down");
+    },
+  };
+  initLogger(throwing, false, { timestamps: false });
+  const value = await logShutdownPhase("listener-closure", async () => "ok");
+  assert.equal(value, "ok", "a start/end marker throw must not flip a success into a failure");
+  await assert.rejects(
+    logShutdownPhase("scheduler-abort-settle", () => Promise.reject(new Error("original-cause"))),
+    /original-cause/,
+    "a failure-marker throw must not replace the phase error",
+  );
   quietLogger();
 });

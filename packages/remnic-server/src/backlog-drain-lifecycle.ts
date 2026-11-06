@@ -9,6 +9,14 @@ export function startBacklogScheduler(orchestrator: Orchestrator): BacklogSchedu
   return scheduler;
 }
 
+/** Marker emission is best-effort: a throwing logger backend must not skip
+ *  the phase, flip a success into a failure, or replace the phase error. */
+function emitMarker(level: "info" | "warn", message: string): void {
+  try {
+    log[level](message);
+  } catch { /* diagnostics only — never control shutdown */ }
+}
+
 /** Monotonic, non-content shutdown phase markers, in the
  *  access-observe-stage-timing style: durations only — never session keys,
  *  content, or error payloads. Start logs before the await, end logs the
@@ -17,13 +25,13 @@ export function startBacklogScheduler(orchestrator: Orchestrator): BacklogSchedu
  *  keep running even when a prior phase throws. */
 export async function logShutdownPhase<T>(phase: string, run: () => Promise<T>): Promise<T> {
   const startedMs = performance.now();
-  log.info(`shutdown-phase-start phase=${phase}`);
+  emitMarker("info", `shutdown-phase-start phase=${phase}`);
   try {
     const result = await run();
-    log.info(`shutdown-phase-end phase=${phase} durationMs=${Math.round(performance.now() - startedMs)}`);
+    emitMarker("info", `shutdown-phase-end phase=${phase} durationMs=${Math.round(performance.now() - startedMs)}`);
     return result;
   } catch (err) {
-    log.warn(`shutdown-phase-failure phase=${phase} durationMs=${Math.round(performance.now() - startedMs)}`);
+    emitMarker("warn", `shutdown-phase-failure phase=${phase} durationMs=${Math.round(performance.now() - startedMs)}`);
     throw err;
   }
 }
