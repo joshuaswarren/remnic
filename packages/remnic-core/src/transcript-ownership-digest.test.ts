@@ -263,3 +263,141 @@ test("digest cache: read errors surface to the caller instead of a cached verdic
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+async function seedFiles(root: string, dir: string, files: Record<string, string>): Promise<void> {
+  const channelDir = path.join(root, dir);
+  await mkdir(channelDir, { recursive: true });
+  for (const [name, text] of Object.entries(files)) await writeFile(path.join(channelDir, name), text, "utf-8");
+}
+
+function line(sessionKey: string, id: string): string {
+  return `${JSON.stringify(entry(sessionKey, id))}\n`;
+}
+
+const MIXED_CASES: Array<{
+  name: string;
+  owned: boolean;
+  files: (owner: string, other: string) => Record<string, string>;
+}> = [
+  {
+    name: "every file owned",
+    owned: true,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a") + line(o, "b"), "2026-01-02.jsonl": line(o, "c"), "2026-01-03.jsonl": line(o, "d") }),
+  },
+  {
+    name: "owned files around a blank-only file",
+    owned: true,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": "\n  \n", "2026-01-03.jsonl": line(o, "b") }),
+  },
+  {
+    name: "only blank files",
+    owned: true,
+    files: () => ({ "2026-01-01.jsonl": "\n", "2026-01-02.jsonl": "   \n" }),
+  },
+  {
+    name: "foreign file after owned files",
+    owned: false,
+    files: (o, x) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": line(o, "b"), "2026-01-03.jsonl": line(x, "f") }),
+  },
+  {
+    name: "foreign file before owned files",
+    owned: false,
+    files: (o, x) => ({ "2026-01-01.jsonl": line(x, "f"), "2026-01-02.jsonl": line(o, "a") }),
+  },
+  {
+    name: "foreign line inside an otherwise owned file",
+    owned: false,
+    files: (o, x) => ({ "2026-01-01.jsonl": line(o, "a") + line(x, "f") + line(o, "b"), "2026-01-02.jsonl": line(o, "c") }),
+  },
+  {
+    name: "malformed line in a middle file",
+    owned: false,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": line(o, "b") + "{not json\n", "2026-01-03.jsonl": line(o, "c") }),
+  },
+  {
+    name: "torn unterminated final line",
+    owned: false,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": line(o, "b") + line(o, "c").slice(0, -6) }),
+  },
+  {
+    name: "JSON null line",
+    owned: false,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a") + "null\n" }),
+  },
+  {
+    name: "JSON scalar line",
+    owned: false,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": "42\n" }),
+  },
+  {
+    name: "JSON array line",
+    owned: false,
+    files: (o) => ({ "2026-01-01.jsonl": line(o, "a"), "2026-01-02.jsonl": "[1]\n" }),
+  },
+];
+
+for (const mixed of MIXED_CASES) {
+  test(`multi-file directory verdict is the conjunction of every file: ${mixed.name}`, async () => {
+    await withManager(async ({ manager, root }) => {
+      const owner = "pi-geek:digest-mixed-own";
+      const other = "pi-geek:digest-mixed-oth";
+      const { dir, alternateDir } = manager.getTranscriptPath(owner);
+      await seedFiles(root, dir, mixed.files(owner, other));
+
+      await manager.append(entry(owner, "new"));
+
+      assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"new"'), mixed.owned);
+      assert.equal((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"new"'), !mixed.owned);
+    });
+  });
+}
+
+const HISTORY = ["2026-01-01.jsonl", "2026-01-02.jsonl", "2026-01-03.jsonl", "2026-01-04.jsonl", "2026-01-05.jsonl"];
+
+async function warmedHistory(manager: TranscriptManager, root: string, owner: string): Promise<string> {
+  const { dir } = manager.getTranscriptPath(owner);
+  await seedFiles(
+    root,
+    dir,
+    Object.fromEntries(HISTORY.map((name, i) => [name, line(owner, `h${i}a`) + line(owner, `h${i}b`)])),
+  );
+  await manager.append(entry(owner, "warm-1"));
+  await manager.append(entry(owner, "warm-2"));
+  return path.join(root, dir, HISTORY[2]);
+}
+
+test("warm multi-file directory: equal-size restored-mtime foreign rewrite of an older file is re-derived, and restoring owned bytes restores ownership", async () => {
+  await withManager(async ({ manager, root }) => {
+    const owner = "pi-geek:digest-multi-a";
+    const intruder = "pi-geek:digest-multi-b";
+    const { dir, alternateDir } = manager.getTranscriptPath(owner);
+    const target = await warmedHistory(manager, root, owner);
+    const original = await readFile(target, "utf-8");
+    await rewriteSameSize(target, (text) => text.replaceAll(owner, intruder));
+
+    await manager.append(entry(owner, "after-foreign"));
+
+    assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-foreign"'), false);
+    assert.equal((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"after-foreign"'), true);
+
+    await writeFile(target, original, "utf-8");
+    await manager.append(entry(owner, "after-restore"));
+
+    assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-restore"'), true);
+    assert.equal((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"after-restore"'), false);
+  });
+});
+
+test("warm multi-file directory: equal-size restored-mtime malformed rewrite of an older file is re-derived", async () => {
+  await withManager(async ({ manager, root }) => {
+    const owner = "pi-geek:digest-multi-m";
+    const { dir, alternateDir } = manager.getTranscriptPath(owner);
+    const target = await warmedHistory(manager, root, owner);
+    await rewriteSameSize(target, (text) => text.replace('{"timestamp"', '{"timestamp:'));
+
+    await manager.append(entry(owner, "after-malformed"));
+
+    assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-malformed"'), false);
+    assert.equal((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"after-malformed"'), true);
+  });
+});
