@@ -4,19 +4,24 @@
  * A result that carries only an identity reflection or only entity
  * relationships used to be judged empty, so persistence never ran and the
  * source turns were cleared. These tests drive the real orchestrator flush
- * path with a stubbed extraction client and assert the writes on disk.
+ * path with a stubbed extraction client and assert the durable writes.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { Orchestrator } from "@remnic/core/orchestrator";
 import { StorageManager } from "@remnic/core/storage";
 import { parseConfig } from "@remnic/core/config";
 import type { ExtractionResult, PluginConfig } from "@remnic/core/types";
 
-function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
+interface OptionalOutputFlags {
+  identityEnabled?: boolean;
+  entityRelationshipsEnabled?: boolean;
+}
+
+function makeConfig(memoryDir: string, flags: OptionalOutputFlags): PluginConfig {
   return parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -31,57 +36,57 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}):
     extractionMinUserTurns: 1,
     consolidateEveryN: 50,
     initGateTimeoutMs: 1000,
-    ...overrides,
+    ...flags,
   });
 }
 
 function stubExtraction(orchestrator: Orchestrator, result: ExtractionResult): () => number {
   let calls = 0;
-  (orchestrator as any).extraction = {
+  const stub = {
     extract: async () => {
       calls += 1;
       return result;
     },
   };
+  // `extraction` is the orchestrator's private LLM client field, the
+  // established offline seam (see orchestrator-characterization.test.ts). The
+  // stub implements the only method the extraction run calls.
+  assert.ok(Reflect.set(orchestrator, "extraction", stub));
   return () => calls;
 }
 
-async function cleanupDir(dir: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    try {
-      await rm(dir, { recursive: true, force: true });
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== "ENOTEMPTY" && code !== "EBUSY") throw err;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-  await rm(dir, { recursive: true, force: true });
+async function makeMemoryDir(prefix: string): Promise<string> {
+  // realpath: Windows hands out 8.3 short temp paths that the storage
+  // containment checks compare against resolved paths.
+  const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), prefix)));
+  await mkdir(path.join(memoryDir, "workspace"), { recursive: true });
+  return memoryDir;
 }
 
-const REFLECTION = "I should state uncertainty explicitly.";
+async function cleanupDir(dir: string): Promise<void> {
+  // Background best-effort writers can still be finishing while rm runs.
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
+function emptyResult(): ExtractionResult {
+  return { facts: [], entities: [], relationships: [], questions: [], profileUpdates: [] };
+}
 
 test("a reflection-only extraction writes the identity reflection to storage (#3227)", async () => {
-  const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-3227-reflection-")));
-  await mkdir(path.join(memoryDir, "workspace"), { recursive: true });
+  const memoryDir = await makeMemoryDir("remnic-3227-reflection-");
   const orchestrator = new Orchestrator(makeConfig(memoryDir, { identityEnabled: true }));
   try {
     const extractCalls = stubExtraction(orchestrator, {
-      facts: [],
-      entities: [],
-      relationships: [],
-      questions: [],
-      profileUpdates: [],
-      identityReflection: REFLECTION,
-    } as ExtractionResult);
+      ...emptyResult(),
+      identityReflection: "I should state uncertainty explicitly.",
+    });
 
     await orchestrator.processTurn("user", "Please be explicit when you are unsure.", "session-3227-reflection");
     await orchestrator.flushSession("session-3227-reflection", { reason: "session-command" });
 
     assert.equal(extractCalls(), 1);
-    const reflections = await (orchestrator as any).storage.readIdentityReflections();
-    assert.match(reflections ?? "", /state uncertainty explicitly/);
+    const reflections = await readFile(path.join(memoryDir, "identity", "reflections.md"), "utf-8");
+    assert.match(reflections, /state uncertainty explicitly/);
   } finally {
     await orchestrator.destroy();
     await cleanupDir(memoryDir);
@@ -89,8 +94,7 @@ test("a reflection-only extraction writes the identity reflection to storage (#3
 });
 
 test("a relationship-only extraction sends both relationship directions to the entity writer (#3227)", async () => {
-  const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-3227-relationship-")));
-  await mkdir(path.join(memoryDir, "workspace"), { recursive: true });
+  const memoryDir = await makeMemoryDir("remnic-3227-relationship-");
   const orchestrator = new Orchestrator(makeConfig(memoryDir, { entityRelationshipsEnabled: true }));
   // Record durable relationship writes at the storage chokepoint. The entity
   // file round trip itself is covered by the entity-store suites.
@@ -101,12 +105,9 @@ test("a relationship-only extraction sends both relationship directions to the e
   };
   try {
     const extractCalls = stubExtraction(orchestrator, {
-      facts: [],
-      entities: [],
+      ...emptyResult(),
       relationships: [{ source: "Alpha", target: "Beta", label: "depends on" }],
-      questions: [],
-      profileUpdates: [],
-    } as ExtractionResult);
+    });
 
     await orchestrator.processTurn("user", "Alpha depends on Beta for queueing.", "session-3227-relationship");
     await orchestrator.flushSession("session-3227-relationship", { reason: "session-command" });

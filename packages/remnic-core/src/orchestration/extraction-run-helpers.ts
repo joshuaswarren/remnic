@@ -17,10 +17,7 @@ export function countRequestedDurableOutputs(result: ExtractionResult, config: P
     capabilities.entityRelationships && Array.isArray(result.relationships)
       ? result.relationships.filter((rel) => Boolean(rel?.source && rel.target && rel.label)).length
       : 0;
-  const reflection =
-    capabilities.identity && typeof result.identityReflection === "string" && result.identityReflection.trim().length > 0
-      ? 1
-      : 0;
+  const reflection = capabilities.identity && (result.identityReflection ?? "").trim().length > 0 ? 1 : 0;
   return (
     result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length +
     relationships + reflection
