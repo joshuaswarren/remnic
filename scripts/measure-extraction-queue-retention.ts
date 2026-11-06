@@ -140,7 +140,6 @@ async function pumpAndMeasure(turnCount: number, turnBytes: number): Promise<Sam
       `refs: distinct=${stats.queuedTailRefs} unshared=${stats.queuedTotalRefs} nodes=${stats.queuedNodes}  ` +
       `residualAfterDrain=${residualMb.toFixed(1)}MB`,
   );
-  rmSync(memoryDir, { recursive: true, force: true });
   return { turns: turnCount, heapGrowthMb: growthMb, tailRefs: stats.queuedTailRefs, totalRefs: stats.queuedTotalRefs };
 }
 
