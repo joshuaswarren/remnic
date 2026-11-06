@@ -14,7 +14,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { BufferState, BufferTurn } from "../types.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 import { queueBufferedCaptureScopeGroups } from "./extraction-task-queueing.js";
-import { chainPrefixEquivalent, ExtractionSnapshotSharingRegistry, materializeChain, turnRepresentationEquivalent } from "./extraction-queue-snapshot-sharing.js";
+import { chainPrefixEquivalent, ExtractionSnapshotSharingRegistry, materializeChain, turnRepresentationEquivalent, type SnapshotChain } from "./extraction-queue-snapshot-sharing.js";
 import { bufferTurnsEqual } from "../buffer-turn-helpers.js";
 import {
   TurnIngestionCoordinator,
@@ -351,6 +351,40 @@ test("representation guard: bufferTurnsEqual turns differing in ignored fields n
   // The representation check is strictly stronger than bufferTurnsEqual.
   assert.ok(!turnRepresentationEquivalent(plain, withParts));
   assert.ok(!turnRepresentationEquivalent(plain, contextOnly));
+});
+
+test("continuous enqueue/dequeue cycles: released ancestors erode, retention returns to zero", async () => {
+  // Codex P2 reproduction attempt: under continuous single-key
+  // enqueue/dequeue, completed ("released") ancestors stay reachable via
+  // `base` while any descendant is queued. Their content is the descendant's
+  // own window prefix (verified element-wise at admit), so retention is the
+  // union of the still-owed windows — and when every task has exited, the
+  // registry must return to exactly zero with no historical remainder.
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const cycles = 500;
+  const live: { node: SnapshotChain }[] = [];
+  let peakQueuedTotalRefs = 0;
+  for (let cycle = 1; cycle <= cycles; cycle += 1) {
+    const turns: BufferTurn[] = [];
+    for (let offset = 1; offset <= cycle; offset += 1) turns.push(makeTurn(`cycle ${offset}`));
+    live.push({ node: registry.admit("k", turns) });
+    // Interleaved drain: the oldest live task exits before the next admit,
+    // exactly the continuous enqueue/dequeue shape.
+    if (live.length > 2) {
+      const oldest = live.shift();
+      assert.ok(oldest, "oldest live entry present");
+      registry.release(oldest.node);
+    }
+    const stats = registry.stats();
+    if (stats.queuedTotalRefs > peakQueuedTotalRefs) peakQueuedTotalRefs = stats.queuedTotalRefs;
+  }
+  // Drain everything.
+  for (const entry of live) registry.release(entry.node);
+  const final = registry.stats();
+  assert.equal(final.queuedNodes, 0, "no historical nodes survive full drain");
+  assert.equal(final.queuedTailRefs, 0, "no historical reference slots survive");
+  assert.equal(final.queuedTotalRefs, 0, "no historical total survives");
+  assert.ok(peakQueuedTotalRefs > 0, "peak was observed");
 });
 
 test("10,000-deep queued chain materializes without stack overflow", async () => {
