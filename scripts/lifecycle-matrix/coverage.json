@@ -220,6 +220,7 @@
     "packages/remnic-core/src/orchestration/extraction-persist-promotion.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-persist.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-queue-coordinator.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/orchestration/extraction-queue-snapshot-sharing.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-run-helpers.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-run.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/extraction-shutdown.ts": "extraction-lifecycle",
