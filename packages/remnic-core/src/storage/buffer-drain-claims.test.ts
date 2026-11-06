@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { BufferDrainClaims, type DrainLease } from "./buffer-drain-claims.js";
-import { bufferSessionFileName } from "./buffer-session-files.js";
+import { BufferSessionFiles, bufferSessionFileName } from "./buffer-session-files.js";
 import type { BufferEntryState } from "../types.js";
 
 /** Plain-file BufferFileIo double: claims logic is file-atomic, not crypto-aware. */
@@ -167,7 +167,7 @@ test("writeEntry replaces the claim content; ack keeps a tombstone the owner con
     await s.claims.claimFromSessionFile("sess-1", makeLease());
     await s.claims.writeEntry("sess-1", "worker-1", entry([turn("b")]));
     assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["b"]);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["a"], "extracted turns are recorded");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["a"], "extracted turns are recorded");
     assert.equal(await s.claims.ack("sess-1", "not-the-owner"), "busy");
     assert.equal(await s.claims.ack("sess-1", "worker-1"), "not_empty");
     await s.claims.writeEntry("sess-1", "worker-1", entry([]));
@@ -175,10 +175,36 @@ test("writeEntry replaces the claim content; ack keeps a tombstone the owner con
     // The claim file stays as a tombstone: a live owner with a stale copy
     // subtracts the drained turns instead of writing them back.
     assert.equal(s.claims.isClaimed("sess-1"), true);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["a", "b"]);
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["a", "b"]);
     assert.equal(existsSync(s.claims.leasePathForTest("sess-1")), false, "the lease is released");
     await s.claims.release("sess-1");
     assert.equal(s.claims.isClaimed("sess-1"), false);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a tombstone subtracts only its original list when a stale entry has an identical retained copy", async () => {
+  const s = setup();
+  try {
+    const same = turn("one source identity");
+    s.seedSession("sess-1", entry([same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), claim.entry);
+    assert.equal(await s.claims.ack("sess-1", "worker-1"), "acked");
+
+    const files = new BufferSessionFiles(s.stateDir, plainIo());
+    const staleLiveEntry: BufferEntryState = {
+      ...entry([same]),
+      retainedTurns: [same],
+    };
+    const outcome = await files.save("sess-1", staleLiveEntry);
+    assert.deepEqual(outcome.drainedTurns, { turns: [same], retainedTurns: [] });
+    const persisted = JSON.parse(readFileSync(s.sessionFile("sess-1"), "utf8"));
+    assert.deepEqual(persisted.turns, [], "the extracted active occurrence is removed");
+    assert.deepEqual(persisted.retainedTurns, [same], "an identical retained occurrence is not removed by active provenance");
   } finally {
     s.cleanup();
   }
@@ -396,7 +422,7 @@ test("writeEntry rejects progress from a drainer that lost the lease", async () 
       /no longer owned/,
     );
     await s.claims.writeEntry("sess-1", "worker-two", entry([]), loaded.entry);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["t1"], "the new owner's progress lands");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["t1"], "the new owner's progress lands");
   } finally {
     s.cleanup();
   }
@@ -415,6 +441,7 @@ test("a retained turn the drainer extracted is tombstoned, not dropped", async (
     const claim = await s.claims.load("sess-1");
     assert.ok(claim);
     assert.deepEqual((claim.drainedRetained ?? []).map((t) => t.content), ["r1"], "the extracted retained copy is recorded");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).retainedTurns.map((t) => t.content), ["r1"]);
     // A live owner still holding a stale retained copy cannot resurrect it.
     await s.claims.mergeIntoClaim("sess-1", { turns: [], retainedTurns: [turn("r1")], lastExtractionAt: null, extractionCount: 0 });
     const after = await s.claims.load("sess-1");

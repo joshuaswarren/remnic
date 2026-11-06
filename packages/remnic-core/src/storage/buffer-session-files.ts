@@ -148,9 +148,9 @@ export class BufferSessionFiles {
         // the owner's fresh remainder back as a session file (the drained
         // turns are subtracted here too, so a caller that did not subtract
         // them cannot resurrect them) and release the tombstone.
-        const fresh: BufferEntryState = { ...entry, turns: subtractBufferTurns(entry.turns, drained) };
+        const fresh: BufferEntryState = { ...entry, turns: subtractBufferTurns(entry.turns, drained.turns) };
         if (entry.retainedTurns && entry.retainedTurns.length > 0) {
-          fresh.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained);
+          fresh.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
           if (fresh.retainedTurns.length === 0) delete fresh.retainedTurns;
         }
         await this.assertDirSafe();

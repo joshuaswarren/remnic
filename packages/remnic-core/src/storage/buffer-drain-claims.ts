@@ -38,7 +38,7 @@ import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { bufferSessionFileName, type BufferFileIo } from "./buffer-session-files.js";
-import { bufferTurnsEqual, mergeBufferTurnsByIdentity, subtractBufferTurns } from "../buffer-turn-helpers.js";
+import { bufferTurnsEqual, mergeBufferTurnsByIdentity, subtractBufferTurns, type DrainedTurnSets } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 import type { BufferEntryState, BufferTurn } from "../types.js";
@@ -47,8 +47,8 @@ import type { BufferEntryState, BufferTurn } from "../types.js";
 export interface BufferSessionSaveOutcome {
   /** "saved": the session file holds the entry. "handed_over": the entry moved into a drain claim. */
   status: "saved" | "handed_over";
-  /** Turns a drain already extracted (claim tombstone): the owner subtracts them from its copy. */
-  drainedTurns?: BufferTurn[];
+  /** Tombstoned turn identities by their original active/retained list. */
+  drainedTurns?: DrainedTurnSets;
 }
 
 export interface DrainLease {
@@ -529,14 +529,17 @@ export class BufferDrainClaims {
     return "acked";
   }
 
-  /** Turns durably extracted from either active or retained claim backlog. */
-  async drainedTurns(key: string): Promise<BufferTurn[]> {
+  /** Return extracted identities with their active/retained provenance intact. */
+  async drainedTurns(key: string): Promise<DrainedTurnSets> {
     const claim = await this.readClaimBody(key);
-    return claim ? mergeBufferTurnsByIdentity(claim.drained ?? [], claim.drainedRetained ?? []) : [];
+    return {
+      turns: claim?.drained ?? [],
+      retainedTurns: claim?.drainedRetained ?? [],
+    };
   }
 
-  /** Return only this lease owner's identity-matched progress, fenced against takeover. */
-  async drainedTurnsForOwner(key: string, ownerId: string): Promise<BufferTurn[] | null> {
+  /** Return this lease owner's progress, fenced against claim takeover. */
+  async drainedTurnsForOwner(key: string, ownerId: string): Promise<DrainedTurnSets | null> {
     return await withHeldFileLock(
       this.lockFileFor(key),
       { staleMs: CLAIM_LOCK_STALE_MS, maxWaitMs: CLAIM_LOCK_MAX_WAIT_MS },
@@ -545,7 +548,7 @@ export class BufferDrainClaims {
         const lease = await this.readLease(key);
         if (!lease || lease.ownerId !== ownerId) return null;
         const claim = await this.readClaimBody(key);
-        return claim ? mergeBufferTurnsByIdentity(claim.drained ?? [], claim.drainedRetained ?? []) : null;
+        return claim ? { turns: claim.drained ?? [], retainedTurns: claim.drainedRetained ?? [] } : null;
       }
     );
   }

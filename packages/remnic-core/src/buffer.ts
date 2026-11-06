@@ -29,6 +29,7 @@ import {
   probeWithTimeout,
   selectRetainedDeferredTurns,
   type BufferEntryCounts,
+  type DrainedTurnSets,
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
@@ -307,9 +308,9 @@ export class SmartBuffer {
     for (const [key, drained] of drainedTurns) {
       const entry = this.peekEntry(key);
       if (!entry) continue;
-      entry.turns = subtractBufferTurns(entry.turns, drained);
+      entry.turns = subtractBufferTurns(entry.turns, drained.turns);
       if (entry.retainedTurns && entry.retainedTurns.length > 0) {
-        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained);
+        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
         if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
       }
       if (key === "default") this.state.turns = entry.turns;
@@ -339,16 +340,16 @@ export class SmartBuffer {
   entryCounts(): Map<string, BufferEntryCounts> {
     return bufferEntryCounts(this.state);
   }
-  /** Remove only identity-matched turns durably extracted by a claim owner. */
-  async reconcileDrainedTurns(bufferKey: string, drainedTurns: readonly BufferTurn[]): Promise<void> {
-    if (drainedTurns.length === 0) return;
+  /** Remove only extracted identities from their original active/retained lists. */
+  async reconcileDrainedTurns(bufferKey: string, drained: DrainedTurnSets): Promise<void> {
+    if (drained.turns.length === 0 && drained.retainedTurns.length === 0) return;
     await this.enqueueMutation(async () => {
       await this.loadUnlocked();
       const entry = this.peekEntry(bufferKey);
       if (!entry) return;
-      entry.turns = subtractBufferTurns(entry.turns, drainedTurns);
+      entry.turns = subtractBufferTurns(entry.turns, drained.turns);
       if (entry.retainedTurns && entry.retainedTurns.length > 0) {
-        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drainedTurns);
+        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
         if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
       }
       if (bufferKey === "default") this.state.turns = entry.turns;
