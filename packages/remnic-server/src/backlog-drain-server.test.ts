@@ -150,7 +150,12 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
       const body = JSON.parse(await readFile(path.join(drainDir, name), "utf8")) as { entry?: { turns?: string[] } };
       assert.equal(body.entry?.turns?.length ?? 0, 0, `claim ${name} ended as an empty tombstone`);
     }
-    assert.ok(result.backlogScheduler.snapshot().counters.processed >= 1, "the scheduler counted real progress");
+    // The counter increments after drainKey fully resolves; the fact file
+    // becomes visible mid-drain, so sample the terminal signal, not the
+    // side effect.
+    const scheduler = result.backlogScheduler;
+    const counted = await waitFor(() => scheduler.snapshot().counters.processed >= 1);
+    assert.ok(counted, "the scheduler counted real progress");
   } finally {
     await result?.stop().catch(() => {});
     await model.close();
