@@ -10,7 +10,7 @@
       "packages/remnic-core/src/storage.ts": 7315,
       "packages/remnic-core/src/config.ts": 4564
     },
-    "oversizedFileCount": 12,
+    "oversizedFileCount": 11,
     "fileSizeGrandfather": {
       "packages/bench/src/adapters/remnic-adapter.ts": 4039,
       "packages/bench/src/benchmarks/published/beam/runner.ts": 1850,
@@ -63,7 +63,6 @@
       "packages/remnic-core/src/storage.ts": 7315,
       "packages/remnic-core/src/targeted-fact-recall.ts": 2928,
       "packages/remnic-core/src/temporal-index.ts": 1599,
-      "packages/remnic-core/src/transcript.ts": 1253,
       "packages/remnic-core/src/types.ts": 3891,
       "src/index.ts": 6166,
       "src/openclaw-flush-plan-lifecycle.ts": 1573,

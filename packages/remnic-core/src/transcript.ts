@@ -7,12 +7,9 @@ import { isDailyFileDatedBefore, resolveSafeStoragePath } from "./storage-paths.
 import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
+import { JsonlOwnershipDigestCache } from "./transcript-ownership-digest.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
-type DirectoryOwnershipCacheEntry = {
-  status: "empty" | "matches";
-  fileSizes: Map<string, number>;
-};
 
 /**
  * De-duplicate JSONL lines collected across multiple read-back candidate
@@ -86,7 +83,7 @@ export class TranscriptManager {
       fileTokens: Map<string, number>;
     }
   >();
-  private directoryOwnershipCache = new Map<string, DirectoryOwnershipCacheEntry>();
+  private ownershipDigests = new JsonlOwnershipDigestCache();
 
   /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
@@ -267,95 +264,38 @@ export class TranscriptManager {
       return "occupied";
     }
 
-    const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
-    if (!fileSizes) return "occupied";
+    const filePaths = await this.directoryJsonlFilePaths(root, dir, names);
+    if (!filePaths) return "occupied";
 
     if (!sessionKey) return "matches";
-    const cacheKey = this.directoryOwnershipCacheKey(root, dir, sessionKey);
-    const cached = this.directoryOwnershipCache.get(cacheKey);
-    if (cached && this.sameFileSizes(cached.fileSizes, fileSizes)) {
-      return cached.status;
-    }
 
     let hasEntries = false;
-    let hasMatchingEntry = false;
-
-    for (const name of names) {
-      const filePath = await resolveSafeStoragePath(root, dir, name).catch(() => null);
-      if (filePath === null) return "occupied";
+    for (const filePath of filePaths) {
       try {
-        const raw = await readFile(filePath, "utf-8");
-        for (const line of raw.split("\n")) {
-          if (!line.trim()) continue;
-          hasEntries = true;
-          try {
-            const obj = JSON.parse(line) as { sessionKey?: string };
-            if (obj.sessionKey === sessionKey) {
-              hasMatchingEntry = true;
-            } else {
-              return "occupied";
-            }
-          } catch {
-            return "occupied";
-          }
-        }
+        const ownership = await this.ownershipDigests.verify(filePath, sessionKey);
+        if (ownership === "foreign") return "occupied";
+        if (ownership === "matches") hasEntries = true;
       } catch {
         return "occupied";
       }
     }
-
-    const status = hasMatchingEntry ? "matches" : hasEntries ? "occupied" : "empty";
-    if (status === "matches" || status === "empty") {
-      this.directoryOwnershipCache.set(cacheKey, { status, fileSizes });
-    }
-    return status;
+    return hasEntries ? "matches" : "empty";
   }
 
-  private directoryOwnershipCacheKey(root: string, dir: string, sessionKey: string): string {
-    return `${path.resolve(root)}\0${dir}\0${sessionKey}`;
-  }
-
-  private sameFileSizes(left: Map<string, number>, right: Map<string, number>): boolean {
-    if (left.size !== right.size) return false;
-    for (const [name, size] of left) {
-      if (right.get(name) !== size) return false;
-    }
-    return true;
-  }
-
-  private async directoryJsonlFileSizes(
+  private async directoryJsonlFilePaths(
     root: string,
     dir: string,
     names: string[],
-  ): Promise<Map<string, number> | null> {
-    const fileSizes = new Map<string, number>();
+  ): Promise<string[] | null> {
+    const filePaths: string[] = [];
     for (const name of names) {
       const filePath = await resolveSafeStoragePath(root, dir, name).catch(() => null);
       if (filePath === null) return null;
       const fileInfo = await stat(filePath).catch(() => null);
       if (!fileInfo?.isFile()) return null;
-      fileSizes.set(name, Math.max(0, fileInfo.size));
+      filePaths.push(filePath);
     }
-    return fileSizes;
-  }
-
-  private async rememberDirectoryOwnership(
-    root: string,
-    dir: string,
-    sessionKey: string,
-  ): Promise<void> {
-    try {
-      const channelDir = await resolveSafeStoragePath(root, dir);
-      const names = (await readdir(channelDir)).filter((file) => file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file));
-      const fileSizes = await this.directoryJsonlFileSizes(root, dir, names);
-      if (!fileSizes) return;
-      this.directoryOwnershipCache.set(
-        this.directoryOwnershipCacheKey(root, dir, sessionKey),
-        { status: "matches", fileSizes },
-      );
-    } catch {
-      // Cache refresh is best-effort; write path correctness does not depend on it.
-    }
+    return filePaths;
   }
 
   private async getSessionStorageFiles(
@@ -412,7 +352,6 @@ export class TranscriptManager {
     await mkdir(channelDir, { recursive: true });
     const filePath = await resolveSafeStoragePath(this.toolUsageDir, writeDir, file);
     await appendFile(filePath, JSON.stringify(entry) + "\n", "utf-8");
-    await this.rememberDirectoryOwnership(this.toolUsageDir, writeDir, entry.sessionKey);
   }
 
   async readToolUse(
@@ -610,7 +549,6 @@ export class TranscriptManager {
 
       const line = JSON.stringify(entry) + "\n";
       await appendFile(filePath, line, "utf-8");
-      await this.rememberDirectoryOwnership(this.transcriptsDir, writeDir, entry.sessionKey);
       log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
     } catch (err) {
       log.error("failed to append transcript entry:", err);
