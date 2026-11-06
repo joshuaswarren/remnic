@@ -168,6 +168,8 @@ console.log(
 // unchanged buffer do. Durability promises stay pending while the drain is
 // blocked; verified-accumulation assertions apply here too.
 {
+  // SAFETY: gc is only defined under node --expose-gc; absent means noisier
+  // heap numbers.
   const gc = (globalThis as { gc?: () => void }).gc;
   gc?.();
   const observeDepth = 300;
