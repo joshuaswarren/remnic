@@ -255,7 +255,7 @@ console.log(
   const observeQueued = process.memoryUsage().heapUsed;
   console.log(
     `acceptedCaptureQueuePath depth=${observeDepth}  heapGrowthWhileQueued=${((observeQueued - heapBefore) / 1e6).toFixed(1)}MB  ` +
-      `refs: distinct=${observeStats.queuedTailRefs} unshared=${observeStats.queuedTotalRefs}`,
+      `refs: distinct=${observeStats.queuedTailRefs} unsharedEquivalent=${observeStats.unsharedEquivalentRefs}`,
   );
   openGate();
   await queue.waitForIdle(120_000);

@@ -104,6 +104,7 @@ export interface SnapshotChain {
 }
 
 export interface SnapshotSharingStats {
+  /** Distinct content chains registered (not task count — see queuedHolders). */
   queuedNodes: number;
   /** Reference slots retained across queued snapshots (the O(N²) term on main). */
   queuedTotalRefs: number;
@@ -111,6 +112,10 @@ export interface SnapshotSharingStats {
   queuedTailRefs: number;
   /** Longest base chain reachable from a queued node (must stay bounded). */
   queuedReachableDepth: number;
+  /** Outstanding tasks holding nodes (per-task, not per-node). */
+  queuedHolders: number;
+  /** What retention would be WITHOUT sharing: Σ chain total × holders. */
+  unsharedEquivalentRefs: number;
 }
 
 /** Iterative root-first walk: recursive `yield*` delegation costs O(depth)
@@ -199,9 +204,12 @@ export class ExtractionSnapshotSharingRegistry {
   }
 
   /** Release one holder of a node when its task exits (or on enqueue
-   * refusal). The node leaves the registry only when its LAST holder
-   * releases, so registry accounting stays truthful while any sharer is
-   * still outstanding. Idempotent per task. */
+   * refusal). CONTRACT: called EXACTLY ONCE per admit, by the task that
+   * admitted it — the registry has no task identity, so a second call by the
+   * same task would steal another holder's count. The only production caller
+   * (queueBufferedExtraction) enforces this structurally: the closure-finally
+   * and the enqueue-refusal branch are mutually exclusive. Defensively, a
+   * release past zero is a no-op. */
   release(node: SnapshotChain): void {
     if (node.holders <= 0) return;
     node.holders -= 1;
@@ -219,16 +227,20 @@ export class ExtractionSnapshotSharingRegistry {
     let queuedTotalRefs = 0;
     let queuedTailRefs = 0;
     let queuedReachableDepth = 0;
+    let queuedHolders = 0;
+    let unsharedEquivalentRefs = 0;
     for (const list of this.buckets.values()) {
       for (const node of list) {
         queuedNodes += 1;
         queuedTotalRefs += node.total;
         queuedTailRefs += node.tail.length;
+        queuedHolders += node.holders;
+        unsharedEquivalentRefs += node.total * node.holders;
         let depth = 0;
         for (let walk: SnapshotChain | undefined = node; walk; walk = walk.base) depth += 1;
         if (depth > queuedReachableDepth) queuedReachableDepth = depth;
       }
     }
-    return { queuedNodes, queuedTotalRefs, queuedTailRefs, queuedReachableDepth };
+    return { queuedNodes, queuedTotalRefs, queuedTailRefs, queuedReachableDepth, queuedHolders, unsharedEquivalentRefs };
   }
 }

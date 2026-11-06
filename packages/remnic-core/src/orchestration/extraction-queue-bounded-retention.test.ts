@@ -434,6 +434,8 @@ test("overlapping identical tasks keep the shared node until the last holder rel
   let stats = registry.stats();
   assert.equal(stats.queuedNodes, 1, "shared node survives until the last holder releases");
   assert.equal(stats.queuedTailRefs, 1, "content still counted while sharers remain");
+  assert.equal(stats.queuedHolders, 2, "per-task holder count tracks outstanding sharers");
+  assert.equal(stats.unsharedEquivalentRefs, 2, "unshared equivalent: 2 tasks x 1-turn chain");
   assert.equal(stats.queuedReachableDepth, 1);
   const d = registry.admit("k", [turn]);
   assert.equal(d, b, "later identical admission keeps aliasing onto the shared node");
@@ -446,7 +448,52 @@ test("overlapping identical tasks keep the shared node until the last holder rel
   assert.equal(stats.queuedNodes, 0, "registry empties when the last holder releases");
   assert.equal(stats.queuedTailRefs, 0);
   assert.equal(stats.queuedTotalRefs, 0);
+  assert.equal(stats.queuedHolders, 0);
+  assert.equal(stats.unsharedEquivalentRefs, 0);
   assert.equal(stats.queuedReachableDepth, 0);
+});
+
+test("refusal path releases exactly once: registry stays balanced for later work", async () => {
+  const h = makeHarness();
+  h.queue.stopAccepting();
+  await h.coordinator.queueBufferedExtraction([makeTurn("refused")], "trigger_mode", {
+    bufferKey: "k",
+    preemptable: true,
+  });
+  // The refusal branch releases the node before any closure existed; the
+  // accounting must be back to zero with no phantom holder, or the next
+  // admission cycle would drift.
+  assert.deepEqual(h.coordinator.snapshotSharing.stats(), {
+    queuedNodes: 0,
+    queuedTotalRefs: 0,
+    queuedTailRefs: 0,
+    queuedReachableDepth: 0,
+    queuedHolders: 0,
+    unsharedEquivalentRefs: 0,
+  });
+  h.queue.resumeAccepting();
+  await h.coordinator.queueBufferedExtraction([makeTurn("after refusal")], "trigger_mode", {
+    bufferKey: "k",
+    preemptable: true,
+  });
+  const stats = h.coordinator.snapshotSharing.stats();
+  assert.equal(stats.queuedNodes, 1, "post-refusal admission registers normally");
+  assert.equal(stats.queuedHolders, 1);
+  await h.release();
+  assert.equal(h.coordinator.snapshotSharing.stats().queuedHolders, 0);
+});
+
+test("stats report per-task holders and unshared equivalent separately from nodes", async () => {
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const turns: BufferTurn[] = [makeTurn("a"), makeTurn("b")];
+  registry.admit("k", turns);
+  registry.admit("k", turns);
+  registry.admit("k", turns);
+  const stats = registry.stats();
+  assert.equal(stats.queuedNodes, 1, "one distinct chain");
+  assert.equal(stats.queuedHolders, 3, "three outstanding tasks");
+  assert.equal(stats.queuedTotalRefs, 2, "chain content slots");
+  assert.equal(stats.unsharedEquivalentRefs, 6, "3 tasks x 2-turn chain without sharing");
 });
 
 test("10,000-deep queued chain materializes without stack overflow", async () => {
