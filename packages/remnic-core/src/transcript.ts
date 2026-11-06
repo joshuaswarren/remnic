@@ -13,6 +13,10 @@ type DirectoryOwnershipCacheEntry = {
   status: "empty" | "matches";
   fileSizes: Map<string, number>;
 };
+type DirectoryOwnershipScanResult = {
+  status: DirectorySessionStatus;
+  fileSizes: Map<string, number>;
+};
 
 /**
  * De-duplicate JSONL lines collected across multiple read-back candidate
@@ -87,6 +91,7 @@ export class TranscriptManager {
     }
   >();
   private directoryOwnershipCache = new Map<string, DirectoryOwnershipCacheEntry>();
+  private directoryScanInFlight = new Map<string, Promise<DirectoryOwnershipScanResult>>();
 
   /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
@@ -276,7 +281,53 @@ export class TranscriptManager {
     if (cached && this.sameFileSizes(cached.fileSizes, fileSizes)) {
       return cached.status;
     }
+    return this.sharedDirectoryOwnershipScan(root, dir, names, sessionKey, cacheKey, fileSizes);
+  }
 
+  /**
+   * Coalesce concurrent ownership parses for the same (root, dir, sessionKey).
+   * A caller joins only when the file-size shape it just observed matches the
+   * in-flight scan's snapshot — the same evidence a persistent-cache hit
+   * requires — so any external write that changed the directory (append,
+   * removal, new file) sends that caller to a private re-scan instead of a
+   * possibly stale shared verdict. The key includes the sessionKey, so
+   * verdicts are never shared across owners.
+   */
+  private async sharedDirectoryOwnershipScan(
+    root: string,
+    dir: string,
+    names: string[],
+    sessionKey: string,
+    cacheKey: string,
+    fileSizes: Map<string, number>,
+  ): Promise<DirectorySessionStatus> {
+    const inFlight = this.directoryScanInFlight.get(cacheKey);
+    if (inFlight) {
+      const shared = await inFlight;
+      if (this.sameFileSizes(fileSizes, shared.fileSizes)) return shared.status;
+      return this.parseDirectoryOwnership(root, dir, names, sessionKey, cacheKey, fileSizes);
+    }
+    const scan: Promise<DirectoryOwnershipScanResult> = (async () => ({
+      status: await this.parseDirectoryOwnership(root, dir, names, sessionKey, cacheKey, fileSizes),
+      fileSizes,
+    }))().finally(() => {
+      if (this.directoryScanInFlight.get(cacheKey) === scan) {
+        this.directoryScanInFlight.delete(cacheKey);
+      }
+    });
+    this.directoryScanInFlight.set(cacheKey, scan);
+    const shared = await scan;
+    return shared.status;
+  }
+
+  private async parseDirectoryOwnership(
+    root: string,
+    dir: string,
+    names: string[],
+    sessionKey: string,
+    cacheKey: string,
+    fileSizes: Map<string, number>,
+  ): Promise<DirectorySessionStatus> {
     let hasEntries = false;
     let hasMatchingEntry = false;
 
