@@ -1,7 +1,28 @@
-import type { BufferTurn, ExtractionFailureClass, ExtractionResult, MetaState } from "../types.js";
+import type { BufferTurn, ExtractionFailureClass, ExtractionResult, MetaState, PluginConfig } from "../types.js";
 import type { StorageManager } from "../index.js";
+import { resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import { log } from "../logger.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
+
+/**
+ * Count of durable outputs an extraction result asks persistence to write
+ * (#3227). Besides the four core arrays, it includes complete relationships
+ * while `entityRelationships` is on and a nonblank identity reflection while
+ * `identity` is on. It counts requested output, not items that passed the
+ * writer's policy gates. Episode titles and provenance metadata never count.
+ */
+export function countRequestedDurableOutputs(result: ExtractionResult, config: PluginConfig): number {
+  const capabilities = resolveRecallEnhancementCapabilities(config);
+  const relationships =
+    capabilities.entityRelationships && Array.isArray(result.relationships)
+      ? result.relationships.filter((rel) => Boolean(rel?.source && rel.target && rel.label)).length
+      : 0;
+  const reflection = capabilities.identity && (result.identityReflection ?? "").trim().length > 0 ? 1 : 0;
+  return (
+    result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length +
+    relationships + reflection
+  );
+}
 
 export function combineExtractionAbortSignals(
   primary: AbortSignal | undefined,

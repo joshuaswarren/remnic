@@ -1457,3 +1457,139 @@ test("isolated claim drains share the orchestrator's provider breaker (review ro
     await harness.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// #3227: optional durable outputs (identity reflection, entity relationships)
+// ---------------------------------------------------------------------------
+
+function optionalOnlyResult(extra: Partial<ExtractionResult>): ExtractionResult {
+  return { ...emptySuccessResult(), ...extra };
+}
+
+async function runOptionalOnly(h: Harness, key: string) {
+  return h.newCoordinator().runExtraction(makeTurns(key), {
+    skipCharThreshold: true,
+    skipUserTurnThreshold: true,
+    clearBufferAfterExtraction: false,
+    bufferKey: key,
+  });
+}
+
+test("#3227: a reflection-only result reaches persistence while identity is enabled", async () => {
+  const h = await makeHarness({ identityEnabled: true });
+  try {
+    h.setRespond(() => optionalOnlyResult({ identityReflection: "I should state uncertainty explicitly." }));
+    const result = await runOptionalOnly(h, "reflection-only");
+    assert.equal(result.status, "completed");
+    assert.notEqual(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 1, "the reflection must reach persistExtraction");
+    assert.equal(result.durableOutputCount, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: a relationship-only result reaches persistence while entity relationships are enabled", async () => {
+  const h = await makeHarness({ entityRelationshipsEnabled: true });
+  try {
+    h.setRespond(() =>
+      optionalOnlyResult({ relationships: [{ source: "Alpha", target: "Beta", label: "depends on" }] }),
+    );
+    const result = await runOptionalOnly(h, "relationship-only");
+    assert.equal(result.status, "completed");
+    assert.notEqual(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 1, "the relationship must reach persistExtraction");
+    assert.equal(result.durableOutputCount, 1);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: optional-only results keep empty semantics while their capability is off", async () => {
+  const h = await makeHarness({ identityEnabled: false, entityRelationshipsEnabled: false });
+  try {
+    h.setRespond(() =>
+      optionalOnlyResult({
+        identityReflection: "I should state uncertainty explicitly.",
+        relationships: [{ source: "Alpha", target: "Beta", label: "depends on" }],
+      }),
+    );
+    const result = await runOptionalOnly(h, "optional-disabled");
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 0);
+    assert.equal(h.recordedProcessedCount(), 1, "a disabled-only result is still an empty success");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: blank reflections, incomplete relationships and title-only metadata are not durable outputs", async () => {
+  const h = await makeHarness({ identityEnabled: true, entityRelationshipsEnabled: true });
+  try {
+    h.setRespond(() =>
+      optionalOnlyResult({
+        identityReflection: "   ",
+        relationships: [{ source: "Alpha", target: "", label: "depends on" }],
+        episodeTitle: "A title alone",
+      }),
+    );
+    const result = await runOptionalOnly(h, "optional-blank");
+    assert.equal(result.status, "skipped");
+    assert.equal(result.reason, "empty_extraction_result");
+    assert.equal(h.persistCalls(), 0);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: mixed results count four-array and optional outputs once", async () => {
+  const h = await makeHarness({ identityEnabled: true, entityRelationshipsEnabled: true });
+  try {
+    h.setRespond(() => ({
+      ...successResult(),
+      identityReflection: "I should state uncertainty explicitly.",
+      relationships: [{ source: "Alpha", target: "Beta", label: "depends on" }],
+    }));
+    const result = await runOptionalOnly(h, "mixed-outputs");
+    assert.equal(result.status, "completed");
+    assert.equal(h.persistCalls(), 1);
+    assert.equal(result.durableOutputCount, 3);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: a fingerprinted reflection-only run records the fingerprint only after persistence", async () => {
+  const h = await makeHarness({ identityEnabled: true });
+  try {
+    const order: string[] = [];
+    h.setPersist(() => {
+      order.push("persist");
+    });
+    h.setFingerprintRecorder(async () => {
+      order.push("fingerprint");
+    });
+    h.setRespond(() => optionalOnlyResult({ identityReflection: "I should state uncertainty explicitly." }));
+    const result = await runOptionalOnly(h, "reflection-fingerprint");
+    assert.equal(result.status, "completed");
+    assert.deepEqual(order, ["persist", "fingerprint"]);
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("#3227: a failed reflection-only persist stays retryable instead of an empty success", async () => {
+  const h = await makeHarness({ identityEnabled: true });
+  try {
+    h.setPersist(() => {
+      throw new Error("synthetic reflection write failure");
+    });
+    h.setRespond(() => optionalOnlyResult({ identityReflection: "I should state uncertainty explicitly." }));
+    await assert.rejects(runOptionalOnly(h, "reflection-persist-fails"), /synthetic reflection write failure/);
+    assert.equal(h.persistCalls(), 1);
+    assert.equal(h.recordedProcessedCount(), 0, "a dropped reflection must not be marked processed");
+  } finally {
+    await h.cleanup();
+  }
+});
