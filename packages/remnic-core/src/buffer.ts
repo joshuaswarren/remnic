@@ -29,7 +29,6 @@ import {
   probeWithTimeout,
   selectRetainedDeferredTurns,
   type BufferEntryCounts,
-  type DrainedTurnSets,
 } from "./buffer-turn-helpers.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
@@ -301,8 +300,8 @@ export class SmartBuffer {
     this.loaded = true;
   }
 
-  private async saveUnlocked(): Promise<void> {
-    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
+  private async saveUnlocked(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
+    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile);
     // A drain tombstone: the turns the drain extracted leave this copy too,
     // so a stale owner never extracts (or persists) them a second time.
     for (const [key, drained] of drainedTurns) {
@@ -340,24 +339,9 @@ export class SmartBuffer {
   entryCounts(): Map<string, BufferEntryCounts> {
     return bufferEntryCounts(this.state);
   }
-  /** Remove only extracted identities from their original active/retained lists. */
-  async reconcileDrainedTurns(bufferKey: string, drained: DrainedTurnSets): Promise<void> {
-    if (drained.turns.length === 0 && drained.retainedTurns.length === 0) return;
-    await this.enqueueMutation(async () => {
-      await this.loadUnlocked();
-      const entry = this.peekEntry(bufferKey);
-      if (!entry) return;
-      entry.turns = subtractBufferTurns(entry.turns, drained.turns);
-      if (entry.retainedTurns && entry.retainedTurns.length > 0) {
-        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
-        if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
-      }
-      if (bufferKey === "default") this.state.turns = entry.turns;
-    });
-  }
 
-  async save(): Promise<void> {
-    await this.enqueueMutation(async () => this.saveUnlocked());
+  async save(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
+    await this.enqueueMutation(async () => this.saveUnlocked(reconcile));
   }
 
   /**

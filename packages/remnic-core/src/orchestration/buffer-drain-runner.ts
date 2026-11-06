@@ -560,7 +560,7 @@ async function runClaimDrain(
   // concurrent ingress saves.
   const reconcileDrainedTurns = async (): Promise<void> => {
     const drained = await ctx.claims.drainedTurnsForOwner(ctx.key, ctx.ownerId);
-    if (drained !== null) await ctx.orchestrator.buffer.reconcileDrainedTurns(ctx.key, drained);
+    if (drained !== null) await ctx.orchestrator.buffer.save({ key: ctx.key, drained });
   };
 
   // An emptied claim acks here: the ack verdict is the truth (drained), or

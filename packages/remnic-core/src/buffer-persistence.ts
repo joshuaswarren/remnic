@@ -74,17 +74,20 @@ export class BufferSessionPersistence {
     storage: BufferStorage,
     state: BufferState,
     peekEntry: (key: string) => BufferEntryState | undefined,
+    reconcile?: { key: string; drained: DrainedTurnSets },
   ): Promise<BufferPersistOutcome> {
+    const drainedTurns = new Map<string, DrainedTurnSets>(
+      reconcile ? [[reconcile.key, reconcile.drained]] : [],
+    );
     const saveSession = storage.saveBufferSession?.bind(storage);
     const deleteSession = storage.deleteBufferSession?.bind(storage);
     if (!saveSession || !deleteSession) {
       await storage.saveBuffer(state);
       this.dirty.clear();
       this.deleted.clear();
-      return { handedOver: [], drainedTurns: new Map() };
+      return { handedOver: [], drainedTurns };
     }
     const handedOver: string[] = [];
-    const drainedTurns = new Map<string, DrainedTurnSets>();
     for (const key of [...this.deleted]) {
       await deleteSession(key);
       this.deleted.delete(key);
