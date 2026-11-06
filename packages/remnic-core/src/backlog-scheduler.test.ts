@@ -23,6 +23,7 @@ import { Orchestrator } from "./orchestrator.js";
 import {
   cleanupDir,
   makeHarmonicLifecycleConfig,
+  memoryFilesContaining,
   mkTempMemoryDir,
   singleFactResult,
   stubExtraction,
@@ -455,6 +456,92 @@ test("a wired scheduler drains real backlog and resumes after tombstone-consumin
         ["wired three"],
         "only the genuinely new turn extracts — drained turns never resurrect"
       );
+    } finally {
+      await scheduler.stop();
+    }
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+// ── Real wiring: full cap cycle (fill → refuse → drain → admit) ─────────────
+
+test("a full session cap admits a new durable session after the backlog drains", async () => {
+  // Real production SmartBuffer admission, real backlog scheduler/drain and
+  // the real persistence path (session files → drain claims → memory files).
+  // The extraction MODEL is a test double: it records the exact turn slice it
+  // is asked to extract and derives one fact from the first turn's content —
+  // every durability, admission and clearing decision below is production code.
+  const memoryDir = await mkTempMemoryDir("backlog-cap-cycle");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(
+      makeHarmonicLifecycleConfig(memoryDir, {
+        extractionMinChars: 0,
+        extractionMinUserTurns: 1,
+        bufferMaxSessions: 4, // + the legacy `default` sentinel entry: 3 durable slots
+      })
+    );
+    const calls = stubExtraction(orchestrator, (turns) => singleFactResult(`cap-cycle fact for ${turns[0]?.content ?? "empty"}`));
+    const buffer = orchestrator.buffer;
+    const defaultNamespace = orchestrator.config.defaultNamespace;
+
+    // Mirrors production ingestion (turn-ingestion.ts): accepted captures are
+    // pinned BEFORE bounded admission, so the cap applies to real durable work.
+    const pinned = (key: string, content: string): BufferTurn => ({
+      ...turn(content, key),
+      acceptedCapture: true,
+      writeNamespaceOverride: defaultNamespace,
+    });
+    const capture = async (key: string, content: string): Promise<void> => {
+      const outcome = await buffer.addTurnBounded(key, pinned(key, content));
+      assert.notEqual(outcome, null, `${key} admitted below the cap`);
+      await buffer.flushPendingSave({ throwOnFailure: true });
+    };
+    await capture("cap-1", "alpha one");
+    await capture("cap-2", "beta two");
+    await capture("cap-3", "gamma three");
+
+    // The cap genuinely bites: a fourth durable session is refused, never
+    // evicted (#3251).
+    assert.equal(
+      await orchestrator.buffer.addTurnBounded("cap-4", turn("delta four", "cap-4")),
+      null,
+      "a fourth session is refused at the cap"
+    );
+
+    const scheduler = wireBacklogScheduler(orchestrator, { pollMs: 3_600_000 });
+    try {
+      scheduler.start();
+      for (let attempt = 0; attempt < 6 && scheduler.snapshot().counters.processed < 3; attempt += 1) {
+        await scheduler.tickForTest();
+        await scheduler.settleForTest();
+      }
+      assert.equal(scheduler.snapshot().counters.processed, 3, "all three sessions drained");
+      assert.equal(scheduler.snapshot().counters.durableOutputs, 3, "one durable output per session");
+      assert.equal(calls.length, 3, "the model double saw one turn slice per session");
+
+      // Durable extraction kept the content: each session's fact is on disk.
+      for (const source of ["alpha one", "beta two", "gamma three"]) {
+        const hits = await memoryFilesContaining(memoryDir, `cap-cycle fact for ${source}`);
+        assert.ok(hits.length > 0, `content of the drained session was lost: ${source}`);
+      }
+
+      // The source turns are cleared: drained claims are empty tombstones.
+      const claims = orchestrator.storage.bufferDrainClaims();
+      assert.deepEqual(
+        (await claims.list()).map((l) => l.turnCount).sort(),
+        [0, 0, 0],
+        "all drained claims are empty tombstones"
+      );
+
+      // THE WEDGE (red): the backlog is drained and the disk freed, yet a new
+      // durable session is still refused — the live in-memory entries keep
+      // their already-drained accepted-capture turns until some ingress
+      // touches those exact keys, and a new key cannot free them.
+      const admitted = await orchestrator.buffer.addTurnBounded("cap-4", turn("delta four", "cap-4"));
+      assert.notEqual(admitted, null, "a fully drained backlog frees cap slots for a new session");
     } finally {
       await scheduler.stop();
     }
