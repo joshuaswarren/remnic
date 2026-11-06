@@ -19,9 +19,10 @@
  * Usage:
  *   node --expose-gc ./node_modules/.bin/tsx scripts/measure-extraction-queue-retention.ts
  */
+import assert from "node:assert/strict";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
 import { SmartBuffer } from "../packages/remnic-core/src/buffer.js";
-import type { BufferState, BufferTurn } from "../packages/remnic-core/src/types.js";
+import type { BufferState } from "../packages/remnic-core/src/types.js";
 import { ExtractionQueueCoordinator } from "../packages/remnic-core/src/orchestration/extraction-queue-coordinator.js";
 import {
   TurnIngestionCoordinator,
@@ -36,14 +37,6 @@ class FakeStorage {
   async saveBuffer(): Promise<void> {}
 }
 
-function makeTurn(content: string): BufferTurn {
-  return {
-    role: "user",
-    content,
-    timestamp: "2026-08-17T00:00:00.000Z",
-    sessionKey: "bench",
-  };
-}
 
 interface Sample {
   turns: number;
@@ -104,7 +97,7 @@ async function pumpAndMeasure(turnCount: number, turnBytes: number): Promise<Sam
   coordinatorRef = coordinator;
 
   for (let index = 1; index <= turnCount; index += 1) {
-    await coordinator.processTurn("user", makeTurn(`${"y".repeat(turnBytes)}#${index}`), "bench");
+    await coordinator.processTurn("user", `${"y".repeat(turnBytes)}#${index}`, "bench");
   }
   globalWithGc.gc?.();
   globalWithGc.gc?.();
