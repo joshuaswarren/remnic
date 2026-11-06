@@ -109,32 +109,38 @@ export interface SnapshotSharingStats {
   queuedTailRefs: number;
 }
 
-function* chainTurns(chain: SnapshotChain): Generator<BufferTurn> {
-  // Iterative root-first walk: recursive `yield*` delegation costs O(depth)
-  // per item and hangs production-scale chains (3,000+ turn sessions,
-  // hours-long backlogs). Same order, bounded stack.
+/** Iterative root-first walk: recursive `yield*` delegation costs O(depth)
+ * per item and hangs production-scale chains (3,000+ turn sessions,
+ * hours-long backlogs). Same order, bounded stack, no casts. */
+function chainNodes(chain: SnapshotChain): SnapshotChain[] {
   const nodes: SnapshotChain[] = [];
   for (let node: SnapshotChain | undefined = chain; node; node = node.base) nodes.push(node);
-  for (const node of [...nodes].reverse()) yield* node.tail;
+  return [...nodes].reverse();
 }
 
-/** Element-wise consumer-equivalence of the chain's turns against a snapshot prefix. */
+/**
+ * Element-wise consumer-equivalence of the chain's turns against a snapshot
+ * prefix. Cost is O(chain.total) compares per admit — required to prove the
+ * shared prefix is consumer-equivalent to the incoming snapshot — so a chain
+ * build is O(depth^2) compares in total (measured, acknowledged in the PR).
+ */
 export function chainPrefixEquivalent(chain: SnapshotChain, turns: readonly BufferTurn[]): boolean {
   let offset = 0;
-  for (const chained of chainTurns(chain)) {
-    const incoming = turns[offset];
-    if (incoming === undefined || !turnRepresentationEquivalent(chained, incoming)) return false;
-    offset += 1;
+  for (const node of chainNodes(chain)) {
+    for (const chained of node.tail) {
+      const incoming = turns[offset];
+      if (incoming === undefined) return false;
+      if (!turnRepresentationEquivalent(chained, incoming)) return false;
+      offset += 1;
+    }
   }
   return offset === chain.total;
 }
 
 /** Fresh array with exactly this snapshot's turns, in order. Run-time only. */
 export function materializeChain(chain: SnapshotChain): BufferTurn[] {
-  const nodes: SnapshotChain[] = [];
-  for (let node: SnapshotChain | undefined = chain; node; node = node.base) nodes.push(node);
   const out: BufferTurn[] = [];
-  for (const node of [...nodes].reverse()) {
+  for (const node of chainNodes(chain)) {
     for (const turn of node.tail) out.push(turn);
   }
   return out;
