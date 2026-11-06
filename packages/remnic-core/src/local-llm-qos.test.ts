@@ -367,11 +367,11 @@ test("LocalLlmClient includes queue wait in the exhausted-abort warning", async 
   const originalFetch = globalThis.fetch;
   const holderResponse = Promise.withResolvers<Response>();
   let calls = 0;
-  globalThis.fetch = (async () => {
+  globalThis.fetch = async () => {
     calls += 1;
     if (calls === 1) return await holderResponse.promise;
     throw new DOMException("request aborted", "AbortError");
-  }) as typeof fetch;
+  };
 
   try {
     const holder = client.chatCompletion(
