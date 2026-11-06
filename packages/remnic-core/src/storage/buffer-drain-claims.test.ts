@@ -5,10 +5,10 @@ import { hostname } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { BufferDrainClaims, type DrainLease } from "./buffer-drain-claims.js";
-import { bufferSessionFileName } from "./buffer-session-files.js";
+import { BufferDrainClaims, type AckOutcome, type DrainLease } from "./buffer-drain-claims.js";
+import { BufferSessionFiles, bufferSessionFileName } from "./buffer-session-files.js";
 import type { BufferEntryState } from "../types.js";
-
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 /** Plain-file BufferFileIo double: claims logic is file-atomic, not crypto-aware. */
 function plainIo() {
   return {
@@ -24,6 +24,7 @@ function plainIo() {
     },
   };
 }
+
 
 function turn(content: string, timestamp = "2026-11-01T00:00:00.000Z") {
   return { role: "user" as const, content, timestamp, sessionKey: "sess-1" };
@@ -146,6 +147,43 @@ test("mergeIntoClaim appends unseen turns and dedupes turns already claimed", as
   }
 });
 
+test("claim merge and reload preserve duplicate occurrence counts after partial extraction", async () => {
+  const s = setup();
+  try {
+    const same = turn("duplicate pending turn");
+    s.seedSession("sess-1", entry([same, same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const initial = await s.claims.load("sess-1");
+    assert.ok(initial);
+
+    await s.claims.writeEntry("sess-1", "worker-1", entry([same]), initial.entry);
+    assert.deepEqual(await s.claims.drainedTurns("sess-1"), { turns: [same], retainedTurns: [] });
+    await s.claims.mergeIntoClaim("sess-1", entry([same, same]));
+
+    const reloaded = new BufferDrainClaims(s.stateDir, plainIo());
+    assert.deepEqual((await reloaded.load("sess-1"))?.entry.turns, [same]);
+    assert.deepEqual(await reloaded.drainedTurns("sess-1"), { turns: [same], retainedTurns: [] });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("claim merge and reload retain every pending duplicate occurrence", async () => {
+  const s = setup();
+  try {
+    const initial = turn("initial pending turn");
+    const duplicate = turn("new duplicate", "2026-11-01T00:01:00.000Z");
+    s.seedSession("sess-1", entry([initial]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([initial, duplicate, duplicate]));
+
+    const reloaded = new BufferDrainClaims(s.stateDir, plainIo());
+    assert.deepEqual((await reloaded.load("sess-1"))?.entry.turns, [initial, duplicate, duplicate]);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("mergeIntoClaim also dedupes retainedTurns", async () => {
   const s = setup();
   try {
@@ -160,6 +198,24 @@ test("mergeIntoClaim also dedupes retainedTurns", async () => {
   }
 });
 
+test("mergeIntoClaim preserves retained work when the same identity drained from active turns", async () => {
+  const s = setup();
+  try {
+    const same = turn("source identity");
+    s.seedSession("sess-1", entry([same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const claimed = await s.claims.load("sess-1");
+    assert.ok(claimed);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), claimed.entry);
+
+    await s.claims.mergeIntoClaim("sess-1", { ...entry([]), retainedTurns: [same] });
+
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.retainedTurns, [same]);
+  } finally {
+    s.cleanup();
+  }
+});
+
 test("writeEntry replaces the claim content; ack keeps a tombstone the owner consumes", async () => {
   const s = setup();
   try {
@@ -167,7 +223,7 @@ test("writeEntry replaces the claim content; ack keeps a tombstone the owner con
     await s.claims.claimFromSessionFile("sess-1", makeLease());
     await s.claims.writeEntry("sess-1", "worker-1", entry([turn("b")]));
     assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["b"]);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["a"], "extracted turns are recorded");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["a"], "extracted turns are recorded");
     assert.equal(await s.claims.ack("sess-1", "not-the-owner"), "busy");
     assert.equal(await s.claims.ack("sess-1", "worker-1"), "not_empty");
     await s.claims.writeEntry("sess-1", "worker-1", entry([]));
@@ -175,12 +231,135 @@ test("writeEntry replaces the claim content; ack keeps a tombstone the owner con
     // The claim file stays as a tombstone: a live owner with a stale copy
     // subtracts the drained turns instead of writing them back.
     assert.equal(s.claims.isClaimed("sess-1"), true);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["a", "b"]);
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["a", "b"]);
     assert.equal(existsSync(s.claims.leasePathForTest("sess-1")), false, "the lease is released");
     await s.claims.release("sess-1");
     assert.equal(s.claims.isClaimed("sess-1"), false);
   } finally {
     s.cleanup();
+  }
+});
+
+test("a tombstone subtracts only its original list when a stale entry has an identical retained copy", async () => {
+  const s = setup();
+  try {
+    const same = turn("one source identity");
+    s.seedSession("sess-1", entry([same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), claim.entry);
+    assert.equal(await s.claims.ack("sess-1", "worker-1"), "acked");
+
+    const files = new BufferSessionFiles(s.stateDir, plainIo());
+    const staleLiveEntry: BufferEntryState = {
+      ...entry([same]),
+      retainedTurns: [same],
+    };
+    const outcome = await files.save("sess-1", staleLiveEntry);
+    assert.deepEqual(outcome.drainedTurns, { turns: [same], retainedTurns: [] });
+    const persisted = JSON.parse(readFileSync(s.sessionFile("sess-1"), "utf8"));
+    assert.deepEqual(persisted.turns, [], "the extracted active occurrence is removed");
+    assert.deepEqual(persisted.retainedTurns, [same], "an identical retained occurrence is not removed by active provenance");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("adopt rejects a reused owner id from a different process identity", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    const original = { ...makeLease("reused-owner"), pid: process.pid };
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", original), "claimed");
+
+    const outcome = await s.claims.adopt("sess-1", {
+      ...makeLease("reused-owner"),
+      pid: process.pid + 1,
+    });
+
+    assert.equal(outcome, "busy");
+    assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, process.pid);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("reused owner IDs cannot authorize stale operations from another process", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("pending")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease("reused-owner")), "claimed");
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    const replacement = { ...makeLease("reused-owner"), pid: process.pid + 1 };
+    writeFileSync(s.claims.leasePathForTest("sess-1"), JSON.stringify(replacement));
+
+    await assert.rejects(
+      s.claims.writeEntry("sess-1", "reused-owner", entry([]), claim.entry),
+      /no longer owned/,
+    );
+    assert.equal(await s.claims.heartbeat("sess-1", "reused-owner", 60_000), "lost");
+    assert.equal(await s.claims.ack("sess-1", "reused-owner"), "busy");
+    await s.claims.releaseLease("sess-1", "reused-owner");
+    assert.equal(await s.claims.drainedTurnsForOwner("sess-1", "reused-owner"), null);
+    assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, replacement.pid);
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns, [turn("pending")]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("releaseLease preserves a replacement lease acquired under the claim lock", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-release-race-"));
+  const claims = new BufferDrainClaims(stateDir, plainIo());
+  const key = "sess-1";
+  const sessionPath = path.join(stateDir, "buffer", bufferSessionFileName(key));
+  const claimPath = path.join(stateDir, "buffer", "drain", bufferSessionFileName(key));
+  let release: Promise<void> | undefined;
+  try {
+    mkdirSync(path.dirname(sessionPath), { recursive: true });
+    writeFileSync(sessionPath, JSON.stringify({ key, ...entry([turn("a")]) }));
+    assert.equal(await claims.claimFromSessionFile(key, makeLease("owner-one")), "claimed");
+
+    await withHeldFileLock(`${claimPath}.lock`, { staleMs: 5_000 }, async (acquired) => {
+      assert.equal(acquired, true);
+      release = claims.releaseLease(key, "owner-one");
+      writeFileSync(claims.leasePathForTest(key), JSON.stringify(makeLease("owner-two")));
+    });
+    await release;
+
+    assert.equal(JSON.parse(readFileSync(claims.leasePathForTest(key), "utf8")).ownerId, "owner-two");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+test("ack preserves a replacement lease acquired under the claim lock", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-ack-race-"));
+  const claims = new BufferDrainClaims(stateDir, plainIo());
+  const key = "sess-1";
+  const sessionPath = path.join(stateDir, "buffer", bufferSessionFileName(key));
+  const claimPath = path.join(stateDir, "buffer", "drain", bufferSessionFileName(key));
+  let ack: Promise<AckOutcome> | undefined;
+  try {
+    mkdirSync(path.dirname(sessionPath), { recursive: true });
+    writeFileSync(sessionPath, JSON.stringify({ key, ...entry([turn("a")]) }));
+    assert.equal(await claims.claimFromSessionFile(key, makeLease("owner-one")), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    await claims.writeEntry(key, "owner-one", entry([]), claimed.entry);
+
+    await withHeldFileLock(`${claimPath}.lock`, { staleMs: 5_000 }, async (acquired) => {
+      assert.equal(acquired, true);
+      ack = claims.ack(key, "owner-one");
+      writeFileSync(claims.leasePathForTest(key), JSON.stringify(makeLease("owner-two")));
+    });
+    await ack;
+
+    assert.equal(JSON.parse(readFileSync(claims.leasePathForTest(key), "utf8")).ownerId, "owner-two");
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });
 
@@ -396,7 +575,7 @@ test("writeEntry rejects progress from a drainer that lost the lease", async () 
       /no longer owned/,
     );
     await s.claims.writeEntry("sess-1", "worker-two", entry([]), loaded.entry);
-    assert.deepEqual((await s.claims.drainedTurns("sess-1")).map((t) => t.content), ["t1"], "the new owner's progress lands");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).turns.map((t) => t.content), ["t1"], "the new owner's progress lands");
   } finally {
     s.cleanup();
   }
@@ -415,6 +594,7 @@ test("a retained turn the drainer extracted is tombstoned, not dropped", async (
     const claim = await s.claims.load("sess-1");
     assert.ok(claim);
     assert.deepEqual((claim.drainedRetained ?? []).map((t) => t.content), ["r1"], "the extracted retained copy is recorded");
+    assert.deepEqual((await s.claims.drainedTurns("sess-1")).retainedTurns.map((t) => t.content), ["r1"]);
     // A live owner still holding a stale retained copy cannot resurrect it.
     await s.claims.mergeIntoClaim("sess-1", { turns: [], retainedTurns: [turn("r1")], lastExtractionAt: null, extractionCount: 0 });
     const after = await s.claims.load("sess-1");

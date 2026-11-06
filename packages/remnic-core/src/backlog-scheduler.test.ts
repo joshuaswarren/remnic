@@ -11,6 +11,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { hostname } from "node:os";
 import {
   BacklogScheduler,
   type BacklogSchedulerDeps,
@@ -23,10 +24,12 @@ import { Orchestrator } from "./orchestrator.js";
 import {
   cleanupDir,
   makeHarmonicLifecycleConfig,
+  memoryFilesContaining,
   mkTempMemoryDir,
   singleFactResult,
   stubExtraction,
 } from "./testing/orchestrator-lite.js";
+import type { DrainLease } from "./storage/buffer-drain-claims.js";
 import type { BufferTurn } from "./types.js";
 
 interface StubState {
@@ -79,10 +82,10 @@ function makeDeps(state: StubState, queue: ExtractionQueueCoordinator): BacklogS
       },
     },
     liveBufferCounts: () => state.counts,
-    lease: () => ({
-      ownerId: "daemon-drain-test",
+    lease: (ownerId) => ({
+      ownerId,
       pid: process.pid,
-      host: "test",
+      host: hostname(),
       acquiredAt: new Date().toISOString(),
       heartbeatAt: new Date().toISOString(),
       leaseMs: 60_000,
@@ -112,6 +115,50 @@ function emptyOutcome(key: string, overrides: Partial<DrainSessionOutcome> = {})
 function turn(content: string, sessionKey: string, timestamp = "2026-11-01T00:00:00.000Z"): BufferTurn {
   return { role: "user", content, timestamp, sessionKey };
 }
+
+test("scheduler instances use distinct lease tokens through claim and drain", async () => {
+  const issuedOwners: string[] = [];
+  const drainedOwners: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const key = `token-session-${attempt}`;
+    const queue = new ExtractionQueueCoordinator(1);
+    const state: StubState = {
+      counts: new Map([[key, { turns: 1, retainedTurns: 0 }]]),
+      claimed: new Set(),
+      claimTurns: new Map(),
+      claimedThisRun: new Set(),
+      outcomes: [emptyOutcome(key)],
+      drained: [],
+    };
+    const deps = makeDeps(state, queue);
+    deps.lease = (ownerId) => {
+      issuedOwners.push(ownerId);
+      return {
+        ownerId,
+        pid: process.pid,
+        host: hostname(),
+        acquiredAt: new Date().toISOString(),
+        heartbeatAt: new Date().toISOString(),
+        leaseMs: 60_000,
+      };
+    };
+    deps.drainKey = async (_drainKey, drainOptions) => {
+      drainedOwners.push(drainOptions.ownerId);
+      return emptyOutcome(key);
+    };
+    const scheduler = new BacklogScheduler(deps, { ownerId: "shared-label", pollMs: 3_600_000 });
+    scheduler.start();
+    try {
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+    } finally {
+      await scheduler.stop();
+    }
+  }
+
+  assert.notEqual(issuedOwners[0], issuedOwners[1]);
+  assert.deepEqual([...new Set(drainedOwners)], [...new Set(issuedOwners)]);
+});
 
 test("startup drains existing claims and newly buffered sessions within the queue's concurrency", async () => {
   const queue = new ExtractionQueueCoordinator(2);
@@ -464,6 +511,399 @@ test("a wired scheduler drains real backlog and resumes after tombstone-consumin
   }
 });
 
+// ── Real wiring: full cap cycle (fill → refuse → drain → admit) ─────────────
+
+test("a full session cap admits a new durable session after the backlog drains", async () => {
+  // Real production SmartBuffer admission, real backlog scheduler/drain and
+  // the real persistence path (session files → drain claims → memory files).
+  // The extraction MODEL is a test double: it records the exact turn slice it
+  // is asked to extract and derives one fact from the first turn's content —
+  // every durability, admission and clearing decision below is production code.
+  const memoryDir = await mkTempMemoryDir("backlog-cap-cycle");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(
+      makeHarmonicLifecycleConfig(memoryDir, {
+        extractionMinChars: 0,
+        extractionMinUserTurns: 1,
+        bufferMaxSessions: 4, // + the legacy `default` sentinel entry: 3 durable slots
+      })
+    );
+    const calls = stubExtraction(orchestrator, (turns) => singleFactResult(`cap-cycle fact for ${turns[0]?.content ?? "empty"}`));
+    const buffer = orchestrator.buffer;
+    const defaultNamespace = orchestrator.config.defaultNamespace;
+
+    // Mirrors production ingestion (turn-ingestion.ts): accepted captures are
+    // pinned BEFORE bounded admission, so the cap applies to real durable work.
+    const pinned = (key: string, content: string): BufferTurn => ({
+      ...turn(content, key),
+      acceptedCapture: true,
+      writeNamespaceOverride: defaultNamespace,
+    });
+    const capture = async (key: string, content: string): Promise<void> => {
+      const outcome = await buffer.addTurnBounded(key, pinned(key, content));
+      assert.notEqual(outcome, null, `${key} admitted below the cap`);
+      await buffer.flushPendingSave({ throwOnFailure: true });
+    };
+    await capture("cap-1", "alpha one");
+    await capture("cap-2", "beta two");
+    await capture("cap-3", "gamma three");
+
+    // The cap genuinely bites: a fourth durable session is refused, never
+    // evicted (#3251).
+    assert.equal(
+      await orchestrator.buffer.addTurnBounded("cap-4", turn("delta four", "cap-4")),
+      null,
+      "a fourth session is refused at the cap"
+    );
+
+    const scheduler = wireBacklogScheduler(orchestrator, { pollMs: 3_600_000 });
+    try {
+      scheduler.start();
+      for (let attempt = 0; attempt < 6 && scheduler.snapshot().counters.processed < 3; attempt += 1) {
+        await scheduler.tickForTest();
+        await scheduler.settleForTest();
+      }
+      assert.equal(scheduler.snapshot().counters.processed, 3, "all three sessions drained");
+      assert.equal(scheduler.snapshot().counters.durableOutputs, 3, "one durable output per session");
+      assert.equal(calls.length, 3, "the model double saw one turn slice per session");
+
+      // Durable extraction kept the content: each session's fact is on disk.
+      for (const source of ["alpha one", "beta two", "gamma three"]) {
+        const hits = await memoryFilesContaining(memoryDir, `cap-cycle fact for ${source}`);
+        assert.ok(hits.length > 0, `content of the drained session was lost: ${source}`);
+      }
+
+
+      // The source turns are cleared from both the durable claim and the live
+      // SmartBuffer; the claim tombstones remain until a later owner save.
+      const claims = orchestrator.storage.bufferDrainClaims();
+      assert.deepEqual(
+        (await claims.list()).map((l) => l.turnCount).sort(),
+        [0, 0, 0],
+        "all drained claims are empty tombstones"
+      );
+      for (const key of ["cap-1", "cap-2", "cap-3"]) {
+        assert.deepEqual(orchestrator.buffer.getTurns(key), [], `${key} stale source turns cleared in memory`);
+      }
+
+      const admitted = await orchestrator.buffer.addTurnBounded("cap-4", pinned("cap-4", "delta four"));
+      assert.notEqual(admitted, null, "a fully drained backlog frees cap slots for a new session");
+    } finally {
+      await scheduler.stop();
+    }
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+
+test("same-key accepted ingress during extraction survives owner-fenced reconciliation", async () => {
+  const memoryDir = await mkTempMemoryDir("backlog-drain-ingress-race");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(
+      makeHarmonicLifecycleConfig(memoryDir, { extractionMinChars: 0, extractionMinUserTurns: 1 })
+    );
+    const buffer = orchestrator.buffer;
+    const namespace = orchestrator.config.defaultNamespace;
+    const key = "race-session";
+    const oldTurn: BufferTurn = {
+      ...turn("original captured turn", key),
+      acceptedCapture: true,
+      writeNamespaceOverride: namespace,
+    };
+    const newerTurn: BufferTurn = {
+      ...turn("new accepted turn during drain", key, "2026-11-02T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: namespace,
+      principalOverride: "principal-race",
+    };
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let firstExtraction = true;
+    const calls = stubExtraction(orchestrator, async (turns) => {
+      if (firstExtraction) {
+        firstExtraction = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return singleFactResult(`race fact for ${turns[0]?.content ?? "empty"}`);
+    });
+
+    assert.notEqual(await buffer.addTurnBounded(key, oldTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    let now = 0;
+    const scheduler = wireBacklogScheduler(orchestrator, {
+      ownerId: "race-owner",
+      pollMs: 3_600_000,
+      retryBaseMs: 1,
+      retryMaxMs: 1,
+      now: () => now,
+    });
+    try {
+      scheduler.start();
+      await entered.promise;
+      assert.equal(
+        await orchestrator.storage.bufferDrainClaims().drainedTurnsForOwner(key, "not-race-owner"),
+        null,
+        "another owner cannot authorize live-buffer reconciliation"
+      );
+
+      // Live ingress saves into the owned claim while the model is still
+      // extracting its original snapshot.
+      assert.notEqual(await buffer.addTurnBounded(key, newerTurn), null);
+      await buffer.flushPendingSave({ throwOnFailure: true });
+      release.resolve();
+      await scheduler.settleForTest();
+
+      const pending = await orchestrator.storage.bufferDrainClaims().load(key);
+      assert.deepEqual(
+        pending?.entry.turns.map((item) => item.content),
+        ["new accepted turn during drain"],
+        "the extracted source is removed while newer accepted ingress remains durable"
+      );
+      assert.equal(pending?.entry.turns[0]?.principalOverride, "principal-race");
+      assert.equal(pending?.entry.turns[0]?.writeNamespaceOverride, namespace);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for original captured turn")).length, 1);
+
+      now = 2;
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+      assert.equal(scheduler.snapshot().counters.processed, 1, "the newer turn also drains");
+      assert.deepEqual(calls.map((batch) => batch.map((item) => item.content)), [
+        ["original captured turn"],
+        ["new accepted turn during drain"],
+      ]);
+      assert.equal(calls[1]?.[0]?.principalOverride, "principal-race");
+      assert.equal(calls[1]?.[0]?.writeNamespaceOverride, namespace);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for original captured turn")).length, 1);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for new accepted turn during drain")).length, 1);
+      assert.equal(scheduler.snapshot().counters.durableOutputs, 1);
+    } finally {
+      release.resolve();
+      await scheduler.stop();
+    }
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+
+
+test("a drain tombstones every identical accepted occurrence before live-buffer reconciliation", async () => {
+  const memoryDir = await mkTempMemoryDir("buffer-reconcile-identical-turns");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const key = "duplicate-session";
+    const duplicate = turn("identical accepted occurrence", key);
+    const newer = {
+      ...turn("new live turn after duplicate drain", key, "2026-11-05T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+    };
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const now = new Date().toISOString();
+    const lease: DrainLease = {
+      ownerId: "duplicate-owner",
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    };
+
+    await buffer.addTurn(key, duplicate);
+    await buffer.addTurn(key, duplicate);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.deepEqual(buffer.getTurns(key), [duplicate, duplicate]);
+    assert.equal(await claims.claimFromSessionFile(key, lease), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    assert.deepEqual(claimed.entry.turns, [duplicate, duplicate]);
+
+    await claims.writeEntry(key, lease.ownerId, { turns: [], lastExtractionAt: null, extractionCount: 0 }, claimed.entry);
+    assert.deepEqual(await claims.drainedTurns(key), { turns: [duplicate, duplicate], retainedTurns: [] });
+    assert.equal(await claims.ack(key, lease.ownerId), "acked");
+
+    assert.notEqual(await buffer.addTurnBounded(key, newer), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.deepEqual(buffer.getTurns(key), [newer]);
+    assert.deepEqual((await orchestrator.storage.loadBuffer()).entries?.[key]?.turns, [newer]);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("ambiguous identical active and retained turns remain pending after cross-list progress", async () => {
+  const memoryDir = await mkTempMemoryDir("buffer-reconcile-cross-list-duplicates");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const key = "cross-list-duplicates";
+    const same = turn("same occurrence identity in both lists", key);
+    const now = new Date().toISOString();
+    const lease: DrainLease = {
+      ownerId: "cross-list-owner",
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    };
+
+    await buffer.addTurn(key, same);
+    await buffer.retainDeferredTurns(key, [same], 10, [same]);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.deepEqual(buffer.getTurns(key), [same, same]);
+    assert.equal(await claims.claimFromSessionFile(key, lease), "claimed");
+    const claim = await claims.load(key);
+    assert.ok(claim);
+    assert.deepEqual(claim.entry.turns, [same]);
+    assert.deepEqual(claim.entry.retainedTurns, [same]);
+
+    // One indistinguishable copy survives in the opposite list. Progress
+    // alone cannot prove whether that is the active or retained occurrence.
+    await claims.writeEntry(
+      key,
+      lease.ownerId,
+      { turns: [], retainedTurns: [same], lastExtractionAt: null, extractionCount: 0 },
+      claim.entry,
+    );
+    const drained = await claims.drainedTurnsForOwner(key, lease.ownerId);
+    assert.deepEqual(drained, { turns: [], retainedTurns: [] });
+    assert.deepEqual(
+      (await claims.load(key))?.entry,
+      { turns: [same], retainedTurns: [same], lastExtractionAt: null, extractionCount: 0 },
+      "both original source-list occurrences remain pending when provenance is ambiguous",
+    );
+    assert.ok(drained);
+    await buffer.save({ key, drained });
+    assert.deepEqual(buffer.getTurns(key), [same, same]);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+test("claim tombstones clear identical active and retained copies on live save", async () => {
+  const memoryDir = await mkTempMemoryDir("buffer-reconcile-retained-provenance");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const key = "retained-session";
+    const source = turn("same source identity", key);
+    const newer = {
+      ...turn("new live turn", key, "2026-11-04T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+    };
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const now = new Date().toISOString();
+    const lease: DrainLease = {
+      ownerId: "retained-owner",
+      pid: process.pid,
+      host: hostname(),
+      acquiredAt: now,
+      heartbeatAt: now,
+      leaseMs: 60_000,
+    };
+
+    await buffer.addTurn(key, source);
+    await buffer.retainDeferredTurns(key, [source]);
+    assert.deepEqual(buffer.getTurns(key), [source, source]);
+    assert.equal(await claims.claimFromSessionFile(key, lease), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    assert.deepEqual(claimed.entry, {
+      turns: [source],
+      retainedTurns: [source],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    await claims.writeEntry(key, lease.ownerId, { turns: [], lastExtractionAt: null, extractionCount: 0 }, claimed.entry);
+    assert.deepEqual(await claims.drainedTurns(key), { turns: [source], retainedTurns: [source] });
+    assert.equal(await claims.ack(key, lease.ownerId), "acked");
+
+    // A new same-key save consumes the tombstone through BufferSessionFiles.
+    assert.notEqual(await buffer.addTurnBounded(key, newer), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.deepEqual(buffer.getTurns(key), [newer]);
+    assert.deepEqual(buffer.getRetainedDeferredTurns(key), []);
+    const persisted = await orchestrator.storage.loadBuffer();
+    assert.deepEqual(persisted.entries?.[key]?.turns, [newer]);
+    assert.equal(persisted.entries?.[key]?.retainedTurns, undefined);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+test("a lease takeover after the drained snapshot cannot erase newer scoped ingress", async () => {
+  const memoryDir = await mkTempMemoryDir("backlog-takeover-reconcile");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(makeHarmonicLifecycleConfig(memoryDir));
+    const buffer = orchestrator.buffer;
+    const claims = orchestrator.storage.bufferDrainClaims();
+    const key = "takeover-session";
+    const oldTurn: BufferTurn = {
+      ...turn("old drained turn", key),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+    };
+    const newerTurn: BufferTurn = {
+      ...turn("new accepted turn", key, "2026-11-03T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: orchestrator.config.defaultNamespace,
+      principalOverride: "new-owner-principal",
+    };
+    const lease = (ownerId: string): DrainLease => {
+      const now = new Date().toISOString();
+      return { ownerId, pid: process.pid, host: hostname(), acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 };
+    };
+
+    assert.notEqual(await buffer.addTurnBounded(key, oldTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    assert.equal(await claims.claimFromSessionFile(key, lease("owner-one")), "claimed");
+    const claimed = await claims.load(key);
+    assert.ok(claimed);
+    await claims.writeEntry(
+      key,
+      "owner-one",
+      { turns: [], lastExtractionAt: null, extractionCount: 0 },
+      claimed.entry
+    );
+    const ownerOneSnapshot = await claims.drainedTurnsForOwner(key, "owner-one");
+    assert.deepEqual(ownerOneSnapshot, { turns: [oldTurn], retainedTurns: [] });
+    assert.ok(ownerOneSnapshot);
+
+    // Simulate takeover after the old owner's fenced read but before its
+    // serialized live-buffer mutation. Progress is monotonic and identities
+    // are list-specific, so applying this snapshot cannot erase newer work.
+    await claims.releaseLease(key, "owner-one");
+    assert.equal(await claims.adopt(key, lease("owner-two")), "adopted");
+    assert.notEqual(await buffer.addTurnBounded(key, newerTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    await buffer.save({ key, drained: ownerOneSnapshot });
+    assert.deepEqual(buffer.getTurns(key), [], "the old in-memory entry remains handed to the claim");
+
+    const afterIngress = await claims.load(key);
+    assert.deepEqual(afterIngress?.entry.turns, [newerTurn]);
+    assert.equal(afterIngress?.entry.turns[0]?.principalOverride, "new-owner-principal");
+    assert.equal(afterIngress?.entry.turns[0]?.writeNamespaceOverride, orchestrator.config.defaultNamespace);
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
 test("a claim decision unsettled mid-rename keeps the key reserved until it settles", async () => {
   const queue = new ExtractionQueueCoordinator(1);
   const state: StubState = {

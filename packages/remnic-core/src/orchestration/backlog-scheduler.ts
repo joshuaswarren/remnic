@@ -25,6 +25,7 @@
  * every claim retryable; a restarted daemon's scheduler adopts them.
  */
 
+import { randomUUID } from "node:crypto";
 import { hostname } from "node:os";
 import { log } from "../logger.js";
 import type { Orchestrator } from "../orchestrator.js";
@@ -44,8 +45,8 @@ export interface BacklogSchedulerDeps {
   liveBufferCounts():
     | Map<string, { turns: number; retainedTurns: number }>
     | Promise<Map<string, { turns: number; retainedTurns: number }>>;
-  /** A fresh lease for claims this scheduler takes. */
-  lease(): DrainLease;
+  /** Create a fresh lease for a unique owner token. */
+  lease(ownerId: string): DrainLease;
   /** Drain one key to quiescence (BufferDrainRunner.drainSession). */
   drainKey(
     key: string,
@@ -63,6 +64,7 @@ export interface BacklogSchedulerDeps {
 }
 
 export interface BacklogSchedulerOptions {
+  /** Optional label prefix; each scheduler instance adds a unique token. */
   ownerId?: string;
   /** Scan cadence in ms (startup + new-work + retry checks). */
   pollMs?: number;
@@ -135,7 +137,7 @@ export class BacklogScheduler {
   constructor(deps: BacklogSchedulerDeps, options: BacklogSchedulerOptions = {}) {
     this.deps = deps;
     this.options = {
-      ownerId: options.ownerId ?? `daemon-drain-${process.pid}`,
+      ownerId: `${options.ownerId ?? "daemon-drain"}-${randomUUID()}`,
       pollMs: options.pollMs ?? DEFAULT_POLL_MS,
       retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
       retryMaxMs: options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS,
@@ -333,11 +335,11 @@ export class BacklogScheduler {
     const { promise: settled, resolve: settle } = Promise.withResolvers<void>();
     this.inFlight.set(key, { controller, settled });
     try {
-      if (!(await this.claimForSubmit(key, needsClaim))) return;
+      if (!(await this.claimForSubmit(key, needsClaim, this.options.ownerId))) return;
       // Stopped between the claim decision and the task: leave the claim
       // with its lease (it expires; the next start adopts) — never drain.
       if (this.stopped) return;
-      await this.drainClaimedKey(key, controller.signal);
+      await this.drainClaimedKey(key, controller.signal, this.options.ownerId);
     } catch (err) {
       // Claim/drain failures are scheduler-level: the claim content is
       // untouched — count failed and back off (never an unhandled rejection
@@ -357,10 +359,10 @@ export class BacklogScheduler {
   }
 
   /** after all — the key goes quiet without a task. "claimed": ours. */
-  private async claimForSubmit(key: string, needsClaim: boolean): Promise<boolean> {
+  private async claimForSubmit(key: string, needsClaim: boolean, ownerId: string): Promise<boolean> {
     if (!needsClaim) return true;
     try {
-      const outcome = await this.deps.claims.claimFromSessionFile(key, this.deps.lease());
+      const outcome = await this.deps.claims.claimFromSessionFile(key, this.deps.lease(ownerId));
       if (outcome === "empty") {
         this.keys.delete(key);
         return false;
@@ -375,11 +377,11 @@ export class BacklogScheduler {
   /** Drain one claimed key. drainKey reports failures as outcomes; a thrown
    *  error still means the claim content is intact — count it failed and
    *  back off. */
-  private async drainClaimedKey(key: string, signal: AbortSignal): Promise<void> {
+  private async drainClaimedKey(key: string, signal: AbortSignal, ownerId: string): Promise<void> {
     this.counters.claimed += 1;
     try {
       const outcome = await this.deps.drainKey(key, {
-        ownerId: this.options.ownerId,
+        ownerId,
         signal,
       });
       this.applyOutcome(key, outcome);
@@ -480,7 +482,6 @@ export function wireBacklogScheduler(
   orchestrator: Orchestrator,
   options: BacklogSchedulerOptions = {}
 ): BacklogScheduler {
-  const ownerId = options.ownerId ?? `daemon-drain-${process.pid}`;
   const runner = new BufferDrainRunner(orchestrator);
   return new BacklogScheduler(
     {
@@ -492,7 +493,7 @@ export function wireBacklogScheduler(
         await orchestrator.buffer.load();
         return orchestrator.buffer.entryCounts();
       },
-      lease: () => {
+      lease: (ownerId) => {
         const now = new Date().toISOString();
         return {
           ownerId,
@@ -508,6 +509,6 @@ export function wireBacklogScheduler(
       // claim-backed drain accumulate toward the same threshold).
       breakerSnapshot: () => orchestrator.getExtractionResilienceStatus().breaker,
     },
-    { ...options, ownerId }
+    options
   );
 }
