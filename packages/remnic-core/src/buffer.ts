@@ -540,6 +540,78 @@ export class SmartBuffer {
     if (mutation === null) return null;
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
+  /**
+   * Admit a multi-session durable capture as one capacity transaction.
+   * Preflight every new key under the mutation lock before persisting any
+   * turn; stable fingerprints make retry after an interrupted persist
+   * idempotent.
+   */
+  async addTurnsBounded(
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+  ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {
+    const pending = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const additions: Array<{ bufferKey: string; turn: BufferTurn }> = [];
+      const seenByKey = new Map<string, Set<string>>();
+      for (const batch of batches) {
+        const existing = this.peekEntry(batch.bufferKey);
+        let fingerprints = seenByKey.get(batch.bufferKey);
+        if (!fingerprints) {
+          fingerprints = new Set(
+            [...(existing?.turns ?? []), ...(existing?.retainedTurns ?? [])]
+              .map((turn) => turn.turnFingerprint)
+              .filter((fingerprint): fingerprint is string => typeof fingerprint === "string" && fingerprint.length > 0),
+          );
+          seenByKey.set(batch.bufferKey, fingerprints);
+        }
+        for (const turn of batch.turns) {
+          const fingerprint = turn.turnFingerprint;
+          if (typeof fingerprint === "string" && fingerprint.length > 0) {
+            if (fingerprints.has(fingerprint)) continue;
+            fingerprints.add(fingerprint);
+          }
+          additions.push({ bufferKey: batch.bufferKey, turn });
+        }
+      }
+
+      const entries = this.state.entries ?? {};
+      const newKeys = [...new Set(
+        additions
+          .map(({ bufferKey }) => bufferKey)
+          .filter((bufferKey) => this.peekEntry(bufferKey) === null),
+      )];
+      const count = Object.keys(entries).length;
+      const requiredEvictions = Math.max(0, count + newKeys.length - this.maxSessionEntries);
+      if (requiredEvictions > 0) {
+        const target = Math.max(0, this.maxSessionEntries - newKeys.length);
+        const evicted = selectEvictedBufferKeys(entries, newKeys, target, {
+          activityAt: (entry) => this.entryActivityAt(entry),
+          holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
+        });
+        if (newKeys.length > 0 && evicted.length < requiredEvictions) return null;
+        for (const key of evicted) delete entries[key];
+        this.persistence.markEvicted(evicted);
+      }
+
+      const recorded: Array<{ bufferKey: string; turn: BufferTurn; mutation: AddTurnMutationResult }> = [];
+      for (const { bufferKey, turn } of additions) {
+        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn) });
+      }
+      return recorded;
+    });
+    if (pending === null) return null;
+
+    const outcomes: Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> = [];
+    for (const item of pending) {
+      outcomes.push({
+        bufferKey: item.bufferKey,
+        turn: item.turn,
+        outcome: await this.completeAddTurnOutcome(item.bufferKey, item.turn, item.mutation),
+      });
+    }
+    return outcomes;
+  }
+
 
   /** Free one slot only when an empty entry can be reclaimed. */
   private makeRoomForEntryUnlocked(): void {

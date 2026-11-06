@@ -158,6 +158,17 @@ test("a retained-only entry is non-evictable backlog: live admission is refused 
     "retained retry turns must not be evicted as 'empty'",
   );
 });
+test("concurrent multi-session admissions reserve capacity without partial batches", async () => {
+  const { buffer } = makeBuffer(seededState({}), 2);
+  const results = await Promise.all([
+    buffer.addTurnsBounded([{ bufferKey: "batch-a", turns: [makeTurn("batch-a", "a")] }]),
+    buffer.addTurnsBounded([{ bufferKey: "batch-b", turns: [makeTurn("batch-b", "b")] }]),
+  ]);
+
+  assert.equal(results.filter((result) => result !== null).length, 1);
+  assert.equal(results.filter((result) => result === null).length, 1);
+  assert.equal(buffer.getTurns("batch-a").length + buffer.getTurns("batch-b").length, 1);
+});
 
 test("processTurn propagates retryable admission refusal without queueing extraction", async () => {
   const { buffer } = makeBuffer(

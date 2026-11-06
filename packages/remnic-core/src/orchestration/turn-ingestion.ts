@@ -305,7 +305,7 @@ export class TurnIngestionCoordinator {
     }
 
     const bySession = new Map<string, BufferTurn[]>();
-    for (const turn of turns) {
+    for (const [turnOrdinal, turn] of turns.entries()) {
       if (turn.role !== "user" && turn.role !== "assistant") continue;
       const key = normalizeReplaySessionKey(turn.sessionKey);
       const list = bySession.get(key) ?? [];
@@ -315,6 +315,18 @@ export class TurnIngestionCoordinator {
         timestamp: turn.timestamp,
         sourceValidAt: turn.sourceValidAt,
         sessionKey: key,
+        turnFingerprint: createHash("sha256")
+          .update(JSON.stringify([
+            turn.source,
+            key,
+            turn.role,
+            turn.timestamp,
+            turnOrdinal,
+            turn.content,
+            turn.externalId ?? null,
+            turn.sourceValidAt ?? null,
+          ]))
+          .digest("hex"),
         ...(options.sessionOwnerPrincipal ? { sessionOwnerPrincipal: options.sessionOwnerPrincipal } : {}),
         parts: turn.parts,
         rawContent: turn.rawContent,
@@ -440,10 +452,31 @@ export class TurnIngestionCoordinator {
         "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
       );
     }
-    for (const [bufferKey, sessionTurns] of bySession) {
-      // No top-level abort check: cancellation applies to the background
-      // extraction, never to the durable capture or save barrier (#3251).
-      if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
+    const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({
+      bufferKey,
+      turns: sessionTurns.map((turn) => {
+        const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
+        if (options.codingContext) pinned.codingContext = options.codingContext;
+        if (options.principalOverride) pinned.principalOverride = options.principalOverride;
+        if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
+        return pinned;
+      }),
+    }));
+    const outcomes = await this.deps.buffer.addTurnsBounded(batches);
+    if (outcomes === null) {
+      const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
+      throw new ReplayAdmissionRefusedError(
+        `durable observe capture refused: extraction buffer at entry capacity for batch containing ${refusedKey}`,
+      );
+    }
+
+    // All requested session keys were capacity-admitted together before any
+    // turn was saved. A repeated request after a partial persistence failure
+    // deduplicates its stable turn fingerprints in addTurnsBounded.
+    await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+
+    if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
+      for (const [bufferKey, sessionTurns] of bySession) {
         await this.deps.lcmEngine.observeMessages(
           bufferKey,
           sessionTurns.map((turn) => ({
@@ -455,29 +488,17 @@ export class TurnIngestionCoordinator {
           })),
         );
       }
-      for (const turn of sessionTurns) {
-        const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
-        if (options.codingContext) pinned.codingContext = options.codingContext;
-        if (options.principalOverride) pinned.principalOverride = options.principalOverride;
-        if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
-        const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
-        if (outcome === null) {
-          throw new ReplayAdmissionRefusedError(
-            `durable observe capture refused: extraction buffer at entry capacity for ${bufferKey}`,
-          );
-        }
-        if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
-          queueBufferedCaptureScopeGroups(
-            this.deps.queueBufferedExtraction,
-            outcome.extractionTurns,
-            bufferKey,
-            options,
-          );
-        }
+    }
+
+    for (const { bufferKey, outcome } of outcomes) {
+      if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
+        queueBufferedCaptureScopeGroups(
+          this.deps.queueBufferedExtraction,
+          outcome.extractionTurns,
+          bufferKey,
+          options,
+        );
       }
-      // Acceptance durability barrier (#1909 seam): surfaces storage failures
-      // BEFORE the caller can report acceptance. Not abort-gated.
-      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     }
   }
 
