@@ -247,9 +247,10 @@ console.log(
   assert.equal(queue.isProcessing, true, "first observe group holds the worker");
   assert.equal(durability.length, observeDepth, "every observe holds a durability promise");
   const observeStats = coordinator.snapshotSharing.stats();
-  assert.equal(observeStats.queuedNodes, observeDepth, "one chain node per accepted observe");
+  assert.equal(observeStats.queuedNodes, 1, "identical accepted groups reuse one chain node");
   assert.equal(observeStats.queuedTailRefs, acceptedGroup.length, "identical accepted groups share fully");
-  assert.equal(observeStats.queuedTotalRefs, acceptedGroup.length * observeDepth, "unshared equals per-observe copies");
+  assert.equal(observeStats.queuedTotalRefs, acceptedGroup.length, "total reflects the single shared window");
+  assert.equal(observeStats.queuedReachableDepth, 1, "identical ingress keeps depth at one");
   gc?.();
   const observeQueued = process.memoryUsage().heapUsed;
   console.log(

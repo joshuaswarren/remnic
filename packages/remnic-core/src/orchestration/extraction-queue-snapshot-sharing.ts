@@ -107,6 +107,8 @@ export interface SnapshotSharingStats {
   queuedTotalRefs: number;
   /** Distinct reference slots (what sharing actually retains). */
   queuedTailRefs: number;
+  /** Longest base chain reachable from a queued node (must stay bounded). */
+  queuedReachableDepth: number;
 }
 
 /** Iterative root-first walk: recursive `yield*` delegation costs O(depth)
@@ -159,6 +161,15 @@ export class ExtractionSnapshotSharingRegistry {
     const bucketKey = `${bufferKey}\u0000${scopeClass}`;
     const list = this.buckets.get(bucketKey);
     const base = list !== undefined && list.length > 0 ? list[list.length - 1] : undefined;
+    if (base && base.total === turns.length && chainPrefixEquivalent(base, turns)) {
+      // Identical window: reuse the existing node. Creating a tail=[] node
+      // here would chain onto the base and grow reachable depth (and admit
+      // cost) by one per admission under continuous unchanged ingress, while
+      // stats showed only the newest node. Sharing is exact: the element-wise
+      // equivalence above proved this window equals the base's, and release
+      // is idempotent across sharers.
+      return base;
+    }
     const node: SnapshotChain =
       base && base.total <= turns.length && chainPrefixEquivalent(base, turns)
         ? {
@@ -196,13 +207,17 @@ export class ExtractionSnapshotSharingRegistry {
     let queuedNodes = 0;
     let queuedTotalRefs = 0;
     let queuedTailRefs = 0;
+    let queuedReachableDepth = 0;
     for (const list of this.buckets.values()) {
       for (const node of list) {
         queuedNodes += 1;
         queuedTotalRefs += node.total;
         queuedTailRefs += node.tail.length;
+        let depth = 0;
+        for (let walk: SnapshotChain | undefined = node; walk; walk = walk.base) depth += 1;
+        if (depth > queuedReachableDepth) queuedReachableDepth = depth;
       }
     }
-    return { queuedNodes, queuedTotalRefs, queuedTailRefs };
+    return { queuedNodes, queuedTotalRefs, queuedTailRefs, queuedReachableDepth };
   }
 }

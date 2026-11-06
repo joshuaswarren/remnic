@@ -387,6 +387,35 @@ test("continuous enqueue/dequeue cycles: released ancestors erode, retention ret
   assert.ok(peakQueuedTotalRefs > 0, "peak was observed");
 });
 
+test("single unchanged turn, one outstanding: reachable chain depth stays bounded", async () => {
+  // Exact Codex P2 shape: 10,000 cycles of one-unchanged-turn admissions
+  // with exactly one outstanding node (admit, then release the previous).
+  // Every admission against an equivalent base creates a tail=[] node
+  // chained onto the previous one: reachable depth grew to 10,000 while
+  // stats reported nodes=1 / tailRefs=0.
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const cycles = 10_000;
+  const turn: BufferTurn = makeTurn("unchanged");
+  let previous: SnapshotChain | undefined;
+  let maxReachableDepth = 0;
+  for (let cycle = 1; cycle <= cycles; cycle += 1) {
+    const node = registry.admit("k", [turn]);
+    if (previous) registry.release(previous);
+    previous = node;
+    let depth = 0;
+    for (let walk: SnapshotChain | undefined = node; walk; walk = walk.base) depth += 1;
+    if (depth > maxReachableDepth) maxReachableDepth = depth;
+  }
+  assert.equal(maxReachableDepth, 1, "identical windows reuse the same chain node: depth stays 1");
+  const stats = registry.stats();
+  // The final release may or may not remove the shared node depending on
+  // which sharer exited last; either way at most one bounded node remains.
+  assert.ok(stats.queuedNodes <= 1, "at most one bounded node remains");
+  assert.ok(stats.queuedTailRefs <= 1, "truthful distinct reference count");
+  assert.ok(stats.queuedTotalRefs <= 1, "truthful total");
+  assert.ok(stats.queuedReachableDepth <= 1, "truthful reachable depth");
+});
+
 test("10,000-deep queued chain materializes without stack overflow", async () => {
   const registry = new ExtractionSnapshotSharingRegistry();
   const depth = 10_000;
