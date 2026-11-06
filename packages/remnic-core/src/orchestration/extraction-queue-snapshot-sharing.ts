@@ -110,8 +110,12 @@ export interface SnapshotSharingStats {
 }
 
 function* chainTurns(chain: SnapshotChain): Generator<BufferTurn> {
-  if (chain.base) yield* chainTurns(chain.base);
-  yield* chain.tail;
+  // Iterative root-first walk: recursive `yield*` delegation costs O(depth)
+  // per item and hangs production-scale chains (3,000+ turn sessions,
+  // hours-long backlogs). Same order, bounded stack.
+  const nodes: SnapshotChain[] = [];
+  for (let node: SnapshotChain | undefined = chain; node; node = node.base) nodes.push(node);
+  for (const node of [...nodes].reverse()) yield* node.tail;
 }
 
 /** Element-wise consumer-equivalence of the chain's turns against a snapshot prefix. */
@@ -127,13 +131,12 @@ export function chainPrefixEquivalent(chain: SnapshotChain, turns: readonly Buff
 
 /** Fresh array with exactly this snapshot's turns, in order. Run-time only. */
 export function materializeChain(chain: SnapshotChain): BufferTurn[] {
+  const nodes: SnapshotChain[] = [];
+  for (let node: SnapshotChain | undefined = chain; node; node = node.base) nodes.push(node);
   const out: BufferTurn[] = [];
-  const append = (node: SnapshotChain | undefined): void => {
-    if (!node) return;
-    append(node.base);
+  for (const node of [...nodes].reverse()) {
     for (const turn of node.tail) out.push(turn);
-  };
-  append(chain);
+  }
   return out;
 }
 

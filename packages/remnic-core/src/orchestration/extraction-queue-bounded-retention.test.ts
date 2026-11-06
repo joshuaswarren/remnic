@@ -14,7 +14,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { BufferState, BufferTurn } from "../types.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 import { queueBufferedCaptureScopeGroups } from "./extraction-task-queueing.js";
-import { ExtractionSnapshotSharingRegistry, turnRepresentationEquivalent } from "./extraction-queue-snapshot-sharing.js";
+import { chainPrefixEquivalent, ExtractionSnapshotSharingRegistry, materializeChain, turnRepresentationEquivalent } from "./extraction-queue-snapshot-sharing.js";
 import { bufferTurnsEqual } from "../buffer-turn-helpers.js";
 import {
   TurnIngestionCoordinator,
@@ -351,4 +351,27 @@ test("representation guard: bufferTurnsEqual turns differing in ignored fields n
   // The representation check is strictly stronger than bufferTurnsEqual.
   assert.ok(!turnRepresentationEquivalent(plain, withParts));
   assert.ok(!turnRepresentationEquivalent(plain, contextOnly));
+});
+
+test("10,000-deep queued chain materializes without stack overflow", async () => {
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const depth = 10_000;
+  let last: ReturnType<ExtractionSnapshotSharingRegistry["admit"]> | undefined;
+  // One shared array grown in place mirrors the real pump: every trigger
+  // hands out a full prefix snapshot of the same buffer.
+  const turns: BufferTurn[] = [];
+  for (let index = 1; index <= depth; index += 1) {
+    turns.push(makeTurn(`deep ${index}`));
+    last = registry.admit("k", turns);
+  }
+  const stats = registry.stats();
+  assert.equal(stats.queuedNodes, depth, "one node per trigger");
+  assert.equal(stats.queuedTailRefs, depth, "shared suffix refs equal the union");
+  assert.ok(last, "deepest node recorded");
+  const materialized = materializeChain(last);
+  assert.equal(materialized.length, depth);
+  assert.equal(materialized[0]?.content, "deep 1");
+  assert.equal(materialized[depth - 1]?.content, `deep ${depth}`);
+  turns.push(makeTurn(`deep ${depth + 1}`));
+  assert.ok(last && chainPrefixEquivalent(last, turns), "prefix equivalence at depth");
 });
