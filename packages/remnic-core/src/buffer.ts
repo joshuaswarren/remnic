@@ -339,6 +339,21 @@ export class SmartBuffer {
   entryCounts(): Map<string, BufferEntryCounts> {
     return bufferEntryCounts(this.state);
   }
+  /** Remove only identity-matched turns durably extracted by a claim owner. */
+  async reconcileDrainedTurns(bufferKey: string, drainedTurns: readonly BufferTurn[]): Promise<void> {
+    if (drainedTurns.length === 0) return;
+    await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const entry = this.peekEntry(bufferKey);
+      if (!entry) return;
+      entry.turns = subtractBufferTurns(entry.turns, drainedTurns);
+      if (entry.retainedTurns && entry.retainedTurns.length > 0) {
+        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drainedTurns);
+        if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
+      }
+      if (bufferKey === "default") this.state.turns = entry.turns;
+    });
+  }
 
   async save(): Promise<void> {
     await this.enqueueMutation(async () => this.saveUnlocked());

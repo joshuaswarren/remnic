@@ -554,14 +554,25 @@ async function runClaimDrain(
   options: BufferDrainRunnerOptions,
   heartbeat: NodeJS.Timeout
 ): Promise<DrainSessionOutcome> {
+  // Reconcile only identities recorded as durably extracted under this
+  // owner's claim lease. The claim lock is released before entering the live
+  // buffer mutation queue, preserving the buffer→claim lock order used by
+  // concurrent ingress saves.
+  const reconcileDrainedTurns = async (): Promise<void> => {
+    const drained = await ctx.claims.drainedTurnsForOwner(ctx.key, ctx.ownerId);
+    if (drained !== null) await ctx.orchestrator.buffer.reconcileDrainedTurns(ctx.key, drained);
+  };
+
   // An emptied claim acks here: the ack verdict is the truth (drained), or
   // live ingress merged between the read and the ack — deferred, source kept.
   if (ctx.turns.length === 0) {
+    await reconcileDrainedTurns();
     const outcome = await ackEmptyClaim(ctx.claims, ctx.key, ctx.ownerId, ctx.turnsAtStart);
     options.onEvent?.({ type: "session_finished", key: ctx.key, outcome });
     return outcome;
   }
   const { groupOutcomes, groupError } = await drainScopeGroups(ctx);
+  await reconcileDrainedTurns();
   // Heartbeat cleared on EVERY exit path: a rejected drain must not keep
   // renewing the lease forever (cleared in the caller's finally).
   const remaining = await ctx.claims.load(ctx.key);

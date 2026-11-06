@@ -528,21 +528,115 @@ test("a full session cap admits a new durable session after the backlog drains",
         assert.ok(hits.length > 0, `content of the drained session was lost: ${source}`);
       }
 
-      // The source turns are cleared: drained claims are empty tombstones.
+
+      // The source turns are cleared from both the durable claim and the live
+      // SmartBuffer; the claim tombstones remain until a later owner save.
       const claims = orchestrator.storage.bufferDrainClaims();
       assert.deepEqual(
         (await claims.list()).map((l) => l.turnCount).sort(),
         [0, 0, 0],
         "all drained claims are empty tombstones"
       );
+      for (const key of ["cap-1", "cap-2", "cap-3"]) {
+        assert.deepEqual(orchestrator.buffer.getTurns(key), [], `${key} stale source turns cleared in memory`);
+      }
 
-      // THE WEDGE (red): the backlog is drained and the disk freed, yet a new
-      // durable session is still refused — the live in-memory entries keep
-      // their already-drained accepted-capture turns until some ingress
-      // touches those exact keys, and a new key cannot free them.
-      const admitted = await orchestrator.buffer.addTurnBounded("cap-4", turn("delta four", "cap-4"));
+      const admitted = await orchestrator.buffer.addTurnBounded("cap-4", pinned("cap-4", "delta four"));
       assert.notEqual(admitted, null, "a fully drained backlog frees cap slots for a new session");
     } finally {
+      await scheduler.stop();
+    }
+  } finally {
+    await orchestrator?.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
+
+
+test("same-key accepted ingress during extraction survives owner-fenced reconciliation", async () => {
+  const memoryDir = await mkTempMemoryDir("backlog-drain-ingress-race");
+  let orchestrator: Orchestrator | undefined;
+  try {
+    orchestrator = new Orchestrator(
+      makeHarmonicLifecycleConfig(memoryDir, { extractionMinChars: 0, extractionMinUserTurns: 1 })
+    );
+    const buffer = orchestrator.buffer;
+    const namespace = orchestrator.config.defaultNamespace;
+    const key = "race-session";
+    const oldTurn: BufferTurn = {
+      ...turn("original captured turn", key),
+      acceptedCapture: true,
+      writeNamespaceOverride: namespace,
+    };
+    const newerTurn: BufferTurn = {
+      ...turn("new accepted turn during drain", key, "2026-11-02T00:00:00.000Z"),
+      acceptedCapture: true,
+      writeNamespaceOverride: namespace,
+      principalOverride: "principal-race",
+    };
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let firstExtraction = true;
+    const calls = stubExtraction(orchestrator, async (turns) => {
+      if (firstExtraction) {
+        firstExtraction = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return singleFactResult(`race fact for ${turns[0]?.content ?? "empty"}`);
+    });
+
+    assert.notEqual(await buffer.addTurnBounded(key, oldTurn), null);
+    await buffer.flushPendingSave({ throwOnFailure: true });
+    let now = 0;
+    const scheduler = wireBacklogScheduler(orchestrator, {
+      ownerId: "race-owner",
+      pollMs: 3_600_000,
+      retryBaseMs: 1,
+      retryMaxMs: 1,
+      now: () => now,
+    });
+    try {
+      scheduler.start();
+      await entered.promise;
+      assert.equal(
+        await orchestrator.storage.bufferDrainClaims().drainedTurnsForOwner(key, "not-race-owner"),
+        null,
+        "another owner cannot authorize live-buffer reconciliation"
+      );
+
+      // Live ingress saves into the owned claim while the model is still
+      // extracting its original snapshot.
+      assert.notEqual(await buffer.addTurnBounded(key, newerTurn), null);
+      await buffer.flushPendingSave({ throwOnFailure: true });
+      release.resolve();
+      await scheduler.settleForTest();
+
+      const pending = await orchestrator.storage.bufferDrainClaims().load(key);
+      assert.deepEqual(
+        pending?.entry.turns.map((item) => item.content),
+        ["new accepted turn during drain"],
+        "the extracted source is removed while newer accepted ingress remains durable"
+      );
+      assert.equal(pending?.entry.turns[0]?.principalOverride, "principal-race");
+      assert.equal(pending?.entry.turns[0]?.writeNamespaceOverride, namespace);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for original captured turn")).length, 1);
+
+      now = 2;
+      await scheduler.tickForTest();
+      await scheduler.settleForTest();
+      assert.equal(scheduler.snapshot().counters.processed, 1, "the newer turn also drains");
+      assert.deepEqual(calls.map((batch) => batch.map((item) => item.content)), [
+        ["original captured turn"],
+        ["new accepted turn during drain"],
+      ]);
+      assert.equal(calls[1]?.[0]?.principalOverride, "principal-race");
+      assert.equal(calls[1]?.[0]?.writeNamespaceOverride, namespace);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for original captured turn")).length, 1);
+      assert.equal((await memoryFilesContaining(memoryDir, "race fact for new accepted turn during drain")).length, 1);
+      assert.equal(scheduler.snapshot().counters.durableOutputs, 1);
+    } finally {
+      release.resolve();
       await scheduler.stop();
     }
   } finally {
