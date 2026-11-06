@@ -1,0 +1,199 @@
+/**
+ * Bounded-queue retention for automatic extraction snapshots (#3324
+ * follow-up).
+ *
+ * The coordinator's queue keeps every accepted task's own snapshot (that is
+ * the #3324 contract: per-entry captured scope and settlement), but nothing
+ * requires each queued snapshot to RETAIN its own turn objects. Automatic
+ * triggers hand out prefix-extended snapshots of the same buffer (the buffer
+ * clears only when extraction runs), so consecutive queued snapshots overlap
+ * almost entirely while their drain is slow. Retaining one deep copy per
+ * snapshot grows quadratic overhead (demonstrated: scaling exponent 1.89 on
+ * main, 36× the unique content at 1000 turns for one session).
+ *
+ * This registry makes the OVERLAP shared without changing ANY task's
+ * semantics: a queued snapshot is stored as a chain node
+ * `{ base, tail }` whose turns are verified element-wise equivalent to the
+ * base chain at admit time. Each task materializes its own fresh array at
+ * run time — identical values, same windows, same chunking, same clear
+ * matching, same settlements. Sharing is data-structure only.
+ *
+ * Safety properties:
+ * - Equivalence is CONSUMER-equivalence, not `bufferTurnsEqual` alone: the
+ *   five fields `bufferTurnsEqual` ignores (extractionContextOnly, parts,
+ *   rawContent, sourceFormat, importProvenance) are compared strictly
+ *   (objects by reference identity), so an aliased segment is
+ *   indistinguishable from a private copy to every downstream reader.
+ * - Turn objects are immutable by audit: no code path writes a BufferTurn
+ *   field or a parts array in place (all writes go to freshly constructed
+ *   objects: `copyBufferTurn`, the replay `pinned` spread). Audited across
+ *   the extraction call graph.
+ * - Distinct scope pins can never share: pins are turn fields covered by
+ *   `bufferTurnsEqual`, and the scope-class bucket is a lookup heuristic
+ *   only — a wrong pairing fails the element-wise check and simply does not
+ *   share.
+ * - Replay, bulk import, force flush, fail-closed callers, and claim-backed
+ *   execution contexts are excluded (they are not automatic snapshots of the
+ *   live buffer).
+ */
+
+import type { BufferTurn } from "../types.js";
+import { bufferTurnsEqual, scopeProfilePlanIdentity } from "../buffer-turn-helpers.js";
+
+/** Option surface of `queueBufferedExtraction` relevant to eligibility. */
+export interface AutomaticSharingOptions {
+  /** Claim-backed backlog tasks own a different buffer view: never share. */
+  execution?: unknown;
+  /** Automatic trigger paths set this; forced replay/import do not. */
+  preemptable?: boolean;
+  failOnExtractionFailure?: boolean;
+  forceExtractionAttempt?: boolean;
+  /** Fail-closed front flush: never share. */
+  preemptRunning?: boolean;
+}
+
+export function automaticSnapshotSharingEligible(options: AutomaticSharingOptions): boolean {
+  return (
+    options.execution === undefined &&
+    options.preemptable === true &&
+    options.failOnExtractionFailure !== true &&
+    options.forceExtractionAttempt !== true &&
+    options.preemptRunning !== true
+  );
+}
+
+/** Consumer-visible equivalence: `bufferTurnsEqual` PLUS the fields it ignores. */
+export function turnRepresentationEquivalent(left: BufferTurn, right: BufferTurn): boolean {
+  return (
+    bufferTurnsEqual(left, right) &&
+    left.extractionContextOnly === right.extractionContextOnly &&
+    left.importProvenance === right.importProvenance &&
+    left.parts === right.parts &&
+    left.rawContent === right.rawContent &&
+    left.sourceFormat === right.sourceFormat
+  );
+}
+
+/** Scope-class bucket key, the same composite `groupTurnsByExtractionScope` uses. */
+function scopeClassKey(turn: BufferTurn): string {
+  return [
+    turn.writeNamespaceOverride ?? "",
+    turn.principalOverride ?? "",
+    scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
+    turn.acceptedCapture === true ? "accepted" : "",
+    turn.codingContext?.projectId ?? "",
+    turn.codingContext?.rootPath ?? "",
+    turn.codingContext?.branch ?? "",
+    turn.codingContext?.defaultBranch ?? "",
+  ].join("\u0000");
+}
+
+/** One queued automatic snapshot: `base` chain plus this trigger's own new turns. */
+export interface SnapshotChain {
+  readonly key: string;
+  readonly scopeClass: string;
+  readonly base: SnapshotChain | undefined;
+  /** Total turns retained by the base chain. */
+  readonly baseLength: number;
+  /** This trigger's non-shared suffix (fresh reference slots, disjoint across the chain). */
+  readonly tail: readonly BufferTurn[];
+  /** Total turns this snapshot represents. */
+  readonly total: number;
+}
+
+export interface SnapshotSharingStats {
+  queuedNodes: number;
+  /** Reference slots retained across queued snapshots (the O(N²) term on main). */
+  queuedTotalRefs: number;
+  /** Distinct reference slots (what sharing actually retains). */
+  queuedTailRefs: number;
+}
+
+function* chainTurns(chain: SnapshotChain): Generator<BufferTurn> {
+  if (chain.base) yield* chainTurns(chain.base);
+  yield* chain.tail;
+}
+
+/** Element-wise consumer-equivalence of the chain's turns against a snapshot prefix. */
+export function chainPrefixEquivalent(chain: SnapshotChain, turns: readonly BufferTurn[]): boolean {
+  let offset = 0;
+  for (const chained of chainTurns(chain)) {
+    const incoming = turns[offset];
+    if (incoming === undefined || !turnRepresentationEquivalent(chained, incoming)) return false;
+    offset += 1;
+  }
+  return offset === chain.total;
+}
+
+/** Fresh array with exactly this snapshot's turns, in order. Run-time only. */
+export function materializeChain(chain: SnapshotChain): BufferTurn[] {
+  const out: BufferTurn[] = [];
+  const append = (node: SnapshotChain | undefined): void => {
+    if (!node) return;
+    append(node.base);
+    for (const turn of node.tail) out.push(turn);
+  };
+  append(chain);
+  return out;
+}
+
+export class ExtractionSnapshotSharingRegistry {
+  private readonly buckets = new Map<string, SnapshotChain[]>();
+
+  /**
+   * Admit one automatic snapshot for `bufferKey`: chain it onto the newest
+   * queued same-scope snapshot when that is a verified prefix-extension,
+   * otherwise start a fresh chain. The caller's array is never mutated.
+   */
+  admit(bufferKey: string, turns: readonly BufferTurn[]): SnapshotChain {
+    const scopeClass = turns.length > 0 ? scopeClassKey(turns[0]) : "";
+    const bucketKey = `${bufferKey}\u0000${scopeClass}`;
+    const list = this.buckets.get(bucketKey);
+    const base = list !== undefined && list.length > 0 ? list[list.length - 1] : undefined;
+    const node: SnapshotChain =
+      base && base.total <= turns.length && chainPrefixEquivalent(base, turns)
+        ? {
+            key: bufferKey,
+            scopeClass,
+            base,
+            baseLength: base.total,
+            tail: turns.slice(base.total),
+            total: turns.length,
+          }
+        : {
+            key: bufferKey,
+            scopeClass,
+            base: undefined,
+            baseLength: 0,
+            tail: [...turns],
+            total: turns.length,
+          };
+    if (list) list.push(node);
+    else this.buckets.set(bucketKey, [node]);
+    return node;
+  }
+
+  /** Release a node when its task starts (or on enqueue refusal). Idempotent. */
+  release(node: SnapshotChain): void {
+    const list = this.buckets.get(`${node.key}\u0000${node.scopeClass}`);
+    if (!list) return;
+    const index = list.indexOf(node);
+    if (index >= 0) list.splice(index, 1);
+    if (list.length === 0) this.buckets.delete(`${node.key}\u0000${node.scopeClass}`);
+  }
+
+  /** Proof seam: what the queue retains right now. */
+  stats(): SnapshotSharingStats {
+    let queuedNodes = 0;
+    let queuedTotalRefs = 0;
+    let queuedTailRefs = 0;
+    for (const list of this.buckets.values()) {
+      for (const node of list) {
+        queuedNodes += 1;
+        queuedTotalRefs += node.total;
+        queuedTailRefs += node.tail.length;
+      }
+    }
+    return { queuedNodes, queuedTotalRefs, queuedTailRefs };
+  }
+}
