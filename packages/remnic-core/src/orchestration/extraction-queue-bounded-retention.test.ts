@@ -416,6 +416,39 @@ test("single unchanged turn, one outstanding: reachable chain depth stays bounde
   assert.ok(stats.queuedReachableDepth <= 1, "truthful reachable depth");
 });
 
+test("overlapping identical tasks keep the shared node until the last holder releases", async () => {
+  // Main follow-up to the Codex P2 fix: node reuse must keep registry
+  // accounting truthful while ANY sharer is still outstanding — the first
+  // completion may not drop the only bucket entry, and later identical
+  // admissions must keep aliasing onto the shared node.
+  const registry = new ExtractionSnapshotSharingRegistry();
+  const turn: BufferTurn = makeTurn("shared window");
+  const a = registry.admit("k", [turn]);
+  const b = registry.admit("k", [turn]);
+  const c = registry.admit("k", [turn]);
+  assert.ok(a === b && b === c, "three overlapping identical tasks share one node");
+  assert.equal(registry.stats().queuedNodes, 1);
+  registry.release(a);
+  // RED on current code: the first release must not empty the registry while
+  // b and c still hold the node.
+  let stats = registry.stats();
+  assert.equal(stats.queuedNodes, 1, "shared node survives until the last holder releases");
+  assert.equal(stats.queuedTailRefs, 1, "content still counted while sharers remain");
+  assert.equal(stats.queuedReachableDepth, 1);
+  const d = registry.admit("k", [turn]);
+  assert.equal(d, b, "later identical admission keeps aliasing onto the shared node");
+  registry.release(b);
+  stats = registry.stats();
+  assert.equal(stats.queuedNodes, 1, "c and d still hold the shared node");
+  registry.release(c);
+  registry.release(d);
+  stats = registry.stats();
+  assert.equal(stats.queuedNodes, 0, "registry empties when the last holder releases");
+  assert.equal(stats.queuedTailRefs, 0);
+  assert.equal(stats.queuedTotalRefs, 0);
+  assert.equal(stats.queuedReachableDepth, 0);
+});
+
 test("10,000-deep queued chain materializes without stack overflow", async () => {
   const registry = new ExtractionSnapshotSharingRegistry();
   const depth = 10_000;

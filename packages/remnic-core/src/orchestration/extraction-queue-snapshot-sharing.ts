@@ -99,6 +99,8 @@ export interface SnapshotChain {
   readonly tail: readonly BufferTurn[];
   /** Total turns this snapshot represents. */
   readonly total: number;
+  /** Outstanding tasks holding this node; the node leaves the registry when it reaches 0. */
+  holders: number;
 }
 
 export interface SnapshotSharingStats {
@@ -166,8 +168,9 @@ export class ExtractionSnapshotSharingRegistry {
       // here would chain onto the base and grow reachable depth (and admit
       // cost) by one per admission under continuous unchanged ingress, while
       // stats showed only the newest node. Sharing is exact: the element-wise
-      // equivalence above proved this window equals the base's, and release
-      // is idempotent across sharers.
+      // equivalence above proved this window equals the base's. The holder
+      // count keeps the node registered until the LAST sharer releases.
+      base.holders += 1;
       return base;
     }
     const node: SnapshotChain =
@@ -179,6 +182,7 @@ export class ExtractionSnapshotSharingRegistry {
             baseLength: base.total,
             tail: turns.slice(base.total),
             total: turns.length,
+            holders: 1,
           }
         : {
             key: bufferKey,
@@ -187,14 +191,21 @@ export class ExtractionSnapshotSharingRegistry {
             baseLength: 0,
             tail: [...turns],
             total: turns.length,
+            holders: 1,
           };
     if (list) list.push(node);
     else this.buckets.set(bucketKey, [node]);
     return node;
   }
 
-  /** Release a node when its task starts (or on enqueue refusal). Idempotent. */
+  /** Release one holder of a node when its task exits (or on enqueue
+   * refusal). The node leaves the registry only when its LAST holder
+   * releases, so registry accounting stays truthful while any sharer is
+   * still outstanding. Idempotent per task. */
   release(node: SnapshotChain): void {
+    if (node.holders <= 0) return;
+    node.holders -= 1;
+    if (node.holders > 0) return;
     const list = this.buckets.get(`${node.key}\u0000${node.scopeClass}`);
     if (!list) return;
     const index = list.indexOf(node);
