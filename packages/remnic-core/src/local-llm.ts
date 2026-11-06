@@ -1093,7 +1093,7 @@ export class LocalLlmClient {
       if (!response) {
         if (lastAbortError) {
           log.warn(
-            `local LLM request aborted after ${maxAttempts} attempt(s): op=${operation} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel} promptChars=${promptChars} durationMs=${Date.now() - startedAtMs}`,
+            `local LLM request aborted after ${maxAttempts} attempt(s): op=${operation} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel} promptChars=${promptChars} durationMs=${Date.now() - startedAtMs}${queueMeta ? ` waitMs=${startedAtMs - queueMeta.enqueuedAtMs}` : ""}`,
           );
         } else {
           log.warn(
