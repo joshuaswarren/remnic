@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- An extraction that produces only an identity reflection or only entity relationships is no longer dropped as an empty result. While the matching capability is on, it now reaches persistence, so the reflection or both relationship directions are written before the source turns are cleared and the input is marked processed. If writing a reflection or relationship fails, the input now stays retryable instead of being marked processed with that output lost (#3227).
+
 ## [v10.0.67] — 2026-11-04
 
 ### Added

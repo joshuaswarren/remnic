@@ -1,6 +1,7 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
+import { rethrowAfterCommittedWriteFinalization } from "./extraction-persist-failure.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
@@ -2895,7 +2896,7 @@ export class ExtractionPersistCoordinator {
           await storage.addEntityRelationship(rel.target, { target: rel.source, label: `${rel.label} (reverse)` });
           recordDurableNonFactWrite();
         } catch (err) {
-          log.debug(`relationship persist failed: ${err}`);
+          await rethrowAfterCommittedWriteFinalization(finalizeCommittedWrites, err, "relationship");
         }
       }
     }
@@ -2951,7 +2952,7 @@ export class ExtractionPersistCoordinator {
           await storage.appendIdentityReflection(result.identityReflection);
           recordDurableNonFactWrite();
         } catch (err) {
-          log.debug(`identity reflection write failed: ${err}`);
+          await rethrowAfterCommittedWriteFinalization(finalizeCommittedWrites, err, "identity reflection");
         }
       }
     }

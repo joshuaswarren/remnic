@@ -124,6 +124,7 @@ import {
   combineExtractionAbortSignals,
   commitEmptySuccessExtraction,
   computeExtractionRetryNextEligibleMs,
+  countRequestedDurableOutputs,
   deriveSourceConnector,
   deriveTopicsFromExtraction, emptyExtractionResult,
   runExtractionPostPersist,
@@ -976,12 +977,10 @@ export class ExtractionRunCoordinator {
     if (options.failOnExtractionFailure && extractionFailure) {
       throw new Error(`extraction failed: ${extractionFailure}`);
     }
-    if (
-      result.facts.length === 0 &&
-      result.entities.length === 0 &&
-      result.questions.length === 0 &&
-      result.profileUpdates.length === 0
-    ) {
+    // #3227: one count covers every enabled durable output kind, so a
+    // reflection-only or relationship-only result reaches persistence.
+    const durableOutputCount = countRequestedDurableOutputs(result, this.config);
+    if (durableOutputCount === 0) {
       log.debug("runExtraction: extraction produced no durable outputs; skipping persistence");
       if (extractionFailure) {
         log.warn(
@@ -1054,8 +1053,6 @@ export class ExtractionRunCoordinator {
         .map((t) => t.content)
         .join("\n\n")
     );
-    const durableOutputCount =
-      result.facts.length + result.entities.length + result.questions.length + result.profileUpdates.length;
     try {
       options.onDurableCommit?.();
     } catch (error) {
