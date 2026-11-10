@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 
 import type { RemnicPiConfig } from "./config.js";
@@ -65,6 +65,8 @@ export class RemnicHttpError extends Error {
     message: string,
     /** Machine-readable error code from the daemon's JSON error body (e.g. `not_ready`). */
     readonly code?: string,
+    /** Server backpressure hint from the `retry-after` header, parsed to ms. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -93,6 +95,8 @@ interface ObserveBody {
   namespace?: string;
   skipExtraction: boolean;
   messages: ObserveMessage[];
+  /** Content-derived replay identity, assigned per chunk in chunkObservePayload. */
+  idempotencyKey?: string;
 }
 
 const encoder = new TextEncoder();
@@ -503,11 +507,12 @@ export class RemnicClient {
       if (!response.ok) {
         const message = responseErrorMessage(response, text, payload, parseError);
         const code = responseErrorCode(payload, parseError);
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
         if (response.status === 413) {
           const bodyBytes = body === undefined ? 0 : jsonBytes(body);
-          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code);
+          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code, retryAfterMs);
         }
-        throw new RemnicHttpError(response.status, message, code);
+        throw new RemnicHttpError(response.status, message, code, retryAfterMs);
       }
       if (parseError) {
         const reason = parseError instanceof Error ? parseError.message : String(parseError);
@@ -678,7 +683,12 @@ export function chunkObservePayload(
   messages: ObserveMessage[],
   maxBytes: number,
 ): ObserveBody[] {
-  const envelopeOverhead = jsonBytes(buildObserveEnvelope(config, sessionKey, cwd, []));
+  const emptyEnvelope = buildObserveEnvelope(config, sessionKey, cwd, []);
+  const envelopeOverhead = jsonBytes(emptyEnvelope) +
+    // The content-derived idempotencyKey is appended after hashing, so it adds
+    // a fixed number of serialized bytes; reserve exactly that much so bodies
+    // still respect observeMaxBytes (#1600 caps).
+    (jsonBytes({ ...emptyEnvelope, idempotencyKey: observeIdempotencyKey(emptyEnvelope) }) - jsonBytes(emptyEnvelope));
   const messageBudget = maxBytes - envelopeOverhead;
   if (messageBudget <= 0) {
     // The envelope overhead alone meets/exceeds the cap, so no valid body can
@@ -687,7 +697,7 @@ export function chunkObservePayload(
     // budget (<=1024) is NOT degenerate: truncate/pack normally so oversized
     // messages are shrunk to fit instead of bypassing the #1600 safeguards
     // (cursor review).
-    return [buildObserveEnvelope(config, sessionKey, cwd, messages)];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, messages))];
   }
   const chunks: ObserveMessage[][] = [];
   let current: ObserveMessage[] = [];
@@ -718,9 +728,9 @@ export function chunkObservePayload(
   }
   flush();
   if (chunks.length === 0) {
-    return [buildObserveEnvelope(config, sessionKey, cwd, [])];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, []))];
   }
-  return chunks.map((msgs) => buildObserveEnvelope(config, sessionKey, cwd, msgs));
+  return chunks.map((msgs) => withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs)));
 }
 
 const decoder = new TextDecoder();
@@ -806,4 +816,35 @@ function responseErrorCode(payload: unknown, parseError: unknown): string | unde
     return payload.code;
   }
   return undefined;
+}
+
+/**
+ * Parse a `retry-after` header (integer seconds or HTTP-date) into
+ * milliseconds. Returns undefined for missing/garbage values; negative deltas
+ * (already-elapsed date) clamp to 0.
+ */
+export function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Math.max(0, Number(trimmed) * 1000);
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+/**
+ * Content-derived request identity for observe bodies. The daemon dedupes a
+ * replayed observe under the same `idempotencyKey` + identical payload (#1649),
+ * so a request whose response was lost (server accepted, client timed out) can
+ * be replayed without double-ingesting. The key is a hash of the exact body
+ * (envelope + messages), making "same key" and "same payload" equivalent —
+ * the daemon's divergent-payload conflict can then never fire from client
+ * behavior alone.
+ */
+export function observeIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">): string {
+  return `obs-${createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 32)}`;
+}
+
+function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">): ObserveBody {
+  return { ...body, idempotencyKey: observeIdempotencyKey(body) };
 }
