@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 
 
 import { DEFAULT_CONFIG, loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
@@ -10,6 +11,7 @@ import {
   type McpTool,
   type ObserveMessage,
 } from "./client.js";
+import { resolvePiAgentHome } from "./paths.js";
 import {
   hashObservedMessage,
   observedMessageDedupeKey,
@@ -21,6 +23,7 @@ import {
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
 import { createMcpRegistration } from "./mcp-registration.js";
 import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from "./startup-probe.js";
+import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -144,6 +147,16 @@ export function resetProcessRecallBreakerForTest(
 export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) {
   const config: RemnicPiConfig = { ...DEFAULT_CONFIG, ...(options.config ?? loadConfig(options)) };
   const client = new RemnicClient(config);
+  // One durable outbox per extension instance (shared across sessions in this
+  // process — the file is process-global, and a single ObserveOutbox instance
+  // serializes its writes). Entries carry their own sessionKey, so a drain
+  // started by any session's successful contact replays every session's
+  // queued captures in queue order.
+  const observeOutbox = config.observeEnabled
+    ? new ObserveOutbox(
+      config.observeOutboxPath?.trim() || path.join(resolvePiAgentHome(process.env), "remnic", "observe-outbox.jsonl"),
+    )
+    : null;
   const sessionStates = new Map<string, PiSessionState>();
   const breakerKey = recallTimeoutBreakerCacheKey(config);
   let recallTimeoutBreaker = PROCESS_SCOPED_RECALL_BREAKERS.get(breakerKey);
@@ -177,6 +190,13 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       state.recallCompleted = false;
       state.startupProbeJoined = false;
       state.startupEpoch += 1;
+
+      // Drain captures queued by a previous process/crash while the daemon
+      // refused work. Runs before the background startup chain so the replay
+      // lands before the first turn's own observe.
+      if (observeOutbox) {
+        await drainObserveOutbox(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys);
+      }
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
       // daemon is marked unreachable even when the status UI is off; otherwise
@@ -257,7 +277,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       // Observe is a first-turn daemon call gated on isReachable(): join the in-flight probe first.
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -267,7 +287,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -278,7 +298,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -737,10 +757,12 @@ export async function observeMessages(
   rawMessages: unknown[],
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
+  config?: RemnicPiConfig,
+  outbox?: ObserveOutbox | null,
 ): Promise<void> {
   const session = snapshotPiContext(ctx);
   if (!session) return;
-  await observeMessagesForSession(session, client, rawMessages, observedHashes, liveObservedReplayKeys);
+  await observeMessagesForSession(session, client, rawMessages, observedHashes, liveObservedReplayKeys, config, false, outbox);
 }
 
 async function observeMessagesForSession(
@@ -751,16 +773,23 @@ async function observeMessagesForSession(
   liveObservedReplayKeys?: Map<string, number>,
   config?: RemnicPiConfig,
   forceAttempt = false,
+  outbox?: ObserveOutbox | null,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
+  const messageHashes: Array<string | null> = [];
   const pendingHashes = new Set<string>();
+  const outboxPending = outbox ? await outbox.pendingHashes() : null;
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
     const hash = observedMessageDedupeKey(message, session.sessionKey);
     if (hash && (observedHashes.has(hash) || pendingHashes.has(hash))) continue;
+    // Already durably queued for replay — never re-send it live under a fresh
+    // (different) request identity, or the daemon would ingest it twice.
+    if (outboxPending?.has(hash ?? "")) continue;
     if (hash) pendingHashes.add(hash);
     messages.push(message);
+    messageHashes.push(hash);
   }
   if (messages.length === 0) return;
   // Circuit breaker: when config is wired (the live Pi handlers always pass
@@ -787,9 +816,61 @@ async function observeMessagesForSession(
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, session.sessionKey));
       }
     }
+    // Successful contact is the drain trigger: replay anything queued while
+    // the daemon was refusing work.
+    if (outbox && config) await drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys);
   } catch (err) {
     if (config && isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-    session.notify(`Remnic observe failed: ${errorMessage(err)}`, "warning");
+    const failureClass = outbox && config && err instanceof Error ? classifyObserveFailure(err) : "permanent";
+    if (failureClass === "permanent") {
+      session.notify(`Remnic observe failed: ${errorMessage(err)}`, "warning");
+      return;
+    }
+    // Capacity backpressure or ambiguous failure: the turns are not lost —
+    // queue them durably for replay on the next successful contact.
+    await outbox?.enqueue(
+      { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes },
+      (message, level) => session.notify(message, level),
+    );
+    session.notify(
+      `Remnic observe deferred (daemon refused or unreachable): ${messages.length} message(s) queued durably for retry — ${errorMessage(err)}`,
+      "warning",
+    );
+  }
+}
+
+/**
+ * Replay queued observe entries in order under their content-derived
+ * idempotency keys. Bounded attempts per drain; undelivered entries stay
+ * queued and the shortfall is surfaced, never silently dropped.
+ */
+async function drainObserveOutbox(
+  session: PiContextSnapshot,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+  outbox: ObserveOutbox,
+  observedHashes: Set<string>,
+  liveObservedReplayKeys?: Map<string, number>,
+): Promise<void> {
+  const result = await outbox.drain(async (entry) => {
+    await client.observe(entry.sessionKey, entry.cwd, entry.messages, { timeoutMs: config.turnRequestTimeoutMs });
+    // Delivered: remember identity so later turns and the shutdown replay skip these.
+    for (const hash of entry.messageHashes) {
+      if (hash !== null) rememberObservedHash(observedHashes, hash);
+    }
+    if (liveObservedReplayKeys) {
+      for (const message of entry.messages) {
+        rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, entry.sessionKey));
+      }
+    }
+  }, {
+    notify: (message, level) => session.notify(message, level),
+  });
+  if (result.pending > 0) {
+    session.notify(
+      `Remnic observe outbox: ${result.pending} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
+      "warning",
+    );
   }
 }
 

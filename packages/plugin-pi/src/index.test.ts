@@ -1513,6 +1513,7 @@ test("observe failure notification survives stale Pi ctx after await", async (t)
       compactionEnabled: false,
       mcpToolsEnabled: false,
       statusEnabled: false,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-stale-observe-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi as any);
@@ -1520,9 +1521,12 @@ test("observe failure notification survives stale Pi ctx after await", async (t)
   await assert.doesNotReject(() =>
     emit("message_end", { message: { id: "m1", role: "user", content: "remember this" } }, stale.ctx)
   );
-  assert.deepEqual(stale.notifications, [
-    { message: "Remnic observe failed: observe offline", level: "warning" },
-  ]);
+  // Ambiguous failures queue durably instead of dropping the turn; the
+  // deferral notification still fires through the captured (stale) notifier.
+  assert.equal(stale.notifications.length, 1);
+  assert.equal(stale.notifications[0].level, "warning");
+  assert.match(stale.notifications[0].message, /queued durably/);
+  assert.match(stale.notifications[0].message, /observe offline/);
 });
 
 test("compaction failure notification survives stale Pi ctx after await", async (t) => {
@@ -2213,6 +2217,7 @@ test("session_shutdown replays the branch even when the daemon breaker is trippe
       compactionEnabled: false,
       mcpToolsEnabled: false,
       statusEnabled: false,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-shutdown-breaker-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi as any);
@@ -2227,14 +2232,16 @@ test("session_shutdown replays the branch even when the daemon breaker is trippe
     },
   };
 
-  // turn_end observe fails transiently -> breaker tripped, nothing recorded.
+  // turn_end observe fails transiently -> breaker tripped; the branch messages
+  // are queued durably for replay instead of dropped.
   await emit("turn_end", { message }, ctx);
   assert.equal(observeBodies.length, 0, "turn_end observe failed and recorded nothing");
 
   // shutdown runs while the breaker is in cooldown; forceAttempt must still
-  // replay the branch (the last chance to observe before teardown).
+  // replay the branch (the last chance to observe before teardown), and the
+  // successful contact then drains what turn_end queued.
   await emit("session_shutdown", {}, ctx);
-  assert.equal(observeBodies.length, 1, "shutdown bypassed the breaker and observed the branch");
+  assert.equal(observeBodies.length, 2, "shutdown bypassed the breaker, observed the branch, and drained the queue");
 });
 
 test("session_shutdown observe uses the general request budget, not the per-turn budget (review cursor)", async (t) => {
@@ -2258,6 +2265,7 @@ test("session_shutdown observe uses the general request budget, not the per-turn
       statusEnabled: false,
       turnRequestTimeoutMs: 30,
       requestTimeoutMs: 150,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-shutdown-budget-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi as any);
@@ -2270,12 +2278,12 @@ test("session_shutdown observe uses the general request budget, not the per-turn
   await emit("session_shutdown", {}, stale.ctx);
 
   // Shutdown replay is teardown (no host handler window), so it must use the
-  // general request budget (150ms), NOT the per-turn budget (30ms). The timeout
-  // error embeds the budget actually used, so this deterministically proves
-  // which budget governed the forced replay.
-  const observeFail = stale.notifications.find((n) => /Remnic observe failed/.test(n.message));
-  assert.ok(observeFail, "shutdown observe ran and timed out");
-  assert.match(observeFail!.message, /timed out after 150ms/);
+  // general request budget (150ms), NOT the per-turn budget (30ms). The timed
+  // out turn is queued durably, and the deferral message embeds the timeout
+  // error, which deterministically proves which budget governed the replay.
+  const deferral = stale.notifications.find((n) => /queued durably/.test(n.message));
+  assert.ok(deferral, "shutdown observe ran, timed out, and queued the turn");
+  assert.match(deferral!.message, /timed out after 150ms/);
 });
 
 test("retry-budget exhaustion trips the circuit breaker so the next turn cools down (review codex)", async (t) => {
@@ -2301,6 +2309,7 @@ test("retry-budget exhaustion trips the circuit breaker so the next turn cools d
       turnRequestTimeoutMs: 30,
       observeMaxRetries: 2,
       daemonCooldownMs: 60000,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-retry-budget-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi as any);
@@ -2792,6 +2801,7 @@ test("observe-only first turn joins the in-flight startup probe so an unreachabl
       startupRequestTimeoutMs: 2000,
       turnRequestTimeoutMs: 20000,
       daemonCooldownMs: 60000,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-joins-probe-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi);
@@ -2852,6 +2862,7 @@ test("a superseded startup probe cannot trip the breaker or override a newer suc
       mcpToolsEnabled: false,
       statusEnabled: true,
       daemonCooldownMs: 60000,
+      observeOutboxPath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-superseded-probe-")), "observe-outbox.jsonl"),
     },
   });
   await extension(pi);
