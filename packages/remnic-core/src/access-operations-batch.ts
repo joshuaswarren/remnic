@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
 import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
 import { defineOperation } from "./access-boundary.js";
-import { EngramAccessForbiddenError } from "./access-errors.js";
+import { EngramAccessForbiddenError, rejectReservedArgumentKey } from "./access-errors.js";
 import {
   type ObserveRequest,
   observeRequestSchema,
@@ -55,11 +55,15 @@ import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+// Object.create(null): a plain {} lets a copied own `__proto__` member invoke
+// the prototype setter, so an inherited field could reach the zod parse
+// (issue #3225 B1).
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
-    const cleaned: Record<string, unknown> = {};
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(obj)) {
+      rejectReservedArgumentKey(key);
       if (value !== null) cleaned[key] = value;
     }
     return cleaned;
@@ -79,8 +83,9 @@ function strictSchema<T extends z.ZodRawShape>(shape: T): z.ZodType<Record<strin
  */
 function stripNullsExcept(data: unknown, preserve: readonly string[]): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
-    const cleaned: Record<string, unknown> = {};
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+      rejectReservedArgumentKey(key);
       if (value !== null || preserve.includes(key)) cleaned[key] = value;
     }
     return cleaned;

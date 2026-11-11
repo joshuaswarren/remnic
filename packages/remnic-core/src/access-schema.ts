@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 
+import { EngramAccessInputError, rejectReservedArgumentKey } from "./access-errors.js";
 import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
@@ -855,17 +856,42 @@ export function validateRequest<T = unknown>(
       },
     };
   }
-  const result = schema.safeParse(stripNullsExceptCodingContext(body));
-  if (result.success) {
-    return { success: true, data: result.data as T };
+  let parseResult: z.ZodSafeParseResult<unknown>;
+  try {
+    parseResult = schema.safeParse(stripNullsExceptCodingContext(body));
+  } catch (error) {
+    // A reserved argument key (__proto__/constructor/prototype, issue #3225
+    // B1) is an ordinary client input fault: return the same documented
+    // failure shape a failed parse returns instead of throwing past the
+    // callers. Anything else keeps propagating.
+    if (error instanceof EngramAccessInputError) {
+      return {
+        success: false,
+        error: {
+          error: "request validation failed",
+          code: "validation_error",
+          details: [{ field: "(root)", message: error.message }],
+        },
+      };
+    }
+    throw error;
   }
-  return { success: false, error: formatZodError(result.error) };
+  if (parseResult.success) {
+    // SAFETY: T is the type each caller associates with schemaName, and the
+    // schema registered under schemaName is that type's canonical parser.
+    return { success: true, data: parseResult.data as T };
+  }
+  return { success: false, error: formatZodError(parseResult.error) };
 }
 
 function stripNullsExceptCodingContext(data: unknown): unknown {
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-  const cleaned: Record<string, unknown> = {};
+  // Object.create(null): a plain {} lets a copied own `__proto__` member
+  // invoke the prototype setter, so an inherited field could reach the wire
+  // schema parse (issue #3225 B1).
+  const cleaned = Object.create(null);
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    rejectReservedArgumentKey(key);
     if (value === null && key !== "codingContext") continue;
     cleaned[key] = value;
   }

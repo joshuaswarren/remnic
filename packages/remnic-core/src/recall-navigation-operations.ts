@@ -11,13 +11,20 @@
 import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
-import { EngramAccessInputError } from "./access-errors.js";
+import { EngramAccessInputError, rejectReservedArgumentKey } from "./access-errors.js";
 
+/**
+ * Null-prototype accumulator for cleaned request arguments, matching the
+ * batch preprocessors (issue #3225 B1): a copied own `__proto__` member on a
+ * plain `{}` switches the accumulator's prototype and an inherited field then
+ * reaches the zod parse.
+ */
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
-    const cleaned: Record<string, unknown> = {};
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(obj)) {
+      rejectReservedArgumentKey(key);
       if (value !== null) cleaned[key] = value;
     }
     return cleaned;

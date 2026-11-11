@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import {
+  assertNamespaceAllowed,
   assertOperationAuthorizationAllowed,
   tokenCapabilityStore,
 } from "./access-token-capabilities.js";
@@ -493,6 +494,20 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
       assertOperationAuthorizationAllowed(tokenCapabilityStore.getStore(), spec);
+      // Post-parse namespace re-check (issue #3225 B1): the transports authorize
+      // the RAW namespace before preprocessing. Re-check the PARSED value so a
+      // namespace that only appears after validation cannot bypass the token
+      // allow-list. Absent namespaces keep the transport check; no default is
+      // invented here.
+      if (operationRequiresAuthorizedNamespace(spec.name)) {
+        // SAFETY: namespace-bearing schemas parse `namespace` as a non-empty
+        // string, an explicit null (transport null-for-absent idiom), or
+        // undefined; falsy spellings mean absent and keep the transport check.
+        const parsedNamespace = (parseResult.data as { namespace?: string | null }).namespace;
+        if (parsedNamespace) {
+          assertNamespaceAllowed(tokenCapabilityStore.getStore(), parsedNamespace);
+        }
+      }
       return spec.handler(parseResult.data, { ...ctx, rawInput });
     },
   };
