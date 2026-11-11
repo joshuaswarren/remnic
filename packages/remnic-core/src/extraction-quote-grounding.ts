@@ -134,20 +134,76 @@ function hasNegation(text: string): boolean {
  * True when the claim asserts what a quote clause denies or does not assert:
  * "did not approve the budget" or "denied approving it" restated as "approved
  * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
- * plain statement. A claim that keeps a negator, exclusion word, or reporting
- * marker ("do not X" reworded as "X is excluded") is not a misstatement.
+ * plain statement. Each negated or unasserted quote clause is matched to the
+ * claim clause that best overlaps it; a claim that keeps one negator may still
+ * misstate another quote clause it restates as positive.
  */
+const CLAUSE_PATTERN = /[^;.!?\n]+[;.!?]*/gu;
+/** Split "X, and Y" claim coordination without touching list commas. */
+const CLAIM_COORD_SPLIT = /,\s{1,8}(?:and|but|or|nor)\s{1,8}/iu;
+
+function splitClaimClauses(content: string): string[] {
+  return (content.match(CLAUSE_PATTERN) ?? [content]).flatMap((clause) => {
+    const parts = clause
+      .split(CLAIM_COORD_SPLIT)
+      .map((part) => part.trim())
+      .filter((part) => part.length > 0);
+    return parts.length > 0 ? parts : [clause];
+  });
+}
+
+function clauseOverlap(clauseTokens: readonly string[], target: string): { shared: number; ratio: number } {
+  if (clauseTokens.length === 0) return { shared: 0, ratio: 0 };
+  const has = tokenPool(tokenize(target));
+  const shared = clauseTokens.filter(has).length;
+  return { shared, ratio: shared / clauseTokens.length };
+}
+
+function bestOverlappingClaimClause(
+  clauseTokens: readonly string[],
+  claimClauses: readonly string[],
+): string | undefined {
+  let best: string | undefined;
+  let bestShared = -1;
+  for (const claimClause of claimClauses) {
+    const { shared } = clauseOverlap(clauseTokens, claimClause);
+    if (shared > bestShared) {
+      bestShared = shared;
+      best = claimClause;
+    }
+  }
+  if (best === undefined) return undefined;
+  const { shared, ratio } = clauseOverlap(clauseTokens, best);
+  if (shared >= GROUNDING_MIN_SHARED_TOKENS && ratio >= 0.5) return best;
+  return undefined;
+}
+
 function misstatesQuote(content: string, quote: string): boolean {
-  const keepsNegation = hasNegation(content) || EXCLUSION_PATTERN.test(content);
-  const keepsReporting = hasNonAssertiveReporting(content) || content.trim().endsWith("?");
-  const contentHas = tokenPool(tokenize(content));
-  return (quote.match(/[^;.!?\n]+[;.!?]*/gu) ?? []).some((clause) => {
-    const negated = hasNegation(clause) && !keepsNegation;
-    const unasserted = (clause.trim().endsWith("?") || hasNonAssertiveReporting(clause)) && !keepsReporting;
-    if (!negated && !unasserted) return false;
-    const clauseTokens = [...tokenize(clause)];
-    const shared = clauseTokens.filter(contentHas).length;
-    return shared >= GROUNDING_MIN_SHARED_TOKENS && shared / clauseTokens.length >= 0.5;
+  const claimClauses = splitClaimClauses(content);
+  return (quote.match(CLAUSE_PATTERN) ?? []).some((quoteClause) => {
+    const needsNegation = hasNegation(quoteClause);
+    const needsReporting = quoteClause.trim().endsWith("?") || hasNonAssertiveReporting(quoteClause);
+    if (!needsNegation && !needsReporting) return false;
+    const clauseTokens = [...tokenize(quoteClause)];
+    const matched = bestOverlappingClaimClause(clauseTokens, claimClauses);
+    // One claim clause may cover several quote clauses when it shares tokens
+    // with each; if no single clause reaches the threshold, fall back to the
+    // whole claim so `;`-folded rewords still match.
+    let polarityText = matched;
+    if (polarityText === undefined) {
+      const whole = clauseOverlap(clauseTokens, content);
+      if (whole.shared >= GROUNDING_MIN_SHARED_TOKENS && whole.ratio >= 0.5) {
+        polarityText = content;
+      }
+    }
+    if (polarityText === undefined) return false;
+    if (needsNegation && !(hasNegation(polarityText) || EXCLUSION_PATTERN.test(polarityText))) {
+      return true;
+    }
+    if (needsReporting && !(hasNonAssertiveReporting(polarityText) || polarityText.trim().endsWith("?"))) {
+      return true;
+    }
+    return false;
   });
 }
 

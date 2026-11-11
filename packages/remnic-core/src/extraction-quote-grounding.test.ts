@@ -410,6 +410,26 @@ test("a claim that inverts a negated quote is rejected, a restated exclusion is 
   assert.deepEqual(keptContents(grounded), ["Alice would avoid approving the budget."]);
 });
 
+test("a claim that keeps one quote negation and flips another is rejected", () => {
+  const source = "Notes: Alice did not approve the budget. Bob did not review the ledger.";
+  const quote = "Alice did not approve the budget. Bob did not review the ledger.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Alice did not approve the budget, and Bob reviewed the ledger.", quote },
+      {
+        content: "Alice did not approve the budget, and Bob did not review the ledger.",
+        quote,
+      },
+    ]),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), [
+    "Alice did not approve the budget, and Bob did not review the ledger.",
+  ]);
+});
+
+
 test("a claim that inverts a denial verb in the quote is rejected", () => {
   const source = "Notes: Alice denied approving the budget. Bob reviewed it.";
   const grounded = filterExtractionResultBySource(
