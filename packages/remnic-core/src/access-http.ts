@@ -2739,8 +2739,15 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     //   DELETE /engram/v1/peers/:id?forget=true — destructive full purge (issue #679 completion)
     //   GET    /engram/v1/peers/:id/profile  — get peer profile
     if (req.method === "GET" && pathname === "/engram/v1/peers") {
-      const result = await this.runPeerOperation(req, "peer_list", {});
-      this.respondJson(res, 200, result);
+      const op = getOperation("peer_list"); // boundary dispatch (issue #1525)
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_list");
+      // SAFETY: the registered peer_list handler returns { result } from the service.
+      const output = (await op.run({}, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -2750,13 +2757,20 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      const op = getOperation("peer_profile_get"); // boundary dispatch (issue #1525)
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_profile_get");
       const peerId = decodePeerIdSegment(peerProfileMatch[1] ?? "");
-      const result = await this.runPeerOperation<{ found: boolean }>(req, "peer_profile_get", { id: peerId });
-      if (!result.found) {
+      // SAFETY: the registered peer_profile_get handler returns { result } from the service.
+      const output = (await op.run({ id: peerId }, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
+      })) as { result: { found: boolean } };
+      if (!output.result.found) {
         this.respondJson(res, 404, { error: "peer_profile_not_found", code: "peer_profile_not_found" });
         return;
       }
-      this.respondJson(res, 200, result);
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -2765,26 +2779,40 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const peerId = decodePeerIdSegment(peerIdMatch[1] ?? "");
 
       if (req.method === "GET") {
-        const result = await this.runPeerOperation<{ found: boolean }>(req, "peer_get", { id: peerId });
-        if (!result.found) {
+        const op = getOperation("peer_get"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_get");
+        // SAFETY: the registered peer_get handler returns { result } with a found flag.
+        const output = (await op.run({ id: peerId }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: { found: boolean } };
+        if (!output.result.found) {
           this.respondJson(res, 404, { error: "peer_not_found", code: "peer_not_found" });
           return;
         }
-        this.respondJson(res, 200, result);
+        this.respondJson(res, 200, output.result);
         return;
       }
 
       if (req.method === "PUT") {
         const body = await this.readJsonBody(req) as Record<string, unknown>;
+        const op = getOperation("peer_set"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_set");
         // Raw body fields: the operation schema rejects malformed types with an
         // input error instead of silently defaulting them (rule 51).
-        const result = await this.runPeerOperation<{ created: boolean }>(req, "peer_set", {
+        // SAFETY: the registered peer_set handler returns { result } with the upsert outcome.
+        const output = (await op.run({
           id: peerId,
           kind: body.kind,
           displayName: body.displayName,
           notes: body.notes,
-        });
-        this.respondJson(res, result.created ? 201 : 200, result);
+        }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: { created: boolean } };
+        this.respondJson(res, output.result.created ? 201 : 200, output.result);
         return;
       }
 
@@ -2805,12 +2833,26 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
             });
             return;
           }
-          const result = await this.runPeerOperation(req, "peer_forget", { id: peerId, confirm: "yes" });
-          this.respondJson(res, 200, result);
+          const op = getOperation("peer_forget"); // boundary dispatch (issue #1525)
+          if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_forget");
+          // SAFETY: the registered peer_forget handler returns { result } with the purge outcome.
+          const output = (await op.run({ id: peerId, confirm: "yes" }, {
+            service: this.service,
+            authenticatedPrincipal: this.resolveRequestPrincipal(req),
+            sourceConnector: this.resolveConnector(req),
+          })) as { result: unknown };
+          this.respondJson(res, 200, output.result);
           return;
         }
-        const result = await this.runPeerOperation(req, "peer_delete", { id: peerId });
-        this.respondJson(res, 200, result);
+        const op = getOperation("peer_delete"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_delete");
+        // SAFETY: the registered peer_delete handler returns { result } with the delete outcome.
+        const output = (await op.run({ id: peerId }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: unknown };
+        this.respondJson(res, 200, output.result);
         return;
       }
 
@@ -3864,29 +3906,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     throw new EngramAccessForbiddenError(
       `token is not permitted to call any required operation: ${ops.join(", ")}`,
     );
-  }
-
-  /**
-   * Dispatch one peer route through its registered boundary operation with the
-   * request's trusted context, so REST enforces the same operation policy
-   * (ops axis plus the fleet-wide namespace rule) as MCP (issue #3225 B3).
-   * Returns the handler's `result` envelope value.
-   */
-  private async runPeerOperation<T = unknown, In = unknown>(
-    req: IncomingMessage,
-    name: OperationName,
-    input: In,
-  ): Promise<T> {
-    const op = getOperation(name); // boundary dispatch (issue #1525)
-    if (!op) throw new EngramAccessInputError(`access-boundary: operation not registered: ${name}`);
-    // SAFETY: every peer handler answers `{ result }`; the run wrapper validates
-    // the envelope and applies the ops plus fleet-wide policy before the handler.
-    const output = (await op.run(input, {
-      service: this.service,
-      authenticatedPrincipal: this.resolveRequestPrincipal(req),
-      sourceConnector: this.resolveConnector(req),
-    })) as { result: T };
-    return output.result;
   }
  
   /**
