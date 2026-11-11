@@ -98,6 +98,8 @@ export type DrainResult = {
   delivered: number;
   dropped: number;
   pending: number;
+  /** True when this call did nothing because another drain on this instance was already running. */
+  skipped?: boolean;
 };
 
 const DEFAULT_MAX_ENTRIES = 200;
@@ -274,7 +276,7 @@ export class ObserveOutbox {
     const notify = options.notify;
     await this.refresh(notify);
     if (this.drainInProgress) {
-      return { delivered: 0, dropped: 0, pending: this.entries.length };
+      return { delivered: 0, dropped: 0, pending: this.entries.length, skipped: true };
     }
     this.drainInProgress = true;
     const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;

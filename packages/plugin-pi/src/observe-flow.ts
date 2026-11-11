@@ -11,6 +11,9 @@ export const MAX_OBSERVED_HASHES = 2000;
 /** Longest a session-start or shutdown replay attempt may take. */
 const STARTUP_DRAIN_ATTEMPT_MS = 3000;
 
+/** Longest the session_start hook waits for its replay before moving on. */
+const STARTUP_DRAIN_BUDGET_MS = 3000;
+
 export function rememberObservedHash(observedHashes: Set<string>, hash: string): void {
   if (observedHashes.has(hash)) return;
   while (observedHashes.size >= MAX_OBSERVED_HASHES) {
@@ -92,7 +95,7 @@ export async function drainObserveOutbox(
       }
     }
   }, drainOptions);
-  if (result.pending > 0) {
+  if (result.pending > 0 && !result.skipped) {
     session.notify(
       `Remnic observe outbox: ${result.pending} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
       "warning",
@@ -145,4 +148,29 @@ export function startObserveOutboxDrain(
 export async function settleObserveOutboxDrain(outbox: ObserveOutbox): Promise<void> {
   const running = inFlightDrains.get(outbox);
   if (running) await Promise.all([...running]);
+}
+
+/**
+ * Session-start replay: one bounded attempt that can neither reject the `session_start`
+ * hook nor hold it past `STARTUP_DRAIN_BUDGET_MS`. The drain has its own catch (via
+ * startObserveOutboxDrain); if it is still running at the deadline (a locked outbox file,
+ * a hanging daemon) the hook moves on and the drain finishes in the background.
+ */
+export async function drainObserveOutboxAtStartup(
+  session: OutboxSession,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+  outbox: ObserveOutbox,
+  observedHashes: Set<string>,
+  liveObservedReplayKeys?: Map<string, number>,
+): Promise<void> {
+  const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, true);
+  const { promise: deadline, resolve } = Promise.withResolvers<void>();
+  const timer = setTimeout(resolve, STARTUP_DRAIN_BUDGET_MS);
+  timer.unref();
+  try {
+    await Promise.race([drain, deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

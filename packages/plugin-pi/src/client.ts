@@ -351,12 +351,7 @@ export class RemnicClient {
         );
       }
       const chunkOptions: RequestOptions = { ...retryOptions, timeoutMs: remaining };
-      const result = await this.requestWithRetry<Record<string, unknown>>(
-        "POST",
-        "/engram/v1/observe",
-        chunks[i],
-        chunkOptions,
-      );
+      const result = await this.requestWithRetry("POST", "/engram/v1/observe", chunks[i], chunkOptions);
       if (result && typeof result === "object") {
         results.push(result);
       }

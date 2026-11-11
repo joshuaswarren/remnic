@@ -434,3 +434,22 @@ test("a non-finite jitterRatio still produces finite, capped sleeps", async () =
   assert.ok(slept.length > 0, "a backoff happened");
   assert.ok(slept.every((ms) => Number.isFinite(ms) && ms > 0 && ms <= 1000), `sleeps are finite and capped (got ${slept.join(", ")})`);
 });
+
+test("a drain that finds another drain running reports skipped so callers do not warn about saturation", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("skipped"));
+  await outbox.enqueue(entryInput("held"));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const first = outbox.drain(async () => {
+    entered.resolve();
+    await release.promise;
+  }, { sleep: async () => undefined });
+  await entered.promise;
+  const second = await outbox.drain(async () => undefined, { sleep: async () => undefined });
+  release.resolve();
+  const done = await first;
+  assert.equal(second.skipped, true, "the concurrent call did no work");
+  assert.equal(second.pending, 1, "and still reports what is queued");
+  assert.equal(done.delivered, 1);
+  assert.equal(done.skipped, undefined, "the real drain is not marked skipped");
+});

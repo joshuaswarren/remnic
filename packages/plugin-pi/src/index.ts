@@ -27,7 +27,7 @@ import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from
 import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
 import {
   MAX_OBSERVED_HASHES,
-  drainObserveOutbox,
+  drainObserveOutboxAtStartup,
   liveReplayKey,
   startObserveOutboxDrain,
   rememberLiveObservedReplayKey,
@@ -206,7 +206,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (observeOutbox) {
         // One cheap attempt: a dead daemon must not hold session start behind retry and
         // backoff ladders; whatever stays queued replays on the next successful contact.
-        await drainObserveOutbox(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys, true);
+        await drainObserveOutboxAtStartup(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys);
       }
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
