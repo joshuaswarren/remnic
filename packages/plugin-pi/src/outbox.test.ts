@@ -453,3 +453,30 @@ test("a drain that finds another drain running reports skipped so callers do not
   assert.equal(done.delivered, 1);
   assert.equal(done.skipped, undefined, "the real drain is not marked skipped");
 });
+
+test("every eviction warns with the count of captures dropped, not just the first", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("evict-each"), { maxEntries: 2 });
+  const warnings: string[] = [];
+  const notify = (message: string, level: "info" | "warning" | "error") => {
+    if (level === "warning") warnings.push(message);
+  };
+  for (const c of ["a", "b", "c", "d", "e"]) await outbox.enqueue(entryInput(c), notify);
+  assert.equal(warnings.length, 3, "one warning for each of the three evictions");
+  for (const warning of warnings) {
+    assert.match(warning, /dropped 1 oldest queued capture\(s\)/);
+    assert.match(warning, /2-entry bound/);
+  }
+});
+
+test("a dropped 4xx capture is logged with its HTTP status and replay key", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("drop-4xx"));
+  await outbox.enqueue({ ...entryInput("rejected"), replayNonce: "nonce-for-rejected" });
+  const notifications: string[] = [];
+  const result = await outbox.drain(async () => {
+    throw new RemnicHttpError(422, "unprocessable", "invalid_request");
+  }, { notify: (message) => notifications.push(message), sleep: async () => undefined });
+  assert.equal(result.dropped, 1, "a retry cannot fix a 4xx, so it is still dropped");
+  assert.equal(notifications.length, 1);
+  assert.match(notifications[0], /HTTP 422/, "the status is in the log line");
+  assert.match(notifications[0], /nonce-for-rejected/, "and so is the key that identifies the capture");
+});
