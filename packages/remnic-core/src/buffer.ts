@@ -43,7 +43,6 @@ export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from
 // pruneEntries, the admission probe and the batch preflight.
 const EVICTION_HOOKS = { activityAt: entryActivityAt, holdsAcceptedCapture: entryHoldsAcceptedCapture };
 
-
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
@@ -505,7 +504,6 @@ export class SmartBuffer {
     }
     return outcomes;
   }
-
 
   /** Free one slot only when an empty entry can be reclaimed. */
   private makeRoomForEntryUnlocked(): void {
