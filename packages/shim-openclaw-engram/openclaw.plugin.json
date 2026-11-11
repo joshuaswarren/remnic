@@ -1259,19 +1259,28 @@
                 "description": "Master gate. Default off - set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
-                "type": "string",
+                "anyOf": [
+                  {"type": "string"},
+                  {"type": "object", "required": ["source"], "properties": {"source": {"type": "string", "minLength": 1}, "provider": {"type": "string"}, "id": {"type": "string"}, "command": {}}}
+                ],
                 "default": "",
-                "description": "OAuth2 client id. Populate from your secret store (e.g. ${GOOGLE_DRIVE_CLIENT_ID}). Never commit a real value to source."
+                "description": "OAuth2 client id. Plain string (e.g. ${GOOGLE_DRIVE_CLIENT_ID}) or OpenClaw SecretRef resolved at poll time. Never commit a real value to source."
               },
               "clientSecret": {
-                "type": "string",
+                "anyOf": [
+                  {"type": "string"},
+                  {"type": "object", "required": ["source"], "properties": {"source": {"type": "string", "minLength": 1}, "provider": {"type": "string"}, "id": {"type": "string"}, "command": {}}}
+                ],
                 "default": "",
-                "description": "OAuth2 client secret. Populate from your secret store (e.g. ${GOOGLE_DRIVE_CLIENT_SECRET}). Never commit a real value to source."
+                "description": "OAuth2 client secret. Plain string (e.g. ${GOOGLE_DRIVE_CLIENT_SECRET}) or OpenClaw SecretRef resolved at poll time. Never commit a real value to source."
               },
               "refreshToken": {
-                "type": "string",
+                "anyOf": [
+                  {"type": "string"},
+                  {"type": "object", "required": ["source"], "properties": {"source": {"type": "string", "minLength": 1}, "provider": {"type": "string"}, "id": {"type": "string"}, "command": {}}}
+                ],
                 "default": "",
-                "description": "OAuth2 refresh token issued for the user's Drive scope. Populate from your secret store (e.g. ${GOOGLE_DRIVE_REFRESH_TOKEN}). Never commit a real value to source."
+                "description": "OAuth2 refresh token. Plain string (e.g. ${GOOGLE_DRIVE_REFRESH_TOKEN}) or OpenClaw SecretRef resolved at poll time. Never commit a real value to source."
               },
               "pollIntervalMs": {
                 "type": "integer",
