@@ -545,8 +545,14 @@ async function persistExplicitCaptureUnlocked(
   resolvedNamespace: string | undefined,
   storage: StorageManager
 ): Promise<PersistedExplicitCapture> {
-  const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
-  if (duplicate) return duplicatePersistResult(duplicate);
+  const isFact = candidate.category === "fact";
+  // Facts take a cheap early exit here and re-check inside the dedup window.
+  // Every other category checks only under the capture lock, so its gate and
+  // its write stay one atomic step per dedup key (#3354).
+  if (isFact) {
+    const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+    if (duplicate) return duplicatePersistResult(duplicate);
+  }
 
   // #1645 (review thread yG-): surface the tombstone block so callers
   // (memory_store tool, access-service HTTP/MCP) can report the capture as
@@ -566,17 +572,20 @@ async function persistExplicitCaptureUnlocked(
     { source: source === "inline" ? "explicit-inline" : "explicit" }
   );
 
-  const writeUnderCaptureLock = (): Promise<PersistedExplicitCapture> => {
-    if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") {
-      return persistSealedExplicitCapture(storage, captureEnvelope, candidate, source);
-    }
+  const withCaptureLock = <T>(run: () => Promise<T>): Promise<T> => {
+    if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return run();
     const lockIdentity = buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector);
-    return storage.withTombstoneBlockedCaptureWriteLock(
-      () => persistSealedExplicitCapture(storage, captureEnvelope, candidate, source),
-      lockIdentity
-    );
+    return storage.withTombstoneBlockedCaptureWriteLock(run, lockIdentity);
   };
+  const writeSealed = (): Promise<PersistedExplicitCapture> =>
+    persistSealedExplicitCapture(storage, captureEnvelope, candidate, source);
 
+  if (!isFact) {
+    return await withCaptureLock(async () => {
+      const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+      return duplicate ? duplicatePersistResult(duplicate) : await writeSealed();
+    });
+  }
   // #3354: fact captures commit inside the per-dir fact-dedup window so a
   // concurrent extraction write of the same fact is caught by the recheck
   // instead of racing the persist-time gate. The tombstone capture write
@@ -584,9 +593,6 @@ async function persistExplicitCaptureUnlocked(
   // promotion) acquires the tombstone lock only inside writeMemory, so
   // taking it here first would order tombstone→window against their
   // window→tombstone and stall the capture on the 60s write-lock backoff.
-  if (candidate.category !== "fact") {
-    return await writeUnderCaptureLock();
-  }
   let racedDuplicate: { id: string; tombstoneBlocked: boolean } | null = null;
   const outcome = await persistUnderFactDedupWindow(
     storage.dir,
@@ -594,7 +600,7 @@ async function persistExplicitCaptureUnlocked(
       racedDuplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
       return racedDuplicate !== null;
     },
-    writeUnderCaptureLock
+    () => withCaptureLock(writeSealed)
   );
   if (!outcome.suppressed) return outcome.result;
   // The closure assignment is invisible to control-flow analysis; the window

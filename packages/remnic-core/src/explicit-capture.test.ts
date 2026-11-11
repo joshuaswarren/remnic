@@ -7,6 +7,7 @@ import type { Orchestrator } from "./orchestrator.js";
 import type { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
 import type { SealedMemoryEnvelope } from "./write-envelope.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import {
   InlineExplicitCaptureProcessor,
   parseInlineExplicitCaptureNotes,
@@ -100,17 +101,19 @@ function createInlineCaptureProcessorProbe(
       readAllCalls += 1;
       activeReadAllCalls += 1;
       maxConcurrentReadAllCalls = Math.max(maxConcurrentReadAllCalls, activeReadAllCalls);
+      // A read reflects the corpus as it was when the read began, so a write
+      // that lands during the delay is invisible to this caller.
+      const snapshot = memories.map((memory) => ({
+        ...memory,
+        frontmatter: { ...memory.frontmatter },
+      }));
       if (options.duplicateReadDelayMs !== undefined) {
         await new Promise((resolve) => setTimeout(resolve, options.duplicateReadDelayMs));
       }
       activeReadAllCalls -= 1;
       // Simulate a concurrent extraction writer committing between this read
-      // and a later one: the caller sees the snapshot below without the peer
+      // and a later one: the caller sees the snapshot above without the peer
       // row, while subsequent reads include it.
-      const snapshot = memories.map((memory) => ({
-        ...memory,
-        frontmatter: { ...memory.frontmatter },
-      }));
       if (options.peerFactCommitAfterFirstReadAll && !peerCommitted) {
         peerCommitted = true;
         memories.push({
@@ -298,6 +301,23 @@ test("persistExplicitCapture serializes duplicate checks across concurrent calls
   assert.equal(probe.lifecycleEvents.length, 1);
 });
 
+test("persistExplicitCapture keeps the duplicate gate and the write atomic for non-fact categories (#3354)", async () => {
+  const probe = createInlineCaptureProcessorProbe({ duplicateReadDelayMs: 15 });
+  const candidate = {
+    content: "Concurrent preference captures must produce one durable capture.",
+    category: "preference" as const,
+    confidence: 0.9,
+    tags: [],
+  };
+  const [first, second] = await Promise.all([
+    persistExplicitCapture(probe.orchestrator, candidate, "memory_store"),
+    persistExplicitCapture(probe.orchestrator, candidate, "memory_store"),
+  ]);
+  assert.equal(Number(first.duplicateOf !== undefined) + Number(second.duplicateOf !== undefined), 1);
+  assert.equal(probe.envelopes.length, 1);
+  assert.equal(probe.lifecycleEvents.length, 1);
+});
+
 test("explicit capture suppresses a fact a concurrent writer commits between the gate and the write", async () => {
   const probe = createInlineCaptureProcessorProbe({ peerFactCommitAfterFirstReadAll: true });
   const candidate = validateExplicitCaptureInput({
@@ -439,6 +459,40 @@ test("inline capture processor queues invalid complete markup and never leaves i
   assert.equal(probe.lifecycleEvents[0]?.actor, "inline.memory_note");
   assert.equal(disabled.content, content);
   assert.equal(disabled.processed, 0);
+  assert.equal(probe.envelopes.length, 1);
+});
+
+test("an inline fact capture that cannot take the dedup window fails closed and stays retryable (#3354)", async () => {
+  const probe = createInlineCaptureProcessorProbe();
+  const request = {
+    captureMode: "hybrid" as const,
+    content: [
+      "<memory_note>",
+      "content: A contended fact capture must stay retryable.",
+      "category: fact",
+      "</memory_note>",
+    ].join("\n"),
+    dedupeKeys: ["window-contention-1"],
+    namespace: "principal-project",
+    namespacePreResolved: true,
+  };
+
+  // A second process holding fact-dedup.lock: the window waits its bounded
+  // 2s, then throws instead of writing unlocked.
+  const contended = await withHeldFileLock(
+    path.join(probe.storage.dir, "fact-dedup.lock"),
+    { staleMs: 60_000, maxWaitMs: 1_000 },
+    async (acquired) => {
+      assert.ok(acquired, "the test must hold the window lock");
+      return await probe.processor.process(request);
+    }
+  );
+  assert.equal(contended.failed, 1);
+  assert.equal(probe.envelopes.length, 0);
+
+  // The failed delivery left its dedupe key unremembered, so the replay commits.
+  const replay = await probe.processor.process(request);
+  assert.equal(replay.accepted, 1);
   assert.equal(probe.envelopes.length, 1);
 });
 
