@@ -133,3 +133,11 @@ test("a destroy that rejects after the deadline passed does not crash the stop c
   // Give the late rejection a chance to surface before the test ends.
   await new Promise((resolve) => setTimeout(resolve, 400));
 });
+
+test("a destroy that settles in time leaves no live deadline timer behind", async () => {
+  quietLogger();
+  const liveTimers = (): number => process.getActiveResourcesInfo().filter((name) => name === "Timeout").length;
+  const before = liveTimers();
+  await shutdownBacklogDrain(undefined, async () => {}, () => {}, 60_000);
+  assert.equal(liveTimers(), before, "the 60s deadline timer must be cleared once destroy settles");
+});

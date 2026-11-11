@@ -39,13 +39,16 @@ async function destroyWithDeadline(
   // rejection handled keeps a late destroy failure from crashing exit while
   // `return await bounded` below still propagates in-time failures.
   bounded.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<symbol>((resolve) => {
     // Ref'd on purpose: the timer IS the shutdown bound. Unref'ing it would
     // let the event loop drain before the deadline ever fires, leaving the
     // stop chain parked on a wedged drain instead of finishing.
-    const timer = setTimeout(() => resolve(timedOut), deadlineMs);
+    timer = setTimeout(() => resolve(timedOut), deadlineMs);
   });
-  const outcome = await Promise.race([bounded, deadline]);
+  // Cleared once the race settles, so a destroy that finishes in time leaves
+  // no live 60s timer holding an embedding process open.
+  const outcome = await Promise.race([bounded, deadline]).finally(() => clearTimeout(timer));
   if (outcome === timedOut) {
     emitMarker(
       "warn",
