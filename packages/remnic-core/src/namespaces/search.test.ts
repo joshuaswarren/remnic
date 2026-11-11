@@ -507,6 +507,71 @@ test("searchAcrossNamespaces still rejects when the caller aborts", async () => 
   assert.equal(degradations.length, 0, "a caller abort is not a backend degradation");
 });
 
+test("searchAcrossNamespaces propagates backend errors instead of masking them", async () => {
+  const degradations: SearchDegradation[] = [];
+  class ThrowingBackend extends FakeBackend {
+    override async search(): Promise<QmdSearchResult[]> {
+      throw new Error("boom");
+    }
+  }
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => new ThrowingBackend(false),
+  );
+  const call = router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main"],
+    maxResults: 10,
+    execution: { onDegradation: (degradation) => degradations.push(degradation) },
+  });
+  await assert.rejects(call, { message: "boom" });
+  assert.equal(degradations.length, 0, "a backend error is not a deadline");
+});
+
+test("searchAcrossNamespaces hands each leg its deadline signal", async (t) => {
+  const signals = new Map<string, AbortSignal | undefined>();
+  const degradations: SearchDegradation[] = [];
+  class RecordingBackend extends FakeBackend {
+    constructor(private readonly name: string) {
+      super(false);
+    }
+    override async search(
+      _query: string,
+      _collection?: string,
+      _maxResults?: number,
+      _options?: SearchQueryOptions,
+      execution?: SearchExecutionOptions,
+    ): Promise<QmdSearchResult[]> {
+      signals.set(this.name, execution?.signal);
+      if (this.name === "stuck") return new Promise<QmdSearchResult[]>(() => {});
+      return [{ path: "facts/a.md", docid: "a", score: 0.9, snippet: this.name }];
+    }
+  }
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    (scopedConfig) => new RecordingBackend(scopedConfig.memoryDir.endsWith("/stuck") ? "stuck" : "healthy"),
+  );
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const call = router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["healthy", "stuck"],
+    maxResults: 10,
+    execution: { onDegradation: (degradation) => degradations.push(degradation) },
+  });
+  await setImmediate();
+  t.mock.timers.tick(NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
+  await setImmediate();
+  const results = await call;
+  assert.deepEqual(results.map((result) => result.snippet), ["healthy"]);
+  assert.equal(signals.get("stuck")?.aborted, true, "the stuck leg's backend must see its deadline abort");
+  assert.equal(signals.get("healthy")?.aborted, false, "a finished leg's timer must be cleared");
+  const deadlineCodes = degradations.filter((degradation) => degradation.code === "deadline_exceeded");
+  assert.equal(deadlineCodes.length, 1);
+  assert.match(deadlineCodes[0].detail ?? "", /stuck/);
+});
+
 test("searchAcrossNamespaces passes scoped collection to backend search methods", async () => {
   const created: FakeBackend[] = [];
   const router = new NamespaceSearchRouter(

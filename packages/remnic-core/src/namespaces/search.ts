@@ -182,6 +182,17 @@ export class NamespaceSearchRouter {
           return { namespace, results: [] as QmdSearchResult[] };
         }
         const backendLimit = backendSearchLimit(record, maxResults);
+        // One stalled backend leg must not hold the whole cross-namespace
+        // search (#3139). The backend gets the deadline signal so it cancels
+        // its own work, and the await is raced against the same budget. A leg
+        // that outlives its budget degrades only its own namespace; real
+        // backend errors and caller aborts propagate as before.
+        const legAbort = new AbortController();
+        const legTimer = setTimeout(() => legAbort.abort(), NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
+        const legSignal = options.execution?.signal
+          ? AbortSignal.any([options.execution.signal, legAbort.signal])
+          : legAbort.signal;
+        const legExecution: SearchExecutionOptions = { ...options.execution, signal: legSignal };
         let leg: Promise<QmdSearchResult[]>;
         switch (method) {
           case "hybrid":
@@ -189,7 +200,7 @@ export class NamespaceSearchRouter {
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           case "bm25":
@@ -197,7 +208,7 @@ export class NamespaceSearchRouter {
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           case "vector":
@@ -205,7 +216,7 @@ export class NamespaceSearchRouter {
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           default:
@@ -214,24 +225,15 @@ export class NamespaceSearchRouter {
               record.collection,
               backendLimit,
               options.searchOptions,
-              options.execution,
+              legExecution,
             );
             break;
         }
-        // One stalled backend leg must not hold the whole cross-namespace
-        // search (#3139). Bound each leg; a leg that outlives its budget
-        // degrades only its own namespace. Uses a mocked-clock-friendly
-        // timer instead of AbortSignal.timeout so tests can tick it.
-        const legAbort = new AbortController();
-        const legTimer = setTimeout(() => legAbort.abort(), NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
-        const legSignal = options.execution?.signal
-          ? AbortSignal.any([options.execution.signal, legAbort.signal])
-          : legAbort.signal;
         let results: QmdSearchResult[];
         try {
           results = await awaitWithAbort(leg, legSignal);
         } catch (error) {
-          if (options.execution?.signal?.aborted) throw error;
+          if (options.execution?.signal?.aborted || !legAbort.signal.aborted) throw error;
           reportSearchDegradation(options.execution, {
             backend: "qmd",
             code: "deadline_exceeded",
