@@ -3,6 +3,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { raceAbort } from "./abort-error.js";
 import { entityMentionEpoch } from "./entity-mention-epoch.js";
 import { log } from "./logger.js";
+import { compareStrings } from "./eval-trajectory-contracts.js";
 
 /**
  * In-memory entity mention index.
@@ -156,12 +157,6 @@ function throwIfMentionAborted(signal?: AbortSignal): void {
   if (!signal?.aborted) return;
   const reason = signal.reason;
   throw reason instanceof Error ? reason : new Error("entity mention rebuild aborted");
-}
-
-function compareStrings(left: string, right: string): number {
-  if (left < right) return -1;
-  if (left > right) return 1;
-  return 0;
 }
 
 function deduped(values: readonly string[]): string[] {
