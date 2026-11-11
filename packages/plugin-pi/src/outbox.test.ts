@@ -423,3 +423,14 @@ test("backoff is clamped to maxRetryAfterMs even after jitter", async () => {
   assert.ok(slept.length > 0, "a backoff happened");
   assert.ok(slept.every((ms) => ms <= 1000), `sleeps stay within the 1000 ms cap (got ${slept.join(", ")})`);
 });
+
+test("a non-finite jitterRatio still produces finite, capped sleeps", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("nan-jitter"));
+  await outbox.enqueue(entryInput("kept"));
+  const slept: number[] = [];
+  await outbox.drain(async () => {
+    throw new RemnicHttpError(503, "busy", "buffer_admission_refused");
+  }, { maxAttempts: 3, backoffBaseMs: 100, maxRetryAfterMs: 1000, jitterRatio: Number.NaN, sleep: async (ms) => { slept.push(ms); } });
+  assert.ok(slept.length > 0, "a backoff happened");
+  assert.ok(slept.every((ms) => Number.isFinite(ms) && ms > 0 && ms <= 1000), `sleeps are finite and capped (got ${slept.join(", ")})`);
+});
