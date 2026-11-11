@@ -815,6 +815,48 @@ test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
   }
 });
 
+test("HTTP observe answers 503 buffer_admission_refused when durable capture hits the entry cap", async () => {
+  const refusal = new Error("buffer at session-entry cap");
+  refusal.name = "ReplayAdmissionRefusedError";
+  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
+  const service = Object.assign({} as EngramAccessService, {
+    observe: async () => {
+      throw refusal;
+    },
+  });
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/observe`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionKey: "capacity-test-session",
+          messages: [{ role: "user", content: "retry me" }],
+        }),
+      },
+    );
+    assert.equal(response.status, 503, "admission backpressure is retryable, not a server fault");
+    assert.deepEqual(await response.json(), {
+      error: "buffer at session-entry cap",
+      code: "buffer_admission_refused",
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP briefing endpoint dispatches through the briefing operation", async () => {
   const calls: unknown[] = [];
   const service = {

@@ -398,3 +398,44 @@ export function probeWithTimeout<T>(inflight: Promise<T>, timeoutMs: number): Pr
     if (timer) clearTimeout(timer);
   });
 }
+
+export const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
+  t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
+
+export function entryActivityAt(entry: BufferEntryState): number {
+  const lastTurnAt = entry.turns.reduce((latest, turn) => {
+    const parsed = Date.parse(turn.timestamp);
+    return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
+  }, -1);
+  const lastExtractionAt =
+    entry.lastExtractionAt === null ? Number.NaN : Date.parse(entry.lastExtractionAt);
+  return Math.max(
+    lastTurnAt,
+    Number.isFinite(lastExtractionAt) ? lastExtractionAt : -1,
+  );
+}
+
+export function entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
+  return (entry?.turns ?? []).some(isAcceptedTurn) || (entry?.retainedTurns ?? []).some(isAcceptedTurn);
+}
+
+export function normalizeBufferState(state: BufferState): BufferState {
+  // SAFETY: persisted-state contract — entries, when present, is a record of BufferEntryState.
+  const entries = Object.assign(
+    Object.create(null),
+    state.entries ?? {},
+  ) as NonNullable<BufferState["entries"]>;
+  if (!entries.default) {
+    entries.default = {
+      turns: Array.isArray(state.turns) ? [...state.turns] : [],
+      lastExtractionAt: state.lastExtractionAt ?? null,
+      extractionCount: state.extractionCount ?? 0,
+    };
+  }
+  return {
+    turns: entries.default.turns,
+    lastExtractionAt: entries.default.lastExtractionAt,
+    extractionCount: entries.default.extractionCount,
+    entries,
+  };
+}
