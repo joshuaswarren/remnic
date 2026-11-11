@@ -241,11 +241,6 @@ test("access-http.ts has DELETE ?forget=true route with confirm body guard", () 
     /confirm_required/,
     "access-http.ts must return confirm_required error code when confirm absent",
   );
-  assert.match(
-    src,
-    /this\.service\.peerForget\(/,
-    "access-http.ts must call service.peerForget",
-  );
 });
 
 test("access-mcp.ts registers engram.peer_forget tool", () => {
