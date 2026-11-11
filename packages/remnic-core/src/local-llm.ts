@@ -1153,6 +1153,7 @@ export class LocalLlmClient {
       const data = JSON.parse(responseBody) as {
         choices?: Array<{
           message?: { content?: string; reasoning_content?: string };
+          finish_reason?: string;
         }>;
         usage?: {
           prompt_tokens?: number;
@@ -1169,6 +1170,7 @@ export class LocalLlmClient {
       // `reasoning_content` and leave `content` empty. Fall back to
       // reasoning_content so engram still gets a usable result.
       const msg = data.choices?.[0]?.message;
+      if (options.failureDiag) options.failureDiag.finishReason = data.choices?.[0]?.finish_reason;
       const content = msg?.content || msg?.reasoning_content || "";
       if (!content) {
         log.warn(`local LLM returned empty content.${options.redactProviderErrors ? "" : ` choices=${JSON.stringify(data.choices)?.slice(0, 200)}`}`);

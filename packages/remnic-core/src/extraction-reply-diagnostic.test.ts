@@ -16,13 +16,13 @@ function assertNoContent(reply: string, sentinels: string[], allowedKeys: string
   assert.deepEqual(diag.topLevelKeys.filter((k) => !allowedKeys.includes(k)), []);
 }
 
-test("commentary: no braces, no JSON, nothing parsed", () => {
+test("commentary: no braces, nothing parses (the whole reply is the one candidate the extractor tries)", () => {
   const reply = `I read the conversation about ${SECRET} and have no durable facts to report.`;
   assert.deepEqual(buildUnusableReplyDiagnostic(reply, "stop", 0), {
     replyChars: reply.length,
     finishReason: "stop",
     startsWithBrace: false,
-    jsonCandidates: 0,
+    jsonCandidates: 1,
     parsedAnyJson: false,
     payloadShapeRejected: 0,
     topLevelKeys: [],

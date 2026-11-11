@@ -214,6 +214,27 @@ test("chat completion passes an undici dispatcher to fetch", async () => {
   }
 });
 
+test("failureDiag carries the completion's finish_reason (issue #3387)", { concurrency: false }, async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "partial" }, finish_reason: "length" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+  const client = new LocalLlmClient(createConfig());
+
+  try {
+    primeClient(client);
+    const failureDiag: { lastError?: unknown; finishReason?: string } = {};
+    const result = await client.chatCompletion([{ role: "user", content: "test" }], { failureDiag });
+    assert.equal(result?.content, "partial");
+    assert.equal(failureDiag.finishReason, "length");
+  } finally {
+    globalThis.fetch = original;
+    await dispatcherOf(client).close();
+  }
+});
+
 test("runtime honors a per-request dispatcher (regression canary for #2148)", async () => {
   // The fix assumes fetch applies `init.dispatcher`. If a future runtime
   // silently ignores it, the 300s cap returns with no other signal — so

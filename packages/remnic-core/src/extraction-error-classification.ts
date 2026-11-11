@@ -101,6 +101,8 @@ export class LocalLlmRejectedError extends Error {
 /** What the local client recorded about a failed call (`failureDiag`). */
 export interface LocalFailureDiag {
   lastError?: unknown;
+  /** The completion's `finish_reason` as the client received it (validated before it is logged). */
+  finishReason?: string;
 }
 
 /** The HTTP status when the local endpoint answered and refuses this input (400, 413, 422); else undefined. A wrong model name or route (404, 405, 410), auth, timeout and rate limiting are the setup's problem, not the chunk's. */

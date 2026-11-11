@@ -39,6 +39,7 @@ import { applyGroundingWithConnector, headerConnector, renderExtractionConversat
 import { isMemoryCategory } from "./write-envelope.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
 import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
+import { buildUnusableReplyDiagnostic, formatUnusableReplyDiagnostic, looksLikeExtractionResultPayload } from "./extraction-reply-diagnostic.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
   CONSOLIDATION_RESPONSE_SCHEMA,
@@ -273,20 +274,6 @@ export class ExtractionEngine {
       || result.questions.length > 0
       || result.profileUpdates.length > 0
       || (result.relationships?.length ?? 0) > 0;
-  }
-
-  private looksLikeExtractionResultPayload(parsed: any): boolean {
-    return !!parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      (
-        "facts" in parsed ||
-        "entities" in parsed ||
-        "profileUpdates" in parsed ||
-        "questions" in parsed ||
-        "relationships" in parsed ||
-        "identityReflection" in parsed
-      );
   }
 
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
@@ -1515,7 +1502,10 @@ ${truncatedConversation}`;
     );
     if (!response?.content) {
       const rejected = localRejectionStatus(failureDiag);
-      if (rejected !== undefined) throw new LocalLlmRejectedError(rejected); // the endpoint is up and refuses this input
+      if (rejected !== undefined) {
+        log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic("", failureDiag.finishReason, 0)));
+        throw new LocalLlmRejectedError(rejected); // the endpoint is up and refuses this input
+      }
       log.debug("extractWithLocalLlm: chatCompletion returned null or empty content");
       return null;
     }
@@ -1528,7 +1518,7 @@ ${truncatedConversation}`;
       try {
         log.debug(`extractWithLocalLlm: attempting JSON parse, candidate length=${candidate.length}`);
         const parsed = JSON.parse(candidate);
-        if (!this.looksLikeExtractionResultPayload(parsed)) {
+        if (!looksLikeExtractionResultPayload(parsed)) {
           continue;
         }
 
@@ -1551,6 +1541,7 @@ ${truncatedConversation}`;
       log.debug(`extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`);
       return partial;
     }
+    log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic(content, failureDiag.finishReason, partial.facts.length)));
     throw new LocalLlmRejectedError(); // the endpoint answered and nothing in the answer is usable
   }
 

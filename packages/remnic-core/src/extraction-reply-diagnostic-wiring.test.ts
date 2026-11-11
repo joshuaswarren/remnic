@@ -46,7 +46,7 @@ test("an unusable reply logs one content-free diagnostic and still classifies pa
   assert.equal(result.extractionFailureClass, "parse_empty");
   const lines = warns.filter((w) => w.includes(MARKER));
   assert.equal(lines.length, 1);
-  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=0 parsedAnyJson=false payloadShapeRejected=0 topLevelKeys= partialFacts=0`));
+  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=1 parsedAnyJson=false payloadShapeRejected=0 topLevelKeys= partialFacts=0`));
   for (const warn of warns) {
     assert.equal(warn.includes(SECRET), false);
     assert.equal(warn.includes("nothing durable"), false);
