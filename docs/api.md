@@ -122,7 +122,7 @@ field, and `remnic query --json` includes it in the serialized recall response.
 **Capsules and offline sync**
 
 - `POST /engram/v1/capsules/export` — export a portable capsule archive
-- `POST /engram/v1/capsules/import` — import a capsule archive
+- `POST /engram/v1/capsules/import` — import a capsule archive (`archivePath` must be inside the destination namespace's capsule store, the same store `capsules/export` writes)
 - `GET` or `POST /engram/v1/offline-sync/snapshot` — offline sync snapshot
 - `POST /engram/v1/offline-sync/files` — list files for offline sync
 - `POST /engram/v1/offline-sync/file-content` — read file content

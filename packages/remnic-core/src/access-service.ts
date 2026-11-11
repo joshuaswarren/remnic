@@ -1,9 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import { readdirSync, unlinkSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import * as nodeFs from "node:fs/promises";
-import { ZodError } from "zod";
 import { summarizeHourlyStatus } from "./summarizer.js";
 import { decodeCitationNamespace } from "./access-citation-namespace.js";
 import {
@@ -288,6 +286,7 @@ import {
 } from "./capabilities.js";
 import { resolveRecallEnhancementCapabilities } from "./capabilities.js";
 import { type CapsuleListEntry, defaultCapsulesDir } from "./capsule-cli.js";
+import { isCapsuleImportArchiveInputError, validateCapsuleImportArchive } from "./capsule-import-gate.js";
 import type { SemanticDedupLookup } from "./dedup/semantic.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
 import type { LocalLlmClient } from "./local-llm.js";
@@ -5366,6 +5365,9 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
    * `versioning` defaults to the orchestrator's page-versioning config so
    * `mode: "overwrite"` automatically snapshots prior content without the
    * caller having to construct the config object.
+   *
+   * Remote callers (HTTP and MCP) may only import from the destination
+   * namespace's capsule store; the CLI keeps unrestricted local paths.
    */
   async capsuleImport(
     opts: Omit<ImportCapsuleOptions, "root" | "memoryDir"> & {
@@ -5385,57 +5387,16 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       maxVersionsPerPage: this.orchestrator.config.versioningMaxPerPage,
       sidecarDir: this.orchestrator.config.versioningSidecarDir,
     };
-    await this.validateCapsuleImportArchivePath(importOptions.archivePath);
+    await validateCapsuleImportArchive(importOptions.archivePath, storage.dir);
     try {
       return await importCapsuleFn({ ...importOptions, root, memoryDir, versioning });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (this.isCapsuleImportArchiveInputError(err, message)) {
+      if (isCapsuleImportArchiveInputError(err, message)) {
         throw new EngramAccessInputError(`capsule import failed: ${message}`);
       }
       throw err;
     }
-  }
-
-  private async validateCapsuleImportArchivePath(archivePath: string): Promise<void> {
-    let archiveStat;
-    try {
-      archiveStat = await stat(archivePath);
-    } catch (err) {
-      if (!this.isCapsuleImportPathInputFsError(err)) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      throw new EngramAccessInputError(`capsule import failed: archive is not readable: ${message}`);
-    }
-    if (!archiveStat.isFile()) {
-      throw new EngramAccessInputError("capsule import failed: archivePath must point to a file");
-    }
-    try {
-      await nodeFs.access(archivePath, fsConstants.R_OK);
-    } catch (err) {
-      if (!this.isCapsuleImportPathInputFsError(err)) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      throw new EngramAccessInputError(`capsule import failed: archive is not readable: ${message}`);
-    }
-  }
-
-  private isCapsuleImportPathInputFsError(err: unknown): boolean {
-    const code =
-      typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
-    return code === "ENOENT" || code === "ENOTDIR" || code === "EACCES" || code === "EPERM" || code === "ELOOP";
-  }
-
-  private isCapsuleImportArchiveInputError(err: unknown, message: string): boolean {
-    if (err instanceof ZodError) return true;
-    const code =
-      typeof err === "object" && err !== null && "code" in err ? (err as { code?: unknown }).code : undefined;
-    if (typeof code === "string" && code.startsWith("Z_")) return true;
-    return (
-      message.startsWith("importCapsule: archive") ||
-      message.startsWith("importCapsule: bundle") ||
-      message.startsWith("importCapsule: manifest") ||
-      message.startsWith("importCapsule: record") ||
-      /incorrect header check|invalid stored block lengths|not in gzip format|unexpected end of file/i.test(message)
-    );
   }
 
   /**
