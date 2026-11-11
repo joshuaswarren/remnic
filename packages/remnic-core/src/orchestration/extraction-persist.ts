@@ -1694,11 +1694,7 @@ export class ExtractionPersistCoordinator {
       // confirmation, so a disabled deployment never suppresses a write via
       // dedup (PR #2016 thread SD-nH).
       if (factDedupEnabled) {
-        exactDuplicate = await confirmActiveFactDuplicate(
-          { hasContentHashDedup: (storage, key) => this.deps.hasContentHashDedup(storage, key) },
-          targetStorage,
-          raceDedupOpts(contentHashDedupKey),
-        );
+        exactDuplicate = await confirmActiveFactDuplicate(targetStorage, raceDedupOpts(contentHashDedupKey));
       }
       // PR #2016/#3231: finalize committed writes before a fail-closed
       // window throw propagates (PRRT_kwDORJXyws6zxG6H).
@@ -1711,11 +1707,7 @@ export class ExtractionPersistCoordinator {
       const raceRecheck = (storage: StorageManager, key: string) => () => {
         // Gates mirror the persist-time suppression gates (PR #2016 SD-nH; #1645 quarantine).
         if (!factDedupEnabled || injectionScreenStatus === "pending_review") return Promise.resolve(false);
-        return confirmActiveFactDuplicate(
-          { hasContentHashDedup: (s, k) => this.deps.hasContentHashDedup(s, k) },
-          storage,
-          raceDedupOpts(key),
-        );
+        return confirmActiveFactDuplicate(storage, raceDedupOpts(key));
       };
       // #1671/#1707 — backfill bi-temporal bounds onto the surviving copy
       // when a duplicate short-circuits: persist-time hit OR raced duplicate

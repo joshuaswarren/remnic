@@ -1,14 +1,27 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { StorageManager } from "./storage.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./orchestration/fact-dedup-window.js";
 
-function probe(storage: StorageManager) {
-  return { hasContentHashDedup: (s: StorageManager, key: string) => s.hasFactContentHash(key) };
+const SKY_OPTS = {
+  category: "fact",
+  contentHashDedupKey: "the sky is blue",
+  connector: undefined,
+  citationEnabled: false,
+  citationTemplate: "",
+} as const;
+const CONTENDED_LOCK_OPTIONS = { maxWaitMs: 40, pollMs: 10, retryMaxAttempts: 2, retryBaseMs: 10 };
+
+/** Hold a fresh fact-hash index lock the way a peer mid-publish does; returns the release. */
+async function holdIndexLock(root: string): Promise<() => Promise<void>> {
+  const lockPath = path.join(root, "state", "fact-hashes.txt.lock");
+  await mkdir(path.dirname(lockPath), { recursive: true });
+  await writeFile(lockPath, `99999 peer-owner ${new Date().toISOString()}\n`);
+  return () => rm(lockPath, { force: true });
 }
 
 async function makeStorage(): Promise<{ storage: StorageManager; cleanup: () => Promise<void> }> {
@@ -19,14 +32,7 @@ async function makeStorage(): Promise<{ storage: StorageManager; cleanup: () => 
 test("confirmActiveFactDuplicate sees a fact another session committed into the same namespace", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const recheck = () =>
-      confirmActiveFactDuplicate(probe(storage), storage, {
-        category: "fact",
-        contentHashDedupKey: "the sky is blue",
-        connector: undefined,
-        citationEnabled: false,
-        citationTemplate: "",
-      });
+    const recheck = () => confirmActiveFactDuplicate(storage, SKY_OPTS);
     assert.equal(await recheck(), false, "clean namespace must not report a duplicate");
 
     // A concurrent session (separate manager, same dir) commits the fact.
@@ -48,14 +54,7 @@ test("persistUnderFactDedupWindow suppresses on recheck hit and writes on a miss
       await storage.writeMemory("fact", "the sky is blue");
       return "written";
     };
-    const recheck = () =>
-      confirmActiveFactDuplicate(probe(storage), storage, {
-        category: "fact",
-        contentHashDedupKey: "the sky is blue",
-        connector: undefined,
-        citationEnabled: false,
-        citationTemplate: "",
-      });
+    const recheck = () => confirmActiveFactDuplicate(storage, SKY_OPTS);
 
     // First session: recheck misses, write proceeds.
     const first = await persistUnderFactDedupWindow(storage["baseDir"], recheck, write);
@@ -114,3 +113,87 @@ test("persistUnderFactDedupWindow fails closed when a peer holds fact-dedup.lock
     await cleanup();
   }
 });
+
+test("lookupContentHash never pairs a stale MISS with authority while a peer holds the index lock", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    storage.factHashIndexLockOptions = CONTENDED_LOCK_OPTIONS;
+    assert.equal(await storage.isFactContentHashAuthoritative(), true, "starts authoritative");
+    const peer = new StorageManager(storage["baseDir"]);
+    await peer.writeMemory("fact", "The sky is BLUE!");
+    const release = await holdIndexLock(storage["baseDir"]);
+    try {
+      assert.deepEqual(
+        await storage.lookupContentHash(SKY_OPTS.contentHashDedupKey),
+        { present: false, authoritative: false },
+        "the rebuild cannot run, so the stale MISS must not claim authority",
+      );
+      assert.equal(await confirmActiveFactDuplicate(storage, SKY_OPTS), true, "the corpus confirms the peer's fact");
+    } finally {
+      await release();
+    }
+    assert.deepEqual(
+      await storage.lookupContentHash(SKY_OPTS.contentHashDedupKey),
+      { present: true, authoritative: true },
+      "once the lock is free the rebuild publishes and the hit is authoritative",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("confirmActiveFactDuplicate stays a duplicate when the peer releases the index lock right after the lookup", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    storage.factHashIndexLockOptions = CONTENDED_LOCK_OPTIONS;
+    assert.equal(await storage.isFactContentHashAuthoritative(), true, "starts authoritative");
+    const peer = new StorageManager(storage["baseDir"]);
+    await peer.writeMemory("fact", "The sky is BLUE!");
+    const release = await holdIndexLock(storage["baseDir"]);
+    const lookup = storage.lookupContentHash.bind(storage);
+    mock.method(storage, "lookupContentHash", async (content: string) => {
+      const answer = await lookup(content);
+      await release();
+      return answer;
+    });
+    assert.equal(
+      await confirmActiveFactDuplicate(storage, SKY_OPTS),
+      true,
+      "a lock released after the lookup must not turn the stale MISS into a clean not-duplicate",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("two managers on one directory commit the same fact through the window exactly once", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const peer = new StorageManager(storage["baseDir"]);
+    const commit = (manager: StorageManager) =>
+      persistUnderFactDedupWindow(
+        manager.dir,
+        () => confirmActiveFactDuplicate(manager, SKY_OPTS),
+        () => manager.writeMemory("fact", "The sky is blue"),
+      );
+    const outcomes = await Promise.all([commit(storage), commit(peer)]);
+    assert.equal(outcomes.filter((outcome) => !outcome.suppressed).length, 1, "one writer wins, the other is suppressed");
+    const stored = await new StorageManager(storage["baseDir"]).readAllMemories();
+    assert.equal(stored.filter((memory) => memory.content.includes("sky is blue")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("confirmActiveFactDuplicate keeps the authoritative MISS fast path", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    assert.equal(await storage.isFactContentHashAuthoritative(), true, "warm the index so no rebuild reads the corpus");
+    const corpusReads = mock.method(storage, "readAllMemories");
+    assert.equal(await confirmActiveFactDuplicate(storage, SKY_OPTS), false);
+    assert.equal(corpusReads.mock.callCount(), 0, "authoritative MISS must not scan the corpus");
+  } finally {
+    await cleanup();
+  }
+});
+
