@@ -151,6 +151,42 @@ test("confirmActiveFactDuplicate falls through when authority flips after a stal
   );
 });
 
+test("confirmActiveFactDuplicate falls through when authority is lost between the snapshot and the probe", async () => {
+  // Race: the index is authoritative at the snapshot, then a peer write that
+  // holds the index lock makes it stale before the probe answers MISS.
+  let authoritative = true;
+  const storage = {
+    dir: "/tmp/fact-dedup-authority-lost",
+    isFactContentHashAuthoritative: async () => authoritative,
+    readAllMemories: async () => [
+      {
+        frontmatter: { category: "fact", status: "active" },
+        content: "the sky is blue",
+      },
+    ],
+    readAllColdMemories: async () => [],
+  };
+  const staleProbe = {
+    hasContentHashDedup: async () => {
+      authoritative = false;
+      return false;
+    },
+  };
+
+  // SAFETY: confirmActiveFactDuplicate reads only isFactContentHashAuthoritative, readAllMemories and readAllColdMemories; the stub above implements exactly those.
+  assert.equal(
+    await confirmActiveFactDuplicate(staleProbe, storage as never, {
+      category: "fact",
+      contentHashDedupKey: "the sky is blue",
+      connector: undefined,
+      citationEnabled: false,
+      citationTemplate: "",
+    }),
+    true,
+    "a MISS from an index that lost authority during the probe must confirm against the corpus",
+  );
+});
+
 test("confirmActiveFactDuplicate keeps the authoritative MISS fast path", async () => {
   let corpusReads = 0;
   const storage = {

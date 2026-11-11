@@ -61,12 +61,14 @@ export async function confirmActiveFactDuplicate(
 ): Promise<boolean> {
   let needsCorpusConfirm: boolean;
   try {
-    // Snapshot authority before the probe. A rebuild that finishes between a
-    // stale MISS and a later authority read must not turn that MISS into a
-    // clean not-duplicate (#3312 finding 2).
+    // Trust a MISS only when the index was authoritative both before and after
+    // the probe. Before: a rebuild that finishes after a stale MISS must not
+    // turn it into a clean not-duplicate. After: a peer write that holds the
+    // index lock between the snapshot and the probe leaves the MISS stale
+    // (#3312 finding 2).
     const authoritativeBeforeProbe = await storage.isFactContentHashAuthoritative();
     if (!(await probe.hasContentHashDedup(storage, opts.contentHashDedupKey))) {
-      if (authoritativeBeforeProbe) return false;
+      if (authoritativeBeforeProbe && (await storage.isFactContentHashAuthoritative())) return false;
       needsCorpusConfirm = true;
     } else {
       needsCorpusConfirm = true;
