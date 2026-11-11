@@ -89,20 +89,20 @@ function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
   throw abortError(message);
 }
 
-/** Intended client-facing access errors keep their message on the wire. */
-function isIntendedMcpToolError(err: unknown): err is Error {
-  return err instanceof EngramAccessInputError || err instanceof EngramAccessForbiddenError;
-}
-
 /**
  * Map tools/call failures to a client-safe message. Unexpected backend/fs
  * errors become a stable generic string; detail stays in the server log.
+ * Intended EngramAccessInputError / EngramAccessForbiddenError stay readable.
  */
-function mcpToolErrorMessage(err: unknown): string {
-  if (isIntendedMcpToolError(err)) return err.message;
+function mcpToolErrorMessage(err: Error): string {
+  if (err instanceof EngramAccessInputError || err instanceof EngramAccessForbiddenError) {
+    return err.message;
+  }
   log.error("engram MCP tools/call internal error", err);
   return "internal error";
 }
+
+
 
 
 type McpRequestOptions = {
@@ -2429,7 +2429,7 @@ export class EngramMcpServer {
         // Cancellation is transport control flow, not a JSON-RPC tool error.
         // Preserve the original AbortError so HTTP can silently end a dead socket.
         if (isAbortError(err)) throw err;
-        const message = mcpToolErrorMessage(err);
+        const message = mcpToolErrorMessage(err instanceof Error ? err : new Error(String(err)));
         return {
           jsonrpc: "2.0",
           id,
