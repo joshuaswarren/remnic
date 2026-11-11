@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+
+- `importCapsule` bounds gunzip output to 64 MiB (`CAPSULE_IMPORT_MAX_GUNZIP_BYTES`). A small highly-compressible archive that expands past the limit is refused with a clear oversize error instead of unbounded allocation; normal capsules still import.
+
+
 ## [v10.0.81] — 2026-11-10
 
 ### Fixed
