@@ -410,6 +410,55 @@ test("a claim that inverts a negated quote is rejected, a restated exclusion is 
   assert.deepEqual(keptContents(grounded), ["Alice would avoid approving the budget."]);
 });
 
+test("a claim that keeps one quote negation and flips another is rejected", () => {
+  const source = "Notes: Alice did not approve the budget. Bob did not review the ledger.";
+  const quote = "Alice did not approve the budget. Bob did not review the ledger.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Alice did not approve the budget, and Bob reviewed the ledger.", quote },
+      {
+        content: "Alice did not approve the budget, and Bob did not review the ledger.",
+        quote,
+      },
+    ]),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), [
+    "Alice did not approve the budget, and Bob did not review the ledger.",
+  ]);
+});
+
+test("a claim that keeps the denial in a pronoun clause is kept", () => {
+  const source = "Notes: Alice did not approve the budget.";
+  const quote = "Alice did not approve the budget.";
+  const claims = [
+    "Alice discussed the budget; she did not approve it.",
+    "Alice reviewed the budget, but she did not approve it.",
+  ];
+  const grounded = filterExtractionResultBySource(
+    resultOf(claims.map((content) => ({ content, quote }))),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), claims);
+});
+
+test("a negator in a claim clause that shares only the subject does not keep the denial", () => {
+  const source = "Notes: Alice did not approve the budget. Alice did not review the contract.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      {
+        content: "Alice did not review the contract. She approved the budget.",
+        quote: "Alice did not approve the budget.",
+      },
+    ]),
+    source,
+    source,
+  );
+  assert.equal(grounded.facts.length, 0);
+});
+
 test("a claim that inverts a denial verb in the quote is rejected", () => {
   const source = "Notes: Alice denied approving the budget. Bob reviewed it.";
   const grounded = filterExtractionResultBySource(
