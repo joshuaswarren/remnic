@@ -429,6 +429,20 @@ test("a claim that keeps one quote negation and flips another is rejected", () =
   ]);
 });
 
+test("a claim that keeps the denial in a pronoun clause is kept", () => {
+  const source = "Notes: Alice did not approve the budget.";
+  const quote = "Alice did not approve the budget.";
+  const claims = [
+    "Alice discussed the budget; she did not approve it.",
+    "Alice reviewed the budget, but she did not approve it.",
+  ];
+  const grounded = filterExtractionResultBySource(
+    resultOf(claims.map((content) => ({ content, quote }))),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), claims);
+});
 
 test("a claim that inverts a denial verb in the quote is rejected", () => {
   const source = "Notes: Alice denied approving the budget. Bob reviewed it.";

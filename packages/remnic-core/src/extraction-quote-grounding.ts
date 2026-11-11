@@ -150,32 +150,16 @@ function clauseOverlap(clauseTokens: readonly string[], target: string) {
   return { shared, ratio: clauseTokens.length === 0 ? 0 : shared / clauseTokens.length };
 }
 
-function bestOverlappingClaimClause(
-  clauseTokens: readonly string[],
-  claimClauses: readonly string[],
-): string | undefined {
-  let best: string | undefined;
-  let bestShared = -1;
-  for (const claimClause of claimClauses) {
-    const { shared } = clauseOverlap(clauseTokens, claimClause);
-    if (shared > bestShared) {
-      bestShared = shared;
-      best = claimClause;
-    }
-  }
-  if (best === undefined) return undefined;
-  const { shared, ratio } = clauseOverlap(clauseTokens, best);
-  if (shared >= GROUNDING_MIN_SHARED_TOKENS && ratio >= 0.5) return best;
-  return undefined;
-}
-
 /**
  * True when the claim asserts what a quote clause denies or does not assert:
  * "did not approve the budget" or "denied approving it" restated as "approved
  * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
- * plain statement. Each negated or unasserted quote clause is matched to the
- * claim clause that best overlaps it; a claim that keeps one negator may still
- * misstate another quote clause it restates as positive.
+ * plain statement. The claim must restate the quote clause, and none of its
+ * clauses that share a word with it may keep the negator, exclusion word, or
+ * reporting marker ("do not X" reworded as "X is excluded", or "Alice
+ * reviewed it, but she did not approve it"). A negator in a clause about
+ * something else does not count, so a claim that keeps one quote negation can
+ * still misstate another quote clause.
  */
 function misstatesQuote(content: string, quote: string): boolean {
   const claimClauses = splitClaimClauses(content);
@@ -184,25 +168,11 @@ function misstatesQuote(content: string, quote: string): boolean {
     const needsReporting = quoteClause.trim().endsWith("?") || hasNonAssertiveReporting(quoteClause);
     if (!needsNegation && !needsReporting) return false;
     const clauseTokens = [...tokenize(quoteClause)];
-    const matched = bestOverlappingClaimClause(clauseTokens, claimClauses);
-    // One claim clause may cover several quote clauses when it shares tokens
-    // with each; if no single clause reaches the threshold, fall back to the
-    // whole claim so `;`-folded rewords still match.
-    let polarityText = matched;
-    if (polarityText === undefined) {
-      const whole = clauseOverlap(clauseTokens, content);
-      if (whole.shared >= GROUNDING_MIN_SHARED_TOKENS && whole.ratio >= 0.5) {
-        polarityText = content;
-      }
-    }
-    if (polarityText === undefined) return false;
-    if (needsNegation && !(hasNegation(polarityText) || EXCLUSION_PATTERN.test(polarityText))) {
-      return true;
-    }
-    if (needsReporting && !(hasNonAssertiveReporting(polarityText) || polarityText.trim().endsWith("?"))) {
-      return true;
-    }
-    return false;
+    const whole = clauseOverlap(clauseTokens, content);
+    if (whole.shared < GROUNDING_MIN_SHARED_TOKENS || whole.ratio < 0.5) return false;
+    const related = claimClauses.filter((claimClause) => clauseOverlap(clauseTokens, claimClause).shared > 0);
+    if (needsNegation && !related.some((text) => hasNegation(text) || EXCLUSION_PATTERN.test(text))) return true;
+    return needsReporting && !related.some((text) => hasNonAssertiveReporting(text) || text.trim().endsWith("?"));
   });
 }
 
