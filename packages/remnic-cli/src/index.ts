@@ -183,6 +183,7 @@ import {
 } from "@remnic/core";
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
+import { initCliLogger } from "./cli-logger.js";
 import { BUFFER_DRAIN_USAGE, runBufferDrain } from "./buffer-drain-cmd.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
@@ -4739,7 +4740,7 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
     return;
   }
 
-  initLogger();
+  initCliLogger(json);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5211,8 +5212,11 @@ export async function runWhoKnowsCommand(
 }
 
 /** Boot a local orchestrator + access service for one command, then tear down. */
-async function withLocalService<T>(fn: (service: EngramAccessService, orchestrator: Orchestrator) => Promise<T>): Promise<T> {
-  initLogger();
+async function withLocalService<T>(
+  fn: (service: EngramAccessService, orchestrator: Orchestrator) => Promise<T>,
+  jsonMode = false,
+): Promise<T> {
+  initCliLogger(jsonMode);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath) ? JSON.parse(fs.readFileSync(configPath, "utf8")) : {};
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
@@ -5229,14 +5233,14 @@ async function withLocalService<T>(fn: (service: EngramAccessService, orchestrat
 
 async function cmdWhoKnows(rest: string[]): Promise<void> {
   const { topic, options } = extractWhoKnowsRawArgs(rest);
-  parseWhoKnowsCliOptions(topic, options); // validate topic/--limit before any IO
+  const parsed = parseWhoKnowsCliOptions(topic, options); // validate topic/--limit before any IO
   if (resolveRemoteDaemon(resolveConfigPath())) {
     throw new Error("who-knows: remote daemon mode is not supported yet; run with a local config");
   }
   await withLocalService((service) => runWhoKnowsCommand(rest, {
     whoKnows: (request) => service.whoKnows(request),
     stdout: (line) => console.log(line),
-  }));
+  }), parsed.json);
 }
 
 async function cmdPromotionCandidates(rest: string[]): Promise<void> {
@@ -5244,11 +5248,11 @@ async function cmdPromotionCandidates(rest: string[]): Promise<void> {
   await withLocalService((service) => runPromotionCandidatesCommand(rest, {
     promotionCandidates: (request) => service.promotionCandidates(request),
     stdout: (line) => console.log(line),
-  }));
+  }), rest.includes("--json"));
 }
 
 async function cmdVersions(rest: string[]): Promise<void> {
-  initLogger();
+  initCliLogger(rest.includes("--json"));
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5719,7 +5723,10 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
 }
 
 async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<void> {
-  initLogger();
+  // Start the logger before parseConfig so its warnings reach stderr; JSON
+  // runs keep every level off stdout.
+  const requestsJson = rest.includes("--json") || resolveFlag(rest, "--format") === "json";
+  initCliLogger(requestsJson);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5797,6 +5804,8 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
   }
   const format: "markdown" | "json" =
     effectiveFormatFlag === "json" ? "json" : effectiveFormatFlag === "markdown" ? "markdown" : config.briefing.defaultFormat;
+  // config.briefing.defaultFormat can also select json after parseConfig.
+  if (format === "json" && !requestsJson) initCliLogger(true);
 
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
@@ -9839,7 +9848,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
       return;
     }
 
-    initLogger();
+    initCliLogger(format === "json");
     const configPath = resolveConfigPath();
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -10237,7 +10246,7 @@ async function cmdSpace(action: string, rest: string[], json: boolean): Promise<
 // ── Benchmark commands ─────────────────────────────────────────────────────────
 
 async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean): Promise<void> {
-  initLogger();
+  initCliLogger(json);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -12004,7 +12013,7 @@ function createOpenclawUpgradeBackupDir(): string {
 // ── Taxonomy commands (#366) ─────────────────────────────────────────────────
 
 async function cmdTaxonomy(rest: string[]): Promise<void> {
-  initLogger();
+  initCliLogger(rest.includes("--json"));
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
