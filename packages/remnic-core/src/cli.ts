@@ -4895,7 +4895,7 @@ export function registerCli(
             // No sidecar — attempt in-memory decryption if the secure-store is
             // unlocked.  decryptCapsuleFileInMemory returns the plaintext gzip
             // bytes; we then gunzip and parse exactly like the plaintext path.
-            const { gunzipSync } = await import("node:zlib");
+            const { gunzipCapsuleArchive } = await import("./transfer/capsule-gunzip.js");
             const { parseExportBundle } = await import("./transfer/types.js");
             let decryptedBuf: Buffer;
             try {
@@ -4917,7 +4917,7 @@ export function registerCli(
               process.exitCode = 1;
               return;
             }
-            const json = gunzipSync(decryptedBuf).toString("utf-8");
+            const json = gunzipCapsuleArchive(decryptedBuf, "capsule inspect", archivePath);
             const parsed2 = parseExportBundle(JSON.parse(json));
             if (parsed2.capsuleVersion !== 2) {
               process.stderr.write(
@@ -4929,10 +4929,10 @@ export function registerCli(
             manifest = (parsed2.bundle as { manifest: Record<string, unknown> }).manifest;
           } else {
             const { readFile } = await import("node:fs/promises");
-            const { gunzipSync } = await import("node:zlib");
+            const { gunzipCapsuleArchive } = await import("./transfer/capsule-gunzip.js");
             const { parseExportBundle } = await import("./transfer/types.js");
             const buf = await readFile(archivePath);
-            const json = gunzipSync(buf).toString("utf-8");
+            const json = gunzipCapsuleArchive(buf, "capsule inspect", archivePath);
             const parsed2 = parseExportBundle(JSON.parse(json));
             if (parsed2.capsuleVersion !== 2) {
               process.stderr.write(
