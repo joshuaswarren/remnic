@@ -44,6 +44,11 @@ export interface RequestOptions {
 export interface ObserveOptions extends RequestOptions {
   /** Soft cap on a single observe POST body in bytes; oversize batches are chunked. */
   maxBytes?: number;
+  /**
+   * Replay identity of ONE enqueued observe. Generated once per logical observe and
+   * reused on every retry or outbox replay of it; omitted means a fresh random one.
+   */
+  replayNonce?: string;
 }
 
 /**
@@ -95,7 +100,7 @@ interface ObserveBody {
   namespace?: string;
   skipExtraction: boolean;
   messages: ObserveMessage[];
-  /** Content-derived replay identity, assigned per chunk in chunkObservePayload. */
+  /** Replay identity (`obs-<nonce>-<body hash>`), assigned per chunk in chunkObservePayload. */
   idempotencyKey?: string;
 }
 
@@ -320,7 +325,14 @@ export class RemnicClient {
       signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
-    const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
+    const chunks = chunkObservePayload(
+      this.config,
+      sessionKey,
+      cwd,
+      messages,
+      maxBytes,
+      options.replayNonce ?? randomUUID(),
+    );
     if (chunks.length === 1) {
       return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
@@ -682,13 +694,14 @@ export function chunkObservePayload(
   cwd: string,
   messages: ObserveMessage[],
   maxBytes: number,
+  nonce: string = randomUUID(),
 ): ObserveBody[] {
   const emptyEnvelope = buildObserveEnvelope(config, sessionKey, cwd, []);
   const envelopeOverhead = jsonBytes(emptyEnvelope) +
-    // The content-derived idempotencyKey is appended after hashing, so it adds
-    // a fixed number of serialized bytes; reserve exactly that much so bodies
+    // The idempotencyKey is appended after hashing, so it adds a fixed number of
+    // serialized bytes (fixed for a given nonce); reserve exactly that much so bodies
     // still respect observeMaxBytes (#1600 caps).
-    (jsonBytes({ ...emptyEnvelope, idempotencyKey: observeIdempotencyKey(emptyEnvelope) }) - jsonBytes(emptyEnvelope));
+    (jsonBytes({ ...emptyEnvelope, idempotencyKey: observeIdempotencyKey(emptyEnvelope, nonce) }) - jsonBytes(emptyEnvelope));
   const messageBudget = maxBytes - envelopeOverhead;
   if (messageBudget <= 0) {
     // The envelope overhead alone meets/exceeds the cap, so no valid body can
@@ -697,7 +710,7 @@ export function chunkObservePayload(
     // budget (<=1024) is NOT degenerate: truncate/pack normally so oversized
     // messages are shrunk to fit instead of bypassing the #1600 safeguards
     // (cursor review).
-    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, messages))];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, messages), nonce)];
   }
   const chunks: ObserveMessage[][] = [];
   let current: ObserveMessage[] = [];
@@ -728,9 +741,9 @@ export function chunkObservePayload(
   }
   flush();
   if (chunks.length === 0) {
-    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, []))];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, []), nonce)];
   }
-  return chunks.map((msgs) => withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs)));
+  return chunks.map((msgs) => withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs), nonce));
 }
 
 const decoder = new TextDecoder();
@@ -833,18 +846,18 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
 }
 
 /**
- * Content-derived request identity for observe bodies. The daemon dedupes a
- * replayed observe under the same `idempotencyKey` + identical payload (#1649),
- * so a request whose response was lost (server accepted, client timed out) can
- * be replayed without double-ingesting. The key is a hash of the exact body
- * (envelope + messages), making "same key" and "same payload" equivalent —
- * the daemon's divergent-payload conflict can then never fire from client
- * behavior alone.
+ * Request identity for one observe chunk. The daemon dedupes a replayed observe under
+ * the same `idempotencyKey` + identical payload (#1649), so a request whose response
+ * was lost (server accepted, client timed out) can be replayed without double-ingesting.
+ * The key is `obs-<nonce>-<body hash>`: the nonce is random per logical observe and is
+ * reused only by retries of that same observe, so two genuinely separate identical
+ * turns ("yes" twice) never collide, while the body hash keeps a re-split chunk from
+ * reusing a key with a different payload (which the daemon answers as a conflict).
  */
-export function observeIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">): string {
-  return `obs-${createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 32)}`;
+export function observeIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): string {
+  return `obs-${nonce}-${createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 16)}`;
 }
 
-function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">): ObserveBody {
-  return { ...body, idempotencyKey: observeIdempotencyKey(body) };
+function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): ObserveBody {
+  return { ...body, idempotencyKey: observeIdempotencyKey(body, nonce) };
 }

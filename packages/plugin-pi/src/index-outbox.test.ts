@@ -13,7 +13,7 @@ import { ObserveOutbox } from "./outbox.js";
 
 // ---------------------------------------------------------------------------
 // Durable observe outbox: capacity refusals and ambiguous failures must never
-// lose a turn. Entries are queued durably with a content-derived idempotency
+// lose a turn. Entries are queued durably with a replay-nonce idempotency
 // key, replayed with bounded Retry-After-aware attempts, and drained on the
 // next successful contact or session start.
 // ---------------------------------------------------------------------------
@@ -186,6 +186,9 @@ test("response loss (server accepted, client timed out) replays without duplicat
     config,
     outbox
   );
+  // The timeout trips the breaker for daemonCooldownMs (1 ms here); without this wait the
+  // second call can land inside the same millisecond and be fast-skipped (flaky under load).
+  await new Promise<void>((resolve) => setTimeout(resolve, 10));
   await observeMessages(
     ctx,
     client,

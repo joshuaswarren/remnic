@@ -9,7 +9,7 @@ import type { ObserveMessage } from "./client.js";
  * Durable local queue for observe batches that the daemon could not accept:
  * capacity backpressure (atomic 503) or ambiguous failures (timeout, dropped
  * connection) where the request MAY have been processed. Entries are replayed
- * under a stable content-derived idempotency key (see client.observe), so a
+ * under a stable replay-nonce idempotency key (see client.observe), so a
  * replay after response loss is deduplicated server-side instead of ingesting
  * twice. Storage is JSONL rewritten atomically (temp file + rename) on every
  * mutation; a torn or corrupt line is skipped on load with a visible
@@ -22,6 +22,8 @@ export type ObserveOutboxEntryInput = {
   messages: ObserveMessage[];
   /** Per-message dedupe keys parallel to `messages` (null where un-hashable). */
   messageHashes: Array<string | null>;
+  /** Replay identity of the original attempt; every replay reuses it so keys and bodies match. */
+  replayNonce?: string;
 };
 
 export type ObserveOutboxEntry = ObserveOutboxEntryInput & {
@@ -59,6 +61,21 @@ export type DrainOptions = {
   jitterRatio?: number;
   sleep?: (ms: number) => Promise<void>;
   notify?: OutboxNotify;
+  /** Clock seam for the stale-replay warning (default Date.now). */
+  now?: () => number;
+};
+
+/** The daemon remembers observe idempotency keys for about this long (512-entry record). */
+const SERVER_IDEMPOTENCY_WINDOW_MS = 15 * 60_000;
+
+export type OutboxStatus = {
+  pending: number;
+  /** Age of the oldest queued entry, or null when empty. */
+  oldestAgeMs: number | null;
+  queued: number;
+  retried: number;
+  delivered: number;
+  dropped: number;
 };
 
 export type DrainResult = {
@@ -88,6 +105,9 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   const entry = parsed as ObserveOutboxEntry;
   if (!Array.isArray(entry.messages) || !Array.isArray(entry.messageHashes)) return null;
   if (!entry.id || !entry.sessionKey || !entry.cwd) return null;
+  // Entries from before the nonce existed replay under a nonce derived from their
+  // persisted id: stable across restarts, never shared with another entry.
+  entry.replayNonce = String(entry.replayNonce || entry.id);
   return entry;
 }
 
@@ -98,6 +118,7 @@ export class ObserveOutbox {
   private loaded = false;
   private writeChain: Promise<void> = Promise.resolve();
   private drainInProgress = false;
+  private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
 
   constructor(filePath: string, options: { maxEntries?: number } = {}) {
     this.filePath = filePath;
@@ -159,13 +180,27 @@ export class ObserveOutbox {
     );
   }
 
+  /** Counters since process start plus the oldest queued entry age. */
+  async status(now: () => number = Date.now): Promise<OutboxStatus> {
+    await this.load();
+    const oldest = this.entries[0] ? Date.parse(this.entries[0].queuedAt) : Number.NaN;
+    return {
+      pending: this.entries.length,
+      oldestAgeMs: Number.isFinite(oldest) ? Math.max(0, now() - oldest) : null,
+      ...this.counters,
+    };
+  }
+
   async enqueue(input: ObserveOutboxEntryInput, notify?: OutboxNotify): Promise<void> {
     await this.load(notify);
     await this.mutate(async () => {
+      const id = randomUUID();
+      this.counters.queued += 1;
       this.entries.push({
-        id: randomUUID(),
+        id,
         queuedAt: new Date().toISOString(),
         ...input,
+        replayNonce: input.replayNonce ?? id,
       });
       if (this.entries.length > this.maxEntries) {
         const evicted = this.entries.splice(0, this.entries.length - this.maxEntries).length;
@@ -203,6 +238,8 @@ export class ObserveOutbox {
         setTimeout(resolve, ms);
         return promise;
       });
+    const now = options.now ?? Date.now;
+    const warnedStale = new Set<string>();
     let delivered = 0;
     let dropped = 0;
     let attempts = 0;
@@ -210,6 +247,14 @@ export class ObserveOutbox {
       while (this.entries.length > 0 && attempts < maxAttempts) {
         const entry = this.entries[0];
         attempts += 1;
+        const queuedAtMs = Date.parse(entry.queuedAt);
+        if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
+          warnedStale.add(entry.id);
+          notify?.(
+            `Remnic observe outbox: replaying a capture queued more than ${SERVER_IDEMPOTENCY_WINDOW_MS / 60_000} minutes ago (older than 15 minutes); the daemon may no longer recognize its idempotency key, so a duplicate is possible if the original request was already accepted`,
+            "warning"
+          );
+        }
         try {
           await send(entry);
         } catch (err) {
@@ -219,6 +264,7 @@ export class ObserveOutbox {
             // still get their attempts.
             attempts -= 1;
             dropped += 1;
+            this.counters.dropped += 1;
             await this.mutate(async () => {
               this.entries.shift();
               await this.persist();
@@ -230,6 +276,7 @@ export class ObserveOutbox {
             );
             continue;
           }
+          this.counters.retried += 1;
           const hint = err instanceof RemnicHttpError ? err.retryAfterMs : undefined;
           const hinted = hint !== undefined && Number.isFinite(hint) ? hint : undefined;
           const base = Math.min(hinted ?? backoffBaseMs * 2 ** (attempts - 1), maxRetryAfterMs);
@@ -242,6 +289,7 @@ export class ObserveOutbox {
           await this.persist();
         });
         delivered += 1;
+        this.counters.delivered += 1;
       }
     } finally {
       this.drainInProgress = false;

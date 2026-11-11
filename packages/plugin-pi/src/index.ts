@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
 
@@ -10,6 +10,7 @@ import {
   isTransientNetworkError,
   type McpTool,
   type ObserveMessage,
+  type ObserveOptions,
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
 import {
@@ -804,9 +805,11 @@ async function observeMessagesForSession(
   // so the forced replay uses the general request budget — otherwise a large
   // unobserved branch would time out exactly when forceAttempt tried to save it
   // (cursor review).
-  const observeOptions = config
-    ? { timeoutMs: forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs }
-    : undefined;
+  // One replay identity per logical observe: the live attempt, any retry of it and a
+  // later outbox replay all send the same key, so the daemon can dedupe a lost response.
+  const replayNonce = randomUUID();
+  const observeOptions: ObserveOptions = { replayNonce };
+  if (config) observeOptions.timeoutMs = forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs;
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
     if (config) client.markReachable();
@@ -829,7 +832,7 @@ async function observeMessagesForSession(
     // Capacity backpressure or ambiguous failure: the turns are not lost —
     // queue them durably for replay on the next successful contact.
     await outbox?.enqueue(
-      { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes },
+      { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce },
       (message, level) => session.notify(message, level),
     );
     session.notify(
@@ -840,7 +843,7 @@ async function observeMessagesForSession(
 }
 
 /**
- * Replay queued observe entries in order under their content-derived
+ * Replay queued observe entries in order under their per-entry
  * idempotency keys. Bounded attempts per drain; undelivered entries stay
  * queued and the shortfall is surfaced, never silently dropped.
  */
@@ -853,7 +856,10 @@ async function drainObserveOutbox(
   liveObservedReplayKeys?: Map<string, number>,
 ): Promise<void> {
   const result = await outbox.drain(async (entry) => {
-    await client.observe(entry.sessionKey, entry.cwd, entry.messages, { timeoutMs: config.turnRequestTimeoutMs });
+    await client.observe(entry.sessionKey, entry.cwd, entry.messages, {
+      timeoutMs: config.turnRequestTimeoutMs,
+      replayNonce: entry.replayNonce ?? entry.id,
+    });
     // Delivered: remember identity so later turns and the shutdown replay skip these.
     for (const hash of entry.messageHashes) {
       if (hash !== null) rememberObservedHash(observedHashes, hash);
