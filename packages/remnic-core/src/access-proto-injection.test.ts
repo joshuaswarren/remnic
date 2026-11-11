@@ -22,6 +22,7 @@ import {
   type EngramAccessRecallResponse,
   type EngramAccessService,
 } from "./access-service.js";
+import { validateRequest, type RecallRequest } from "./access-schema.js";
 import type { RecallNavigationResult } from "./recall-navigation.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
@@ -280,4 +281,25 @@ test("an allowed explicit namespace reaches the memory_expand handler", async ()
       op.run({ memoryId: "m1", sessionKey: "s1", namespace: "ns2" }, { service }),
   );
   assert.equal(capturedNamespace, "ns2");
+});
+
+test("own __proto__ member cannot smuggle a namespace through the wire request parse", () => {
+  // validateRequest is the shared entry the HTTP REST body reader
+  // (readValidatedBody) and the MCP wire-schema parse (parseMcpRequest) run.
+  const recallExploit = JSON.parse('{"__proto__":{"namespace":"other"},"query":"hello"}');
+  assert.throws(
+    () => validateRequest<RecallRequest>("recall", recallExploit),
+    EngramAccessInputError,
+  );
+  const observeExploit = JSON.parse('{"__proto__":{"namespace":"other"}}');
+  assert.throws(() => validateRequest("observe", observeExploit), EngramAccessInputError);
+});
+
+test("wire request parse still preserves codingContext null clearing", () => {
+  const result = validateRequest<RecallRequest>("recall", JSON.parse('{"query":"q","codingContext":null}'));
+  assert.ok(result.success, "a codingContext null clear must parse");
+  if (result.success) {
+    assert.ok(Object.hasOwn(result.data, "codingContext"), "codingContext must survive the wire null strip");
+    assert.equal(result.data.codingContext, null);
+  }
 });

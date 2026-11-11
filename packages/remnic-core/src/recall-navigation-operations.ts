@@ -10,8 +10,8 @@
 
 import { z } from "zod";
 
-import { defineOperation, rejectReservedArgumentKey } from "./access-boundary.js";
-import { EngramAccessInputError } from "./access-errors.js";
+import { defineOperation } from "./access-boundary.js";
+import { EngramAccessInputError, rejectReservedArgumentKey } from "./access-errors.js";
 
 /**
  * Null-prototype accumulator for cleaned request arguments, matching the

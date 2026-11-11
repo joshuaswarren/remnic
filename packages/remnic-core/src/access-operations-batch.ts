@@ -13,8 +13,8 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
 import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
-import { defineOperation, rejectReservedArgumentKey } from "./access-boundary.js";
-import { EngramAccessForbiddenError } from "./access-errors.js";
+import { defineOperation } from "./access-boundary.js";
+import { EngramAccessForbiddenError, rejectReservedArgumentKey } from "./access-errors.js";
 import {
   type ObserveRequest,
   observeRequestSchema,

@@ -35,6 +35,28 @@ export class NamespaceNotWritableError extends EngramAccessInputError {
   }
 }
 
+// ─── Reserved argument keys (issue #3225 B1) ──────────────────────────────
+
+/**
+ * Dictionary keys that change object shape or prototype resolution. A JSON
+ * body can carry them as own members; the request preprocessors reject them
+ * before copying, so a decoded `__proto__` member cannot become an inherited
+ * schema field. Lives in this lowest module so the boundary and wire schema
+ * layers share one implementation without an import cycle.
+ */
+export const RESERVED_PROTO_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
+
+/**
+ * Reject the reserved keys with the input-error type, so a client that
+ * submits a magic dictionary key gets a validation error instead of a
+ * silently reshaped request object.
+ */
+export function rejectReservedArgumentKey(key: string): void {
+  if (RESERVED_PROTO_KEYS.includes(key)) {
+    throw new EngramAccessInputError(`${key} is not a permitted argument key`);
+  }
+}
+
 // ─── Levenshtein distance ─────────────────────────────────────────────────
 
 /**

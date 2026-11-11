@@ -339,25 +339,6 @@ export interface BoundOperation<In = unknown, Out = unknown> {
   readonly run: (rawInput: unknown, ctx: OperationContext) => Promise<Out>;
 }
 
-/**
- * Dictionary keys that change object shape or prototype resolution. A JSON
- * body can carry them as own members; the null-strip preprocessors reject
- * them before copying, so a decoded `__proto__` member cannot become an
- * inherited schema field (issue #3225 B1).
- */
-export const RESERVED_PROTO_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
-
-/**
- * Reject the reserved keys with the boundary input-error type, so a client
- * that submits a magic dictionary key gets a validation error instead of a
- * silently reshaped request object.
- */
-export function rejectReservedArgumentKey(key: string): void {
-  if (RESERVED_PROTO_KEYS.includes(key)) {
-    throw new EngramAccessInputError(`${key} is not a permitted argument key`);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Shared normalizers the boundary owns (rules 17, 28, 36, 48, 51)
 // ---------------------------------------------------------------------------

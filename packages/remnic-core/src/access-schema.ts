@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 
+import { rejectReservedArgumentKey } from "./access-errors.js";
 import type { MemoryCategory } from "./types.js";
 import {
   ACTION_CONFIDENCE_CONTEXT_READINESS,
@@ -864,8 +865,12 @@ export function validateRequest<T = unknown>(
 
 function stripNullsExceptCodingContext(data: unknown): unknown {
   if (!data || typeof data !== "object" || Array.isArray(data)) return data;
-  const cleaned: Record<string, unknown> = {};
+  // Object.create(null): a plain {} lets a copied own `__proto__` member
+  // invoke the prototype setter, so an inherited field could reach the wire
+  // schema parse (issue #3225 B1).
+  const cleaned = Object.create(null);
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    rejectReservedArgumentKey(key);
     if (value === null && key !== "codingContext") continue;
     cleaned[key] = value;
   }
