@@ -417,6 +417,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
   private readonly resourceMetadataUrl?: string;
   private readonly externalRequestHandler?: SupportPassportExternalRequestHandler;
   private readonly writeLimiter: WriteRateLimiter;
+  // Reservations taken by ensureWriteRateLimitAvailable and not yet committed
+  // by recordWriteRateLimitHit, keyed by request. The per-request release in
+  // the connection callback covers every early return and error path, so a
+  // failed or exempt write never leaks its slot (issue #3225 C4).
+  private readonly pendingWriteQuotas = new WeakMap<IncomingMessage, WriteRateLimitReservation>();
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
   private boundPort = 0;
@@ -556,6 +561,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         }).finally(() => {
           req.off("aborted", abortDisconnectedRequest);
           res.off("close", abortDisconnectedRequest);
+          // A counted write that failed or was exempt (dry run, replay) must
+          // not hold its reserved slot past the request (issue #3225 C4).
+          this.releasePendingWriteQuota(req);
         });
       });
     });
@@ -3931,14 +3939,46 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return 200;
   }
 
+  /**
+   * Admit a quota-counted write by RESERVING a limiter slot for the request
+   * (issue #3225 C4). A bare hasCapacity check admits N concurrent requests
+   * against the same committed count; the reservation holds in-flight
+   * capacity until the write commits at recordWriteRateLimitHit or the
+   * request ends. Idempotent per request, so a quota hook that fires after
+   * an earlier reservation is a no-op.
+   */
   protected ensureWriteRateLimitAvailable(req?: IncomingMessage): void {
-    if (!this.writeLimiter.hasCapacity(this.principalForRateLimit(req))) {
+    if (!req) {
+      if (!this.writeLimiter.hasCapacity()) {
+        throw new HttpError(429, "write_rate_limited", "write_rate_limited");
+      }
+      return;
+    }
+    if (this.pendingWriteQuotas.has(req)) return;
+    const reservation = this.writeLimiter.reserve(this.principalForRateLimit(req));
+    if (!reservation) {
       throw new HttpError(429, "write_rate_limited", "write_rate_limited");
     }
+    this.pendingWriteQuotas.set(req, reservation);
   }
 
+  /** Commit a counted write at the durable boundary; consumes the request's reservation. */
   protected recordWriteRateLimitHit(req?: IncomingMessage): void {
+    const pending = req ? this.pendingWriteQuotas.get(req) : undefined;
+    if (pending && req) {
+      this.pendingWriteQuotas.delete(req);
+      pending.commit();
+      return;
+    }
     this.writeLimiter.record(this.principalForRateLimit(req));
+  }
+
+  /** Release an uncommitted reservation after a rejection, failure, or exempt outcome. */
+  private releasePendingWriteQuota(req: IncomingMessage): void {
+    const pending = this.pendingWriteQuotas.get(req);
+    if (!pending) return;
+    this.pendingWriteQuotas.delete(req);
+    pending.release();
   }
 
   protected reserveWriteRateLimitSlot(req?: IncomingMessage): WriteRateLimitReservation {

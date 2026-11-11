@@ -13,8 +13,8 @@ import {
 import { peerManifestRevision } from "./reconcile/manifest.js";
 import {
   EngramAccessInputError,
+  EngramAccessService,
   type EngramAccessRecallRequest,
-  type EngramAccessService,
   type EngramAccessBriefingRequest,
 } from "./access-service.js";
 import {
@@ -6514,4 +6514,207 @@ test("a budget above the backend cap still gets the rows it asked for", async ()
     30_000,
     "the excluded hit was replaced, not subtracted",
   );
+});
+
+/**
+ * Prototype-backed service stub for the write-quota tests: the constructor's
+ * surface getters read only `orchestrator.config`, and each test overrides the
+ * single member its route dispatches.
+ */
+function quotaStubService(): EngramAccessService {
+  // SAFETY: the prototype supplies the untouched service surface; each quota test overrides only the member its route dispatches.
+  const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  // SAFETY: startup reads only orchestrator.config from the service; an empty config keeps every surface flag false.
+  Reflect.set(service, "orchestrator", { config: {} });
+  return service;
+}
+
+test("concurrent distinct-payload writes cannot overshoot the write quota (issue #3225 C4)", async () => {
+  // Checking hasCapacity before the operation and calling record after it
+  // left a window where N in-flight writes all pass against the same
+  // committed count. Admission must reserve a slot, so only LIMIT of TOTAL
+  // overlapping writes proceed and the rest get 429.
+  const LIMIT = 2;
+  const TOTAL = 6;
+  let dispatches = 0;
+  const firstDispatched = Promise.withResolvers<void>();
+  const releaseWrites = Promise.withResolvers<void>();
+  const service = quotaStubService();
+  service.capsuleExport = async (request) => {
+    dispatches += 1;
+    if (dispatches === 1) firstDispatched.resolve();
+    await releaseWrites.promise;
+    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
+    return { ok: true, name: request.name } as never;
+  };
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: LIMIT,
+  });
+  const status = await server.start();
+  const post = (index: number) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/capsules/export`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: `quota-race-${index}` }),
+    });
+  try {
+    const first = post(0);
+    await firstDispatched.promise;
+    const rest = Array.from({ length: TOTAL - 1 }, (_, index) => post(index + 1));
+    // The first write is admitted and held open inside the service, so every
+    // other request must run its admission check against an unrecorded
+    // window. Loopback arrival needs a bounded grace; the overlap cannot be
+    // driven deterministically because admission is server-internal.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseWrites.resolve();
+    const responses = await Promise.all([first, ...rest]);
+    const statuses = responses.map((response) => response.status).sort((a, b) => a - b);
+    assert.deepEqual(
+      statuses,
+      [...Array<number>(LIMIT).fill(200), ...Array<number>(TOTAL - LIMIT).fill(429)],
+      `expected exactly ${LIMIT} admitted writes and ${TOTAL - LIMIT} rejections, got ${JSON.stringify(statuses)}`,
+    );
+  } finally {
+    releaseWrites.resolve();
+    await server.stop();
+  }
+});
+
+test("a failed write releases its reserved quota slot (issue #3225 C4)", async () => {
+  let calls = 0;
+  const service = quotaStubService();
+  service.capsuleExport = async (request) => {
+    calls += 1;
+    if (calls === 1) throw new Error("export backend failed");
+    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
+    return { ok: true, name: request.name } as never;
+  };
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const post = (name: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/capsules/export`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    });
+  try {
+    // The first export fails in the backend; the slot it reserved at
+    // admission must be released, so the retry is admitted and only then
+    // does the window fill.
+    assert.equal((await post("quota-fail-1")).status, 500);
+    assert.equal((await post("quota-fail-2")).status, 200);
+    assert.equal((await post("quota-fail-3")).status, 429);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("a replayed observe never 429s and never consumes a second quota slot (issue #1434, #3225 C4)", async () => {
+  const stored = new Map<string, { sessionKey: string }>();
+  let hookCalls = 0;
+  const service = quotaStubService();
+  service.observe = async (request, hooks) => {
+    const key = request.idempotencyKey?.trim();
+    const cached = key ? stored.get(key) : undefined;
+    if (cached) {
+      // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
+      return { ...cached, idempotencyReplay: true } as never;
+    }
+    // Mirror the real service contract: the quota hook fires exactly once,
+    // immediately before an actual write commits, never on a replay.
+    await hooks?.enforceWriteQuota?.();
+    hookCalls += 1;
+    const response = { sessionKey: request.sessionKey };
+    stored.set(key ?? "", response);
+    // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
+    return response as never;
+  };
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const post = (idempotencyKey: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/observe`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sessionKey: "quota-replay",
+        messages: [{ role: "user", content: "hello" }],
+        idempotencyKey,
+      }),
+    });
+  try {
+    assert.equal((await post("quota-replay-1")).status, 202);
+    const replay = await post("quota-replay-1");
+    assert.equal(replay.status, 202);
+    // SAFETY: our own server serialized this body; the test reads only the idempotencyReplay flag.
+    const replayBody = (await replay.json()) as { idempotencyReplay?: boolean };
+    assert.equal(replayBody.idempotencyReplay, true);
+    assert.equal(hookCalls, 1, "the replay must not re-run the quota hook");
+    // The window still holds exactly the first write's slot: a different
+    // payload is rejected, proving the replay consumed nothing.
+    assert.equal((await post("quota-replay-2")).status, 429);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("a dreams dry run neither 429s nor consumes quota at a full window (#3225 C4)", async () => {
+  const service = quotaStubService();
+  service.dreamsRun = async (options) => {
+    // SAFETY: the route serializes this stub result into the HTTP response and reads its dryRun flag.
+    return { phase: options.phase, dryRun: options.dryRun === true } as never;
+  };
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    writeRateLimitMaxRequests: 1,
+  });
+  const status = await server.start();
+  const post = (body: Record<string, boolean>) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/dreams/run`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ phase: "lightSleep", ...body }),
+    });
+  try {
+    assert.equal((await post({})).status, 200);
+    // The window is full; the dry run must pass and leave the count alone.
+    const dry = await post({ dryRun: true });
+    assert.equal(dry.status, 200);
+    // SAFETY: our own server serialized this body; the test reads only the dryRun flag.
+    const dryBody = (await dry.json()) as { dryRun?: boolean };
+    assert.equal(dryBody.dryRun, true);
+    assert.equal((await post({})).status, 429);
+  } finally {
+    await server.stop();
+  }
 });
