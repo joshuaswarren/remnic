@@ -8,7 +8,8 @@ import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
 import { RemnicClient } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
-import { observeMessages } from "./index.js";
+import { createRemnicPiExtension, observeMessages } from "./index.js";
+import type { PiApi } from "./index.js";
 import { settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
@@ -160,4 +161,74 @@ test("a drain failure never reports the delivered live turn as failed or re-queu
     .filter((line) => line.trim().length > 0);
   assert.equal(queued.length, 1, "the delivered live turn was not queued again");
   assert.ok(queued[0].includes("queued earlier"));
+});
+
+test("session start survives a locked outbox: no rejection, bounded, and the startup probe still runs", async (t) => {
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const seeded = new ObserveOutbox(outboxPath);
+  await seeded.enqueue({ ...queuedEntry, sessionKey: "session-start-locked" });
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const urls: string[] = [];
+  globalThis.fetch = async (input) => {
+    urls.push(String(input));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  // Another pi process holds the outbox lock for longer than the whole test.
+  const acquired = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const holder = withHeldFileLock(`${outboxPath}.lock`, { staleMs: 60_000, maxWaitMs: 1000 }, async (got) => {
+    assert.ok(got, "test setup: the lock was acquired");
+    acquired.resolve();
+    await release.promise;
+  });
+  await acquired.promise;
+
+  type TestPiEventHandler = Parameters<PiApi["on"]>[1];
+  const handlers = new Map<string, TestPiEventHandler[]>();
+  const pi: PiApi = {
+    on: (event, handler) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    appendEntry: () => undefined,
+  };
+  await createRemnicPiExtension({ config })(pi);
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const started = Date.now();
+  try {
+    for (const handler of handlers.get("session_start") ?? []) {
+      await handler(
+        {},
+        {
+          cwd: "/tmp/remnic-pi",
+          ui: {
+            setStatus: () => undefined,
+            notify: (message: string, level: string) => notifications.push({ message, level }),
+          },
+          sessionManager: { getSessionId: () => "session-start-locked", getEntries: () => [] },
+        }
+      );
+    }
+  } finally {
+    release.resolve();
+    await holder;
+  }
+  const elapsed = Date.now() - started;
+
+  assert.ok(elapsed < 4500, `session start stays bounded while the outbox is locked (took ${elapsed} ms)`);
+  assert.ok(!notifications.some((n) => n.level === "error"), "no error notification");
+  // The startup probe chain runs in the background after the drain step.
+  const deadline = Date.now() + 2000;
+  while (!urls.some((url) => !url.endsWith("/engram/v1/observe")) && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  }
+  assert.ok(urls.some((url) => !url.endsWith("/engram/v1/observe")), "the startup health probe still ran");
 });
