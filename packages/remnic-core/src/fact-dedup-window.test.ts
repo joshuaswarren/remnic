@@ -196,7 +196,8 @@ test("explicit capture and an extraction write race the same new fact to exactly
   const { storage, cleanup } = await makeStorage();
   try {
     const content = "An extraction run and an explicit capture hold this new fact.";
-    const orchestrator = {
+    const dependencies: Pick<Orchestrator, "config" | "getStorage"> = {
+      // SAFETY: namespacePreResolved skips the namespace resolver, so the capture path never reads config; the fields only satisfy the type.
       config: {
         captureMode: "hybrid",
         defaultNamespace: "default",
@@ -204,9 +205,11 @@ test("explicit capture and an extraction write race the same new fact to exactly
         namespacePolicies: [],
         namespacesEnabled: true,
         sharedNamespace: "shared",
-      } as unknown as PluginConfig,
+      } as PluginConfig,
       getStorage: async () => storage,
-    } as unknown as Orchestrator;
+    };
+    // SAFETY: persistExplicitCapture touches only getStorage here; the rest of the Orchestrator is unused in this race test.
+    const orchestrator = dependencies as Orchestrator;
     const candidate = { content, category: "fact" as const, confidence: 0.9, tags: [], namespacePreResolved: true };
     const extractionCommit = persistUnderFactDedupWindow(
       storage.dir,

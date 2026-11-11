@@ -630,6 +630,7 @@ function makeService(persisted: { category?: string; writes?: number }, memoryDi
         return { id: "mem-2780", tombstoneBlocked: false };
       },
       appendMemoryLifecycleEvents: async () => {},
+      // SAFETY: memory_store through this fake reads memories and writes sealed memories only; the rest of the StorageManager surface is unused here.
     }) as never;
   return new EngramAccessService(orch);
 }
