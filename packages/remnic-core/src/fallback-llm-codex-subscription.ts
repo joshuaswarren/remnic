@@ -200,6 +200,10 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
   }
   return (
     /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
+    // "unavailable" counts only when it directly describes the format (DeepSeek:
+    // "This response_format type is unavailable now"). A wider window would also
+    // match an outage message that merely echoes the format.
+    /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)(?:\s{1,8}(?:type|mode|parameter|option|feature))?\s{1,8}(?:is\s{1,8})?unavailable\b/i.test(message) ||
     /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05
