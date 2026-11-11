@@ -30,7 +30,8 @@ import {
   validateRequest,
 } from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
-import { unknownToolError } from "./access-errors.js";
+import { EngramAccessForbiddenError, unknownToolError } from "./access-errors.js";
+import { log } from "./logger.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -87,6 +88,22 @@ function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
   if (isAbortError(signal.reason)) throw signal.reason;
   throw abortError(message);
 }
+
+/** Intended client-facing access errors keep their message on the wire. */
+function isIntendedMcpToolError(err: unknown): err is Error {
+  return err instanceof EngramAccessInputError || err instanceof EngramAccessForbiddenError;
+}
+
+/**
+ * Map tools/call failures to a client-safe message. Unexpected backend/fs
+ * errors become a stable generic string; detail stays in the server log.
+ */
+function mcpToolErrorMessage(err: unknown): string {
+  if (isIntendedMcpToolError(err)) return err.message;
+  log.error("engram MCP tools/call internal error", err);
+  return "internal error";
+}
+
 
 type McpRequestOptions = {
   principalOverride?: string;
@@ -406,7 +423,7 @@ function parseMcpRequest<N extends SchemaName>(schemaName: N, args: Record<strin
 function optionalNonEmptyString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") {
-    throw new Error(`${label} expects a string; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a string; got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -420,11 +437,11 @@ function optionalNonEmptyString(value: unknown, label: string): string | undefin
 function optionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "number" && typeof value !== "string") {
-    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
   }
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -2402,7 +2419,7 @@ export class EngramMcpServer {
         // Cancellation is transport control flow, not a JSON-RPC tool error.
         // Preserve the original AbortError so HTTP can silently end a dead socket.
         if (isAbortError(err)) throw err;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = mcpToolErrorMessage(err);
         return {
           jsonrpc: "2.0",
           id,
@@ -2620,7 +2637,7 @@ export class EngramMcpServer {
             caps?.ops === undefined || capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? "")
         )
         .map((t) => t.name);
-      throw new Error(unknownToolError(name, visible));
+      throw new EngramAccessInputError(unknownToolError(name, visible));
     }
     const op = getOperation(migrated);
     if (!op) {

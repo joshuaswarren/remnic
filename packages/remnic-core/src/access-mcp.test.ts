@@ -13,9 +13,11 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
+import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
+import { initLogger, resetLogger } from "./logger.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import type { StorageManager } from "./storage.js";
 
@@ -1451,3 +1453,77 @@ test("MCP external_wiki_search rejects an empty query before service dispatch", 
   assert.equal(readMcpResult(response).isError, true);
   assert.equal(configRead, false);
 });
+
+// ===========================================================================
+// Issue #3225 C5 — tools/call catch-all must not leak unexpected Error.message
+// (paths from fs/backend). Intended typed access errors stay readable.
+// ===========================================================================
+
+test("MCP tools/call hides unexpected Error.message paths behind internal error", async () => {
+  const secretPath = "/home/secret/vault/token.pem";
+  const service = {
+    ...makeMockService(),
+    recall: async () => {
+      throw new Error(`ENOENT: no such file or directory, open '${secretPath}'`);
+    },
+  } as unknown as EngramAccessService;
+
+  const logLines: string[] = [];
+  initLogger(
+    {
+      info() {},
+      warn() {},
+      error(msg: string) {
+        logLines.push(msg);
+      },
+    },
+    false,
+    { timestamps: false },
+  );
+  try {
+    const server = new EngramMcpServer(service);
+    const outcome = readCallToolOutcome(
+      await server.handleRequest(makeToolRequest("engram.recall", { query: "anything" })),
+    );
+    assert.equal(outcome.isError, true);
+    assert.equal(outcome.text, "internal error");
+    assert.equal(outcome.text.includes(secretPath), false);
+    assert.ok(
+      logLines.some((line) => line.includes(secretPath)),
+      "server log must retain the unexpected detail",
+    );
+  } finally {
+    resetLogger();
+  }
+});
+
+test("MCP tools/call keeps intended EngramAccessInputError and ForbiddenError messages", async () => {
+  const inputService = {
+    ...makeMockService(),
+    recall: async () => {
+      throw new EngramAccessInputError("memory not found: mem-42");
+    },
+  } as unknown as EngramAccessService;
+  const inputOutcome = readCallToolOutcome(
+    await new EngramMcpServer(inputService).handleRequest(
+      makeToolRequest("engram.recall", { query: "anything" }),
+    ),
+  );
+  assert.equal(inputOutcome.isError, true);
+  assert.equal(inputOutcome.text, "memory not found: mem-42");
+
+  const forbiddenService = {
+    ...makeMockService(),
+    recall: async () => {
+      throw new EngramAccessForbiddenError("token is not permitted to call operation: recall");
+    },
+  } as unknown as EngramAccessService;
+  const forbiddenOutcome = readCallToolOutcome(
+    await new EngramMcpServer(forbiddenService).handleRequest(
+      makeToolRequest("engram.recall", { query: "anything" }),
+    ),
+  );
+  assert.equal(forbiddenOutcome.isError, true);
+  assert.equal(forbiddenOutcome.text, "token is not permitted to call operation: recall");
+});
+
