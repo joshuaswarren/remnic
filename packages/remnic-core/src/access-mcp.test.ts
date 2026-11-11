@@ -13,7 +13,8 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { EngramMcpServer, MCP_STDIO_MAX_FRAME_BYTES } from "./access-mcp.js";
+import { EngramMcpServer } from "./access-mcp.js";
+import { MCP_STDIO_MAX_FRAME_BYTES } from "./access-mcp-frames.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";

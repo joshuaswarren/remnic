@@ -32,6 +32,7 @@ import {
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
 import { EngramAccessForbiddenError, unknownToolError } from "./access-errors.js";
 import { log } from "./logger.js";
+import { McpFrameReader } from "./access-mcp-frames.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -156,12 +157,6 @@ type McpResource = {
  */
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_DEFAULT_PROTOCOL_VERSION: string = MCP_SUPPORTED_PROTOCOL_VERSIONS[0] ?? "2025-06-18";
-/**
- * Max MCP stdio frame size (header + body). Matches the HTTP access
- * default maxBodyBytes so local stdio and HTTP share one ceiling.
- */
-export const MCP_STDIO_MAX_FRAME_BYTES = 131072;
-
 /**
  * Suffix-based allowlist matcher. Returns true for tools whose canonical
  * suffix (after stripping `remnic_`, `remnic.`, or `engram.`) is in
@@ -467,12 +462,8 @@ async function getMcpServerVersion(): Promise<string> {
 }
 
 export class EngramMcpServer {
-  private buffer = Buffer.alloc(0);
+  private readonly frames = new McpFrameReader();
   private flushTask: Promise<void> | null = null;
-  /** Body bytes still discarded after an oversized Content-Length refusal. */
-  private skipBodyBytes = 0;
-  /** True when flush stopped only because the current frame is incomplete. */
-  private frameNeedsMore = false;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
   private readonly resourceTextByUri: Map<string, string>;
@@ -2450,16 +2441,7 @@ export class EngramMcpServer {
 
   async runStdio(input: Readable, output: Writable): Promise<void> {
     input.on("data", (chunk) => {
-      let next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (this.skipBodyBytes > 0) {
-        if (next.length <= this.skipBodyBytes) {
-          this.skipBodyBytes -= next.length;
-          return;
-        }
-        next = next.subarray(this.skipBodyBytes);
-        this.skipBodyBytes = 0;
-      }
-      this.buffer = Buffer.concat([this.buffer, next]);
+      this.frames.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       this.scheduleFlush(output);
     });
     await new Promise<void>((resolve, reject) => {
@@ -2488,79 +2470,23 @@ export class EngramMcpServer {
         if (this.flushTask === task) {
           this.flushTask = null;
         }
-        // Incomplete frames wait for more data; do not spin on the same buffer.
-        if (this.buffer.length > 0 && !this.frameNeedsMore) {
+        if (this.frames.hasUnread()) {
           this.scheduleFlush(output);
         }
       });
     this.flushTask = task;
   }
 
-  private writeFrameTooLarge(output: Writable): void {
-    this.writeMessage(output, {
-      jsonrpc: "2.0",
-      id: null,
-      error: {
-        code: -32600,
-        message: "frame too large",
-      },
-    });
-  }
-
   private async flushBuffer(output: Writable): Promise<void> {
-    this.frameNeedsMore = false;
-    while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) {
-        if (this.buffer.length > MCP_STDIO_MAX_FRAME_BYTES) {
-          this.buffer = Buffer.alloc(0);
-          this.writeFrameTooLarge(output);
-        } else {
-          this.frameNeedsMore = true;
-        }
-        return;
-      }
-      if (headerEnd > MCP_STDIO_MAX_FRAME_BYTES) {
-        this.buffer = Buffer.alloc(0);
-        this.writeFrameTooLarge(output);
-        return;
-      }
-      const headerText = this.buffer.slice(0, headerEnd).toString("utf-8");
-      const headers = headerText.split("\r\n");
-      const contentLengthHeader = headers.find((line) => line.toLowerCase().startsWith("content-length:"));
-      if (!contentLengthHeader) {
-        this.buffer = Buffer.alloc(0);
-        return;
-      }
-      const contentLength = Number.parseInt(contentLengthHeader.split(":")[1]?.trim() ?? "0", 10);
-      if (!Number.isFinite(contentLength) || contentLength < 0) {
-        this.buffer = Buffer.alloc(0);
-        return;
-      }
-      const messageStart = headerEnd + 4;
-      // Refuse oversized declared lengths before buffering the body.
-      if (contentLength > MCP_STDIO_MAX_FRAME_BYTES) {
-        this.writeFrameTooLarge(output);
-        this.buffer = this.buffer.slice(messageStart);
-        if (this.buffer.length >= contentLength) {
-          this.buffer = this.buffer.slice(contentLength);
-        } else {
-          this.skipBodyBytes = contentLength - this.buffer.length;
-          this.buffer = Buffer.alloc(0);
-        }
+    for (let frame = this.frames.next(); frame; frame = this.frames.next()) {
+      if (frame.kind === "too-large") {
+        this.writeMessage(output, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "frame too large" } });
         continue;
       }
-      const messageEnd = messageStart + contentLength;
-      if (this.buffer.length < messageEnd) {
-        this.frameNeedsMore = true;
-        return;
-      }
-      const body = this.buffer.slice(messageStart, messageEnd).toString("utf-8");
-      this.buffer = this.buffer.slice(messageEnd);
-
       let parsed: JsonRpcRequest;
       try {
-        parsed = JSON.parse(body) as JsonRpcRequest;
+        // SAFETY: handleRequest defaults missing fields; a non-object body throws and scheduleFlush answers -32700.
+        parsed = JSON.parse(frame.text) as JsonRpcRequest;
       } catch {
         this.writeMessage(output, {
           jsonrpc: "2.0",
