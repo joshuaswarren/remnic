@@ -12,7 +12,7 @@ import {
 } from "undici";
 
 import { LocalLlmClient } from "./local-llm.js";
-import { probeFetch } from "./local-llm-helpers.js";
+import { probeFetch, type LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import { classifyAnalysisProviderError } from "./activity/timeline/analysis-provider.js";
 import { ChatTransport } from "./local-llm-transport.js";
 import { initLogger, resetLogger } from "./logger.js";
@@ -216,6 +216,7 @@ test("chat completion passes an undici dispatcher to fetch", async () => {
 
 test("failureDiag carries the completion's finish_reason (issue #3387)", { concurrency: false }, async () => {
   const original = globalThis.fetch;
+  // SAFETY: the stub satisfies the only fetch call this client makes.
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ choices: [{ message: { content: "partial" }, finish_reason: "length" }] }), {
       status: 200,
@@ -225,10 +226,10 @@ test("failureDiag carries the completion's finish_reason (issue #3387)", { concu
 
   try {
     primeClient(client);
-    const failureDiag: { lastError?: unknown; finishReason?: string } = {};
-    const result = await client.chatCompletion([{ role: "user", content: "test" }], { failureDiag });
+    const options: LocalLlmChatCompletionOptions = { failureDiag: {} };
+    const result = await client.chatCompletion([{ role: "user", content: "test" }], options);
     assert.equal(result?.content, "partial");
-    assert.equal(failureDiag.finishReason, "length");
+    assert.equal(options.failureDiag?.finishReason, "length");
   } finally {
     globalThis.fetch = original;
     await dispatcherOf(client).close();

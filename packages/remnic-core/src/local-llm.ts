@@ -1150,11 +1150,9 @@ export class LocalLlmClient {
       this.consecutive400s = 0;
       this.nativeSchemaGate.recordSuccess(requestBody, requestModel);
 
+      // SAFETY: OpenAI-compatible wire format; every field is optional and read defensively below.
       const data = JSON.parse(responseBody) as {
-        choices?: Array<{
-          message?: { content?: string; reasoning_content?: string };
-          finish_reason?: string;
-        }>;
+        choices?: Array<{ message?: { content?: string; reasoning_content?: string }; finish_reason?: string }>;
         usage?: {
           prompt_tokens?: number;
           completion_tokens?: number;

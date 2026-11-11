@@ -1,17 +1,29 @@
+import { z } from "zod";
+
 import { extractJsonCandidates } from "./json-extract.js";
 
-const SHAPE_KEYS = ["facts", "entities", "profileUpdates", "questions", "relationships", "identityReflection"];
-const SAFE_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,31}$/;
+const PAYLOAD_KEYS = ["facts", "entities", "profileUpdates", "questions", "relationships", "identityReflection"];
+const SAFE_NAME = z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,31}$/);
+const JsonObject = z.record(z.string(), z.unknown());
 const MAX_TOP_LEVEL_KEYS = 8;
 
-/** True when a parsed JSON value has the top-level shape of an extraction result. */
-export function looksLikeExtractionResultPayload(parsed: unknown): boolean {
-  return (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    !Array.isArray(parsed) &&
-    SHAPE_KEYS.some((key) => key in parsed)
-  );
+export type JsonValue = z.infer<ReturnType<typeof z.json>>;
+
+/** True when a parsed JSON value is an object carrying at least one extraction-result key. */
+export function looksLikeExtractionResultPayload(parsed: JsonValue): boolean {
+  const object = JsonObject.safeParse(parsed);
+  return object.success && PAYLOAD_KEYS.some((key) => key in object.data);
+}
+
+function safeTopLevelKeys(parsed: JsonValue): string[] {
+  const object = JsonObject.safeParse(parsed);
+  const keys: string[] = [];
+  if (!object.success) return keys;
+  for (const key of Object.keys(object.data)) {
+    if (keys.length === MAX_TOP_LEVEL_KEYS) break;
+    if (SAFE_NAME.safeParse(key).success) keys.push(key);
+  }
+  return keys;
 }
 
 /**
@@ -23,43 +35,45 @@ export interface UnusableReplyDiagnostic {
   replyChars: number;
   finishReason: string | undefined;
   startsWithBrace: boolean;
+  /** Candidates the extractor tried; the whole reply counts as one when non-empty. */
   jsonCandidates: number;
   parsedAnyJson: boolean;
-  payloadShapeRejected: number;
+  /** Candidates that parsed as JSON but carry no extraction-result key. */
+  unrecognizedPayloads: number;
+  /** From the first candidate that parsed. */
   topLevelKeys: string[];
   partialFacts: number;
 }
 
-/** `content` is the trimmed reply; `finishReason` is whatever the client reported (validated here). */
+/** `content` is the trimmed reply; `finishReason` is whatever the client recorded (validated here). */
 export function buildUnusableReplyDiagnostic(
   content: string,
-  finishReason: unknown,
+  finishReason: string | undefined,
   partialFacts: number,
 ): UnusableReplyDiagnostic {
   const candidates = extractJsonCandidates(content);
   let parsedAnyJson = false;
-  let payloadShapeRejected = 0;
+  let unrecognizedPayloads = 0;
   let topLevelKeys: string[] = [];
   for (const candidate of candidates) {
-    let parsed: unknown;
+    let parsed: JsonValue;
     try {
       parsed = JSON.parse(candidate);
     } catch {
       continue;
     }
-    if (!parsedAnyJson && typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-      topLevelKeys = Object.keys(parsed).filter((key) => SAFE_NAME.test(key)).slice(0, MAX_TOP_LEVEL_KEYS);
-    }
+    if (!parsedAnyJson) topLevelKeys = safeTopLevelKeys(parsed);
     parsedAnyJson = true;
-    if (!looksLikeExtractionResultPayload(parsed)) payloadShapeRejected++;
+    if (!looksLikeExtractionResultPayload(parsed)) unrecognizedPayloads++;
   }
+  const reason = SAFE_NAME.safeParse(finishReason);
   return {
     replyChars: content.length,
-    finishReason: typeof finishReason === "string" && SAFE_NAME.test(finishReason) ? finishReason : undefined,
+    finishReason: reason.success ? reason.data : undefined,
     startsWithBrace: content.startsWith("{"),
     jsonCandidates: candidates.length,
     parsedAnyJson,
-    payloadShapeRejected,
+    unrecognizedPayloads,
     topLevelKeys,
     partialFacts,
   };
@@ -73,7 +87,7 @@ export function formatUnusableReplyDiagnostic(d: UnusableReplyDiagnostic): strin
     `startsWithBrace=${d.startsWithBrace}`,
     `jsonCandidates=${d.jsonCandidates}`,
     `parsedAnyJson=${d.parsedAnyJson}`,
-    `payloadShapeRejected=${d.payloadShapeRejected}`,
+    `unrecognizedPayloads=${d.unrecognizedPayloads}`,
     `topLevelKeys=${d.topLevelKeys.join(",")}`,
     `partialFacts=${d.partialFacts}`,
   ].join(" ");

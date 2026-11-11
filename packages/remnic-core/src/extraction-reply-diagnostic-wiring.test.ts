@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
-import { LocalLlmRejectedError } from "./extraction-error-classification.js";
+import type { LocalFailureDiag } from "./extraction-error-classification.js";
 import { ExtractionEngine } from "./extraction.js";
 import { initLogger, resetLogger } from "./logger.js";
 import type { BufferTurn } from "./types.js";
@@ -14,63 +14,52 @@ const TURNS: BufferTurn[] = [
 ];
 const MARKER = "unusable local reply";
 
-type Diag = { lastError?: Error; finishReason?: string };
-type Stub = (messages: unknown, options: { failureDiag?: Diag }) => Promise<{ content: string } | null>;
+type LocalMessages = Array<{ role: string; content: string }>;
+type LocalStub = (messages: LocalMessages, options: { failureDiag?: LocalFailureDiag }) => Promise<{ content: string } | null>;
 
-function makeEngine(local: Stub): ExtractionEngine {
+async function extractCapturingWarns(local: LocalStub) {
   const engine = new ExtractionEngine(parseConfig({ localLlmEnabled: true, localLlmModel: "fixture-local", localLlmFallback: false }));
   const modelRegistry = { calculateContextSizes: () => ({ maxInputChars: 8_000, maxOutputTokens: 1_000, description: "fixture" }) };
   assert.equal(Reflect.set(engine, "localLlm", { chatCompletion: local }), true);
   assert.equal(Reflect.set(engine, "modelRegistry", modelRegistry), true);
-  return engine;
-}
-
-function captureWarns<T>(run: () => Promise<T>): Promise<{ value: T; warns: string[] }> {
   const warns: string[] = [];
   initLogger({
     info() {},
     warn: (msg, ...args) => warns.push([msg, ...args.map(String)].join(" ")),
     error() {},
   });
-  return run().then((value) => ({ value, warns })).finally(resetLogger);
+  try {
+    return { result: await engine.extract(TURNS), warns };
+  } finally {
+    resetLogger();
+  }
 }
 
-test("an unusable reply logs one content-free diagnostic and still classifies parse_empty", async () => {
+test("an unusable reply logs one content-free diagnostic; the rejection and parse_empty class are unchanged", async () => {
   const reply = `Here is my analysis of ${SECRET}: nothing durable was said.`;
-  const engine = makeEngine(async (_m, options) => {
+  const { result, warns } = await extractCapturingWarns(async (_messages, options) => {
     if (options.failureDiag) options.failureDiag.finishReason = "length";
     return { content: reply };
   });
-  const { value: result, warns } = await captureWarns(() => engine.extract(TURNS));
   assert.equal(result.extractionFailure, "local_llm_error");
   assert.equal(result.extractionFailureClass, "parse_empty");
   const lines = warns.filter((w) => w.includes(MARKER));
   assert.equal(lines.length, 1);
-  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=1 parsedAnyJson=false payloadShapeRejected=0 topLevelKeys= partialFacts=0`));
+  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=1 parsedAnyJson=false unrecognizedPayloads=0 topLevelKeys= partialFacts=0`));
+  assert.ok(warns.some((w) => w.includes("LocalLlmRejectedError: local LLM answered with unusable content")));
   for (const warn of warns) {
     assert.equal(warn.includes(SECRET), false);
     assert.equal(warn.includes("nothing durable"), false);
   }
 });
 
-test("wrong-shape JSON: the thrown error is the unchanged LocalLlmRejectedError and keys are reported", async () => {
+test("wrong-shape JSON: key names are reported, values and unsafe keys are not", async () => {
   const reply = JSON.stringify({ summary: SECRET, "user@example.com": 1 });
-  const engine = makeEngine(async () => ({ content: reply }));
-  const extractWithLocalLlm = Reflect.get(engine, "extractWithLocalLlm") as (c: string) => Promise<unknown>;
-  const { value: thrown, warns } = await captureWarns(async () => {
-    try {
-      await extractWithLocalLlm.call(engine, "User: hello");
-      return undefined;
-    } catch (err) {
-      return err;
-    }
-  });
-  assert.ok(thrown instanceof LocalLlmRejectedError);
-  assert.equal(thrown.httpStatus, undefined);
-  assert.equal(thrown.message, "local LLM answered with unusable content");
+  const { result, warns } = await extractCapturingWarns(async () => ({ content: reply }));
+  assert.equal(result.extractionFailureClass, "parse_empty");
   const lines = warns.filter((w) => w.includes(MARKER));
   assert.equal(lines.length, 1);
-  assert.match(lines[0]!, /parsedAnyJson=true payloadShapeRejected=1 topLevelKeys=summary partialFacts=0/);
+  assert.match(lines[0]!, /startsWithBrace=true jsonCandidates=1 parsedAnyJson=true unrecognizedPayloads=1 topLevelKeys=summary partialFacts=0/);
   for (const warn of warns) {
     assert.equal(warn.includes(SECRET), false);
     assert.equal(warn.includes("user@example.com"), false);
@@ -78,22 +67,13 @@ test("wrong-shape JSON: the thrown error is the unchanged LocalLlmRejectedError 
 });
 
 test("a rejected request (HTTP 400, no reply) logs the same diagnostic once and keeps its status", async () => {
-  const engine = makeEngine(async (_m, options) => {
+  const { result, warns } = await extractCapturingWarns(async (_messages, options) => {
     if (options.failureDiag) options.failureDiag.lastError = Object.assign(new Error("local LLM http failure"), { status: 400 });
     return null;
   });
-  const extractWithLocalLlm = Reflect.get(engine, "extractWithLocalLlm") as (c: string) => Promise<unknown>;
-  const { value: thrown, warns } = await captureWarns(async () => {
-    try {
-      await extractWithLocalLlm.call(engine, "User: hello");
-      return undefined;
-    } catch (err) {
-      return err;
-    }
-  });
-  assert.ok(thrown instanceof LocalLlmRejectedError);
-  assert.equal(thrown.httpStatus, 400);
+  assert.equal(result.extractionFailureClass, "parse_empty");
   const lines = warns.filter((w) => w.includes(MARKER));
   assert.equal(lines.length, 1);
   assert.match(lines[0]!, /replyChars=0 /);
+  assert.ok(warns.some((w) => w.includes("LocalLlmRejectedError: local LLM rejected the input (HTTP 400)")));
 });
