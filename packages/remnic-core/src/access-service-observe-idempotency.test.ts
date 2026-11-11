@@ -20,6 +20,7 @@ import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { EngramAccessInputError } from "./access-service.js";
+import { initLogger } from "./logger.js";
 import { Orchestrator } from "./orchestrator.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import type { CodingContext, PluginConfig } from "./types.js";
@@ -134,6 +135,27 @@ test("#1649 a retried observe with the same idempotencyKey is deduplicated to a 
     assert.equal(probe.extractionCalls.length, 1, "retry must not queue extraction a second time");
     assert.equal(probe.lcmCalls.length, 1, "retry must not archive LCM a second time");
   } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a replayed observe logs access-observe-replay and a first attempt does not", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-replay-log-"));
+  const lines: string[] = [];
+  initLogger({ info: (msg) => lines.push(msg), warn() {}, error() {}, debug() {} }, false, { timestamps: false });
+  try {
+    const service = new EngramAccessService(makeObserveProbe(memoryDir).orch);
+    const key = "observe-replay-log-key";
+
+    await service.observe(observeRequest({ idempotencyKey: key }));
+    assert.deepEqual(lines.filter((line) => line.includes("access-observe-replay")), []);
+
+    await service.observe(observeRequest({ idempotencyKey: key }));
+    assert.deepEqual(lines.filter((line) => line.includes("access-observe-replay")), [
+      "remnic: access-observe-replay sessionKey=pi-geek:abc123 messages=2",
+    ]);
+  } finally {
+    initLogger({ info() {}, warn() {}, error() {}, debug() {} }, false);
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });

@@ -4122,7 +4122,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       // ignored by runObserve cannot change the retry fingerprint.
       effectiveCodingContext = (await this.resolveCodingScopeInputs(request)).codingContext;
     }
-    return this.handleIdempotentWrite<EngramAccessObserveResponse>({
+    const response = await this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
       idempotencyKey: request.idempotencyKey,
       // Shared builder (issue #1989 PR3): byte-parity with the historical
@@ -4141,6 +4141,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),
     });
+    if (response.idempotencyReplay) {
+      log.info(`access-observe-replay sessionKey=${request.sessionKey} messages=${request.messages.length}`);
+    }
+    return response;
   }
 
   private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
