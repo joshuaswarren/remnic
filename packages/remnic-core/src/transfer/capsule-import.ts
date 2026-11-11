@@ -1,7 +1,6 @@
 import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
@@ -31,6 +30,7 @@ import {
   type ExportMemoryRecordV1,
 } from "./types.js";
 import { isEncryptedCapsuleFile, decryptCapsuleFileInMemory } from "./capsule-crypto.js";
+import { gunzipCapsuleArchive } from "./capsule-gunzip.js";
 
 /**
  * Conflict-resolution mode for {@link importCapsule}. Inverse of the
@@ -197,7 +197,7 @@ export async function importCapsule(
   } else {
     raw = await readFile(archiveAbs);
   }
-  const json = gunzipSync(raw).toString("utf-8");
+  const json = gunzipCapsuleArchive(raw, "importCapsule", archiveAbs);
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(json);

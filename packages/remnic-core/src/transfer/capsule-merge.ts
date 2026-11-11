@@ -1,6 +1,5 @@
 import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
@@ -29,6 +28,7 @@ import {
   type ExportManifestV2,
   type ExportMemoryRecordV1,
 } from "./types.js";
+import { gunzipCapsuleArchive } from "./capsule-gunzip.js";
 
 /**
  * Three-way conflict-resolution mode for {@link mergeCapsule}.
@@ -190,15 +190,7 @@ export async function mergeCapsule(
   // ---------------------------------------------------------------------------
 
   const raw = await readFile(archiveAbs);
-  let json: string;
-  try {
-    json = gunzipSync(raw).toString("utf-8");
-  } catch (cause) {
-    throw new Error(
-      `mergeCapsule: archive is not a valid gzip file: ${archiveAbs}`,
-      { cause: cause as Error },
-    );
-  }
+  const json = gunzipCapsuleArchive(raw, "mergeCapsule", archiveAbs);
 
   let parsedJson: unknown;
   try {

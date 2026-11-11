@@ -1,9 +1,10 @@
 /**
  * Tests for `remnic capsule` CLI helpers (issue #676 PR 6/6).
  *
- * All tests exercise pure functions from `capsule-cli.ts` — no orchestrator
- * or filesystem access needed. The test data is fully synthetic (CLAUDE.md
- * public-repo rule: no real conversation content or user identifiers).
+ * Most tests exercise pure functions from `capsule-cli.ts`. The wiring tests
+ * drive the registered `capsule` actions with a mock command tree. The test
+ * data is fully synthetic (CLAUDE.md public-repo rule: no real conversation
+ * content or user identifiers).
  *
  * Test suites:
  *   1. parseCapsuleOutputFormat
@@ -24,7 +25,10 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import os from "node:os";
 import path from "node:path";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
 
 import {
   defaultCapsulesDir,
@@ -45,6 +49,7 @@ import {
   type CapsuleListEntry,
 } from "../../packages/remnic-core/src/capsule-cli.js";
 import { registerCli } from "../../packages/remnic-core/src/cli.js";
+import { CAPSULE_IMPORT_MAX_GUNZIP_BYTES } from "../../packages/remnic-core/src/transfer/capsule-gunzip.js";
 
 class MockCommand {
   children = new Map<string, MockCommand>();
@@ -80,7 +85,7 @@ class MockCommand {
   }
 }
 
-function getCapsuleExportAction(): (...args: unknown[]) => Promise<void> | void {
+function getCapsuleAction(subcommand: string): (...args: unknown[]) => Promise<void> | void {
   const root = new MockCommand("root");
   registerCli(
     {
@@ -98,7 +103,7 @@ function getCapsuleExportAction(): (...args: unknown[]) => Promise<void> | void 
   const action = root.children
     .get("engram")
     ?.children.get("capsule")
-    ?.children.get("export")
+    ?.children.get(subcommand)
     ?.actionHandler;
   assert.ok(typeof action === "function" && action);
   return action;
@@ -108,7 +113,7 @@ async function captureCapsuleExportError(options: Record<string, unknown>): Prom
   exitCode: string | number | undefined;
   stderr: string;
 }> {
-  const action = getCapsuleExportAction();
+  const action = getCapsuleAction("export");
   const originalError = console.error;
   const originalExitCode = process.exitCode;
   const messages: string[] = [];
@@ -397,6 +402,20 @@ test("capsule export CLI wiring rejects empty include kind and peer id lists bef
   );
   assert.equal(peerIdsResult.exitCode, 1);
   assert.match(peerIdsResult.stderr, /--peer-ids expects at least one non-empty peer id/);
+});
+
+test("capsule inspect refuses an archive that decompresses past the size cap", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-capsule-inspect-"));
+  try {
+    const archive = path.join(dir, "bomb.capsule.json.gz");
+    await writeFile(archive, gzipSync(Buffer.alloc(CAPSULE_IMPORT_MAX_GUNZIP_BYTES + 1)));
+    await assert.rejects(
+      Promise.resolve(getCapsuleAction("inspect")(archive, {})),
+      /capsule inspect: archive decompressed size exceeds limit/,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
