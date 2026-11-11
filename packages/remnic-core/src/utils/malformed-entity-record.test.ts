@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   isMalformedEntityRecord,
   isPopulatedUnnamedEntityRecord,
-  isShapedUnnamedEntityRecord,
+  isShapedUnnamedEntityRecord as isEntityLikeUnnamedRecord,
   isUnnamedEntityRecord,
 } from "./malformed-entity-record.js";
 
@@ -38,12 +38,12 @@ test("isPopulatedUnnamedEntityRecord needs body text without a name", () => {
 });
 
 test("isShapedUnnamedEntityRecord keeps entity-like unnamed files only", () => {
-  assert.equal(isShapedUnnamedEntityRecord(NAMED), false);
-  assert.equal(isShapedUnnamedEntityRecord(TYPE_ONLY), true);
-  assert.equal(isShapedUnnamedEntityRecord(TAB_HEADING), true, "any # line shapes the record");
-  assert.equal(isShapedUnnamedEntityRecord(BLANK_HEADING), true);
-  assert.equal(isShapedUnnamedEntityRecord(PROSE_ONLY), false, "unstructured placeholders stay for filename recall");
-  assert.equal(isShapedUnnamedEntityRecord(EMPTY_BODY), false);
+  assert.equal(isEntityLikeUnnamedRecord(NAMED), false);
+  assert.equal(isEntityLikeUnnamedRecord(TYPE_ONLY), true);
+  assert.equal(isEntityLikeUnnamedRecord(TAB_HEADING), true, "any # line shapes the record");
+  assert.equal(isEntityLikeUnnamedRecord(BLANK_HEADING), true);
+  assert.equal(isEntityLikeUnnamedRecord(PROSE_ONLY), false, "unstructured placeholders stay for filename recall");
+  assert.equal(isEntityLikeUnnamedRecord(EMPTY_BODY), false);
 });
 
 test("isMalformedEntityRecord requires both name and explicit type for migration", () => {

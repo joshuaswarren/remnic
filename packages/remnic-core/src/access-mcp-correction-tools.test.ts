@@ -19,6 +19,7 @@ test("memory_correct_plan requires text and advertises duplicateOf", () => {
   const plan = correctionMcpTools.find((tool) => tool.name === "engram.memory_correct_plan");
   assert.ok(plan);
   assert.deepEqual(plan.inputSchema.required, ["text"]);
+  // SAFETY: the memory_correct_plan schema declares these properties; the assertions below read only them.
   const props = plan.inputSchema.properties as Record<string, { type?: string; items?: { type?: string } }>;
   assert.equal(props.text?.type, "string");
   assert.equal(props.duplicateOf?.type, "string");
@@ -34,6 +35,7 @@ test("memory_correct_apply requires planId and advertises confirm", () => {
   const apply = correctionMcpTools.find((tool) => tool.name === "engram.memory_correct_apply");
   assert.ok(apply);
   assert.deepEqual(apply.inputSchema.required, ["planId"]);
+  // SAFETY: the memory_correct_apply schema declares these properties; the assertions below read only them.
   const props = apply.inputSchema.properties as Record<string, { type?: string }>;
   assert.equal(props.planId?.type, "string");
   assert.equal(props.confirm?.type, "boolean");

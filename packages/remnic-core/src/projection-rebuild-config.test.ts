@@ -7,19 +7,19 @@ import {
   parseProjectionRebuildScheduleConfig,
 } from "./projection-rebuild-config.js";
 
-function parseIntegerAtLeast(
-  value: unknown,
-  fallback: number,
-  min: number,
-  keyName: string,
-): number {
+const parseIntegerAtLeast: Parameters<typeof parseProjectionRebuildScheduleConfig>[1] = (
+  value,
+  fallback,
+  min,
+  keyName,
+) => {
   if (value === undefined || value === null) return fallback;
-  const n = typeof value === "number" ? value : Number(value);
+  const n = Number(value);
   if (!Number.isFinite(n) || !Number.isInteger(n) || n < min) {
     throw new Error(`${keyName} must be an integer >= ${min}; got ${JSON.stringify(value)}`);
   }
   return n;
-}
+};
 
 test("parseProjectionRebuildHeapUsageLimit defaults and accepts (0, 1]", () => {
   assert.equal(parseProjectionRebuildHeapUsageLimit(undefined), DEFAULT_PROJECTION_REBUILD_HEAP_USAGE_LIMIT);
