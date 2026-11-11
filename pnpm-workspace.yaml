@@ -11,6 +11,13 @@ onlyBuiltDependencies:
 
 overrides:
   "esbuild@>=0.27.3 <0.28.1": "0.28.1"
-  "fast-uri@>=3.0.0 <3.1.5": "3.1.5"
-  "@hono/node-server": "1.19.15"
-  "ip-address@<10.3.1": "10.5.0"
+  "fast-uri@>=3.0.0 <3.1.9": "3.1.9"
+  "@hono/node-server": "2.1.6"
+  "ip-address@<=10.7.3": "10.7.6"
+  "proxy-addr@>=1.1.0 <2.0.8": "2.0.8"
+  "browserslist@<=4.28.6": "4.28.7"
+  "baseline-browser-mapping@>=2.0.0 <2.11.0": "2.11.0"
+  "qs@>=2.2.5 <=6.16.0": "6.17.1"
+  "body-parser@<1.20.9": "1.20.9"
+  "body-parser@>=2.0.0 <2.4.0": "2.4.0"
+  "zod@<4.6.6": "4.6.7"
