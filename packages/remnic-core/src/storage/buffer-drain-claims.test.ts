@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { BufferDrainClaims, type AckOutcome, type DrainLease } from "./buffer-drain-claims.js";
 import { BufferSessionFiles, bufferSessionFileName } from "./buffer-session-files.js";
+import { ClaimBufferStorage } from "../orchestration/buffer-drain-runner.js";
 import type { BufferEntryState } from "../types.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 /** Plain-file BufferFileIo double: claims logic is file-atomic, not crypto-aware. */
@@ -280,6 +281,22 @@ test("adopt rejects a reused owner id from a different process identity", async 
 
     assert.equal(outcome, "busy");
     assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, process.pid);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("adopt takes over an expired lease even when the owner id is reused by another process", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    const expired = { ...makeLease("reused-owner"), heartbeatAt: "2026-11-01T00:00:00.000Z" };
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", expired), "claimed");
+
+    const outcome = await s.claims.adopt("sess-1", { ...makeLease("reused-owner"), pid: process.pid + 1 });
+
+    assert.equal(outcome, "adopted");
+    assert.equal(JSON.parse(readFileSync(s.claims.leasePathForTest("sess-1"), "utf8")).pid, process.pid + 1);
   } finally {
     s.cleanup();
   }
@@ -622,6 +639,133 @@ test("a turn the drainer retained for retry is not recorded as drained", async (
     assert.ok(claim);
     assert.deepEqual((claim.drained ?? []).map((t) => t.content), [], "a retained-for-retry turn stays out of drained");
     assert.deepEqual((claim.entry.retainedTurns ?? []).map((t) => t.content), ["t1"], "the retained copy stays pending in the claim");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a turn moved to retained and extracted from there cannot return from a stale active copy", async () => {
+  const s = setup();
+  try {
+    const moved = turn("moved to retained, then extracted");
+    s.seedSession("sess-1", entry([moved]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", { ...entry([]), retainedTurns: [moved] }, loaded.entry);
+    const reloaded = await s.claims.load("sess-1");
+    assert.ok(reloaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), reloaded.entry);
+
+    // A live owner still holds the turn in its active list and hands it over.
+    await s.claims.mergeIntoClaim("sess-1", entry([moved]));
+
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns, [], "the extracted turn is not pending again");
+    assert.deepEqual(claim?.entry.retainedTurns ?? [], []);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a turn moved to active and extracted from there cannot return from a stale retained copy", async () => {
+  const s = setup();
+  try {
+    const moved = turn("moved to active, then extracted");
+    s.seedSession("sess-1", { ...entry([]), retainedTurns: [moved] });
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([moved]), loaded.entry);
+    const reloaded = await s.claims.load("sess-1");
+    assert.ok(reloaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), reloaded.entry);
+
+    await s.claims.mergeIntoClaim("sess-1", { ...entry([]), retainedTurns: [moved] });
+
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns, []);
+    assert.deepEqual(claim?.entry.retainedTurns ?? [], [], "the extracted turn is not pending again");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a turn that moves to retained and back is still tombstoned in its original list", async () => {
+  const s = setup();
+  try {
+    const roundTrip = turn("moves out and back");
+    s.seedSession("sess-1", entry([roundTrip]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", { ...entry([]), retainedTurns: [roundTrip] }, loaded.entry);
+    const retained = await s.claims.load("sess-1");
+    assert.ok(retained);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([roundTrip]), retained.entry);
+    const back = await s.claims.load("sess-1");
+    assert.ok(back);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), back.entry);
+
+    assert.deepEqual(await s.claims.drainedTurns("sess-1"), { turns: [roundTrip], retainedTurns: [] });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("mergeIntoClaim keeps the claim's own pending occurrence after a partial extraction", async () => {
+  const s = setup();
+  try {
+    const same = turn("duplicate pending turn");
+    s.seedSession("sess-1", entry([same, same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([same]), loaded.entry);
+
+    // The live owner hands over a copy that adds nothing new.
+    await s.claims.mergeIntoClaim("sess-1", entry([]));
+
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns, [same], "the remainder is not subtracted a second time");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("repeated progress writes record each extracted occurrence once", async () => {
+  const s = setup();
+  try {
+    const same = turn("duplicate pending turn");
+    s.seedSession("sess-1", entry([same, same]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    // The drain runner's buffer keeps ONE snapshot of the claim for the whole run.
+    const storage = new ClaimBufferStorage(s.claims, "sess-1", "worker-1", loaded.entry);
+    await storage.saveBufferSession("sess-1", entry([same]));
+    await storage.saveBufferSession("sess-1", entry([]));
+
+    assert.deepEqual(await s.claims.drainedTurns("sess-1"), { turns: [same, same], retainedTurns: [] });
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a late arrival of an ambiguous identity does not replace a source occurrence", async () => {
+  const s = setup();
+  try {
+    const same = turn("same identity in both lists");
+    s.seedSession("sess-1", { ...entry([same]), retainedTurns: [same] });
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.mergeIntoClaim("sess-1", entry([same, same]));
+
+    await s.claims.writeEntry("sess-1", "worker-1", { ...entry([]), retainedTurns: [same] }, loaded.entry);
+
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns, [same, same], "the source occurrence and the late arrival both stay pending");
+    assert.deepEqual(claim?.entry.retainedTurns, [same]);
   } finally {
     s.cleanup();
   }

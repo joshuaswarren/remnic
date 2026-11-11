@@ -76,6 +76,13 @@ export interface DrainClaimFile {
   drained?: BufferTurn[];
   /** Same tombstone for turns the drain extracted from `retainedTurns`. */
   drainedRetained?: BufferTurn[];
+  /**
+   * Pending turns whose only copy sits in the other list than the one they
+   * were claimed into (active to retained or back). When such a turn is
+   * extracted, its tombstone goes to BOTH lists: a live owner still holds
+   * the stale copy in the list the turn started in.
+   */
+  movedTurns?: BufferTurn[];
 }
 
 export type ClaimFromSessionOutcome = "claimed" | "empty" | "already_claimed";
@@ -147,15 +154,27 @@ function appendUnmatched(
   }
 }
 
+function removeOneByIdentity(turns: BufferTurn[], identity: string): boolean {
+  const index = turns.findIndex((turn) => bufferTurnIdentityKey(turn) === identity);
+  if (index < 0) return false;
+  turns.splice(index, 1);
+  return true;
+}
+
+function takeByIdentity(source: readonly BufferTurn[], identity: string, count: number): BufferTurn[] {
+  return source.filter((turn) => bufferTurnIdentityKey(turn) === identity).slice(0, count);
+}
+
 function mergeEntries(claim: DrainClaimFile, incoming: BufferEntryState): DrainClaimFile {
   const entry = emptyEntry();
-  // Each tombstone applies only to the list from which the turn was extracted.
+  // The claim's own lists already exclude what was extracted; each tombstone
+  // applies only to the incoming copy in the list the turn was extracted from.
   entry.turns = mergeTurns(
-    subtractBufferTurns(claim.entry.turns, claim.drained ?? []),
+    claim.entry.turns,
     subtractBufferTurns(incoming.turns, claim.drained ?? []),
   );
   entry.retainedTurns = mergeTurns(
-    subtractBufferTurns(claim.entry.retainedTurns ?? [], claim.drainedRetained ?? []),
+    claim.entry.retainedTurns ?? [],
     subtractBufferTurns(incoming.retainedTurns ?? [], claim.drainedRetained ?? []),
   );
   if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
@@ -204,6 +223,7 @@ const claimBodySchema = z.object({
   claimedAt: z.string().optional(),
   drained: z.array(z.unknown()).optional(),
   drainedRetained: z.array(z.unknown()).optional(),
+  movedTurns: z.array(z.unknown()).optional(),
 });
 
 function parseBody(raw: string): DrainClaimFile | null {
@@ -244,6 +264,10 @@ function parseBody(raw: string): DrainClaimFile | null {
   if (Array.isArray(body.drainedRetained)) {
     // SAFETY: same boundary as the turns above (this module writes the file).
     claim.drainedRetained = body.drainedRetained as BufferTurn[];
+  }
+  if (Array.isArray(body.movedTurns)) {
+    // SAFETY: same boundary as the turns above (this module writes the file).
+    claim.movedTurns = body.movedTurns as BufferTurn[];
   }
   return claim;
 }
@@ -420,8 +444,7 @@ export class BufferDrainClaims {
       async (acquired) => {
         if (!acquired) return "busy";
         const existing = await this.readLease(key);
-        if (existing?.ownerId === lease.ownerId) {
-          if (existing.pid !== lease.pid || existing.host !== lease.host) return "busy";
+        if (existing?.ownerId === lease.ownerId && existing.pid === lease.pid && existing.host === lease.host) {
           // Reuse the token only from the same process identity.
           await this.writeLease(key, { ...existing, heartbeatAt: new Date().toISOString(), leaseMs: lease.leaseMs });
           return "adopted";
@@ -508,6 +531,7 @@ export class BufferDrainClaims {
         ...seenActiveCounts.keys(),
         ...seenRetainedCounts.keys(),
       ]);
+      const crossedCounts = new Map<string, number>();
       for (const identity of identityKeys) {
         const seenActive = seenActiveCounts.get(identity) ?? 0;
         const seenRetainedCount = seenRetainedCounts.get(identity) ?? 0;
@@ -534,21 +558,49 @@ export class BufferDrainClaims {
         );
         matchedActiveCounts.set(identity, matchedActive + activeMovedToRetained);
         matchedRetainedCounts.set(identity, matchedRetained + retainedMovedToActive);
+        const crossed = activeMovedToRetained + retainedMovedToActive;
+        if (crossed > 0) crossedCounts.set(identity, crossed);
       }
-      const drained = [...(claim.drained ?? [])];
-      appendUnmatched(seenTurns, matchedActiveCounts, drained);
-      const drainedRetained = [...(claim.drainedRetained ?? [])];
-      appendUnmatched(seenRetained, matchedRetainedCounts, drainedRetained);
-      const late = subtractBufferTurns(claim.entry.turns, seenTurns);
-      const next: BufferEntryState = { ...entry, turns: [...entry.turns, ...late] };
-      const lateRetained = subtractBufferTurns(claim.entry.retainedTurns ?? [], seenRetained);
-      const nextRetained = [...entryRetained, ...lateRetained];
+      // A pending copy that crossed lists stays tombstoned in its ORIGINAL
+      // list too once it is extracted. A copy that crosses back is home again.
+      const moved = [...(claim.movedTurns ?? [])];
+      for (const [identity, crossed] of crossedCounts) {
+        let returned = 0;
+        while (returned < crossed && removeOneByIdentity(moved, identity)) returned += 1;
+        moved.push(...takeByIdentity([...seenTurns, ...seenRetained], identity, crossed - returned));
+      }
+      const extractedActive: BufferTurn[] = [];
+      appendUnmatched(seenTurns, matchedActiveCounts, extractedActive);
+      const extractedRetained: BufferTurn[] = [];
+      appendUnmatched(seenRetained, matchedRetainedCounts, extractedRetained);
+      const drained = [...(claim.drained ?? []), ...extractedActive];
+      const drainedRetained = [...(claim.drainedRetained ?? []), ...extractedRetained];
+      for (const turn of extractedActive) {
+        if (removeOneByIdentity(moved, bufferTurnIdentityKey(turn))) drainedRetained.push(turn);
+      }
+      for (const turn of extractedRetained) {
+        if (removeOneByIdentity(moved, bufferTurnIdentityKey(turn))) drained.push(turn);
+      }
+      // Source occurrences of an ambiguous identity are restored BEFORE late
+      // arrivals are appended, so a late equal turn cannot stand in for them.
+      const keptTurns = [...entry.turns];
+      const keptRetained = [...entryRetained];
       for (const identity of ambiguousIdentities) {
-        preserveSourceOccurrences(next.turns, seenTurns, identity);
-        preserveSourceOccurrences(nextRetained, seenRetained, identity);
+        preserveSourceOccurrences(keptTurns, seenTurns, identity);
+        preserveSourceOccurrences(keptRetained, seenRetained, identity);
       }
+      const late = subtractBufferTurns(claim.entry.turns, seenTurns);
+      const lateRetained = subtractBufferTurns(claim.entry.retainedTurns ?? [], seenRetained);
+      const next: BufferEntryState = { ...entry, turns: [...keptTurns, ...late] };
+      const nextRetained = [...keptRetained, ...lateRetained];
       if (nextRetained.length > 0) next.retainedTurns = nextRetained;
-      await this.writeClaimBody(key, { ...claim, entry: next, drained, drainedRetained });
+      await this.writeClaimBody(key, {
+        ...claim,
+        entry: next,
+        drained,
+        drainedRetained,
+        movedTurns: moved.length > 0 ? moved : undefined,
+      });
     });
   }
 
