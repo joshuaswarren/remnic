@@ -480,3 +480,51 @@ test("a dropped 4xx capture is logged with its HTTP status and replay key", asyn
   assert.match(notifications[0], /HTTP 422/, "the status is in the log line");
   assert.match(notifications[0], /nonce-for-rejected/, "and so is the key that identifies the capture");
 });
+
+test("an unreadable existing outbox fails the write instead of being treated as empty (#3381)", async () => {
+  const file = tmpOutboxPath("unreadable");
+  const first = new ObserveOutbox(file);
+  await first.enqueue(entryInput("kept"));
+  fs.chmodSync(file, 0o000);
+  try {
+    const second = new ObserveOutbox(file);
+    await assert.rejects(() => second.enqueue(entryInput("would-overwrite")));
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+  const lines = fs.readFileSync(file, "utf8").split("\n").filter((line) => line.trim().length > 0);
+  assert.equal(lines.length, 1, "the queued capture is still on disk");
+  assert.ok(lines[0].includes("kept"));
+});
+
+test("read-only views of an unreadable outbox keep the last known entries instead of throwing", async () => {
+  const file = tmpOutboxPath("unreadable-views");
+  const outbox = new ObserveOutbox(file);
+  await outbox.enqueue(entryInput("known"));
+  assert.equal(await outbox.size(), 1);
+  fs.chmodSync(file, 0o000);
+  try {
+    // Force a re-read by changing the signature through another writer is not possible while the
+    // file is unreadable, so the cached view is what the live hook sees.
+    assert.equal(await outbox.size(), 1);
+    assert.deepEqual([...(await outbox.pendingHashes())], ["hash-known"]);
+  } finally {
+    fs.chmodSync(file, 0o600);
+  }
+});
+
+test("two drains started back to back on one instance send the head entry once (#3381)", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("drain-race"));
+  await outbox.enqueue(entryInput("head"));
+  let sends = 0;
+  const send = async () => {
+    sends += 1;
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+  };
+  const [a, b] = await Promise.all([
+    outbox.drain(send, { sleep: async () => undefined }),
+    outbox.drain(send, { sleep: async () => undefined }),
+  ]);
+  assert.equal(sends, 1, "the second drain must not start while the first is reading");
+  assert.equal([a, b].filter((r) => r.skipped).length, 1, "exactly one drain was skipped");
+});
