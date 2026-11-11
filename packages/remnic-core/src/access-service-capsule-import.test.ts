@@ -3,12 +3,13 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
+import { EngramAccessInputError } from "./access-errors.js";
 import { EngramAccessService } from "./access-service.js";
 import { defaultCapsulesDir } from "./capsule-cli.js";
 import { parseConfig } from "./config.js";
 import { NamespaceStorageRouter } from "./namespaces/storage.js";
 import type { Orchestrator } from "./orchestrator.js";
-import { generateSalt, seal } from "./secure-store/cipher.js";
+import { generateSalt } from "./secure-store/cipher.js";
 import { buildHeaderFromPassphrase, writeHeader, secureStoreDir } from "./secure-store/header.js";
 import * as keyring from "./secure-store/keyring.js";
 import type { ScryptParams } from "./secure-store/kdf.js";
@@ -75,7 +76,7 @@ async function createFixture(t: TestContext): Promise<Fixture> {
   return { memoryDir, service: new EngramAccessService(dependencies as Orchestrator), storageRouter };
 }
 
-const REFUSAL = /capsule import failed: archivePath must be inside the namespace capsule store/;
+const REFUSAL = /capsule import failed: archivePath must be an existing file inside the namespace capsule store/;
 
 test("capsule import refuses an archive outside the namespace capsule store", async (t) => {
   const { memoryDir, service } = await createFixture(t);
@@ -104,7 +105,7 @@ test("capsule import refuses an archive outside the namespace capsule store", as
 });
 
 test("capsule import refuses an archive in another namespace's capsule store", async (t) => {
-  const { memoryDir, service, storageRouter } = await createFixture(t);
+  const { service, storageRouter } = await createFixture(t);
   const exported = await service.capsuleExport({ name: "cross-principal", namespace: "default", principal: "owner" });
   const foreignStorage = await storageRouter.storageFor("foreign");
   const foreignStore = defaultCapsulesDir(foreignStorage.dir);
@@ -150,11 +151,43 @@ test("capsule import refuses a missing namespace capsule store", async (t) => {
   try {
     await assert.rejects(
       () => service.capsuleImport({ archivePath: outsideArchive, namespace: "default", principal: "owner" }),
-      /capsule import failed: namespace capsule store is not readable/,
+      REFUSAL,
     );
   } finally {
     await rm(outsideArchive, { force: true });
   }
+});
+
+test("capsule import gives the same refusal for every outside path, whatever the path holds", async (t) => {
+  const { memoryDir, service } = await createFixture(t);
+  const outsideDir = path.join(memoryDir, "outside-dir");
+  await mkdir(outsideDir, { recursive: true });
+  const presentFile = path.join(outsideDir, "present.capsule.json.gz");
+  await writeFile(presentFile, "not an archive");
+  const loop = path.join(outsideDir, "loop");
+  await symlink(loop, loop);
+  const candidates = [
+    presentFile,
+    path.join(outsideDir, "absent.capsule.json.gz"),
+    outsideDir,
+    loop,
+    path.join(presentFile, "below-a-file"),
+    `${presentFile}\0suffix`,
+    path.join(os.tmpdir(), "remnic-capsule-import-no-such-dir", "x.capsule.json.gz"),
+  ];
+  const messages = new Set<string>();
+  for (const archivePath of candidates) {
+    await assert.rejects(
+      () => service.capsuleImport({ archivePath, namespace: "default", principal: "owner" }),
+      (err) => {
+        assert.ok(err instanceof EngramAccessInputError);
+        messages.add(err.message);
+        return true;
+      },
+    );
+  }
+  assert.equal(messages.size, 1, `refusal messages differ: ${[...messages].join(" | ")}`);
+  assert.match([...messages][0] ?? "", REFUSAL);
 });
 
 test("export, list, and import of the listed archivePath round-trips a plain archive", async (t) => {
