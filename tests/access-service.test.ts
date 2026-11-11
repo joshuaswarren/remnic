@@ -783,7 +783,7 @@ test("capsuleImport decrypts namespace imports with the root secure-store keyrin
     const capsule = await exportCapsule({
       name: "project-x-import",
       root: sourceDir,
-      outDir: path.join(memoryDir, "out"),
+      outDir: path.join(namespaceDir, ".capsules"),
       encrypt: true,
       memoryDir,
     });
@@ -816,10 +816,10 @@ test("capsuleImport decrypts namespace imports with the root secure-store keyrin
   }
 });
 
-test("capsuleImport reports bad archive input as an access input error", async () => {
+test("capsuleImport refuses a missing archive inside the capsule store as an access input error", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-capsule-import-bad-"));
   const namespaceDir = path.join(memoryDir, "namespaces", "project-x");
-  await mkdir(namespaceDir, { recursive: true });
+  await mkdir(path.join(namespaceDir, ".capsules"), { recursive: true });
   const service = new EngramAccessService({
     config: {
       memoryDir,
@@ -856,13 +856,13 @@ test("capsuleImport reports bad archive input as an access input error", async (
   try {
     await assert.rejects(
       () => service.capsuleImport({
-        archivePath: path.join(memoryDir, "missing.capsule.json.gz"),
+        archivePath: path.join(namespaceDir, ".capsules", "missing.capsule.json.gz"),
         namespace: "project-x",
         principal: "project-x",
       }),
       (err: unknown) =>
         err instanceof EngramAccessInputError &&
-        /capsule import failed:/.test(err.message),
+        /archivePath must be an existing file inside the namespace capsule store/.test(err.message),
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -872,8 +872,9 @@ test("capsuleImport reports bad archive input as an access input error", async (
 test("capsuleImport reports unreadable archive paths as access input errors", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-capsule-import-unreadable-"));
   const namespaceDir = path.join(memoryDir, "namespaces", "project-x");
-  await mkdir(namespaceDir, { recursive: true });
-  const archivePath = path.join(memoryDir, "unreadable.capsule.json.gz");
+  const storeDir = path.join(namespaceDir, ".capsules");
+  await mkdir(storeDir, { recursive: true });
+  const archivePath = path.join(storeDir, "unreadable.capsule.json.gz");
   await writeFile(archivePath, "not gzip", "utf8");
   await chmod(archivePath, 0o000);
   const service = new EngramAccessService({
@@ -929,9 +930,10 @@ test("capsuleImport reports unreadable archive paths as access input errors", as
 test("capsuleImport reports malformed capsule bundles as access input errors", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-capsule-import-malformed-"));
   const namespaceDir = path.join(memoryDir, "namespaces", "project-x");
-  await mkdir(namespaceDir, { recursive: true });
-  const archivePath = path.join(memoryDir, "bad.capsule.json.gz");
-  const corruptGzipPath = path.join(memoryDir, "corrupt.capsule.json.gz");
+  const storeDir = path.join(namespaceDir, ".capsules");
+  await mkdir(storeDir, { recursive: true });
+  const archivePath = path.join(storeDir, "bad.capsule.json.gz");
+  const corruptGzipPath = path.join(storeDir, "corrupt.capsule.json.gz");
   await writeFile(archivePath, gzipSync(Buffer.from(JSON.stringify({ format: "not-remnic-capsule" }), "utf8")));
   await writeFile(corruptGzipPath, "not gzip", "utf8");
   const service = new EngramAccessService({
@@ -976,7 +978,8 @@ test("capsuleImport reports malformed capsule bundles as access input errors", a
       }),
       (err: unknown) =>
         err instanceof EngramAccessInputError &&
-        /capsule import failed:/.test(err.message),
+        /capsule import failed:/.test(err.message) &&
+        !/inside the namespace capsule store/.test(err.message),
     );
     await assert.rejects(
       () => service.capsuleImport({
@@ -986,7 +989,8 @@ test("capsuleImport reports malformed capsule bundles as access input errors", a
       }),
       (err: unknown) =>
         err instanceof EngramAccessInputError &&
-        /capsule import failed:/.test(err.message),
+        /capsule import failed:/.test(err.message) &&
+        !/inside the namespace capsule store/.test(err.message),
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
