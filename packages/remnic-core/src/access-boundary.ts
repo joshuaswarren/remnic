@@ -16,7 +16,11 @@
  */
 
 import { z } from "zod";
-import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+// The input error lives in the leaf module; importing it from access-service
+// here (a re-export) drags the whole service hub into this module's init and
+// leaves `registry` TDZ-uninitialized when the cycle re-enters (#3354).
+import { EngramAccessInputError } from "./access-errors.js";
+import type { EngramAccessService } from "./access-service.js";
 import {
   assertNamespaceAllowed,
   assertOperationAuthorizationAllowed,

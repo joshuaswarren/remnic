@@ -309,6 +309,8 @@ function makePersistService(memoryDir: string): PersistProbe {
   (orch as unknown as { getStorage: () => Promise<unknown> }).getStorage = async () => ({
     readAllMemories: async () => [],
     readAllColdMemories: async () => [],
+    // #3354: the fact-dedup window takes a real per-dir lock on storage.dir.
+    dir: memoryDir,
     appendMemoryLifecycleEvents: async () => {},
     writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
       const { category, content } = sealedWriteToLegacyArgs(envelope);
@@ -620,6 +622,8 @@ function makeService(persisted: { category?: string; writes?: number }, memoryDi
   orch.getStorage = async () =>
     ({
       readAllMemories: async () => [],
+      // #3354: the fact-dedup window takes a real per-dir lock on storage.dir.
+      dir: memoryDir ?? path.join(tmpdir(), `remnic-2780-fake-${process.pid}`),
       writeSealedMemory: async (envelope: SealedMemoryEnvelope) => {
         persisted.category = envelope.category;
         persisted.writes = (persisted.writes ?? 0) + 1;

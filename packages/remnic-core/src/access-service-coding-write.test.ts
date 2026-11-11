@@ -19,6 +19,8 @@
  *  - Precedence: explicit `namespace` wins; namespaces-disabled is a no-op.
  */
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
@@ -41,7 +43,11 @@ import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "./write-enve
 function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
   const decorated = stub as T & {
     writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
+    dir?: string;
   };
+  // #3354: the fact-dedup window keys its lock on storage.dir and takes a
+  // real file lock, so the fake needs a writable per-process dir.
+  decorated.dir = path.join(os.tmpdir(), `remnic-coding-write-fake-${process.pid}`);
   decorated.writeSealedMemory = (envelope, extras = {}) => {
     const { category, content, options } = sealedWriteToLegacyArgs(envelope, extras);
     return (stub.writeMemory as (c: unknown, b: unknown, o: unknown) => unknown)(category, content, options);

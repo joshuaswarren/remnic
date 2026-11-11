@@ -1,11 +1,14 @@
-import test, { mock } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { StorageManager } from "./storage.js";
-import { withHeldFileLock } from "./utils/serialize-mutations.js";
+import test, { mock } from "node:test";
+import { persistExplicitCapture } from "./explicit-capture.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./orchestration/fact-dedup-window.js";
+import type { Orchestrator } from "./orchestrator.js";
+import { StorageManager } from "./storage.js";
+import type { PluginConfig } from "./types.js";
+import { withHeldFileLock } from "./utils/serialize-mutations.js";
 
 const SKY_OPTS = {
   category: "fact",
@@ -83,7 +86,7 @@ test("persistUnderFactDedupWindow fails closed when a peer holds fact-dedup.lock
         assert.ok(acquired, "test holder must acquire the lock");
         holderEntered.resolve();
         await holderRelease.promise;
-      },
+      }
     );
     await holderEntered.promise;
 
@@ -95,9 +98,9 @@ test("persistUnderFactDedupWindow fails closed when a peer holds fact-dedup.lock
         async () => {
           wrote = true;
           return "written";
-        },
+        }
       ),
-      /fact-dedup\.lock not acquired/,
+      /fact-dedup\.lock not acquired/
     );
     assert.equal(wrote, false, "a locked-out writer must not write unlocked");
 
@@ -106,7 +109,7 @@ test("persistUnderFactDedupWindow fails closed when a peer holds fact-dedup.lock
     const outcome = await persistUnderFactDedupWindow(
       storage["baseDir"],
       async () => false,
-      async () => "written",
+      async () => "written"
     );
     assert.deepEqual(outcome, { suppressed: false, result: "written" });
   } finally {
@@ -126,7 +129,7 @@ test("lookupContentHash never pairs a stale MISS with authority while a peer hol
       assert.deepEqual(
         await storage.lookupContentHash(SKY_OPTS.contentHashDedupKey),
         { present: false, authoritative: false },
-        "the rebuild cannot run, so the stale MISS must not claim authority",
+        "the rebuild cannot run, so the stale MISS must not claim authority"
       );
       assert.equal(await confirmActiveFactDuplicate(storage, SKY_OPTS), true, "the corpus confirms the peer's fact");
     } finally {
@@ -135,7 +138,7 @@ test("lookupContentHash never pairs a stale MISS with authority while a peer hol
     assert.deepEqual(
       await storage.lookupContentHash(SKY_OPTS.contentHashDedupKey),
       { present: true, authoritative: true },
-      "once the lock is free the rebuild publishes and the hit is authoritative",
+      "once the lock is free the rebuild publishes and the hit is authoritative"
     );
   } finally {
     await cleanup();
@@ -159,7 +162,7 @@ test("confirmActiveFactDuplicate stays a duplicate when the peer releases the in
     assert.equal(
       await confirmActiveFactDuplicate(storage, SKY_OPTS),
       true,
-      "a lock released after the lookup must not turn the stale MISS into a clean not-duplicate",
+      "a lock released after the lookup must not turn the stale MISS into a clean not-duplicate"
     );
   } finally {
     await cleanup();
@@ -174,12 +177,59 @@ test("two managers on one directory commit the same fact through the window exac
       persistUnderFactDedupWindow(
         manager.dir,
         () => confirmActiveFactDuplicate(manager, SKY_OPTS),
-        () => manager.writeMemory("fact", "The sky is blue"),
+        () => manager.writeMemory("fact", "The sky is blue")
       );
     const outcomes = await Promise.all([commit(storage), commit(peer)]);
-    assert.equal(outcomes.filter((outcome) => !outcome.suppressed).length, 1, "one writer wins, the other is suppressed");
+    assert.equal(
+      outcomes.filter((outcome) => !outcome.suppressed).length,
+      1,
+      "one writer wins, the other is suppressed"
+    );
     const stored = await new StorageManager(storage["baseDir"]).readAllMemories();
     assert.equal(stored.filter((memory) => memory.content.includes("sky is blue")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("explicit capture and an extraction write race the same new fact to exactly one active copy (#3354)", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const content = "An extraction run and an explicit capture hold this new fact.";
+    const orchestrator = {
+      config: {
+        captureMode: "hybrid",
+        defaultNamespace: "default",
+        memoryDir: "",
+        namespacePolicies: [],
+        namespacesEnabled: true,
+        sharedNamespace: "shared",
+      } as unknown as PluginConfig,
+      getStorage: async () => storage,
+    } as unknown as Orchestrator;
+    const candidate = { content, category: "fact" as const, confidence: 0.9, tags: [], namespacePreResolved: true };
+    const extractionCommit = persistUnderFactDedupWindow(
+      storage.dir,
+      () => confirmActiveFactDuplicate(storage, { ...SKY_OPTS, contentHashDedupKey: content }),
+      () => storage.writeMemory("fact", content)
+    );
+    const [capture, extraction] = await Promise.all([
+      persistExplicitCapture(orchestrator, candidate, "memory_store"),
+      extractionCommit,
+    ]);
+    const stored = await storage.readAllMemories();
+    const active = stored.filter(
+      (memory) => memory.frontmatter.category === "fact" && (memory.frontmatter.status ?? "active") === "active"
+    );
+    assert.equal(active.length, 1, `exactly one active copy of the raced fact, got ${active.length}`);
+    const winner = active[0];
+    assert.ok(winner, "the single active copy must exist");
+    assert.ok(winner.content.includes(content));
+    if (capture.duplicateOf === undefined) {
+      assert.equal(extraction.suppressed, true, "the extraction write is the loser and must be suppressed");
+    } else {
+      assert.equal(winner.frontmatter.id, capture.duplicateOf, "the capture reports the winning copy");
+    }
   } finally {
     await cleanup();
   }
@@ -196,4 +246,3 @@ test("confirmActiveFactDuplicate keeps the authoritative MISS fast path", async 
     await cleanup();
   }
 });
-

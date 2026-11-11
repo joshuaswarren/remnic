@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import type { Orchestrator } from "./orchestrator.js";
@@ -67,6 +69,7 @@ function createInlineCaptureProcessorProbe(
     failPrimaryWrites?: boolean;
     duplicateReadDelayMs?: number;
     lockBusyAttempts?: number;
+    peerFactCommitAfterFirstReadAll?: boolean;
   } = {}
 ) {
   const envelopes: SealedMemoryEnvelope[] = [];
@@ -86,7 +89,13 @@ function createInlineCaptureProcessorProbe(
   let nextId = 1;
   let writeTail = Promise.resolve();
   let lockBusyAttemptsRemaining = options.lockBusyAttempts ?? 0;
+  let peerCommitted = false;
+  const peerFactContent = "A concurrent writer committed this fact before the capture could.";
+  // #3354: the dedup window takes a real per-dir file lock, so the fake needs
+  // a writable per-process dir even though its reads/writes stay in memory.
+  const storageDir = path.join(os.tmpdir(), `remnic-explicit-capture-probe-${process.pid}`);
   const storage = {
+    dir: storageDir,
     readAllMemories: async () => {
       readAllCalls += 1;
       activeReadAllCalls += 1;
@@ -95,10 +104,21 @@ function createInlineCaptureProcessorProbe(
         await new Promise((resolve) => setTimeout(resolve, options.duplicateReadDelayMs));
       }
       activeReadAllCalls -= 1;
-      return memories.map((memory) => ({
+      // Simulate a concurrent extraction writer committing between this read
+      // and a later one: the caller sees the snapshot below without the peer
+      // row, while subsequent reads include it.
+      const snapshot = memories.map((memory) => ({
         ...memory,
         frontmatter: { ...memory.frontmatter },
       }));
+      if (options.peerFactCommitAfterFirstReadAll && !peerCommitted) {
+        peerCommitted = true;
+        memories.push({
+          frontmatter: { id: `peer-fact-${nextId++}`, category: "fact", tags: [] },
+          content: peerFactContent,
+        });
+      }
+      return snapshot;
     },
     readAllColdMemories: async () =>
       coldMemories.map((memory) => ({
@@ -142,8 +162,7 @@ function createInlineCaptureProcessorProbe(
     },
     ...(options.authoritativeFactHashMiss
       ? {
-          hasFactContentHash: async () => false,
-          isFactContentHashAuthoritative: () => true,
+          lookupContentHash: async () => ({ present: false, authoritative: true }),
         }
       : {}),
     ...(options.tombstoneBlockedCaptureIndexHit !== undefined
@@ -277,6 +296,26 @@ test("persistExplicitCapture serializes duplicate checks across concurrent calls
   assert.equal(Number(first.duplicateOf !== undefined) + Number(second.duplicateOf !== undefined), 1);
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.lifecycleEvents.length, 1);
+});
+
+test("explicit capture suppresses a fact a concurrent writer commits between the gate and the write", async () => {
+  const probe = createInlineCaptureProcessorProbe({ peerFactCommitAfterFirstReadAll: true });
+  const candidate = validateExplicitCaptureInput({
+    content: "A concurrent writer committed this fact before the capture could.",
+    category: "fact",
+  });
+
+  const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
+
+  // The peer row committed between the persist-time gate and the dedup
+  // window, so the capture must report the raced copy instead of writing a
+  // second active fact (#3354).
+  assert.equal(result.id, "peer-fact-1");
+  assert.equal(result.duplicateOf, "peer-fact-1");
+  assert.equal(probe.envelopes.length, 0, "no second sealed write of the raced fact");
+  assert.equal(probe.lifecycleEvents.length, 0);
+  const active = probe.memories.filter((memory) => (memory.frontmatter.status ?? "active") === "active");
+  assert.equal(active.length, 1);
 });
 
 test("inline capture processor hashes the effective authorized input for replay dedupe", async () => {
@@ -1117,13 +1156,14 @@ test("explicit capture keeps the authoritative fact-hash miss fast path", async 
   const result = await persistExplicitCapture(probe.orchestrator, candidate, "memory_store");
 
   assert.equal(result.duplicateOf, undefined);
-  assert.deepEqual(probe.blockedIndexArguments(), [
-    {
-      content: candidate.content,
-      category: "fact",
-      sourceConnector: undefined,
-    },
-  ]);
+  // The gate probes once outside the window and the in-window recheck
+  // (#3354) probes again; both take the authoritative-miss fast path.
+  const blockedProbe = {
+    content: candidate.content,
+    category: "fact",
+    sourceConnector: undefined,
+  };
+  assert.deepEqual(probe.blockedIndexArguments(), [blockedProbe, blockedProbe]);
   assert.equal(probe.envelopes.length, 1);
   assert.equal(probe.readAllCalls(), 0);
 });
