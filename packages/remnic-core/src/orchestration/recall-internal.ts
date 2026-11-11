@@ -65,8 +65,10 @@ import {
   type RecallXrayScoreDecomposition,
   buildXraySnapshot,
 } from "../recall-xray.js";
-import { foldQueueWaitTiming, recordRecallTiming, type RecallTimingEmission } from "../recall-timings.js";
-import { createPhase2Timer, type Phase2AwaitStatus } from "./recall-phase2-timing.js";
+import { foldQueueWaitTiming } from "../recall-timings.js";
+import { emitRecallTiming } from "../recall-attempt-timing.js";
+import { createPhase2Timer, type Phase2AwaitStatus } from "../recall-phase2-timing.js";
+import { createEnrichmentAbortHandle, observeEnrichmentPromise, type DeferredEnrichmentOutcome, type ObservedDeferredEnrichmentPromise } from "../recall-enrichment-promise.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -104,7 +106,6 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "../orchestrator.js";
-import type { PluginConfig } from "../types.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 import { filterRecentScanMemories } from "../recall-state-view-anchors.js";
 import { indexStateViewAnnotatedResults, resolveRecallStateViewActive } from "../recall-state-view-admission.js";
@@ -118,24 +119,6 @@ import type { RecallInternalDeps } from "./recall-internal-deps.js";
 import { appendEpisodicContextSection } from "./episodic-context-section.js";
 import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
 import { fetchQmdMemoryResultsWithRecognitionSwap } from "./recall-recognition-search.js";
-
-/**
- * Route this recall's per-phase timing payload. When the access surface wired
- * `onRecallTiming`, the payload folds into the attempt's single finally-record
- * there (requestId + outcome + httpTotalMs); direct orchestrator callers keep
- * the legacy success-only push.
- */
-function emitRecallTiming(
-  config: PluginConfig,
-  options: RecallInvocationOptions,
-  payload: RecallTimingEmission,
-): void {
-  if (options.onRecallTiming) {
-    options.onRecallTiming(payload);
-    return;
-  }
-  recordRecallTiming(config, payload);
-}
 
 export class RecallInternalCoordinator {
   private readonly securityCapabilities: SecurityCapabilitySet;
@@ -193,55 +176,6 @@ export class RecallInternalCoordinator {
     // Wrap entire recall body in try/finally so profiling trace is always closed,
     // even on unexpected exceptions (e.g., throwIfRecallAborted, phase-1 errors).
     try {
-    type DeferredEnrichmentOutcome<T> =
-      | { status: "resolved"; value: T }
-      | { status: "rejected"; error: unknown };
-    type ObservedDeferredEnrichmentPromise<T> =
-      Promise<DeferredEnrichmentOutcome<T>> & {
-        getSettledOutcome: () => DeferredEnrichmentOutcome<T> | undefined;
-        cancel: () => void;
-      };
-    const createEnrichmentAbortHandle = (parentSignal?: AbortSignal) => {
-      const controller = new AbortController();
-      const onAbort = () => controller.abort();
-      if (parentSignal?.aborted) {
-        controller.abort();
-      } else if (parentSignal) {
-        parentSignal.addEventListener("abort", onAbort, { once: true });
-      }
-      let disposed = false;
-      const dispose = () => {
-        if (disposed) return;
-        disposed = true;
-        parentSignal?.removeEventListener("abort", onAbort);
-      };
-      return {
-        signal: controller.signal,
-        cancel: () => {
-          controller.abort();
-          dispose();
-        },
-        dispose,
-      };
-    };
-    const observeEnrichmentPromise = <T>(
-      promise: Promise<T>,
-      cancel: () => void = () => {},
-    ): ObservedDeferredEnrichmentPromise<T> => {
-      let settledOutcome: DeferredEnrichmentOutcome<T> | undefined;
-      const observed = promise
-        .then<DeferredEnrichmentOutcome<T>, DeferredEnrichmentOutcome<T>>(
-          (value) => ({ status: "resolved", value }),
-          (error) => ({ status: "rejected", error }),
-        )
-        .then((outcome) => {
-          settledOutcome = outcome;
-          return outcome;
-        }) as ObservedDeferredEnrichmentPromise<T>;
-      observed.getSettledOutcome = () => settledOutcome;
-      observed.cancel = cancel;
-      return observed;
-    };
     const recordRecallSectionMetric = createRecallSectionMetricRecorder({
       timings,
       logger: log,
@@ -573,7 +507,7 @@ export class RecallInternalCoordinator {
       const earlySessionKey = sessionKey ?? "default";
       this.deps._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
-      emitRecallTiming(this.deps.config, options, {
+      emitRecallTiming(this.deps.config, {
         ...timings,
         timestamp: new Date().toISOString(),
         namespace: selfNamespace,
@@ -4958,7 +4892,7 @@ export class RecallInternalCoordinator {
       .map(([k, v]) => `${k}=${v}`)
       .join(", ");
     log.info(`recall timings: ${timingParts}`);
-    emitRecallTiming(this.deps.config, options, {
+    emitRecallTiming(this.deps.config, {
       ...timings,
       ...phase2Timings,
       timestamp: new Date().toISOString(),

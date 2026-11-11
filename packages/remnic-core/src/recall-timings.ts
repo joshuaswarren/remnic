@@ -7,7 +7,7 @@ import {
   phase2StatusField,
   phase2TotalField,
   type Phase2AwaitStatus,
-} from "./orchestration/recall-phase2-timing.js";
+} from "./recall-phase2-timing.js";
 
 export type RecallTimingOutcome = "ok" | "error" | "aborted";
 

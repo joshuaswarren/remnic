@@ -22,7 +22,6 @@ import { buildCompressionGuidelinesMarkdown as buildCompressionGuidelinesMarkdow
 import { FallbackLlmClient } from "../fallback-llm.js";
 import { hasBroadGraphIntent, planRecallMode } from "../intent.js";
 import { resolveLifecycleState } from "../lifecycle.js";
-import type { RecallTimingEmission } from "../recall-timings.js";
 import { log } from "../logger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import { parseQmdExplain } from "../qmd.js";
@@ -200,14 +199,6 @@ export interface RecallInvocationOptions {
   namespace?: string;
   topK?: number;
   mode?: RecallPlanMode;
-  /**
-   * Receives this recall's per-phase timing payload (issue: recall-timings
-   * attempt contract). The access surface hands one in so the attempt's
-   * single record — requestId + outcome + monotonic httpTotalMs + these
-   * phases — is pushed once, from its own `finally`. Absent (x-ray, direct
-   * orchestrator callers): the pipeline keeps its legacy direct push.
-   */
-  onRecallTiming?: (timing: RecallTimingEmission) => void;
   onRecallPlanResolved?: (mode: RecallPlanMode, readNamespaces: readonly string[]) => void | Promise<void>;
   abortSignal?: AbortSignal;
   /** Server-resolved identity of the connector performing this recall. */

@@ -11,10 +11,10 @@
  *   - fetchRawExcerpts (raw-excerpt read gate)
  */
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import * as nodePath from "node:path";
 import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
-import { isAbortError, throwIfAborted } from "./abort-error.js";
+import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBudgetWarning } from "./cross-namespace-budget.js";
@@ -27,8 +27,6 @@ import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { createRecallCorpusVersionCapture, mergeRecallCorpusVersions } from "./access-recall-corpus-versions.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
-import { currentCorrelationId } from "./access-correlation.js";
-import { recordRecallTiming, type RecallTimingEmission, type RecallTimingOutcome } from "./recall-timings.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
 import type { RecallContextComposition } from "./recall-context-composition.js";
@@ -663,54 +661,6 @@ export class AccessRecallSurface {
     budgetRecordPrincipal: string | null;
     reservation?: BudgetReservation;
   }> {
-    // Attempt contract: every executed recall leaves exactly one record,
-    // pushed in `finally` so denials, disconnects, and assembly failures
-    // carry the same requestId + outcome + monotonic httpTotalMs trail as
-    // successes. The requestId IS the HTTP request's server-generated
-    // correlation id (x-request-id); outside HTTP dispatch (x-ray, hooks,
-    // tests) it falls back to a generated id in the same field.
-    const requestId = currentCorrelationId() ?? randomUUID();
-    const startedMs = performance.now();
-    const emitted: RecallTimingEmission[] = [];
-    let failure: { abortError: boolean } | undefined;
-    try {
-      return await this.runRecallAttempt(request, (payload) => {
-        emitted.push(payload);
-      });
-    } catch (err) {
-      failure = { abortError: isAbortError(err) };
-      throw err;
-    } finally {
-      const phases = emitted.at(-1);
-      // aborted: the request/flight signal fired, or an abort error was thrown
-      // (the pipeline's soft abort returns normally with the signal already
-      // aborted). error: any other throw, or a normal return from a pipeline
-      // that never reached its timing emit (the entry coordinator swallows
-      // outer timeouts, init-gate aborts and internal failures into a degraded
-      // context). ok: the pipeline ran to completion.
-      const outcome: RecallTimingOutcome =
-        request.abortSignal?.aborted === true || failure?.abortError === true
-          ? "aborted"
-          : failure !== undefined || phases === undefined
-            ? "error"
-            : "ok";
-      recordRecallTiming(this.deps.orchestrator.config, {
-        ...phases,
-        requestId,
-        outcome,
-        httpTotalMs: performance.now() - startedMs,
-      });
-    }
-  }
-
-  private async runRecallAttempt(
-    request: EngramAccessRecallRequest,
-    onRecallTiming: (timing: RecallTimingEmission) => void,
-  ): Promise<{
-    response: EngramAccessRecallResponse;
-    budgetRecordPrincipal: string | null;
-    reservation?: BudgetReservation;
-  }> {
     const query = request.query;
     // Disclosure depth (issue #677).  Default to `"chunk"` when omitted so
     // pre-#677 callers see unchanged behavior.  Reject explicitly invalid
@@ -916,8 +866,6 @@ export class AccessRecallSurface {
       ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
-      // Per-phase payload folds into the attempt's single finally-record.
-      onRecallTiming,
     };
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are

@@ -16,7 +16,7 @@ import { Orchestrator } from "./orchestrator.js";
 import {
   PHASE2_AWAIT_STATUSES,
   type Phase2AwaitStatus,
-} from "./orchestration/recall-phase2-timing.js";
+} from "./recall-phase2-timing.js";
 import { getRecallTimings } from "./recall-timings.js";
 import { StorageManager } from "./storage.js";
 import { cleanupDir, eventually } from "./testing/orchestrator-lite.js";
