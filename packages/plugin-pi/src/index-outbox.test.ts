@@ -307,3 +307,56 @@ test("session start drains an outbox left behind by a previous process", async (
   assert.match(String(observeRequests[0].idempotencyKey), /^obs-/);
   assert.equal(fs.readFileSync(outboxPath, "utf8").trim().length, 0, "outbox emptied after drain");
 });
+
+test("session start with a dead daemon returns quickly and keeps the queue intact", async (t) => {
+  const outboxPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-outbox-")), "observe-outbox.jsonl");
+  const config = outboxTestConfig({ observeOutboxPath: outboxPath });
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const seeded = {
+    id: "seed-dead",
+    queuedAt: "2026-01-01T00:00:00.000Z",
+    sessionKey: "dead-daemon",
+    cwd: "/tmp/remnic-pi",
+    messages: [{ role: "user", content: "still queued" }],
+    messageHashes: ["hash-dead"],
+  };
+  fs.mkdirSync(path.dirname(outboxPath), { recursive: true });
+  fs.writeFileSync(outboxPath, `${JSON.stringify(seeded)}\n`, "utf8");
+
+  let observeCalls = 0;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/engram/v1/observe")) observeCalls += 1;
+    throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+  };
+
+  type TestPiEventHandler = Parameters<PiApi["on"]>[1];
+  const handlers = new Map<string, TestPiEventHandler[]>();
+  const pi: PiApi = {
+    on: (event, handler) => {
+      handlers.set(event, [...(handlers.get(event) ?? []), handler]);
+    },
+    registerCommand: () => undefined,
+    registerTool: () => undefined,
+    appendEntry: () => undefined,
+  };
+  const extension = createRemnicPiExtension({ config });
+  await extension(pi);
+  const started = Date.now();
+  for (const handler of handlers.get("session_start") ?? []) {
+    await handler(
+      {},
+      {
+        cwd: "/tmp/remnic-pi",
+        ui: { setStatus: () => undefined, notify: () => undefined },
+        sessionManager: { getSessionId: () => "dead-daemon", getEntries: () => [] },
+      }
+    );
+  }
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1500, `startup must not block on a dead daemon (took ${elapsed} ms)`);
+  assert.equal(observeCalls, 1, "one cheap attempt at startup, no backoff ladder");
+  assert.equal(fs.readFileSync(outboxPath, "utf8").trim().split("\n").length, 1, "the queued capture is still on disk");
+});

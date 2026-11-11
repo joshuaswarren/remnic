@@ -283,7 +283,7 @@ test("replaying an entry older than the server idempotency window warns that a d
     notify: (message, level) => notifications.push({ message, level }),
   });
   assert.equal(notifications.length, 1, "one warning for the one stale replay");
-  assert.match(notifications[0].message, /older than 15 minutes/);
+  assert.match(notifications[0].message, /most recent 512/);
   assert.match(notifications[0].message, /duplicate/);
   assert.equal(notifications[0].level, "warning");
 
@@ -295,4 +295,112 @@ test("replaying an entry older than the server idempotency window warns that a d
     notify: (message) => quiet.push(message),
   });
   assert.deepEqual(quiet, [], "no warning inside the window");
+});
+
+function threeEntries(outbox: ObserveOutbox) {
+  return Promise.all(["a", "b", "c"].map((c) => outbox.enqueue(entryInput(c))));
+}
+
+test("REVIEW 1: a 429 write_rate_limited keeps every queued capture", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("rate-limit"));
+  await threeEntries(outbox);
+  const result = await outbox.drain(async () => {
+    throw new RemnicHttpError(429, "write_rate_limited", "write_rate_limited");
+  }, { maxAttempts: 2, jitterRatio: 0, sleep: async () => undefined });
+  assert.equal(result.dropped, 0, "a rate limit is not a rejection of the capture");
+  assert.equal(result.pending, 3, "rate-limited captures were never executed; they stay queued");
+});
+
+test("transient gateway statuses 408, 502 and 504 keep the capture queued", async () => {
+  for (const status of [408, 502, 504]) {
+    const outbox = new ObserveOutbox(tmpOutboxPath(`gw-${status}`));
+    await outbox.enqueue(entryInput("kept"));
+    const result = await outbox.drain(async () => {
+      throw new RemnicHttpError(status, "transient", "transient");
+    }, { maxAttempts: 2, jitterRatio: 0, sleep: async () => undefined });
+    assert.deepEqual({ dropped: result.dropped, pending: result.pending }, { dropped: 0, pending: 1 }, `status ${status}`);
+  }
+});
+
+test("401 and 403 stop the drain and keep the whole queue so a rotated token cannot wipe it", async () => {
+  for (const status of [401, 403]) {
+    const outbox = new ObserveOutbox(tmpOutboxPath(`auth-${status}`));
+    await threeEntries(outbox);
+    let sends = 0;
+    const notifications: string[] = [];
+    const result = await outbox.drain(async () => {
+      sends += 1;
+      throw new RemnicHttpError(status, "unauthorized", "unauthorized");
+    }, { maxAttempts: 4, jitterRatio: 0, sleep: async () => undefined, notify: (message) => notifications.push(message) });
+    assert.equal(sends, 1, `status ${status}: auth will not succeed on the next entry, stop at once`);
+    assert.deepEqual({ dropped: result.dropped, pending: result.pending }, { dropped: 0, pending: 3 });
+    assert.ok(notifications.some((m) => /credentials|authori[sz]/i.test(m)), "the user is told why the queue is parked");
+  }
+});
+
+test("successful sends do not consume the per-drain attempt budget", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("budget"));
+  for (const c of ["1", "2", "3", "4", "5", "6"]) await outbox.enqueue(entryInput(c));
+  const result = await outbox.drain(async () => undefined, { maxAttempts: 4, jitterRatio: 0, sleep: async () => undefined });
+  assert.deepEqual({ delivered: result.delivered, pending: result.pending }, { delivered: 6, pending: 0 });
+});
+
+function readContents(file: string): string[] {
+  return fs
+    .readFileSync(file, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => (JSON.parse(line) as ObserveOutboxEntry).messages[0].content);
+}
+
+test("REVIEW 2: two processes sharing one outbox file keep each other's entries", async () => {
+  const file = tmpOutboxPath("two-procs");
+  const procA = new ObserveOutbox(file);
+  const procB = new ObserveOutbox(file);
+  await procB.pendingHashes(); // B loaded the (empty) file before A queued anything
+  await procA.enqueue(entryInput("from-A"));
+  await procB.enqueue(entryInput("from-B"));
+  assert.deepEqual(readContents(file).sort(), ["from-A", "from-B"]);
+});
+
+test("many concurrent writers never lose an entry and leave no stray temp files", async () => {
+  const file = tmpOutboxPath("many-writers");
+  const writers = Array.from({ length: 12 }, () => new ObserveOutbox(file));
+  await Promise.all(writers.map((writer, i) => writer.enqueue(entryInput(`w${i}`))));
+  assert.deepEqual(
+    readContents(file).sort(),
+    Array.from({ length: 12 }, (_, i) => `w${i}`).sort(),
+  );
+  const strays = fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith(".tmp"));
+  assert.deepEqual(strays, [], "temp files are unique per write and renamed away");
+});
+
+test("a drain removes only the entry it delivered and keeps what another process queued meanwhile", async () => {
+  const file = tmpOutboxPath("drain-vs-enqueue");
+  const procA = new ObserveOutbox(file);
+  const procB = new ObserveOutbox(file);
+  await procA.enqueue(entryInput("first"));
+  await procA.drain(async () => {
+    // Another pi process queues a capture while A is mid-send; A then gets rate limited.
+    await procB.enqueue(entryInput("queued-by-B"));
+    throw new RemnicHttpError(429, "write_rate_limited", "write_rate_limited");
+  }, { maxAttempts: 1, jitterRatio: 0, sleep: async () => undefined });
+  assert.deepEqual(readContents(file).sort(), ["first", "queued-by-B"]);
+
+  const done = await procA.drain(async () => undefined, { jitterRatio: 0, sleep: async () => undefined });
+  assert.equal(done.delivered, 2, "A sees B's entry and delivers it too");
+  assert.equal(readContents(file).length, 0);
+});
+
+test("classifyObserveFailure keeps rate limits and gateway errors, parks auth, drops semantic rejections", () => {
+  const cls = (status: number) => classifyObserveFailure(new RemnicHttpError(status, "x", "x"));
+  assert.equal(cls(429), "retry-capacity");
+  assert.equal(cls(503), "retry-capacity");
+  assert.equal(cls(408), "retry-capacity");
+  assert.equal(cls(502), "retry-capacity");
+  assert.equal(cls(504), "retry-capacity");
+  assert.equal(cls(401), "blocked");
+  assert.equal(cls(403), "blocked");
+  assert.equal(cls(400), "permanent");
+  assert.equal(cls(409), "permanent");
 });
