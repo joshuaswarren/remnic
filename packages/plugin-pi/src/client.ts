@@ -546,8 +546,8 @@ export class RemnicClient {
    * connection-level failures (socket close mid-request, ECONNRESET, EPIPE).
    * Timeouts (our own AbortController) and HTTP responses (4xx/5xx) are NOT
    * retried here — timeouts already burned the full budget, and HTTP errors
-   * carry semantic meaning the caller must handle. Observe/recall are
-   * dedupe-safe so retrying a transiently-failed POST is harmless (#1602).
+   * carry semantic meaning the caller must handle. A later observe call reuses
+   * the chunk key until that send is acknowledged (#3368).
    */
   private async requestWithRetry<T = Record<string, unknown>>(
     method: string,

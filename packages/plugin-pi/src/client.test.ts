@@ -108,6 +108,82 @@ test("RemnicClient forwards caller aborts to observe requests", async (t) => {
   );
 });
 
+test("observe sends a stable idempotency key and reuses it on a retry", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: string[] = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(String(init?.body ?? ""));
+    calls += 1;
+    if (calls === 1) throw new Error("fetch failed");
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const client = new RemnicClient({ ...baseConfig() });
+  await client.observe("session", "/cwd", [{ role: "user", content: "observe" }], { timeoutMs: 5000, maxRetries: 1 });
+  assert.equal(bodies.length, 2);
+  const first = JSON.parse(bodies[0] ?? "");
+  const second = JSON.parse(bodies[1] ?? "");
+  assert.ok(first.idempotencyKey);
+  assert.equal(second.idempotencyKey, first.idempotencyKey);
+});
+
+test("a timed-out observe is replayed under its replay nonce, and a new observe mints a new key", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: string[] = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(String(init?.body ?? ""));
+    calls += 1;
+    if (calls === 1) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError" }));
+        });
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const client = new RemnicClient({ ...baseConfig() });
+  const messages = [{ role: "user" as const, content: "observe" }];
+  // The caller owns the replay identity (the live hook and the outbox persist it), so a
+  // replay in a later call or process reuses the key; there is no hidden in-memory map.
+  const replayNonce = "33333333-4444-5555-6666-777777777777";
+  await assert.rejects(() => client.observe("session", "/cwd", messages, { timeoutMs: 40, maxRetries: 0, replayNonce }));
+  await client.observe("session", "/cwd", messages, { timeoutMs: 5000, maxRetries: 0, replayNonce });
+  const timedOut = JSON.parse(bodies[0] ?? "");
+  const retried = JSON.parse(bodies[1] ?? "");
+  assert.equal(retried.idempotencyKey, timedOut.idempotencyKey);
+  await client.observe("session", "/cwd", messages, { timeoutMs: 5000, maxRetries: 0 });
+  const afterSuccess = JSON.parse(bodies[2] ?? "");
+  assert.notEqual(afterSuccess.idempotencyKey, timedOut.idempotencyKey);
+});
+
+test("observe bodies stay within observeMaxBytes after the key is added", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: string[] = [];
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(String(init?.body ?? ""));
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const cap = 50000;
+  const client = new RemnicClient({ ...baseConfig(), observeMaxBytes: cap });
+  await client.observe("sess", "/cwd", [{ role: "user", content: "x".repeat(200000) }], { timeoutMs: 5000, maxRetries: 0 });
+  assert.ok(bodies.length >= 1);
+  const encoder = new TextEncoder();
+  for (const body of bodies) {
+    assert.ok(encoder.encode(body).length <= cap);
+  }
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",
