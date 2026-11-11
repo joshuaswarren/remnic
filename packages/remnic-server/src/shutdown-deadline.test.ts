@@ -7,7 +7,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { initLogger, type LoggerBackend } from "@remnic/core";
+import { initLogger } from "@remnic/core";
+import type { LoggerBackend } from "@remnic/core/logger";
 
 import { ORCHESTRATOR_DESTROY_DEADLINE_MS, shutdownBacklogDrain } from "./backlog-drain-lifecycle.js";
 
@@ -79,6 +80,35 @@ test("a wedged orchestrator destroy cannot hold the stop chain past the injected
 
 test("the default destroy deadline is the 60s production backstop", () => {
   assert.equal(ORCHESTRATOR_DESTROY_DEADLINE_MS, 60_000);
+});
+
+test("a destroy that rejects before the deadline propagates its error and still runs finish", async () => {
+  const { lines } = installRecordingLogger();
+  const { promise: earlyFailure, reject: failNow } = Promise.withResolvers<void>();
+  try {
+    let finishRan = false;
+    const failingDestroy = (): Promise<void> => earlyFailure;
+
+    const pending = shutdownBacklogDrain(undefined, failingDestroy, () => {
+      finishRan = true;
+    }, 60_000);
+    const settled = assert.rejects(
+      withTestDeadline(pending, 5_000, "in-time destroy rejection"),
+      /persist failed during shutdown/,
+    );
+    // Reject well before the 60s deadline: the error must surface as the
+    // chain's own rejection, not be swallowed by the deadline machinery.
+    failNow(new Error("buffer persist failed during shutdown"));
+    await settled;
+    assert.equal(finishRan, true, "finish must still run after an in-time failure");
+    assert.ok(
+      lines.some((line) => line.startsWith("shutdown-phase-failure phase=orchestrator-drain-flush-dispose")),
+      "the phase failure marker must be emitted for an in-time rejection",
+    );
+  } finally {
+    failNow(new Error("buffer persist failed during shutdown"));
+    quietLogger();
+  }
 });
 
 test("a destroy that rejects after the deadline passed does not crash the stop chain", async () => {

@@ -150,3 +150,37 @@ test("stop completes while extraction is parked on a never-settling LLM; the shu
     await cleanupDir(memoryDir);
   }
 });
+
+test("an extraction already inside its persist stage when destroy() starts still completes: the delivery getter must not throw mid-drain", async () => {
+  initLogger({ info() {}, warn() {}, error() {} }, false);
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-shutdown-persist-"));
+  const orchestrator = new Orchestrator(makeConfig(memoryDir));
+  try {
+    // In any real session the delivery already exists before SIGTERM; the
+    // persist stage reads the getter again while destroy() awaits the drain.
+    // SAFETY: dependencyPropagationDelivery is a private orchestrator getter,
+    // read at the established field seam (same as the wedged-extraction test above).
+    const delivery = (orchestrator as any).dependencyPropagationDelivery;
+    assert.ok(delivery, "the delivery getter must be reachable before destroy");
+    // SAFETY: extractionQueueCoordinator is a private orchestrator field; the
+    // stub implements the two members destroy() calls on it.
+    (orchestrator as any).extractionQueueCoordinator = {
+      stopAccepting(): void {},
+      async pauseAndDrain(): Promise<boolean> {
+        // SAFETY: same private getter as above. ExtractionPersistCoordinator
+        // reads it while the queue drain is in flight; this read is that path.
+        void (orchestrator as any).dependencyPropagationDelivery;
+        return true;
+      },
+    };
+
+    await withTestDeadline(
+      orchestrator.destroy(),
+      10_000,
+      "destroy with a persist-stage delivery read",
+    );
+  } finally {
+    resetLogger();
+    await cleanupDir(memoryDir);
+  }
+});

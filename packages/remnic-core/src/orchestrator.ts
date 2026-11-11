@@ -1016,7 +1016,6 @@ export class Orchestrator {
     await this.maintenanceScheduler.dispose();
     await this._dependencyPropagationRecovery;
     this._dependencyPropagationRecovery = null;
-    this.destroyed = true;
     // Persist unsent turns BEFORE the extraction drain: buffered turns must
     // already be on disk when shutdown abandons or bounds the drain's wait.
     let bufferFlushError: unknown;
@@ -1029,6 +1028,10 @@ export class Orchestrator {
       this.extractionQueueCoordinator,
       this._dependencyPropagationDelivery,
     );
+    // After the drain, never before: an extraction already in its persist
+    // stage reads dependencyPropagationDelivery, and this flag gates that
+    // getter ("orchestrator has been destroyed").
+    this.destroyed = true;
     this._dependencyPropagationDelivery = undefined;
     // Persist post-drain removals; a failed write stays pending for next boot.
     await this.buffer.flushPendingSave().catch(() => undefined);
