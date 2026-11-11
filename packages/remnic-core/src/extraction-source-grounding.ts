@@ -101,6 +101,7 @@ export function filterExtractionResultBySource(
   eventTimeNormalizer?: (eventTime: string) => string,
   spanMode: "off" | "shadow" | "on" = "off",
   quoteTransform?: (quote: string) => string,
+  turns?: readonly string[],
 ): ExtractionResult {
   return filterGroundingRules(
     result,
@@ -110,5 +111,6 @@ export function filterExtractionResultBySource(
     eventTimeNormalizer,
     spanMode,
     quoteTransform,
+    turns,
   );
 }

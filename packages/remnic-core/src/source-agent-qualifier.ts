@@ -52,6 +52,8 @@ export interface ExtractionGroundingContext {
    *  second pass reads it so its prompts carry the same media warning. */
   ambientCapture?: boolean;
   scopeClassificationEnabled?: boolean;
+  /** Contents of the turns assertionSource was joined from, so quote anchors cut at real turn boundaries. */
+  turns?: readonly string[];
 }
 
 export function applyGroundingWithConnector(
@@ -64,6 +66,7 @@ export function applyGroundingWithConnector(
     sourceGrounding: caps.sourceGrounding,
     anchorTemporalExpressions: caps.delinearize,
     spanMode: config.extraction?.spanMode ?? "off",
+    turns: ctx.turns,
   };
   const known = buildKnownConnectors(ctx.sourceConnector);
   // Scope-forcing is decoupled from strip/restore (runs without a trusted
