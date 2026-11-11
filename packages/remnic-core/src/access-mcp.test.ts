@@ -1600,6 +1600,15 @@ function stdioFrame(payload: StdioRequest): string {
 }
 
 function readStdioMessages(raw: string): StdioMessage[] {
+  if (!raw.toLowerCase().startsWith("content-length:")) {
+    return raw
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map((line) => {
+        const message: StdioMessage = JSON.parse(line);
+        return message;
+      });
+  }
   const messages: StdioMessage[] = [];
   let rest = raw;
   while (rest.length > 0) {
@@ -1660,4 +1669,43 @@ test("MCP stdio reassembles a frame split inside its header and inside its body"
   const messages = await runStdioChunks([frame.slice(0, 6), frame.slice(6, frame.length - 4), frame.slice(frame.length - 4)]);
   assert.equal(messages.length, 1);
   assert.equal(messages[0]?.id, 9);
+});
+
+// Issue #3357: a spec client sends one JSON message per line and reads the
+// reply in the same form. The server keeps Content-Length for a header client.
+type StdioLineRequest = { jsonrpc: "2.0"; id: number; method: string; params?: { protocolVersion?: string } };
+const stdioInit: StdioLineRequest = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } };
+const stdioTools: StdioLineRequest = { jsonrpc: "2.0", id: 2, method: "tools/list" };
+
+function stdioLine(payload: StdioLineRequest): string {
+  return `${JSON.stringify(payload)}\n`;
+}
+
+test("MCP stdio answers a newline-delimited initialize and tools/list with newline-delimited replies", async () => {
+  const messages = await runStdioChunks([stdioLine(stdioInit), stdioLine(stdioTools)]);
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.id, 1);
+  assert.equal(messages[1]?.id, 2);
+  assert.ok(messages[1]?.result, "tools/list returns a result");
+});
+
+test("MCP stdio answers a Content-Length initialize and tools/list with Content-Length replies", async () => {
+  const header = (payload: StdioLineRequest): string => {
+    const body = JSON.stringify(payload);
+    return `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
+  };
+  const messages = await runStdioChunks([header(stdioInit), header(stdioTools)]);
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0]?.id, 1);
+  assert.equal(messages[1]?.id, 2);
+});
+
+test("MCP stdio refuses an oversized newline-delimited line and answers the next line", async () => {
+  const messages = await runStdioChunks([
+    `${"A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1)}\n`,
+    stdioLine({ jsonrpc: "2.0", id: 4, method: "ping" }),
+  ]);
+  assert.equal(messages.length, 2);
+  assert.match(messages[0]?.error?.message ?? "", /frame too large/);
+  assert.equal(messages[1]?.id, 4);
 });

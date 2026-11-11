@@ -32,7 +32,7 @@ import {
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
 import { EngramAccessForbiddenError, unknownToolError } from "./access-errors.js";
 import { log } from "./logger.js";
-import { McpFrameReader } from "./access-mcp-frames.js";
+import { McpFrameReader, type McpFrameForm } from "./access-mcp-frames.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -470,6 +470,8 @@ async function getMcpServerVersion(): Promise<string> {
 
 export class EngramMcpServer {
   private readonly frames = new McpFrameReader();
+  /** The form of the first frame on this connection. Replies use the same form. */
+  private replyForm: McpFrameForm | null = null;
   private flushTask: Promise<void> | null = null;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
@@ -2489,6 +2491,7 @@ export class EngramMcpServer {
 
   private async flushBuffer(output: Writable): Promise<void> {
     for (let frame = this.frames.next(); frame; frame = this.frames.next()) {
+      this.replyForm ??= frame.form;
       if (frame.kind === "too-large") {
         this.writeMessage(output, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "frame too large" } });
         continue;
@@ -2517,7 +2520,9 @@ export class EngramMcpServer {
 
   private writeMessage(output: Writable, payload: Record<string, unknown>): void {
     const body = JSON.stringify(payload);
-    const message = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
+    const message = this.replyForm === "line"
+      ? `${body}\n`
+      : `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
     output.write(message);
   }
 

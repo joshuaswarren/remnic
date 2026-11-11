@@ -157,7 +157,7 @@ Access layer notes:
 - `openclaw engram access http-serve` fails closed when no bearer token is configured.
 - HTTP recall accepts `query`, `sessionKey`, `namespace`, `topK`, `mode`, and `includeDebug`.
 - HTTP write endpoints (`/engram/v1/memories`, `/engram/v1/suggestions`, `/engram/v1/review-disposition`) enforce body-size limits, rate limiting, and idempotent retry support for explicit write flows.
-- `openclaw engram access mcp-serve` exposes the same recall/read/write service layer over stdio for MCP clients such as Codex and Claude Code.
+- `openclaw engram access mcp-serve` exposes the same recall/read/write service layer over stdio for an MCP client that speaks the stdio transport.
 - Use `GET /engram/v1/health`, `GET /engram/v1/quality`, or `GET /engram/v1/maintenance` as startup probes when local scripts need projection/governance readiness signals before issuing recall or review requests.
 
 ## Corpus Watermark (HA Divergence Detection)
