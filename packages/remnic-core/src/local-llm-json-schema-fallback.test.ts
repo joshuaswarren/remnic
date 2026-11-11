@@ -171,6 +171,8 @@ test("a diagnostic echo of the format is not a schema capability rejection", asy
     "Context length exceeded; request included response_format json_schema",
     "Unsupported parameter temperature; request included response_format json_schema",
     "Model temporarily unavailable; request included response_format json_schema",
+    "Request included response_format json_schema but model temporarily unavailable",
+    "json_schema request failed: upstream unavailable",
   ]) {
     const server = await startRecordingServer(() => ({ status: 400, body: { error: { message } } }));
     try {
