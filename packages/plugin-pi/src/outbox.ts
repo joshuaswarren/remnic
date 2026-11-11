@@ -320,8 +320,9 @@ export class ObserveOutbox {
             this.counters.dropped += 1;
             await this.remove(entry.id);
             const reason = err instanceof Error ? err.message : String(err);
+            const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
             notify?.(
-              `Remnic observe outbox: dropped 1 capture the daemon permanently rejected (${reason}); it will not be retried`,
+              `Remnic observe outbox: dropped 1 capture the daemon permanently rejected (${status}${reason}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); it will not be retried`,
               "warning"
             );
             continue;
