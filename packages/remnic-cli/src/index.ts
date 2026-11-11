@@ -5723,6 +5723,10 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
 }
 
 async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<void> {
+  // Start the logger before parseConfig so its warnings reach stderr; JSON
+  // runs keep every level off stdout.
+  const requestsJson = rest.includes("--json") || resolveFlag(rest, "--format") === "json";
+  initCliLogger(requestsJson);
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5800,7 +5804,8 @@ async function cmdBriefing(rest: string[], abortSignal: AbortSignal): Promise<vo
   }
   const format: "markdown" | "json" =
     effectiveFormatFlag === "json" ? "json" : effectiveFormatFlag === "markdown" ? "markdown" : config.briefing.defaultFormat;
-  initCliLogger(format === "json");
+  // config.briefing.defaultFormat can also select json after parseConfig.
+  if (format === "json" && !requestsJson) initCliLogger(true);
 
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();

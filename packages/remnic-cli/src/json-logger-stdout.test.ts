@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { EngramAccessService, Orchestrator, log } from "@remnic/core";
+import { EngramAccessService, Orchestrator, initLogger, log } from "@remnic/core";
 import { runCli } from "./run-cli.js";
 
 test("query --json keeps log.info off stdout so JSON.parse succeeds", async (t) => {
@@ -37,4 +37,38 @@ test("query --json keeps log.info off stdout so JSON.parse succeeds", async (t) 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+const INSECURE_HTTP_WARNING = /openaiBaseUrl from config is using insecure http/;
+
+/** A fresh `remnic` process starts with a no-op logger; earlier tests in this process installed a real one. */
+const SILENT_LOGGER = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} };
+
+async function runBriefingWithInsecureConfig(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-briefing-logger-"));
+  const configPath = path.join(root, "remnic.config.json");
+  await writeFile(configPath, JSON.stringify({ memoryDir: path.join(root, "memory"), openaiBaseUrl: "http://example.invalid/v1" }));
+  initLogger(SILENT_LOGGER);
+  try {
+    return await runCli(["briefing", ...args], {
+      cwd: root,
+      env: { HOME: root, REMNIC_CONFIG_PATH: configPath },
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("briefing keeps config warnings when the format flag is rejected", async () => {
+  const result = await runBriefingWithInsecureConfig(["--format", "bogus"]);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, INSECURE_HTTP_WARNING);
+  assert.match(result.stderr, /Invalid --format value/);
+});
+
+test("briefing --json keeps config warnings on stderr", async () => {
+  const result = await runBriefingWithInsecureConfig(["--json", "--since", "bogus"]);
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, INSECURE_HTTP_WARNING);
+  assert.doesNotMatch(result.stdout, INSECURE_HTTP_WARNING);
 });
