@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 
 import type { RemnicPiConfig } from "./config.js";
@@ -93,6 +93,7 @@ interface ObserveBody {
   namespace?: string;
   skipExtraction: boolean;
   messages: ObserveMessage[];
+  idempotencyKey?: string;
 }
 
 const encoder = new TextEncoder();
@@ -101,6 +102,9 @@ const RETRY_BASE_DELAY_MS = 200;
 const STORE_JITTER_MS = 250;
 const MAX_COOLDOWN_MS = 60_000;
 const TRUNCATION_MARKER = "\n\n[Remnic observe truncated: payload exceeded client size cap]";
+/** Fixed length so the chunker can reserve the key inside the byte cap. A UUID is always 36 characters. */
+const OBSERVE_KEY_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
+const OBSERVE_KEY_LIMIT = 32;
 
 export class RemnicClient {
   private requestId = 0;
@@ -109,10 +113,53 @@ export class RemnicClient {
   // callers skip fast instead of blocking every turn on a doomed request (#1626).
   private unreachableUntil = 0;
   private consecutiveFailures = 0;
+  /** Chunk fingerprint to its nonce, kept until that send is acknowledged. */
+  private observeKeys = new Map<string, string>();
   /** Bumped on every markReachable so a deferred startup probe can drop a stale unreachable. */
   private reachabilityGeneration = 0;
 
   constructor(private readonly config: RemnicPiConfig) {}
+
+  private observeChunkFingerprint(chunk: ObserveBody): string {
+    return createHash("sha256")
+      .update(JSON.stringify({
+        sessionKey: chunk.sessionKey,
+        cwd: chunk.cwd,
+        namespace: chunk.namespace ?? "",
+        skipExtraction: chunk.skipExtraction,
+        messages: chunk.messages,
+      }))
+      .digest("hex");
+  }
+
+  private stableObserveKey(chunk: ObserveBody): string {
+    const fingerprint = this.observeChunkFingerprint(chunk);
+    const existing = this.observeKeys.get(fingerprint);
+    if (existing !== undefined) {
+      this.observeKeys.delete(fingerprint);
+      this.observeKeys.set(fingerprint, existing);
+      return existing;
+    }
+    const key = randomUUID();
+    this.observeKeys.set(fingerprint, key);
+    while (this.observeKeys.size > OBSERVE_KEY_LIMIT) {
+      const oldest = this.observeKeys.keys().next().value;
+      if (oldest === undefined) break;
+      this.observeKeys.delete(oldest);
+    }
+    return key;
+  }
+
+  private dropObserveKey(chunk: ObserveBody): void {
+    this.observeKeys.delete(this.observeChunkFingerprint(chunk));
+  }
+
+  private async sendObserveChunk(chunk: ObserveBody, options: RequestOptions) {
+    const keyed = { ...chunk, idempotencyKey: this.stableObserveKey(chunk) };
+    const result = await this.requestWithRetry("POST", "/engram/v1/observe", keyed, options);
+    this.dropObserveKey(chunk);
+    return result;
+  }
 
   /** True when the daemon is not in a known-unreachable cooldown. */
   isReachable(): boolean {
@@ -316,9 +363,11 @@ export class RemnicClient {
       signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
+    // One key per chunk, made once and reused on every retry of that chunk, so a
+    // client timeout that re-sends the same chunk does not admit the turns twice.
     const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
     if (chunks.length === 1) {
-      return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
+      return this.sendObserveChunk(chunks[0], retryOptions);
     }
     // Multiple chunks: send sequentially within the SAME per-turn deadline so
     // the TOTAL observe time stays under turnBudgetMs (not per-chunk), which
@@ -335,12 +384,7 @@ export class RemnicClient {
         );
       }
       const chunkOptions: RequestOptions = { ...retryOptions, timeoutMs: remaining };
-      const result = await this.requestWithRetry<Record<string, unknown>>(
-        "POST",
-        "/engram/v1/observe",
-        chunks[i],
-        chunkOptions,
-      );
+      const result = await this.sendObserveChunk(chunks[i], chunkOptions);
       if (result && typeof result === "object") {
         results.push(result);
       }
@@ -529,8 +573,8 @@ export class RemnicClient {
    * connection-level failures (socket close mid-request, ECONNRESET, EPIPE).
    * Timeouts (our own AbortController) and HTTP responses (4xx/5xx) are NOT
    * retried here — timeouts already burned the full budget, and HTTP errors
-   * carry semantic meaning the caller must handle. Observe/recall are
-   * dedupe-safe so retrying a transiently-failed POST is harmless (#1602).
+   * carry semantic meaning the caller must handle. A later observe call reuses
+   * the chunk key until that send is acknowledged (#3368).
    */
   private async requestWithRetry<T = Record<string, unknown>>(
     method: string,
@@ -662,6 +706,7 @@ function buildObserveEnvelope(config: RemnicPiConfig, sessionKey: string, cwd: s
     namespace: config.namespace,
     skipExtraction: config.observeSkipExtraction,
     messages,
+    idempotencyKey: OBSERVE_KEY_PLACEHOLDER,
   };
 }
 
