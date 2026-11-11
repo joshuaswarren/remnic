@@ -346,11 +346,13 @@ test("successful sends do not consume the per-drain attempt budget", async () =>
 });
 
 function readContents(file: string): string[] {
-  return fs
+  const lines = fs
     .readFileSync(file, "utf8")
     .split("\n")
-    .filter((line) => line.trim().length > 0)
-    .map((line) => (JSON.parse(line) as ObserveOutboxEntry).messages[0].content);
+    .filter((line) => line.trim().length > 0);
+  // SAFETY: every line was written by ObserveOutbox in this test and is read back only for messages[0].content.
+  const entries = lines.map((line) => JSON.parse(line) as ObserveOutboxEntry);
+  return entries.map((entry) => entry.messages[0].content);
 }
 
 test("REVIEW 2: two processes sharing one outbox file keep each other's entries", async () => {

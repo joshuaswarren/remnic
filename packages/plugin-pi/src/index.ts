@@ -24,7 +24,7 @@ import {
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
 import { createMcpRegistration } from "./mcp-registration.js";
 import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from "./startup-probe.js";
-import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
+import { classifyObserveFailure, type DrainOptions, ObserveOutbox } from "./outbox.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -196,7 +196,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // refused work. Runs before the background startup chain so the replay
       // lands before the first turn's own observe.
       if (observeOutbox) {
-        await drainObserveOutbox(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys);
+        // One cheap attempt: a dead daemon must not hold session start behind retry and
+        // backoff ladders; whatever stays queued replays on the next successful contact.
+        await drainObserveOutbox(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys, true);
       }
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
@@ -854,12 +856,17 @@ async function drainObserveOutbox(
   outbox: ObserveOutbox,
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
+  startup = false,
 ): Promise<void> {
+  const drainOptions: DrainOptions = { notify: (message, level) => session.notify(message, level) };
+  if (startup) drainOptions.maxAttempts = 1;
   const result = await outbox.drain(async (entry) => {
-    await client.observe(entry.sessionKey, entry.cwd, entry.messages, {
+    const observeOptions: ObserveOptions = {
       timeoutMs: config.turnRequestTimeoutMs,
       replayNonce: entry.replayNonce ?? entry.id,
-    });
+    };
+    if (startup) observeOptions.maxRetries = 0;
+    await client.observe(entry.sessionKey, entry.cwd, entry.messages, observeOptions);
     // Delivered: remember identity so later turns and the shutdown replay skip these.
     for (const hash of entry.messageHashes) {
       if (hash !== null) rememberObservedHash(observedHashes, hash);
@@ -869,9 +876,7 @@ async function drainObserveOutbox(
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, entry.sessionKey));
       }
     }
-  }, {
-    notify: (message, level) => session.notify(message, level),
-  });
+  }, drainOptions);
   if (result.pending > 0) {
     session.notify(
       `Remnic observe outbox: ${result.pending} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,

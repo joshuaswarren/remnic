@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
 import { RemnicHttpError, RemnicRequestTimeoutError, isTransientNetworkError } from "./client.js";
 import type { ObserveMessage } from "./client.js";
@@ -11,9 +13,11 @@ import type { ObserveMessage } from "./client.js";
  * connection) where the request MAY have been processed. Entries are replayed
  * under a stable replay-nonce idempotency key (see client.observe), so a
  * replay after response loss is deduplicated server-side instead of ingesting
- * twice. Storage is JSONL rewritten atomically (temp file + rename) on every
- * mutation; a torn or corrupt line is skipped on load with a visible
- * notification rather than silently discarding the remaining entries.
+ * twice. Storage is JSONL rewritten atomically (unique temp file + rename) on
+ * every mutation. Every pi process on a machine shares one default path, so each
+ * mutation takes a file lock, re-reads the file and applies its change to what is
+ * on disk (never to a stale in-memory copy); a torn or corrupt line is skipped on
+ * load with a visible notification rather than silently discarding the rest.
  */
 
 export type ObserveOutboxEntryInput = {
@@ -33,15 +37,26 @@ export type ObserveOutboxEntry = ObserveOutboxEntryInput & {
 
 export type OutboxNotify = (message: string, level: "info" | "warning" | "error") => void;
 
-export type ObserveFailureClass = "retry-capacity" | "retry-ambiguous" | "permanent";
+/**
+ * retry-capacity: the daemon asked us to come back (503 backpressure, 429 rate limit,
+ *   408/502/504 transient gateway). retry-ambiguous: the request may have been
+ *   processed. blocked: credentials rejected (401/403); no retry helps until the
+ *   token is fixed, so keep the whole queue. permanent: a semantic rejection.
+ */
+export type ObserveFailureClass = "retry-capacity" | "retry-ambiguous" | "blocked" | "permanent";
+
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 502, 503, 504]);
+const AUTH_HTTP_STATUSES = new Set([401, 403]);
 
 export function classifyObserveFailure(err: Error): ObserveFailureClass {
   if (err instanceof RemnicHttpError) {
-    // 503 is server backpressure (capacity admission or not-ready); the body
-    // was refused atomically, so a keyed retry is safe. Any other HTTP answer
-    // is a semantic rejection (bad payload, auth, storage-target 400) that no
-    // retry can fix.
-    return err.status === 503 ? "retry-capacity" : "permanent";
+    // 503 is server backpressure (capacity admission or not-ready) and 429 a write
+    // quota (observe counts against it); the capture was never executed, so a keyed
+    // retry is safe. 401/403 park the queue. Any other HTTP answer is a semantic
+    // rejection (bad payload, storage-target 400) that no retry can fix.
+    if (RETRYABLE_HTTP_STATUSES.has(err.status)) return "retry-capacity";
+    if (AUTH_HTTP_STATUSES.has(err.status)) return "blocked";
+    return "permanent";
   }
   if (err instanceof RemnicRequestTimeoutError) return "retry-ambiguous";
   if (isTransientNetworkError(err)) return "retry-ambiguous";
@@ -111,24 +126,40 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   return entry;
 }
 
+const LOCK_STALE_MS = 30_000;
+const LOCK_MAX_WAIT_MS = 5_000;
+
 export class ObserveOutbox {
   readonly filePath: string;
+  private readonly lockPath: string;
   private readonly maxEntries: number;
   private entries: ObserveOutboxEntry[] = [];
-  private loaded = false;
+  /** ino:size:mtime of the file as last read or written by this instance. */
+  private diskSignature: string | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private drainInProgress = false;
   private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
 
   constructor(filePath: string, options: { maxEntries?: number } = {}) {
     this.filePath = filePath;
+    this.lockPath = `${filePath}.lock`;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
   }
 
-  private async load(notify?: OutboxNotify): Promise<void> {
-    if (this.loaded) return;
-    this.loaded = true;
-    const raw = await readFile(this.filePath, "utf8").catch(() => null);
+  private async signature(): Promise<string | null> {
+    const info = await stat(this.filePath).catch(() => null);
+    return info ? `${info.ino}:${info.size}:${info.mtimeMs}` : null;
+  }
+
+  /** Re-read the shared file when another process (or this one) changed it. */
+  private async refresh(notify?: OutboxNotify, force = false): Promise<void> {
+    const signature = await this.signature();
+    if (!force && signature === this.diskSignature) return;
+    // Recorded before the read: a write that lands mid-read changes the signature,
+    // so the next refresh sees it and re-reads.
+    this.diskSignature = signature;
+    this.entries = [];
+    const raw = signature === null ? null : await readFile(this.filePath, "utf8").catch(() => null);
     if (raw === null) return;
     let skipped = 0;
     for (const line of raw.split("\n")) {
@@ -144,37 +175,54 @@ export class ObserveOutbox {
         "warning"
       );
     }
-    if (this.entries.length > this.maxEntries) {
-      const evicted = this.entries.splice(0, this.entries.length - this.maxEntries).length;
-      notify?.(
-        `Remnic observe outbox full: dropped ${evicted} oldest queued capture(s) to stay under the ${this.maxEntries}-entry bound`,
-        "warning"
-      );
-    }
   }
 
   private async persist(): Promise<void> {
     const data = this.entries.map((entry) => JSON.stringify(entry)).join("\n");
-    const tmp = `${this.filePath}.tmp`;
+    // Unique per write: two processes must never share a temp file.
+    const tmp = `${this.filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
     await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(tmp, data ? `${data}\n` : "", "utf8");
-    await rename(tmp, this.filePath);
+    try {
+      await writeFile(tmp, data ? `${data}\n` : "", "utf8");
+      await rename(tmp, this.filePath);
+    } catch (err) {
+      await unlink(tmp).catch(() => undefined);
+      throw err;
+    }
   }
 
-  private mutate(update: () => Promise<void> | void): Promise<void> {
-    const run = this.writeChain.then(update);
+  /**
+   * Serialize in-process, then take the cross-process file lock, re-read what is on
+   * disk and apply `update` to THAT before the atomic rewrite. A lock that cannot be
+   * acquired fails the mutation rather than writing over another process's entries.
+   */
+  private mutate(update: () => void, notify?: OutboxNotify): Promise<void> {
+    const run = this.writeChain.then(async () => {
+      await mkdir(path.dirname(this.filePath), { recursive: true });
+      await withHeldFileLock(
+        this.lockPath,
+        { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS },
+        async (acquired) => {
+          if (!acquired) throw new Error(`observe outbox is locked by another process (${this.lockPath})`);
+          await this.refresh(notify, true);
+          update();
+          await this.persist();
+          this.diskSignature = await this.signature();
+        },
+      );
+    });
     this.writeChain = run.catch(() => undefined);
     return run;
   }
 
   async size(): Promise<number> {
-    await this.load();
+    await this.refresh();
     return this.entries.length;
   }
 
   /** Dedupe keys of everything currently queued (used to avoid double-delivery channels). */
   async pendingHashes(): Promise<Set<string>> {
-    await this.load();
+    await this.refresh();
     return new Set(
       this.entries.flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
     );
@@ -182,7 +230,7 @@ export class ObserveOutbox {
 
   /** Counters since process start plus the oldest queued entry age. */
   async status(now: () => number = Date.now): Promise<OutboxStatus> {
-    await this.load();
+    await this.refresh();
     const oldest = this.entries[0] ? Date.parse(this.entries[0].queuedAt) : Number.NaN;
     return {
       pending: this.entries.length,
@@ -192,8 +240,7 @@ export class ObserveOutbox {
   }
 
   async enqueue(input: ObserveOutboxEntryInput, notify?: OutboxNotify): Promise<void> {
-    await this.load(notify);
-    await this.mutate(async () => {
+    await this.mutate(() => {
       const id = randomUUID();
       this.counters.queued += 1;
       this.entries.push({
@@ -209,20 +256,27 @@ export class ObserveOutbox {
           "warning"
         );
       }
-      await this.persist();
+    }, notify);
+  }
+
+  private async remove(id: string): Promise<void> {
+    await this.mutate(() => {
+      this.entries = this.entries.filter((entry) => entry.id !== id);
     });
   }
 
   /**
-   * Deliver queued entries strictly in order. Capacity/ambiguous failures
-   * retry the same entry with Retry-After-aware backoff up to `maxAttempts`
-   * total attempts per drain, then leave the queue intact for the next drain
-   * trigger. Permanent rejections are dropped with a visible notification and
-   * never retried.
+   * Deliver queued entries strictly in order. Capacity/rate-limit/ambiguous failures
+   * retry the same entry with Retry-After-aware backoff, at most `maxAttempts`
+   * FAILED attempts per drain (successful sends are free), then leave the queue
+   * intact for the next drain trigger. Rejected credentials (401/403) stop the drain
+   * and keep the whole queue. Permanent rejections are dropped with a visible
+   * notification and never retried. The file is re-read before every send, so
+   * entries queued by another process meanwhile are delivered or kept, never lost.
    */
   async drain(send: (entry: ObserveOutboxEntry) => Promise<void>, options: DrainOptions = {}): Promise<DrainResult> {
     const notify = options.notify;
-    await this.load(notify);
+    await this.refresh(notify);
     if (this.drainInProgress) {
       return { delivered: 0, dropped: 0, pending: this.entries.length };
     }
@@ -242,16 +296,17 @@ export class ObserveOutbox {
     const warnedStale = new Set<string>();
     let delivered = 0;
     let dropped = 0;
-    let attempts = 0;
+    let failures = 0;
     try {
-      while (this.entries.length > 0 && attempts < maxAttempts) {
+      while (failures < maxAttempts) {
+        await this.refresh(notify);
         const entry = this.entries[0];
-        attempts += 1;
+        if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
           warnedStale.add(entry.id);
           notify?.(
-            `Remnic observe outbox: replaying a capture queued more than ${SERVER_IDEMPOTENCY_WINDOW_MS / 60_000} minutes ago (older than 15 minutes); the daemon may no longer recognize its idempotency key, so a duplicate is possible if the original request was already accepted`,
+            `Remnic observe outbox: replaying a capture queued ${Math.round((now() - queuedAtMs) / 60_000)} minutes ago; the daemon only remembers its most recent 512 observe idempotency keys (roughly 15 minutes at typical load), so a duplicate is possible if the original request was already accepted`,
             "warning"
           );
         }
@@ -260,15 +315,9 @@ export class ObserveOutbox {
         } catch (err) {
           const failureClass = err instanceof Error ? classifyObserveFailure(err) : "retry-ambiguous";
           if (failureClass === "permanent") {
-            // Permanent drop does not consume the retry budget; later entries
-            // still get their attempts.
-            attempts -= 1;
             dropped += 1;
             this.counters.dropped += 1;
-            await this.mutate(async () => {
-              this.entries.shift();
-              await this.persist();
-            });
+            await this.remove(entry.id);
             const reason = err instanceof Error ? err.message : String(err);
             notify?.(
               `Remnic observe outbox: dropped 1 capture the daemon permanently rejected (${reason}); it will not be retried`,
@@ -276,18 +325,25 @@ export class ObserveOutbox {
             );
             continue;
           }
+          if (failureClass === "blocked") {
+            const status = err instanceof RemnicHttpError ? err.status : "auth";
+            notify?.(
+              `Remnic observe outbox: the daemon rejected the request credentials (HTTP ${status}); ${this.entries.length} queued capture(s) were kept and will replay once the token is fixed`,
+              "warning"
+            );
+            break;
+          }
+          failures += 1;
           this.counters.retried += 1;
+          if (failures >= maxAttempts) break;
           const hint = err instanceof RemnicHttpError ? err.retryAfterMs : undefined;
           const hinted = hint !== undefined && Number.isFinite(hint) ? hint : undefined;
-          const base = Math.min(hinted ?? backoffBaseMs * 2 ** (attempts - 1), maxRetryAfterMs);
+          const base = Math.min(hinted ?? backoffBaseMs * 2 ** (failures - 1), maxRetryAfterMs);
           const jitter = 1 + (Math.random() * 2 - 1) * jitterRatio;
           await sleep(Math.max(0, Math.round(base * jitter)));
           continue;
         }
-        await this.mutate(async () => {
-          this.entries.shift();
-          await this.persist();
-        });
+        await this.remove(entry.id);
         delivered += 1;
         this.counters.delivered += 1;
       }
