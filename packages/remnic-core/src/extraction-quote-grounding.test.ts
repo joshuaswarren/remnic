@@ -635,3 +635,37 @@ test("turn texts that do not tile the source fall back to blank-line behavior", 
   const quote = "near the mill. Also the culvert repair is scheduled for next Tuesday at the plant";
   assert.deepEqual(quoteAnchors(quote, TURNED_SOURCE, undefined, ["a turn that is not in the source"]), []);
 });
+
+const LONG_TAIL = Array.from({ length: 60 }, (_, index) => `word${index} filler`).join(" ");
+const LONG_TURN = `The river gauges read high all week near the mill. ${LONG_TAIL}`;
+const LONG_SOURCE = `${LONG_TURN}\n\n${TURN_TWO}`;
+
+test("the window cut by the turn length ends on a whole word, matching the no-turns window", () => {
+  const quote = "The river gauges read high all week near the mill.";
+  const [bounded] = quoteAnchors(quote, LONG_SOURCE, undefined, [LONG_TURN, TURN_TWO]);
+  const [plain] = quoteAnchors(quote, LONG_TURN);
+  assert.ok(bounded !== undefined && plain !== undefined);
+  assert.equal(bounded.window, plain.window);
+});
+
+test("the window of a quote in a non-last turn does not end with a separator newline", () => {
+  const [anchor] = quoteAnchors(
+    "The river gauges read high all week near the mill.",
+    TURNED_SOURCE,
+    undefined,
+    [TURN_ONE, TURN_TWO],
+  );
+  assert.ok(anchor !== undefined);
+  assert.ok(!anchor.window.endsWith("\n"));
+});
+
+test("a quote ending exactly at the last character of a non-last turn still anchors", () => {
+  const anchors = quoteAnchors(
+    "Also the culvert repair is scheduled for next Tuesday at the plant.",
+    TURNED_SOURCE,
+    undefined,
+    [TURN_ONE, TURN_TWO],
+  );
+  assert.equal(anchors.length, 1);
+  assert.ok(anchors[0]!.window.endsWith("at the plant."));
+});

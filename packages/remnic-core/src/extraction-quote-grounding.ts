@@ -108,14 +108,17 @@ function findQuoteAnchors(quote: string, source: string, bounds?: readonly numbe
       let turnEnd = source.length;
       for (const bound of bounds) {
         if (bound <= start) turnStart = bound;
-        else { turnEnd = bound; break; }
+        else {
+          turnEnd = bound - TURN_SEPARATOR.length;
+          break;
+        }
       }
       if (turnEnd < end) continue;
       before = source.slice(Math.max(turnStart, start - QUOTE_ANCHOR_CONTEXT_CHARS), start);
       if (start - QUOTE_ANCHOR_CONTEXT_CHARS > turnStart) before = before.replace(/^\S+/u, "");
       const contextEnd = Math.min(turnEnd, end + QUOTE_ANCHOR_CONTEXT_CHARS);
       after = source.slice(end, contextEnd);
-      if (end + QUOTE_ANCHOR_CONTEXT_CHARS < contextEnd) after = after.replace(/\S+$/u, "");
+      if (end + QUOTE_ANCHOR_CONTEXT_CHARS < turnEnd) after = after.replace(/\S+$/u, "");
     }
 
     anchors.push({ quote: needle, window: `${before}${needle.replace(/;/gu, ",")}${after}` });
