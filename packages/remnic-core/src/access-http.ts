@@ -238,6 +238,8 @@ export function resolveDefaultAdminConsolePublicDir(sourceUrl = import.meta.url)
 
 const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
 const correlationIdStore = new AsyncLocalStorage<string>();
+/** Advisory backpressure hint for 503 buffer_admission_refused (optional; removable without a contract change). */
+const BUFFER_ADMISSION_RETRY_AFTER_SECONDS = 5;
 const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
   ["relay.css", "text/css; charset=utf-8"],
   ["relay-model.js", "application/javascript; charset=utf-8"],
@@ -549,10 +551,20 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
             });
             return;
           }
+          if (err.name === "StorageTargetRequiredError") {
+            // A capture with no resolvable storage target is a client fault:
+            // retrying cannot succeed, so it must never advertise backpressure.
+            this.respondJson(res, 400, { error: err.message, code: "storage_target_required" });
+            return;
+          }
           if (err.name === "ReplayAdmissionRefusedError") {
             // Durable-capture backpressure (#3251/#1908): the request was
             // never accepted — the buffer is at entry capacity. Retryable,
             // not a server fault (503, not 500).
+            log.warn(
+              `engram access HTTP buffer admission refused [${correlationId}]: ${err.message}`,
+            );
+            res.setHeader("retry-after", String(BUFFER_ADMISSION_RETRY_AFTER_SECONDS));
             this.respondJson(res, 503, { error: err.message, code: "buffer_admission_refused" });
             return;
           }
