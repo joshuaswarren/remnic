@@ -1,10 +1,28 @@
 import type { PluginConfig } from "./types.js";
 
+export type RecallTimingOutcome = "ok" | "error";
+
+/**
+ * Flat per-phase timing payload the recall pipeline emits (recall-timings
+ * attempt contract). `timestamp`/`namespace` are required; every other key is
+ * a phase or dimension the recall-timings sanitizer already knows how to
+ * parse (string durations like "12ms", plus `recallPlan`/`queryPolicy`).
+ */
+export type RecallTimingEmission = {
+  timestamp: string;
+  namespace: string;
+} & Record<string, string>;
+
 export interface RecallTimingRecord {
   readonly timestamp: string;
   readonly namespace: string;
   readonly recallPlan: string;
   readonly queryPolicy: string;
+  /** Server-generated id for the recall attempt; never caller-supplied input. */
+  readonly requestId: string;
+  readonly outcome: RecallTimingOutcome;
+  /** Monotonic (performance.now) total for the whole recall attempt, in ms. */
+  readonly httpTotalMs: number;
   readonly timingsMs: Readonly<Record<string, number>>;
 }
 
@@ -78,11 +96,21 @@ function sanitizeRecallTiming(
     // Phases that did not run are omitted; 0 means "ran, measured zero".
     if (value !== undefined) timingsMs[field] = value;
   }
+  // Attempt-contract id decode: String(x) === x holds exactly for string
+  // primitives; every other value coalesces to "" (no runtime typeof here).
+  const requestId = String(input.requestId);
   return {
     timestamp: typeof input.timestamp === "string" ? input.timestamp : "",
     namespace: typeof input.namespace === "string" ? input.namespace : "",
     recallPlan: typeof input.recallPlan === "string" ? input.recallPlan : "",
     queryPolicy: typeof input.queryPolicy === "string" ? input.queryPolicy : "",
+    // Attempt contract, copied field-by-field like the dimension strings:
+    // non-string requestIds drop, anything but the literal error mark is
+    // "ok", and the monotonic total rides the same numeric-ms parsing as
+    // the phases (absent or negative floors to 0 for legacy emitters).
+    requestId: requestId === input.requestId ? requestId : "",
+    outcome: input.outcome === "error" ? "error" : "ok",
+    httpTotalMs: numericMilliseconds(input.httpTotalMs) ?? 0,
     timingsMs,
   };
 }

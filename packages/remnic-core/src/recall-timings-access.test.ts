@@ -31,6 +31,8 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) 
   });
 }
 
+const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 test("authenticated recall timings route returns two recalls without user-correlatable inputs", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-timings-"));
   const config = makeConfig(memoryDir);
@@ -48,8 +50,10 @@ test("authenticated recall timings route returns two recalls without user-correl
   const started = await server.start();
   const url = `http://${started.host}:${started.port}/engram/v1/recall/timings`;
   try {
-    await orchestrator.recall("private first query", "private:first:session");
-    await orchestrator.recall("private second query", "private:second:session", { mode: "no_recall" });
+    // Drive recalls through the service path (HTTP / MCP recall route) so the
+    // records carry the attempt contract (requestId + outcome + httpTotalMs).
+    await service.recall({ query: "private first query", sessionKey: "private:first:session" });
+    await service.recall({ query: "private second query", sessionKey: "private:second:session", mode: "no_recall" });
 
     const denied = await fetch(url);
     assert.equal(denied.status, 401);
@@ -111,6 +115,10 @@ test("authenticated recall timings route returns two recalls without user-correl
       assert.ok(record.timingsMs.total >= 0);
       assert.equal(typeof record.recallPlan, "string");
       assert.equal(typeof record.queryPolicy, "string");
+      // Attempt contract (requestId + outcome + monotonic httpTotalMs).
+      assert.match(record.requestId, REQUEST_ID_PATTERN);
+      assert.equal(record.outcome, "ok");
+      assert.ok(Number.isFinite(record.httpTotalMs) && record.httpTotalMs >= 0);
       assert.equal("query" in record, false);
       assert.equal("prompt" in record, false);
       assert.equal("sessionKey" in record, false);
@@ -193,6 +201,11 @@ test("recall timing records expose only the fixed telemetry schema", () => {
     namespace: "default",
     recallPlan: "full",
     queryPolicy: "general/full",
+    // Attempt contract defaults for legacy emitters: no id, not an error,
+    // no monotonic duration measured.
+    requestId: "",
+    outcome: "ok",
+    httpTotalMs: 0,
     timingsMs: {
       total: 7,
       qmd: 3,
@@ -339,4 +352,95 @@ test("batch context without transport operator fails closed when config names no
     operatorPrincipal: "operator",
   }) as { result: { count: number } };
   assert.equal(output.result.count, 0);
+});
+
+test("recall timing record allowlists requestId, outcome, and monotonic httpTotalMs (attempt contract)", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-attempt-fields"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "42ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+    requestId: "attempt-1",
+    outcome: "error",
+    httpTotalMs: 123.5,
+    // Not part of the record contract: dropped by the sanitizer.
+    query: "private user text",
+    sessionKey: "private:session",
+  });
+  const record = getRecallTimings(config)[0];
+  assert.ok(record);
+  assert.equal(record.requestId, "attempt-1");
+  assert.equal(record.outcome, "error");
+  assert.equal(record.httpTotalMs, 123.5);
+  assert.equal("query" in record, false);
+  assert.equal("sessionKey" in record, false);
+});
+
+test("attempt contract fields fail closed for legacy emitters and bad values", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-attempt-defaults"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: 5,
+    recallPlan: "full",
+    queryPolicy: "general/full",
+    requestId: 42,
+    outcome: "bogus",
+    httpTotalMs: "12ms",
+  });
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: 6,
+    recallPlan: "full",
+    queryPolicy: "general/full",
+    httpTotalMs: -3,
+  });
+  const [newest, oldest] = getRecallTimings(config);
+  assert.ok(newest && oldest);
+  // Direct orchestrator callers (x-ray, daemon hooks) predate the contract:
+  // their records carry neutral defaults, never a misleading id or duration.
+  assert.equal(newest.requestId, "");
+  assert.equal(newest.outcome, "ok");
+  assert.equal(newest.httpTotalMs, 0);
+  // Parsed and sanitized: non-string requestId drops, unknown outcome fails
+  // closed to "ok", "12ms" parses, negative durations floor to 0.
+  assert.equal(oldest.requestId, "");
+  assert.equal(oldest.outcome, "ok");
+  assert.equal(oldest.httpTotalMs, 12);
+});
+
+test("service recall records exactly one attempt in finally with contract fields", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-attempt-ok"));
+  const service = new EngramAccessService(new Orchestrator(config));
+  await service.recall({ query: "contract probe", sessionKey: "contract:probe:session" });
+  const records = getRecallTimings(config);
+  // One attempt, one record: the pipeline's per-phase payload folds into the
+  // finally-record instead of pushing a second entry.
+  assert.equal(records.length, 1);
+  const record = records[0]!;
+  assert.match(record.requestId, REQUEST_ID_PATTERN);
+  assert.equal(record.outcome, "ok");
+  assert.ok(Number.isFinite(record.httpTotalMs) && record.httpTotalMs >= 0);
+  assert.ok(Number.isFinite(record.timingsMs.total) && record.timingsMs.total >= 0);
+  assert.equal(record.recallPlan, "full");
+});
+
+test("denied recall attempt still records outcome error in finally", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-attempt-error"));
+  const service = new EngramAccessService(new Orchestrator(config));
+  await assert.rejects(
+    service.recall({ query: "contract probe", sessionKey: "contract:probe:session", asOf: "   " }),
+    /asOf/,
+  );
+  const records = getRecallTimings(config);
+  // The attempt failed before the pipeline ran: the finally-record is the
+  // only trace, with the error outcome and the monotonic total it measured.
+  assert.equal(records.length, 1);
+  const record = records[0]!;
+  assert.match(record.requestId, REQUEST_ID_PATTERN);
+  assert.equal(record.outcome, "error");
+  assert.ok(Number.isFinite(record.httpTotalMs) && record.httpTotalMs >= 0);
 });

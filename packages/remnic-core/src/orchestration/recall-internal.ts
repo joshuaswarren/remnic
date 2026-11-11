@@ -65,7 +65,7 @@ import {
   type RecallXrayScoreDecomposition,
   buildXraySnapshot,
 } from "../recall-xray.js";
-import { foldQueueWaitTiming, recordRecallTiming } from "../recall-timings.js";
+import { foldQueueWaitTiming, recordRecallTiming, type RecallTimingEmission } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -103,6 +103,7 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "../orchestrator.js";
+import type { PluginConfig } from "../types.js";
 import { isGenericRecallExcludedPath } from "./generic-recall-paths.js";
 import { filterRecentScanMemories } from "../recall-state-view-anchors.js";
 import { indexStateViewAnnotatedResults, resolveRecallStateViewActive } from "../recall-state-view-admission.js";
@@ -116,6 +117,24 @@ import type { RecallInternalDeps } from "./recall-internal-deps.js";
 import { appendEpisodicContextSection } from "./episodic-context-section.js";
 import { resolveCompositeProfileStorage } from "./recall-profile-storage.js";
 import { fetchQmdMemoryResultsWithRecognitionSwap } from "./recall-recognition-search.js";
+
+/**
+ * Route this recall's per-phase timing payload. When the access surface wired
+ * `onRecallTiming`, the payload folds into the attempt's single finally-record
+ * there (requestId + outcome + httpTotalMs); direct orchestrator callers keep
+ * the legacy success-only push.
+ */
+function emitRecallTiming(
+  config: PluginConfig,
+  options: RecallInvocationOptions,
+  payload: RecallTimingEmission,
+): void {
+  if (options.onRecallTiming) {
+    options.onRecallTiming(payload);
+    return;
+  }
+  recordRecallTiming(config, payload);
+}
 
 export class RecallInternalCoordinator {
   private readonly securityCapabilities: SecurityCapabilitySet;
@@ -549,7 +568,7 @@ export class RecallInternalCoordinator {
       const earlySessionKey = sessionKey ?? "default";
       this.deps._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
-      recordRecallTiming(this.deps.config, {
+      emitRecallTiming(this.deps.config, options, {
         ...timings,
         timestamp: new Date().toISOString(),
         namespace: selfNamespace,
@@ -4905,7 +4924,7 @@ export class RecallInternalCoordinator {
       .map(([k, v]) => `${k}=${v}`)
       .join(", ");
     log.info(`recall timings: ${timingParts}`);
-    recordRecallTiming(this.deps.config, {
+    emitRecallTiming(this.deps.config, options, {
       ...timings,
       timestamp: new Date().toISOString(),
       namespace: selfNamespace,
