@@ -340,8 +340,13 @@ export class NamespaceSearchRouter {
         embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
       };
 
-      // Aborted probes report unavailable; do not cache that incomplete answer.
-      if (execution?.signal?.aborted !== true) {
+      // Cache only a healthy answer. Unavailable or missing must re-probe so
+      // readiness polls see recovery immediately, not up to one TTL late.
+      if (
+        execution?.signal?.aborted !== true &&
+        health.available === true &&
+        health.collectionState !== "missing"
+      ) {
         this.healthResultCache.set(key, {
           expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
           value: { ...health },
@@ -353,7 +358,6 @@ export class NamespaceSearchRouter {
       await dispose?.call(record.backend);
     }
   }
-
 
   private async liveCachedRecordForHealth(
     key: string,
@@ -393,7 +397,6 @@ export class NamespaceSearchRouter {
     this.trackDisposal(disposal);
   }
 
-
   private async disposeRecord(record: NamespaceBackendRecord): Promise<void> {
     if (record.disposed) return;
     record.disposed = true;
@@ -414,7 +417,6 @@ export class NamespaceSearchRouter {
     );
   }
 
-
   /**
    * Disable namespace search for this runtime while retaining the resolved
    * records as unavailable/missing. This releases concrete QMD/daemon handles
@@ -433,7 +435,6 @@ export class NamespaceSearchRouter {
       }),
     );
   }
-
 
   private async backendRecordFor(
     namespace: string,

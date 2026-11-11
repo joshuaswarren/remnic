@@ -981,6 +981,126 @@ test("healthForNamespace does not cache a thrown probe", async () => {
   assert.deepEqual(cached, health);
 });
 
+test("healthForNamespace does not cache an unavailable answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      if (created.length === 0) {
+        backend.available = false;
+      }
+      backend.statusResult = {
+        pendingEmbeddings: created.length,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.available, false);
+  assert.equal(created.length, 1);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.available, true, "recovery must be visible on the next probe");
+  assert.equal(created.length, 2, "unavailable answers must not be cached");
+});
+
+test("healthForNamespace does not cache a missing-collection answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(
+        false,
+        [],
+        created.length === 0 ? { check: "missing" } : { check: "present" },
+      );
+      backend.statusResult = {
+        pendingEmbeddings: created.length,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.collectionState, "missing");
+  assert.equal(created.length, 1);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.collectionState, "present", "collection recovery must re-probe");
+  assert.equal(created.length, 2, "missing-collection answers must not be cached");
+});
+
+test("healthForNamespace dispose drops the health result cache", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: created.length + 1,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1);
+  assert.equal(first.pendingEmbeddings, 1);
+
+  await router.dispose();
+  const second = await router.healthForNamespace("shared");
+
+  assert.equal(created.length, 2, "dispose must drop the health result cache");
+  assert.equal(second.pendingEmbeddings, 2);
+});
+
+test("healthForNamespace disableSearchBackends drops the health result cache", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: created.length + 1,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1);
+  assert.equal(first.pendingEmbeddings, 1);
+
+  await router.disableSearchBackends();
+  const second = await router.healthForNamespace("shared");
+
+  assert.equal(created.length, 2, "disableSearchBackends must drop the health result cache");
+  assert.equal(second.pendingEmbeddings, 2);
+});
+
+
 
 test("ensureNamespaceCollection does not cache aborted namespace backend probes", async () => {
   const created: FakeBackend[] = [];
