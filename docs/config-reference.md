@@ -278,7 +278,7 @@ Access-layer safety notes:
 | `highSignalPatterns` | `[]` | Additional regex patterns for immediate extraction |
 | `consolidateEveryN` | `3` | Run consolidation every N extractions |
 
-> **Overflow policy (provider outage).** While the extraction circuit breaker is open during a prolonged provider outage, buffered turns are retained (not dropped) so no extractable turn is lost — they are re-extracted once the provider recovers. Buffered *session entries* are bounded to `MAX_BUFFER_ENTRY_COUNT` (200); once exceeded, the oldest empty session entries are pruned oldest-first and the pruning is logged loudly (a `warn`) so overflow degrades observably rather than silently. See the `extractionBreaker*` / `extractionRetry*` settings under **Local LLM**.
+> **Overflow policy (provider outage).** While the extraction circuit breaker is open during a prolonged provider outage, buffered turns are retained so they can be re-extracted once the provider recovers. The session-entry cap bounds new admissions: empty entries are pruned oldest-first, but an entry with active or retained turns is never evicted. When no empty entry can make room, the new capture is refused with retryable backpressure; callers must retry after extraction frees a slot. This applies to live and accepted captures. See the `extractionBreaker*` / `extractionRetry*` settings under **Local LLM**.
 
 ## Extraction Guardrails
 

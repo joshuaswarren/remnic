@@ -18,7 +18,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { abortError, isPreemptedExtraction } from "../abort-error.js";
-import { SmartBuffer } from "../buffer.js";
+import { SmartBuffer, type AddTurnOutcome } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolveNamespaceCapabilities, resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import type { CorrectionService } from "../correction/correction-service.js";
@@ -57,18 +57,10 @@ import {
   type BulkImportBatchIngestResult,
 } from "../orchestrator.js";
 
-/**
- * #3251: raised by the buffered observe capture path when bounded admission
- * refuses a NEW session entry because the extraction buffer is at its entry
- * cap. The request was never accepted — no durable capture exists and no
- * previously accepted capture was evicted to make room.
- */
-export class ReplayAdmissionRefusedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "ReplayAdmissionRefusedError";
-  }
-}
+// The class lives in ../buffer-admission.js next to BufferAdmissionRefusedError;
+// re-exported here so existing importers keep their import path.
+import { ReplayAdmissionRefusedError } from "../buffer-admission.js";
+export { ReplayAdmissionRefusedError };
 
 export interface TurnIngestionDeps {
   readonly buffer: SmartBuffer;
@@ -440,10 +432,29 @@ export class TurnIngestionCoordinator {
         "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
       );
     }
-    for (const [bufferKey, sessionTurns] of bySession) {
-      // No top-level abort check: cancellation applies to the background
-      // extraction, never to the durable capture or save barrier (#3251).
-      if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
+    const pin = (turn: BufferTurn): BufferTurn => {
+      const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
+      if (options.codingContext) pinned.codingContext = options.codingContext;
+      if (options.principalOverride) pinned.principalOverride = options.principalOverride;
+      if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
+      return pinned;
+    };
+    const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
+    const outcomes = await this.deps.buffer.addTurnsBounded(batches);
+    if (outcomes === null) {
+      const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
+      throw new ReplayAdmissionRefusedError(
+        `durable observe capture refused: extraction buffer at entry capacity for batch containing ${refusedKey}`,
+      );
+    }
+
+    // All requested session keys were capacity-admitted together before any
+    // turn was saved. There is no retry identity: a repeat after a crash that
+    // persisted only a prefix duplicates that prefix, as on main.
+    await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+
+    if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
+      for (const [bufferKey, sessionTurns] of bySession) {
         await this.deps.lcmEngine.observeMessages(
           bufferKey,
           sessionTurns.map((turn) => ({
@@ -455,29 +466,17 @@ export class TurnIngestionCoordinator {
           })),
         );
       }
-      for (const turn of sessionTurns) {
-        const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
-        if (options.codingContext) pinned.codingContext = options.codingContext;
-        if (options.principalOverride) pinned.principalOverride = options.principalOverride;
-        if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
-        const outcome = await this.deps.buffer.addTurnBounded(bufferKey, pinned);
-        if (outcome === null) {
-          throw new ReplayAdmissionRefusedError(
-            `durable observe capture refused: extraction buffer at entry capacity for ${bufferKey}`,
-          );
-        }
-        if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
-          queueBufferedCaptureScopeGroups(
-            this.deps.queueBufferedExtraction,
-            outcome.extractionTurns,
-            bufferKey,
-            options,
-          );
-        }
+    }
+
+    for (const { bufferKey, outcome } of outcomes) {
+      if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
+        queueBufferedCaptureScopeGroups(
+          this.deps.queueBufferedExtraction,
+          outcome.extractionTurns,
+          bufferKey,
+          options,
+        );
       }
-      // Acceptance durability barrier (#1909 seam): surfaces storage failures
-      // BEFORE the caller can report acceptance. Not abort-gated.
-      await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     }
   }
 

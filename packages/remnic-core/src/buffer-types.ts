@@ -1,6 +1,33 @@
 /** Types split out of buffer.ts (structural ratchet, issue #1995). */
 
-import type { BufferTurn } from "./types.js";
+import type { BufferTurn, CodingContext, SignalLevel } from "./types.js";
+import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
+
+export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
+
+export interface AddTurnOutcome {
+  decision: TriggerDecision;
+  extractionTurns?: BufferTurn[];
+}
+
+export interface AddTurnMutationResult {
+  decision: TriggerDecision;
+  signalLevel: SignalLevel;
+  priorTurns: BufferTurn[];
+  activeTurnsSnapshot: BufferTurn[];
+  retainedTurnsSnapshot: BufferTurn[];
+  turnCountInWindow: number;
+}
+
+export interface RetainedTurnCleanupOptions {
+  abortSignal?: AbortSignal;
+  deadlineMs?: number;
+  /** Keep cleanup within the accepted namespace. */
+  writeNamespaceOverride?: string;
+  /** Match the original profile and project binding, not just its write namespace. */
+  scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
+  codingContext?: CodingContext;
+}
 
 /**
  * Optional surprise probe injected into `SmartBuffer`.

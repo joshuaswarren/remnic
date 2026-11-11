@@ -23,39 +23,32 @@ import {
   bufferTurnsEqual,
   copyBufferTurn,
   describeError,
+  entryActivityAt,
+  entryHoldsAcceptedCapture,
   hasPinnedCaptureScope,
   liveTurnsFromExtractionSnapshot,
   matchingQueuedExtractionPrefixLength,
+  normalizeBufferState,
   probeWithTimeout,
   selectRetainedDeferredTurns,
   type BufferEntryCounts,
 } from "./buffer-turn-helpers.js";
+import { BufferAdmissionRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
+export { BufferAdmissionRefusedError } from "./buffer-admission.js";
+import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
 
-export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
+export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from "./buffer-types.js";
+
+// Eviction hooks are pure functions of an entry; one shared instance serves
+// pruneEntries, the admission probe and the batch preflight.
+const EVICTION_HOOKS = { activityAt: entryActivityAt, holdsAcceptedCapture: entryHoldsAcceptedCapture };
 
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
 
-export interface AddTurnOutcome {
-  decision: TriggerDecision;
-  extractionTurns?: BufferTurn[];
-}
-
-export interface RetainedTurnCleanupOptions {
-  abortSignal?: AbortSignal;
-  deadlineMs?: number;
-  /** Keep cleanup within the accepted namespace. */
-  writeNamespaceOverride?: string;
-  /** Match the original profile and project binding, not just its write namespace. */
-  scopeProfileWritePlan?: import("./namespaces/scope-profiles.js").ResolvedScopeProfilePlan | null;
-  codingContext?: import("./types.js").CodingContext;
-}
-
 // Raised from 200 in #3303: live captures were being dropped at busy hours
 // while the single extraction worker drained a backlog.
 const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
-const isAcceptedTurn = (t: { acceptedCapture?: boolean; writeNamespaceOverride?: string }): boolean =>
-  t.acceptedCapture === true || t.writeNamespaceOverride !== undefined;
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -75,15 +68,6 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  * could still exceed it.
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
-
-interface AddTurnMutationResult {
-  decision: TriggerDecision;
-  signalLevel: SignalLevel;
-  priorTurns: BufferTurn[];
-  activeTurnsSnapshot: BufferTurn[];
-  retainedTurnsSnapshot: BufferTurn[];
-  turnCountInWindow: number;
-}
 
 export class SmartBuffer {
   private state: BufferState;
@@ -182,61 +166,13 @@ export class SmartBuffer {
     };
   }
 
-  private normalizeState(state: BufferState): BufferState {
-    const entries = Object.assign(
-      Object.create(null),
-      state.entries ?? {},
-    ) as NonNullable<BufferState["entries"]>;
-    if (!entries.default) {
-      entries.default = {
-        turns: Array.isArray(state.turns) ? [...state.turns] : [],
-        lastExtractionAt: state.lastExtractionAt ?? null,
-        extractionCount:
-          typeof state.extractionCount === "number" ? state.extractionCount : 0,
-      };
-    }
-    return {
-      turns: entries.default.turns,
-      lastExtractionAt: entries.default.lastExtractionAt,
-      extractionCount: entries.default.extractionCount,
-      entries,
-    };
-  }
-
-  private entryActivityAt(entry: BufferEntryState): number {
-    const lastTurnAt = entry.turns.reduce((latest, turn) => {
-      const parsed = Date.parse(turn.timestamp);
-      return Number.isFinite(parsed) ? Math.max(latest, parsed) : latest;
-    }, -1);
-    const lastExtractionAt =
-      typeof entry.lastExtractionAt === "string"
-        ? Date.parse(entry.lastExtractionAt)
-        : Number.NaN;
-    return Math.max(
-      lastTurnAt,
-      Number.isFinite(lastExtractionAt) ? lastExtractionAt : -1,
-    );
-  }
-
   /** Evict oldest entries past this.maxSessionEntries and queue their session files for deletion. */
   private pruneEntries(retainKeys: string[], maxCount = this.maxSessionEntries): void {
     const entries = this.state.entries;
     if (!entries) return;
-    const evicted = selectEvictedBufferKeys(entries, retainKeys, maxCount, {
-      activityAt: (entry) => this.entryActivityAt(entry),
-      holdsAcceptedCapture: (entry) => this.entryHoldsAcceptedCapture(entry),
-    });
+    const evicted = selectEvictedBufferKeys(entries, retainKeys, maxCount, EVICTION_HOOKS);
     for (const key of evicted) delete entries[key];
     this.persistence.markEvicted(evicted);
-    if (evicted.length > 0) {
-      // Loud degradation (extraction hot-loop hardening, Step 7): buffer
-      // pressure during a provider outage is bounded and expected, but must
-      // be observable, not silent.
-      log.warn(
-        `buffer: pruned ${evicted.length} oldest session entr${evicted.length === 1 ? "y" : "ies"} ` +
-          `past the session-entry cap (${this.maxSessionEntries}); buffered turn data for those sessions was dropped`,
-      );
-    }
   }
 
   private async loadUnlocked(): Promise<void> {
@@ -244,7 +180,7 @@ export class SmartBuffer {
     if (!this.loadPromise) {
       this.loadPromise = this.storage.loadBuffer()
         .then((state) => {
-          this.state = this.normalizeState(state);
+          this.state = normalizeBufferState(state);
           this.loaded = true;
         })
         .finally(() => {
@@ -517,24 +453,80 @@ export class SmartBuffer {
     if (mutation === null) return null;
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
+  /**
+   * Admit a multi-session durable capture as one capacity transaction.
+   * Preflight every new key under the mutation lock before persisting any
+   * turn; refusal records nothing and drops nothing.
+   */
+  async addTurnsBounded(
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+  ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {
+    const pending = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      const additions: Array<{ bufferKey: string; turn: BufferTurn }> = [];
+      for (const batch of batches) {
+        for (const turn of batch.turns) {
+          additions.push({ bufferKey: batch.bufferKey, turn });
+        }
+      }
 
-  /** Free one slot for an accepted capture via the native eviction policy (COS-244c). */
+      const entries = this.state.entries ?? {};
+      const newKeys = [...new Set(
+        additions
+          .map(({ bufferKey }) => bufferKey)
+          .filter((bufferKey) => this.peekEntry(bufferKey) === null),
+      )];
+      const count = Object.keys(entries).length;
+      const requiredEvictions = Math.max(0, count + newKeys.length - this.maxSessionEntries);
+      if (requiredEvictions > 0) {
+        const target = Math.max(0, this.maxSessionEntries - newKeys.length);
+        const evicted = selectEvictedBufferKeys(entries, newKeys, target, EVICTION_HOOKS);
+        if (newKeys.length > 0 && evicted.length < requiredEvictions) return null;
+        for (const key of evicted) delete entries[key];
+        this.persistence.markEvicted(evicted);
+      }
+
+      const recorded: Array<{ bufferKey: string; turn: BufferTurn; mutation: AddTurnMutationResult }> = [];
+      for (const { bufferKey, turn } of additions) {
+        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn) });
+      }
+      return recorded;
+    });
+    if (pending === null) return null;
+
+    const outcomes: Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> = [];
+    for (const item of pending) {
+      outcomes.push({
+        bufferKey: item.bufferKey,
+        turn: item.turn,
+        outcome: await this.completeAddTurnOutcome(item.bufferKey, item.turn, item.mutation),
+      });
+    }
+    return outcomes;
+  }
+
+  /** Free one slot only when an empty entry can be reclaimed. */
   private makeRoomForEntryUnlocked(): void {
     const entries = this.state.entries ?? {};
     const target = Math.max(0, this.maxSessionEntries - 1);
-    const pinned = Object.keys(entries).filter((k) => k === "default" || this.entryHoldsAcceptedCapture(entries[k]));
-    if (pinned.length <= target) this.pruneEntries([], target); // evict only if it frees a slot
-  }
-
-  private entryHoldsAcceptedCapture(entry: BufferEntryState | undefined): boolean {
-    return (entry?.turns ?? []).some(isAcceptedTurn) || (entry?.retainedTurns ?? []).some(isAcceptedTurn);
+    const pinned = Object.keys(entries).filter((k) => k === "default" || entryHoldsAcceptedCapture(entries[k]));
+    if (pinned.length <= target) this.pruneEntries([], target);
   }
 
   async addTurnWithOutcome(
     bufferKey: string,
     turn: BufferTurn,
   ): Promise<AddTurnOutcome> {
-    const mutation = await this.enqueueMutation(() => this.recordTurnUnlocked(bufferKey, turn));
+    const mutation = await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      if (
+        this.peekEntry(bufferKey) === null &&
+        !canAdmitNewEntryUnlocked(this.state.entries ?? {}, bufferKey, this.maxSessionEntries, EVICTION_HOOKS)
+      ) {
+        throw new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries);
+      }
+      return this.recordTurnUnlocked(bufferKey, turn);
+    });
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
   }
 

@@ -84,6 +84,13 @@ type JsonRpcRequest = {
   params?: Record<string, unknown>;
 };
 
+/** tools/call failure envelope; admission backpressure adds a retryable code. */
+type McpToolErrorResult = {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+  structuredContent?: { code: string; retryable: boolean };
+};
+
 function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
   if (!signal?.aborted) return;
   if (isAbortError(signal.reason)) throw signal.reason;
@@ -2418,14 +2425,17 @@ export class EngramMcpServer {
         // Preserve the original AbortError so HTTP can silently end a dead socket.
         if (isAbortError(err)) throw err;
         const message = mcpToolErrorMessage(err instanceof Error ? err : new Error(String(err)));
-        return {
-          jsonrpc: "2.0",
-          id,
-          result: {
-            content: [{ type: "text", text: message }],
-            isError: true,
-          },
+        const admissionBackpressure =
+          err instanceof Error &&
+          (err.name === "ReplayAdmissionRefusedError" || err.name === "BufferAdmissionRefusedError");
+        const result: McpToolErrorResult = {
+          content: [{ type: "text", text: message }],
+          isError: true,
         };
+        if (admissionBackpressure) {
+          result.structuredContent = { code: "buffer_admission_refused", retryable: true };
+        }
+        return { jsonrpc: "2.0", id, result };
       }
     }
 

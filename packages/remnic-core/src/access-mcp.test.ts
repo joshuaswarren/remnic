@@ -109,6 +109,46 @@ function makeToolRequest(name: string, args: Record<string, unknown> = {}): Reco
     },
   };
 }
+test("MCP reports buffer admission refusal as retryable and does not return success", async () => {
+  let attempts = 0;
+  const refusal = new Error("buffer at session-entry cap");
+  refusal.name = "ReplayAdmissionRefusedError";
+  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
+  const service = Object.assign({} as EngramAccessService, {
+    observe: async () => {
+      attempts += 1;
+      if (attempts === 1) throw refusal;
+      return { ok: true };
+    },
+  });
+  const server = new EngramMcpServer(service);
+  const request = makeToolRequest("engram.observe", {
+    sessionKey: "capacity-test-session",
+    messages: [{ role: "user", content: "retry me" }],
+  });
+
+  const refused = await server.handleRequest(request);
+  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
+  const refusedResult = refused as {
+    result?: {
+      isError?: boolean;
+      structuredContent?: { code?: string; retryable?: boolean };
+    };
+  };
+  assert.equal(refusedResult.result?.isError, true, "refused admission must not be acknowledged as success");
+  // SAFETY: same tools/call result envelope as the assertion above.
+  assert.deepEqual(refusedResult.result?.structuredContent, {
+    code: "buffer_admission_refused",
+    retryable: true,
+  }, JSON.stringify(refused));
+
+  const retried = await server.handleRequest(request);
+  // SAFETY: same tools/call result envelope as refusedResult above.
+  const retriedResult = retried as typeof refusedResult;
+  assert.equal(retriedResult.result?.isError, false);
+  assert.equal(attempts, 2, "the same request can be retried after capacity is available");
+});
+
 
 // ──────────────────────────────────────────────────────────────────────────
 // Finding 2 (#396 new): invalid MCP briefing format values must be rejected

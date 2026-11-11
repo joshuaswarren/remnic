@@ -549,6 +549,13 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
             });
             return;
           }
+          if (err.name === "ReplayAdmissionRefusedError") {
+            // Durable-capture backpressure (#3251/#1908): the request was
+            // never accepted — the buffer is at entry capacity. Retryable,
+            // not a server fault (503, not 500).
+            this.respondJson(res, 503, { error: err.message, code: "buffer_admission_refused" });
+            return;
+          }
           if (res.headersSent) {
             res.destroy(err as Error);
             return;
