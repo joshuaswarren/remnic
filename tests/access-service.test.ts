@@ -783,7 +783,7 @@ test("capsuleImport decrypts namespace imports with the root secure-store keyrin
     const capsule = await exportCapsule({
       name: "project-x-import",
       root: sourceDir,
-      outDir: path.join(memoryDir, "out"),
+      outDir: path.join(namespaceDir, ".capsules"),
       encrypt: true,
       memoryDir,
     });
