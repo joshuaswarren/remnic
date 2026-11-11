@@ -199,7 +199,7 @@ export function isUnsupportedJsonSchemaError(error: unknown): boolean {
     return false;
   }
   return (
-    /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available)\b/i.test(message) ||
+    /(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output)\b[^;,\n]{0,60}\b(?:unsupported|not supported|not implemented|not available|unavailable)\b/i.test(message) ||
     /\b(?:unsupported|unknown|unrecognized)(?:[\s:"'=]|parameter|argument|request|supplied|field|type|value){1,40}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     /\b(?:does not|doesn't|cannot|can't) support(?:[\s:"'=]|the|native|type){1,20}\b(?:response[_ ]?format|json[_ ]?schema|structured[_ ]?output|schema|format)\b/i.test(message) ||
     // A strict provider parser rejecting the SCHEMA CONTENT itself (2026-11-05

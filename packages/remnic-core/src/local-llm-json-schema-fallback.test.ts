@@ -170,6 +170,7 @@ test("a diagnostic echo of the format is not a schema capability rejection", asy
   for (const message of [
     "Context length exceeded; request included response_format json_schema",
     "Unsupported parameter temperature; request included response_format json_schema",
+    "Model temporarily unavailable; request included response_format json_schema",
   ]) {
     const server = await startRecordingServer(() => ({ status: 400, body: { error: { message } } }));
     try {
@@ -196,6 +197,36 @@ test("an explicit unknown response_format field retries without the format", asy
     assert.equal(server.requests[1].body.response_format, undefined);
   } finally {
     await server.close();
+  }
+});
+
+test("an unavailable response_format type retries without the format and persists the rejection", async () => {
+  const memoryDir = fs.mkdtempSync(join(os.tmpdir(), "remnic-schema-cap-"));
+  const server = await startRecordingServer((_req, count) =>
+    count === 1
+      ? { status: 400, body: { error: { message: "This response_format type is unavailable now" } } }
+      : { status: 200, body: okCompletion },
+  );
+  try {
+    const registry = new ModelRegistry(memoryDir);
+    const client = new LocalLlmClient(createConfig({ localLlmUrl: server.url }), registry);
+    primeClient(client);
+    assert.equal(
+      (await client.chatCompletion([{ role: "user", content: "hello" }], { responseFormat }))?.content,
+      "done",
+    );
+    assert.equal(server.requests.length, 2, "one schema-carrying request, then one retry without the format");
+    assert.deepEqual(server.requests[0].body.response_format, responseFormat);
+    assert.equal(server.requests[1].body.response_format, undefined);
+    // SAFETY: we wrote model-capabilities.json through ModelRegistry above; the
+    // document is an object keyed by normalized model id.
+    const persisted = JSON.parse(
+      fs.readFileSync(join(memoryDir, ".registry", "model-capabilities.json"), "utf8"),
+    ) as { models: Record<string, { structuredOutput?: string }> };
+    assert.equal(persisted.models["test-local-model"]?.structuredOutput, "none");
+  } finally {
+    await server.close();
+    fs.rmSync(memoryDir, { recursive: true, force: true });
   }
 });
 
