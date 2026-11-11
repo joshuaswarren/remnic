@@ -444,6 +444,21 @@ test("a claim that keeps the denial in a pronoun clause is kept", () => {
   assert.deepEqual(keptContents(grounded), claims);
 });
 
+test("a negator in a claim clause that shares only the subject does not keep the denial", () => {
+  const source = "Notes: Alice did not approve the budget. Alice did not review the contract.";
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      {
+        content: "Alice did not review the contract. She approved the budget.",
+        quote: "Alice did not approve the budget.",
+      },
+    ]),
+    source,
+    source,
+  );
+  assert.equal(grounded.facts.length, 0);
+});
+
 test("a claim that inverts a denial verb in the quote is rejected", () => {
   const source = "Notes: Alice denied approving the budget. Bob reviewed it.";
   const grounded = filterExtractionResultBySource(
