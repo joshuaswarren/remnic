@@ -130,14 +130,6 @@ function hasNegation(text: string): boolean {
   return NEGATOR_PATTERN.test(text.replace(/[\u2018\u2019]/gu, "'")) || hasDenialReporting(text);
 }
 
-/**
- * True when the claim asserts what a quote clause denies or does not assert:
- * "did not approve the budget" or "denied approving it" restated as "approved
- * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
- * plain statement. Each negated or unasserted quote clause is matched to the
- * claim clause that best overlaps it; a claim that keeps one negator may still
- * misstate another quote clause it restates as positive.
- */
 const CLAUSE_PATTERN = /[^;.!?\n]+[;.!?]*/gu;
 /** Split "X, and Y" claim coordination without touching list commas. */
 const CLAIM_COORD_SPLIT = /,\s{1,8}(?:and|but|or|nor)\s{1,8}/iu;
@@ -152,11 +144,10 @@ function splitClaimClauses(content: string): string[] {
   });
 }
 
-function clauseOverlap(clauseTokens: readonly string[], target: string): { shared: number; ratio: number } {
-  if (clauseTokens.length === 0) return { shared: 0, ratio: 0 };
+function clauseOverlap(clauseTokens: readonly string[], target: string) {
   const has = tokenPool(tokenize(target));
   const shared = clauseTokens.filter(has).length;
-  return { shared, ratio: shared / clauseTokens.length };
+  return { shared, ratio: clauseTokens.length === 0 ? 0 : shared / clauseTokens.length };
 }
 
 function bestOverlappingClaimClause(
@@ -178,6 +169,14 @@ function bestOverlappingClaimClause(
   return undefined;
 }
 
+/**
+ * True when the claim asserts what a quote clause denies or does not assert:
+ * "did not approve the budget" or "denied approving it" restated as "approved
+ * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
+ * plain statement. Each negated or unasserted quote clause is matched to the
+ * claim clause that best overlaps it; a claim that keeps one negator may still
+ * misstate another quote clause it restates as positive.
+ */
 function misstatesQuote(content: string, quote: string): boolean {
   const claimClauses = splitClaimClauses(content);
   return (quote.match(CLAUSE_PATTERN) ?? []).some((quoteClause) => {
