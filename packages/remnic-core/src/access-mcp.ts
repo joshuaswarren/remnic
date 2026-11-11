@@ -2434,6 +2434,9 @@ export class EngramMcpServer {
         };
         if (admissionBackpressure) {
           result.structuredContent = { code: "buffer_admission_refused", retryable: true };
+        } else if (err instanceof Error && err.name === "StorageTargetRequiredError") {
+          // A permanent property of the request: tell clients not to retry it.
+          result.structuredContent = { code: "storage_target_required", retryable: false };
         }
         return { jsonrpc: "2.0", id, result };
       }
