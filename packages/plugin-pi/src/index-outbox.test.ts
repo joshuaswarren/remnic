@@ -9,6 +9,7 @@ import type { RemnicPiConfig } from "./config.js";
 import { createRemnicPiExtension, observeMessages } from "./index.js";
 import type { PiApi } from "./index.js";
 import { observedMessageDedupeKey, toObserveMessage } from "./messages.js";
+import { settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
 // ---------------------------------------------------------------------------
@@ -103,6 +104,8 @@ test("repeat 503 capacity refusals queue durably, then drain exactly once in ord
   await observeMessages(ctx, client, [raw1], observedHashes, undefined, config, outbox);
   await observeMessages(ctx, client, [raw2], observedHashes, undefined, config, outbox);
   await observeMessages(ctx, client, [raw3], observedHashes, undefined, config, outbox);
+  // The replay drain runs in the background after each successful live observe.
+  await settleObserveOutboxDrain(outbox);
 
   // Live sends carry ONLY the new turn's messages — queued messages are never re-sent live.
   assert.equal(requests.length, 3);
@@ -198,6 +201,7 @@ test("response loss (server accepted, client timed out) replays without duplicat
     config,
     outbox
   );
+  await settleObserveOutboxDrain(outbox);
 
   assert.equal(requests.length, 3, "original + next turn + one replay");
   assert.equal(requests[2].idempotencyKey, requests[0].idempotencyKey, "replay reuses the lost send's stable identity");

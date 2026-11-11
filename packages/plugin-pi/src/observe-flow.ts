@@ -8,6 +8,9 @@ export type OutboxSession = { notify: (message: string, level: "info" | "success
 
 export const MAX_OBSERVED_HASHES = 2000;
 
+/** Longest a session-start or shutdown replay attempt may take. */
+const STARTUP_DRAIN_ATTEMPT_MS = 3000;
+
 export function rememberObservedHash(observedHashes: Set<string>, hash: string): void {
   if (observedHashes.has(hash)) return;
   while (observedHashes.size >= MAX_OBSERVED_HASHES) {
@@ -64,16 +67,20 @@ export async function drainObserveOutbox(
   outbox: ObserveOutbox,
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
-  startup = false,
+  bounded = false,
 ): Promise<void> {
   const drainOptions: DrainOptions = { notify: (message, level) => session.notify(message, level) };
-  if (startup) drainOptions.maxAttempts = 1;
+  if (bounded) drainOptions.maxAttempts = 1;
   const result = await outbox.drain(async (entry) => {
     const observeOptions: ObserveOptions = {
       timeoutMs: config.turnRequestTimeoutMs,
       replayNonce: entry.replayNonce ?? entry.id,
     };
-    if (startup) observeOptions.maxRetries = 0;
+    if (bounded) {
+      observeOptions.maxRetries = 0;
+      // One cheap attempt: never let a hanging daemon hold session start or shutdown for a full turn budget.
+      observeOptions.timeoutMs = Math.min(config.turnRequestTimeoutMs, STARTUP_DRAIN_ATTEMPT_MS);
+    }
     await client.observe(entry.sessionKey, entry.cwd, entry.messages, observeOptions);
     // Delivered: remember identity so later turns and the shutdown replay skip these.
     for (const hash of entry.messageHashes) {
@@ -93,3 +100,49 @@ export async function drainObserveOutbox(
   }
 }
 
+/** Background drains per outbox, so callers (shutdown, tests) can wait for them. */
+const inFlightDrains = new WeakMap<ObserveOutbox, Set<Promise<void>>>();
+
+/**
+ * Replay queued entries after a successful live observe. The returned promise never rejects;
+ * live hooks ignore it (background), shutdown awaits it (`bounded`: no retries or backoff).
+ *
+ * In the BACKGROUND case: The live
+ * hook must neither wait for the drain (retries and Retry-After sleeps can add up to
+ * about 84 s against the host's ~30 s handler window) nor see its failures: a drain
+ * problem is reported as an outbox warning and never re-queues the live turns, which
+ * the daemon already accepted. `OutboxSession.notify` may throw once the UI is gone,
+ * so the report itself is guarded.
+ */
+export function startObserveOutboxDrain(
+  session: OutboxSession,
+  client: RemnicClient,
+  config: RemnicPiConfig,
+  outbox: ObserveOutbox,
+  observedHashes: Set<string>,
+  liveObservedReplayKeys?: Map<string, number>,
+  bounded = false,
+): Promise<void> {
+  const run: Promise<void> = drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys, bounded)
+    .catch((err: Error) => {
+      try {
+        // The drain only throws Errors (lock timeout, write failure); coerce defensively for the message.
+        session.notify(`Remnic observe outbox drain failed: ${String(err.message ?? err)}`, "warning");
+      } catch {
+        // The session UI is gone; the queue itself is untouched and replays next time.
+      }
+    })
+    .finally(() => {
+      inFlightDrains.get(outbox)?.delete(run);
+    });
+  const running = inFlightDrains.get(outbox) ?? new Set<Promise<void>>();
+  running.add(run);
+  inFlightDrains.set(outbox, running);
+  return run;
+}
+
+/** Resolves when every background drain started for this outbox has finished. */
+export async function settleObserveOutboxDrain(outbox: ObserveOutbox): Promise<void> {
+  const running = inFlightDrains.get(outbox);
+  if (running) await Promise.all([...running]);
+}

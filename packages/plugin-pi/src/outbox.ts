@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
 import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
 import { RemnicHttpError, RemnicRequestTimeoutError, isTransientNetworkError } from "./client.js";
@@ -133,6 +134,7 @@ export class ObserveOutbox {
   readonly filePath: string;
   private readonly lockPath: string;
   private readonly maxEntries: number;
+  private readonly lockMaxWaitMs: number;
   private entries: ObserveOutboxEntry[] = [];
   /** ino:size:mtime of the file as last read or written by this instance. */
   private diskSignature: string | null = null;
@@ -140,9 +142,10 @@ export class ObserveOutbox {
   private drainInProgress = false;
   private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
 
-  constructor(filePath: string, options: { maxEntries?: number } = {}) {
+  constructor(filePath: string, options: { maxEntries?: number; lockMaxWaitMs?: number } = {}) {
     this.filePath = filePath;
     this.lockPath = `${filePath}.lock`;
+    this.lockMaxWaitMs = options.lockMaxWaitMs ?? LOCK_MAX_WAIT_MS;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
   }
 
@@ -179,16 +182,9 @@ export class ObserveOutbox {
 
   private async persist(): Promise<void> {
     const data = this.entries.map((entry) => JSON.stringify(entry)).join("\n");
-    // Unique per write: two processes must never share a temp file.
-    const tmp = `${this.filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    try {
-      await writeFile(tmp, data ? `${data}\n` : "", "utf8");
-      await rename(tmp, this.filePath);
-    } catch (err) {
-      await unlink(tmp).catch(() => undefined);
-      throw err;
-    }
+    // Atomic replace with fsync of the temp file and the directory, so an OS crash or
+    // power loss cannot commit the rename ahead of the data and leave a short queue.
+    await writeFileAtomically(this.filePath, data ? `${data}\n` : "");
   }
 
   /**
@@ -201,7 +197,7 @@ export class ObserveOutbox {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       await withHeldFileLock(
         this.lockPath,
-        { staleMs: LOCK_STALE_MS, maxWaitMs: LOCK_MAX_WAIT_MS },
+        { staleMs: LOCK_STALE_MS, maxWaitMs: this.lockMaxWaitMs },
         async (acquired) => {
           if (!acquired) throw new Error(`observe outbox is locked by another process (${this.lockPath})`);
           await this.refresh(notify, true);
@@ -284,12 +280,15 @@ export class ObserveOutbox {
     const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
     const backoffBaseMs = options.backoffBaseMs ?? DEFAULT_BACKOFF_BASE_MS;
     const maxRetryAfterMs = options.maxRetryAfterMs ?? DEFAULT_MAX_RETRY_AFTER_MS;
-    const jitterRatio = options.jitterRatio ?? DEFAULT_JITTER_RATIO;
+    const requestedJitter = options.jitterRatio ?? DEFAULT_JITTER_RATIO;
+    // A NaN/negative ratio would make the sleep NaN (a hot retry loop); fall back to the default.
+    const jitterRatio = Number.isFinite(requestedJitter) && requestedJitter >= 0 ? requestedJitter : DEFAULT_JITTER_RATIO;
     const sleep =
       options.sleep ??
       ((ms: number) => {
         const { promise, resolve } = Promise.withResolvers<void>();
-        setTimeout(resolve, ms);
+        // unref: a background drain's backoff must not keep the host process alive.
+        setTimeout(resolve, ms).unref();
         return promise;
       });
     const now = options.now ?? Date.now;

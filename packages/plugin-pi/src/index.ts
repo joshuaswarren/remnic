@@ -29,6 +29,7 @@ import {
   MAX_OBSERVED_HASHES,
   drainObserveOutbox,
   liveReplayKey,
+  startObserveOutboxDrain,
   rememberLiveObservedReplayKey,
   rememberObservedHash,
   skipLiveObservedReplayMessages,
@@ -828,9 +829,15 @@ async function observeMessagesForSession(
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, session.sessionKey));
       }
     }
-    // Successful contact is the drain trigger: replay anything queued while
-    // the daemon was refusing work.
-    if (outbox && config) await drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys);
+    // Successful contact is the drain trigger: replay anything queued while the
+    // daemon was refusing work. It runs in the background with its own error
+    // handling, so it can neither delay this hook nor turn a delivered live turn
+    // into a failed (and re-queued) one.
+    if (outbox && config) {
+      const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, forceAttempt === true);
+      // Shutdown is the last chance before teardown: wait for one bounded pass (it never rejects).
+      if (forceAttempt) await drain;
+    }
   } catch (err) {
     if (config && isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     const failureClass = outbox && config && err instanceof Error ? classifyObserveFailure(err) : "permanent";
