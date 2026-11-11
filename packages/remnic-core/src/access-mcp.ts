@@ -160,6 +160,12 @@ type McpResource = {
 export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_DEFAULT_PROTOCOL_VERSION: string = MCP_SUPPORTED_PROTOCOL_VERSIONS[0] ?? "2025-06-18";
 /**
+ * Max MCP stdio frame size (header + body). Matches the HTTP access
+ * default maxBodyBytes so local stdio and HTTP share one ceiling.
+ */
+export const MCP_STDIO_MAX_FRAME_BYTES = 131072;
+
+/**
  * Suffix-based allowlist matcher. Returns true for tools whose canonical
  * suffix (after stripping `remnic_`, `remnic.`, or `engram.`) is in
  * {@link MCP_READ_ONLY_TOOL_SUFFIXES}. Unprefixed names are treated as
@@ -466,6 +472,10 @@ async function getMcpServerVersion(): Promise<string> {
 export class EngramMcpServer {
   private buffer = Buffer.alloc(0);
   private flushTask: Promise<void> | null = null;
+  /** Body bytes still discarded after an oversized Content-Length refusal. */
+  private skipBodyBytes = 0;
+  /** True when flush stopped only because more body bytes are required. */
+  private frameNeedsMore = false;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
   private readonly resourceTextByUri: Map<string, string>;
@@ -2443,7 +2453,16 @@ export class EngramMcpServer {
 
   async runStdio(input: Readable, output: Writable): Promise<void> {
     input.on("data", (chunk) => {
-      this.buffer = Buffer.concat([this.buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      let next = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (this.skipBodyBytes > 0) {
+        if (next.length <= this.skipBodyBytes) {
+          this.skipBodyBytes -= next.length;
+          return;
+        }
+        next = next.subarray(this.skipBodyBytes);
+        this.skipBodyBytes = 0;
+      }
+      this.buffer = Buffer.concat([this.buffer, next]);
       this.scheduleFlush(output);
     });
     await new Promise<void>((resolve, reject) => {
@@ -2472,17 +2491,41 @@ export class EngramMcpServer {
         if (this.flushTask === task) {
           this.flushTask = null;
         }
-        if (this.buffer.length > 0) {
+        // Incomplete frames wait for more data; do not spin on the same buffer.
+        if (this.buffer.length > 0 && !this.frameNeedsMore) {
           this.scheduleFlush(output);
         }
       });
     this.flushTask = task;
   }
 
+  private writeFrameTooLarge(output: Writable): void {
+    this.writeMessage(output, {
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32600,
+        message: "frame too large",
+      },
+    });
+  }
+
   private async flushBuffer(output: Writable): Promise<void> {
+    this.frameNeedsMore = false;
     while (true) {
       const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) return;
+      if (headerEnd < 0) {
+        if (this.buffer.length > MCP_STDIO_MAX_FRAME_BYTES) {
+          this.buffer = Buffer.alloc(0);
+          this.writeFrameTooLarge(output);
+        }
+        return;
+      }
+      if (headerEnd > MCP_STDIO_MAX_FRAME_BYTES) {
+        this.buffer = Buffer.alloc(0);
+        this.writeFrameTooLarge(output);
+        return;
+      }
       const headerText = this.buffer.slice(0, headerEnd).toString("utf-8");
       const headers = headerText.split("\r\n");
       const contentLengthHeader = headers.find((line) => line.toLowerCase().startsWith("content-length:"));
@@ -2496,8 +2539,23 @@ export class EngramMcpServer {
         return;
       }
       const messageStart = headerEnd + 4;
+      // Refuse oversized declared lengths before buffering the body.
+      if (contentLength > MCP_STDIO_MAX_FRAME_BYTES) {
+        this.writeFrameTooLarge(output);
+        this.buffer = this.buffer.slice(messageStart);
+        if (this.buffer.length >= contentLength) {
+          this.buffer = this.buffer.slice(contentLength);
+        } else {
+          this.skipBodyBytes = contentLength - this.buffer.length;
+          this.buffer = Buffer.alloc(0);
+        }
+        continue;
+      }
       const messageEnd = messageStart + contentLength;
-      if (this.buffer.length < messageEnd) return;
+      if (this.buffer.length < messageEnd) {
+        this.frameNeedsMore = true;
+        return;
+      }
       const body = this.buffer.slice(messageStart, messageEnd).toString("utf-8");
       this.buffer = this.buffer.slice(messageEnd);
 
@@ -2527,6 +2585,7 @@ export class EngramMcpServer {
     const message = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
     output.write(message);
   }
+
 
   private toolAcceptsArgument(name: string, key: string): boolean {
     // Match by canonical name so argument validation resolves whether the

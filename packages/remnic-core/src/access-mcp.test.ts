@@ -10,9 +10,10 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { EngramMcpServer } from "./access-mcp.js";
+import { EngramMcpServer, MCP_STDIO_MAX_FRAME_BYTES } from "./access-mcp.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
@@ -1526,4 +1527,85 @@ test("MCP tools/call keeps intended EngramAccessInputError and ForbiddenError me
   assert.equal(forbiddenOutcome.isError, true);
   assert.equal(forbiddenOutcome.text, "token is not permitted to call operation: recall");
 });
+
+// ===========================================================================
+// Issue #3225 N1 — stdio Content-Length / header framing must be bounded.
+// ===========================================================================
+
+function readStdioJsonRpcPayloads(raw: string): Array<Record<string, unknown>> {
+  const payloads: Array<Record<string, unknown>> = [];
+  let offset = 0;
+  while (offset < raw.length) {
+    const headerEnd = raw.indexOf("\r\n\r\n", offset);
+    if (headerEnd < 0) break;
+    const header = raw.slice(offset, headerEnd);
+    const lengthLine = header.split("\r\n").find((line) => line.toLowerCase().startsWith("content-length:"));
+    const length = Number.parseInt(lengthLine?.split(":")[1]?.trim() ?? "", 10);
+    if (!Number.isFinite(length) || length < 0) break;
+    const bodyStart = headerEnd + 4;
+    const body = raw.slice(bodyStart, bodyStart + length);
+    payloads.push(JSON.parse(body) as Record<string, unknown>);
+    offset = bodyStart + length;
+  }
+  return payloads;
+}
+
+test("MCP stdio refuses Content-Length above the frame limit without buffering the body", async () => {
+  const declared = MCP_STDIO_MAX_FRAME_BYTES + 1;
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const chunks: Buffer[] = [];
+  output.on("data", (chunk) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  const server = new EngramMcpServer(makeMockService());
+  const running = server.runStdio(input, output);
+  // Header only — never feed the declared body bytes.
+  input.write(`Content-Length: ${declared}\r\n\r\n`);
+  input.end();
+  await running;
+
+  const raw = Buffer.concat(chunks).toString("utf8");
+  const payloads = readStdioJsonRpcPayloads(raw);
+  assert.ok(payloads.length >= 1, "stdio must answer with a JSON-RPC error");
+  const first = payloads[0];
+  assert.ok(first && typeof first === "object" && "error" in first, "response must carry a JSON-RPC error");
+  const error = first.error;
+  assert.ok(error && typeof error === "object" && error !== null && "message" in error);
+  assert.match(String(error.message ?? ""), /frame too large/i);
+  // SAFETY: buffer is private transport state inspected only for this bound.
+  const held = (server as unknown as { buffer: Buffer }).buffer;
+  assert.ok(
+    held.length <= MCP_STDIO_MAX_FRAME_BYTES,
+    `reader must not retain a body of declared size; held ${held.length}`,
+  );
+});
+
+test("MCP stdio refuses a header that grows past the frame limit", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const chunks: Buffer[] = [];
+  output.on("data", (chunk) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  const server = new EngramMcpServer(makeMockService());
+  const running = server.runStdio(input, output);
+  // No header terminator — a single growing line past the limit.
+  input.write("A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1));
+  input.end();
+  await running;
+
+  const raw = Buffer.concat(chunks).toString("utf8");
+  const payloads = readStdioJsonRpcPayloads(raw);
+  assert.ok(payloads.length >= 1, "stdio must answer with a JSON-RPC error");
+  const first = payloads[0];
+  assert.ok(first && typeof first === "object" && "error" in first, "response must carry a JSON-RPC error");
+  const error = first.error;
+  assert.ok(error && typeof error === "object" && error !== null && "message" in error);
+  assert.match(String(error.message ?? ""), /frame too large/i);
+  // SAFETY: buffer is private transport state inspected only for this bound.
+  const held = (server as unknown as { buffer: Buffer }).buffer;
+  assert.ok(held.length <= MCP_STDIO_MAX_FRAME_BYTES, `held ${held.length}`);
+});
+
 
