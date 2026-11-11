@@ -14,7 +14,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as nodePath from "node:path";
 import { AccessAuditAdapter, type AccessAuditResult } from "./access-audit.js";
-import { throwIfAborted } from "./abort-error.js";
+import { isAbortError, throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolveCodingNamespaceOverlay } from "./coding/coding-namespace.js";
 import { type BudgetDecision, type BudgetReservation, CrossNamespaceBudget, toBudgetWarning } from "./cross-namespace-budget.js";
@@ -27,6 +27,7 @@ import { resolveScopePlan } from "./scopes/scope-plan.js";
 import type { Orchestrator, RecallInvocationOptions } from "./orchestrator.js";
 import { createRecallCorpusVersionCapture, mergeRecallCorpusVersions } from "./access-recall-corpus-versions.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
+import { currentCorrelationId } from "./access-correlation.js";
 import { recordRecallTiming, type RecallTimingEmission, type RecallTimingOutcome } from "./recall-timings.js";
 import { assembleRecallResponse } from "./access-recall-response.js";
 import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.js";
@@ -663,9 +664,12 @@ export class AccessRecallSurface {
     reservation?: BudgetReservation;
   }> {
     // Attempt contract: every executed recall leaves exactly one record,
-    // pushed in `finally` so denials and assembly failures carry the same
-    // requestId + outcome + monotonic httpTotalMs trail as successes.
-    const requestId = randomUUID();
+    // pushed in `finally` so denials, disconnects, and assembly failures
+    // carry the same requestId + outcome + monotonic httpTotalMs trail as
+    // successes. The requestId IS the HTTP request's server-generated
+    // correlation id (x-request-id); outside HTTP dispatch (x-ray, hooks,
+    // tests) it falls back to a generated id in the same field.
+    const requestId = currentCorrelationId() ?? randomUUID();
     const startedMs = performance.now();
     let outcome: RecallTimingOutcome = "ok";
     let phases: RecallTimingEmission | undefined;
@@ -674,9 +678,16 @@ export class AccessRecallSurface {
         phases = payload;
       });
     } catch (err) {
-      outcome = "error";
+      // Settled because the caller cancelled: the request signal fired or the
+      // error itself is an abort. Anything else is an error outcome.
+      outcome = isAbortError(err) || request.abortSignal?.aborted === true
+        ? "aborted"
+        : "error";
       throw err;
     } finally {
+      if (outcome === "ok" && request.abortSignal?.aborted === true) {
+        outcome = "aborted";
+      }
       recordRecallTiming(this.deps.orchestrator.config, {
         ...phases,
         requestId,

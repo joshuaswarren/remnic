@@ -66,6 +66,7 @@ import {
   buildXraySnapshot,
 } from "../recall-xray.js";
 import { foldQueueWaitTiming, recordRecallTiming, type RecallTimingEmission } from "../recall-timings.js";
+import { createPhase2Timer, type Phase2AwaitStatus } from "./recall-phase2-timing.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -164,6 +165,10 @@ export class RecallInternalCoordinator {
       if (Number.isFinite(parsed)) asOfMs = parsed;
     }
     const timings = foldQueueWaitTiming(options.queueWaitMs); // #1906 queue-wait phase
+    // Phase-2 await timings (#1830): separate from `timings` so traces and the
+    // eval shadow keep their payloads; folded into the recall-timings record only.
+    const phase2Timings: Record<string, string> = {};
+    const phase2Timer = createPhase2Timer(phase2Timings, () => options.abortSignal?.aborted === true);
     const profileTraceId = this.deps.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: resolveQmdCapabilities(this.deps.config).qmd,
       rerankEnabled: caps.rerank,
@@ -1506,6 +1511,7 @@ export class RecallInternalCoordinator {
       return results.length > 0 ? this.deps.formatTrustZoneResults(results) : null;
     })();
 
+    const harmonicStartedMs = performance.now();
     const harmonicRetrievalAbort = createEnrichmentAbortHandle(
       options.abortSignal,
     );
@@ -1854,6 +1860,7 @@ export class RecallInternalCoordinator {
       return results.length > 0 ? this.deps.formatWorkProductResults(results) : null;
     })();
 
+    const prefilterStartedMs = performance.now();
     const queryAwarePrefilterPromise =
       (async (): Promise<QueryAwarePrefilter> => {
         const t0 = Date.now();
@@ -2720,6 +2727,7 @@ export class RecallInternalCoordinator {
       }
     })();
 
+    const compoundingStartedMs = performance.now();
     const compoundingPromise = observeEnrichmentPromise(
       (async (): Promise<string | null> => {
         const t0 = Date.now();
@@ -2911,6 +2919,7 @@ export class RecallInternalCoordinator {
     const awaitEnrichmentSection = async <T>(
       name: string,
       promise: ObservedDeferredEnrichmentPromise<T>,
+      onStatus?: (status: Phase2AwaitStatus) => void,
     ): Promise<T | null> => {
       const finalizeEnrichmentOutcome = (
         outcome: DeferredEnrichmentOutcome<T>,
@@ -2919,6 +2928,7 @@ export class RecallInternalCoordinator {
           log.debug(
             `recall phase-1 enrichment [${name}]: resolved at +${Date.now() - phase1Start}ms`,
           );
+          onStatus?.("ok");
           return outcome.value;
         }
 
@@ -2926,12 +2936,14 @@ export class RecallInternalCoordinator {
           log.debug(
             `recall phase-1 enrichment [${name}]: skipped after abort at +${Date.now() - phase1Start}ms`,
           );
+          onStatus?.("skipped");
           return null;
         }
         log.warn(
           `recall phase-1 enrichment [${name}] failed open: ` +
             `${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`,
         );
+        onStatus?.("error");
         return null;
       };
 
@@ -2940,6 +2952,7 @@ export class RecallInternalCoordinator {
         log.debug(
           `recall phase-1 enrichment [${name}]: skipped after abort at +${Date.now() - phase1Start}ms`,
         );
+        onStatus?.("skipped");
         return null;
       }
 
@@ -2962,6 +2975,7 @@ export class RecallInternalCoordinator {
             `at +${Date.now() - phase1Start}ms`,
         );
         promise.cancel();
+        onStatus?.("timeout");
         return null;
       }
 
@@ -2984,6 +2998,7 @@ export class RecallInternalCoordinator {
             `at +${Date.now() - phase1Start}ms`,
         );
         promise.cancel();
+        onStatus?.("timeout");
         return null;
       }
 
@@ -4788,9 +4803,11 @@ export class RecallInternalCoordinator {
     }
     const phase2AfterQmdMs = Date.now() - recallStart;
 
-    const harmonicRetrievalSection = await awaitEnrichmentSection(
-      "harmonic",
-      harmonicRetrievalPromise,
+    const harmonicRetrievalSection = await phase2Timer.enrichment(
+      "Harmonic",
+      harmonicStartedMs,
+      () => timings.harmonicRetrieval?.startsWith("skip") === true,
+      (onStatus) => awaitEnrichmentSection("harmonic", harmonicRetrievalPromise, onStatus),
     );
     if (harmonicRetrievalSection) {
       this.deps.appendRecallSection(
@@ -4814,35 +4831,39 @@ export class RecallInternalCoordinator {
       if (!graphDecisionReason) {
         graphDecisionReason = graphSnapshotReason;
       }
-      await this.deps.recordLastGraphRecallSnapshot({
+      const persistedGraphSnapshotStatus = graphSnapshotStatus;
+      await phase2Timer.step("GraphSnapshot", () => this.deps.recordLastGraphRecallSnapshot({
         storage: profileStorage,
         prompt: retrievalQuery,
         recallMode,
         recallNamespaces,
         seedPaths: graphSnapshotSeedPaths,
         expandedPaths: graphSnapshotExpandedPaths,
-        status: graphSnapshotStatus,
+        status: persistedGraphSnapshotStatus,
         reason: graphSnapshotReason,
         shadowMode: graphDecisionShadowMode,
         queryIntent,
         seedResults: graphSnapshotSeedResults,
         finalResults: graphSnapshotFinalResults,
         shadowComparison: graphSnapshotShadowComparison,
-      });
+      }));
+    } else {
+      phase2Timer.skipped("GraphSnapshot");
     }
-    await this.deps.recordLastIntentSnapshot({
+    await phase2Timer.step("IntentSnapshot", () => this.deps.recordLastIntentSnapshot({
       storage: profileStorage,
       snapshot: buildIntentDebugSnapshot(),
-    });
+    }));
     // 2.5. Compression guideline recall section (v8.11 Task 5)
-    if (
-      this.deps.isRecallSectionEnabled(
-        "compression-guidelines",
-        resolveCompressionCapabilities(this.deps.config).compressionGuidelineLearning === true,
-      )
-    ) {
-      const compressionGuidelineSection =
-        await this.deps.buildCompressionGuidelineRecallSection();
+    const compressionEnabled = this.deps.isRecallSectionEnabled(
+      "compression-guidelines",
+      resolveCompressionCapabilities(this.deps.config).compressionGuidelineLearning === true,
+    );
+    if (compressionEnabled) {
+      const compressionGuidelineSection = await phase2Timer.step(
+        "Compression",
+        () => this.deps.buildCompressionGuidelineRecallSection(),
+      );
       if (compressionGuidelineSection) {
         this.deps.appendRecallSection(
           sectionBuckets,
@@ -4850,6 +4871,8 @@ export class RecallInternalCoordinator {
           compressionGuidelineSection,
         );
       }
+    } else {
+      phase2Timer.skipped("Compression");
     }
     // 3. Transcript/summaries/conversation/compounding are fetched in parallel above,
     // then assembled here according to recallPipeline order.
@@ -4874,9 +4897,11 @@ export class RecallInternalCoordinator {
         conversationRecallSection,
       );
     }
-    const compoundingSection = await awaitEnrichmentSection(
-      "compounding",
-      compoundingPromise,
+    const compoundingSection = await phase2Timer.enrichment(
+      "Compounding",
+      compoundingStartedMs,
+      () => timings.compounding?.startsWith("skip") === true,
+      (onStatus) => awaitEnrichmentSection("compounding", compoundingPromise, onStatus),
     );
     if (compoundingSection) {
       this.deps.appendRecallSection(
@@ -4886,10 +4911,14 @@ export class RecallInternalCoordinator {
       );
     }
     let curiosityFooter: string | undefined, curiosityQuestionSelected = false, curiosityFooterTruncated = false;
-    const topQuestion = this.deps.config.injectQuestions &&
-      this.deps.isRecallSectionEnabled("questions", true)
-      ? selectCuriosityQuestion(await profileStorage.readQuestions({ unresolvedOnly: true }))
+    const questionsEnabled = this.deps.config.injectQuestions &&
+      this.deps.isRecallSectionEnabled("questions", true);
+    const topQuestion = questionsEnabled
+      ? selectCuriosityQuestion(
+          await phase2Timer.step("Questions", () => profileStorage.readQuestions({ unresolvedOnly: true })),
+        )
       : undefined;
+    if (!questionsEnabled) phase2Timer.skipped("Questions");
     if (topQuestion) {
       curiosityQuestionSelected = true;
       const formattedFooter = formatCuriosityFooter(topQuestion);
@@ -4902,7 +4931,12 @@ export class RecallInternalCoordinator {
       }
     }
     const phase2QuestionsDoneMs = Date.now() - recallStart;
-    const finalizedQueryAwarePrefilter = await queryAwarePrefilterPromise;
+    const finalizedQueryAwarePrefilter = await phase2Timer.enrichment(
+      "Prefilter",
+      prefilterStartedMs,
+      () => timings.queryAware?.startsWith("skip") === true,
+      () => queryAwarePrefilterPromise,
+    );
     const phase2QapDoneMs = Date.now() - recallStart;
     throwIfRecallAborted(options.abortSignal);
     if (
@@ -4926,6 +4960,7 @@ export class RecallInternalCoordinator {
     log.info(`recall timings: ${timingParts}`);
     emitRecallTiming(this.deps.config, options, {
       ...timings,
+      ...phase2Timings,
       timestamp: new Date().toISOString(),
       namespace: selfNamespace,
       total: timings.total,

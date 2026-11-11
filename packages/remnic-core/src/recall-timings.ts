@@ -1,6 +1,15 @@
 import type { PluginConfig } from "./types.js";
+import {
+  PHASE2_AWAIT_NAMES,
+  PHASE2_AWAIT_STATUSES,
+  PHASE2_AWAIT_TOTAL_NAMES,
+  phase2MsField,
+  phase2StatusField,
+  phase2TotalField,
+  type Phase2AwaitStatus,
+} from "./orchestration/recall-phase2-timing.js";
 
-export type RecallTimingOutcome = "ok" | "error";
+export type RecallTimingOutcome = "ok" | "error" | "aborted";
 
 /**
  * Flat per-phase timing payload the recall pipeline emits (recall-timings
@@ -23,6 +32,24 @@ export interface RecallTimingRecord {
   readonly outcome: RecallTimingOutcome;
   /** Monotonic (performance.now) total for the whole recall attempt, in ms. */
   readonly httpTotalMs: number;
+  /** Phase-2 await timings: overlapping, not additive (see recall-phase2-timing.ts). */
+  readonly phase2HarmonicMs?: number;
+  readonly phase2HarmonicStatus?: Phase2AwaitStatus;
+  readonly phase2HarmonicTotalMs?: number;
+  readonly phase2GraphSnapshotMs?: number;
+  readonly phase2GraphSnapshotStatus?: Phase2AwaitStatus;
+  readonly phase2IntentSnapshotMs?: number;
+  readonly phase2IntentSnapshotStatus?: Phase2AwaitStatus;
+  readonly phase2CompressionMs?: number;
+  readonly phase2CompressionStatus?: Phase2AwaitStatus;
+  readonly phase2CompoundingMs?: number;
+  readonly phase2CompoundingStatus?: Phase2AwaitStatus;
+  readonly phase2CompoundingTotalMs?: number;
+  readonly phase2QuestionsMs?: number;
+  readonly phase2QuestionsStatus?: Phase2AwaitStatus;
+  readonly phase2PrefilterMs?: number;
+  readonly phase2PrefilterStatus?: Phase2AwaitStatus;
+  readonly phase2PrefilterTotalMs?: number;
   readonly timingsMs: Readonly<Record<string, number>>;
 }
 
@@ -99,18 +126,33 @@ function sanitizeRecallTiming(
   // Attempt-contract id decode: String(x) === x holds exactly for string
   // primitives; every other value coalesces to "" (no runtime typeof here).
   const requestId = String(input.requestId);
+  // Phase-2 await fields ride the same boundary decode: durations parse like
+  // every other ms string, statuses must be enum literals, and anything else
+  // is omitted so legacy emitters carry no phase-2 noise.
+  const phase2Fields: Record<string, number | Phase2AwaitStatus> = {};
+  for (const name of PHASE2_AWAIT_NAMES) {
+    const ms = numericMilliseconds(input[phase2MsField(name)]);
+    if (ms !== undefined) phase2Fields[phase2MsField(name)] = ms;
+    const status = PHASE2_AWAIT_STATUSES.find((candidate) => candidate === input[phase2StatusField(name)]);
+    if (status !== undefined) phase2Fields[phase2StatusField(name)] = status;
+  }
+  for (const name of PHASE2_AWAIT_TOTAL_NAMES) {
+    const totalMs = numericMilliseconds(input[phase2TotalField(name)]);
+    if (totalMs !== undefined) phase2Fields[phase2TotalField(name)] = totalMs;
+  }
   return {
     timestamp: typeof input.timestamp === "string" ? input.timestamp : "",
     namespace: typeof input.namespace === "string" ? input.namespace : "",
     recallPlan: typeof input.recallPlan === "string" ? input.recallPlan : "",
     queryPolicy: typeof input.queryPolicy === "string" ? input.queryPolicy : "",
     // Attempt contract, copied field-by-field like the dimension strings:
-    // non-string requestIds drop, anything but the literal error mark is
-    // "ok", and the monotonic total rides the same numeric-ms parsing as
+    // non-string requestIds drop, anything but the literal error/abort marks
+    // is "ok", and the monotonic total rides the same numeric-ms parsing as
     // the phases (absent or negative floors to 0 for legacy emitters).
     requestId: requestId === input.requestId ? requestId : "",
-    outcome: input.outcome === "error" ? "error" : "ok",
+    outcome: input.outcome === "error" || input.outcome === "aborted" ? input.outcome : "ok",
     httpTotalMs: numericMilliseconds(input.httpTotalMs) ?? 0,
+    ...phase2Fields,
     timingsMs,
   };
 }

@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
+import { currentCorrelationId, runWithCorrelationId } from "./access-correlation.js";
 import { log } from "./logger.js";
 import { respondBufferAdmissionError } from "./access-http-admission.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
@@ -119,7 +119,6 @@ export function resolveDefaultAdminConsolePublicDir(sourceUrl = import.meta.url)
 }
 
 const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
-const correlationIdStore = new AsyncLocalStorage<string>();
 const RELAY_ADMIN_CONSOLE_ASSETS = new Map<string, string>([
   ["relay.css", "text/css; charset=utf-8"],
   ["relay-model.js", "application/javascript; charset=utf-8"],
@@ -386,7 +385,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       };
       req.once("aborted", abortDisconnectedRequest);
       res.once("close", abortDisconnectedRequest);
-      correlationIdStore.run(correlationId, () => {
+      runWithCorrelationId(correlationId, () => {
         void this.handle(req, res, correlationId, abortController.signal).catch((err) => {
           if (err instanceof BriefingTimeoutError) {
             this.respondJson(res, 504, { error: err.message, code: "briefing_timeout" });
@@ -1192,7 +1191,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         includeContent: false,
         signal: this.createRequestAbortSignal(req, res),
       });
-      await respondOfflineSnapshotStream(res, result, correlationIdStore.getStore());
+      await respondOfflineSnapshotStream(res, result, currentCorrelationId());
       return;
     }
     if (
@@ -1225,7 +1224,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         includeTranscripts: includeTranscriptsRaw !== "false",
         signal: this.createRequestAbortSignal(req, res),
       });
-      await respondOfflineManifestStream(res, result, correlationIdStore.getStore());
+      await respondOfflineManifestStream(res, result, currentCorrelationId());
       return;
     }
 
@@ -3254,7 +3253,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const raw = req.headers["mcp-session-id"];
       return typeof raw === "string" ? raw.trim() : undefined;
     })();
-    const mcpCorrelationId = correlationIdStore.getStore() ?? randomUUID();
+    const mcpCorrelationId = currentCorrelationId() ?? randomUUID();
     const requestIdentity = this.resolveRequestIdentity(req);
     // Per-token namespace enforcement on the MCP dispatch path (issue #1850
     // finding 1): MCP `tools/call` previously never applied the namespace
@@ -3351,7 +3350,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     res.statusCode = status;
     res.setHeader("content-type", "application/json; charset=utf-8");
     res.setHeader("content-length", String(Buffer.byteLength(body)));
-    const cid = correlationIdStore.getStore();
+    const cid = currentCorrelationId();
     if (cid) {
       res.setHeader("x-request-id", cid);
     }
@@ -3370,7 +3369,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     for (const [key, value] of Object.entries(headers)) {
       res.setHeader(key, value);
     }
-    const cid = correlationIdStore.getStore();
+    const cid = currentCorrelationId();
     if (cid) {
       res.setHeader("x-request-id", cid);
     }
