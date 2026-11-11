@@ -88,6 +88,41 @@ test("validateGoogleDriveConfig accepts a minimal valid config", () => {
   assert.deepEqual([...cfg.folderIds], []);
 });
 
+test("a SecretRef credential resolves at poll time and never reaches the persisted config", async () => {
+  const client = makeMockClient({});
+  let seenSecret = "";
+  const factory: GoogleDriveClientFactory = async (config) => {
+    seenSecret = config.clientSecret;
+    return client;
+  };
+  const connector = createGoogleDriveConnector({ clientFactory: factory });
+  const ref = { source: "keychain", id: "projects/drive-secret" };
+  const config: ConnectorConfig = { ...SYNTHETIC_CREDS, clientSecret: ref };
+  await connector.syncIncremental({
+    cursor: null,
+    config,
+    resolveSecretRef: async () => "resolved-drive-secret",
+  });
+  assert.equal(seenSecret, "resolved-drive-secret");
+  const persisted = JSON.stringify(connector.persistConfig?.(config) ?? {});
+  assert.equal(persisted.includes("resolved-drive-secret"), false);
+  assert.equal(persisted.includes("projects/drive-secret"), false);
+});
+
+test("a SecretRef with no resolver fails the connector and hides the reference", async () => {
+  const connector = createGoogleDriveConnector({ clientFactory: makeFactory(makeMockClient({})) });
+  const config: ConnectorConfig = { ...SYNTHETIC_CREDS, clientSecret: { source: "keychain", id: "projects/drive-secret" } };
+  let message = "";
+  try {
+    await connector.syncIncremental({ cursor: null, config });
+  } catch (err) {
+    message = err instanceof Error ? err.message : "";
+  }
+  assert.match(message, /clientSecret is a secret reference but no resolver is configured/);
+  assert.equal(message.includes("projects/drive-secret"), false);
+  assert.equal(message.includes("keychain"), false);
+});
+
 test("validateGoogleDriveConfig rejects non-object input", () => {
   assert.throws(() => validateGoogleDriveConfig(null), /must be an object/);
   assert.throws(() => validateGoogleDriveConfig([]), /must be an object/);

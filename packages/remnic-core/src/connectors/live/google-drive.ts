@@ -65,6 +65,8 @@ import type {
 } from "./framework.js";
 import { isTransientHttpError } from "./transient-errors.js";
 import { throwIfAborted } from "../../abort-error.js";
+import type { ResolveSecretRefFn } from "../../resolve-auth-token.js";
+import type { SecretRef } from "../../types.js";
 
 /**
  * Stable connector id. Lives in the registry under this exact string.
@@ -122,12 +124,30 @@ const FOLDER_ID_PATTERN = /^[A-Za-z0-9_-]{8,256}$/;
  * Validated, frozen view of `connectors.googleDrive.*`.
  */
 export interface GoogleDriveConnectorConfig {
-  readonly clientId: string;
-  readonly clientSecret: string;
-  readonly refreshToken: string;
+  readonly clientId: DriveCredential;
+  readonly clientSecret: DriveCredential;
+  readonly refreshToken: DriveCredential;
   /** Poll interval surfaced to the scheduler. */
   readonly pollIntervalMs: number;
   /** Folder ids to scope import to. Empty = "all accessible". */
+  readonly folderIds: readonly string[];
+}
+
+/** A credential field as configured: a plain string, or a SecretRef resolved at poll time. */
+type DriveCredential = string | SecretRef;
+
+interface DriveCredentialFields {
+  clientId: DriveCredential;
+  clientSecret: DriveCredential;
+  refreshToken: DriveCredential;
+}
+
+/** Resolved credentials passed to the Drive client. Always plain strings. */
+interface GoogleDriveResolvedConfig {
+  readonly clientId: string;
+  readonly clientSecret: string;
+  readonly refreshToken: string;
+  readonly pollIntervalMs: number;
   readonly folderIds: readonly string[];
 }
 
@@ -139,7 +159,7 @@ export interface GoogleDriveConnectorConfig {
  * The shape only covers the tiny slice of the SDK we actually use.
  */
 export interface GoogleDriveClientFactory {
-  (config: GoogleDriveConnectorConfig): Promise<GoogleDriveClient>;
+  (config: GoogleDriveResolvedConfig): Promise<GoogleDriveClient>;
 }
 
 /**
@@ -243,9 +263,30 @@ export function validateGoogleDriveConfig(raw: unknown): GoogleDriveConnectorCon
     );
   }
   const r = raw as Record<string, unknown>;
-  const clientId = requireNonEmptyString(r.clientId, "clientId");
-  const clientSecret = requireNonEmptyString(r[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD);
-  const refreshToken = requireNonEmptyString(r[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD);
+  const credentialKeys = ["clientId", CLIENT_SECRET_FIELD, REFRESH_TOKEN_FIELD] as const;
+  const credentials: DriveCredentialFields = {
+    clientId: "",
+    clientSecret: "",
+    refreshToken: "",
+  };
+  for (const key of credentialKeys) {
+    const value = r[key];
+    if (Object.prototype.toString.call(value) === "[object Object]") {
+      // SAFETY: the toString check proves value is a non-null object.
+      const source = (value as { source?: object }).source;
+      if (Object.prototype.toString.call(source) === "[object String]") {
+        // SAFETY: a string `source` on this object is the SecretRef discriminator.
+        credentials[key] = value as SecretRef;
+      } else {
+        credentials[key] = requireNonEmptyString(value, key);
+      }
+    } else {
+      credentials[key] = requireNonEmptyString(value, key);
+    }
+  }
+  const clientId = credentials.clientId;
+  const clientSecret = credentials.clientSecret;
+  const refreshToken = credentials.refreshToken;
 
   let pollIntervalMs: number;
   if (r.pollIntervalMs === undefined) {
@@ -319,6 +360,46 @@ function requireNonEmptyString(value: unknown, key: string): string {
     throw new RangeError(`googleDrive: ${key} must be non-empty`);
   }
   return trimmed;
+}
+
+
+async function resolveCredential(
+  value: DriveCredential,
+  key: string,
+  resolver: ResolveSecretRefFn | null | undefined,
+): Promise<string> {
+  if (Object.prototype.toString.call(value) !== "[object Object]") {
+    // SAFETY: a DriveCredential that is not an object is the plain string form.
+    return value as string;
+  }
+  // SAFETY: the toString check proves value is a non-null object, so it is a SecretRef.
+  const ref = value as SecretRef;
+  if (resolver == null) {
+    throw new Error(`googleDrive: ${key} is a secret reference but no resolver is configured`);
+  }
+  const resolved = await resolver(ref);
+  if (Object.prototype.toString.call(resolved) !== "[object String]") {
+    throw new Error(`googleDrive: ${key} secret reference resolved to an empty value`);
+  }
+  // SAFETY: the toString check above proves `resolved` is a string.
+  const text = (resolved as string).trim();
+  if (text.length === 0) {
+    throw new Error(`googleDrive: ${key} secret reference resolved to an empty value`);
+  }
+  return text;
+}
+
+async function resolveGoogleDriveConfig(
+  stored: GoogleDriveConnectorConfig,
+  resolver: ResolveSecretRefFn | null | undefined,
+): Promise<GoogleDriveResolvedConfig> {
+  return {
+    clientId: await resolveCredential(stored.clientId, "clientId", resolver),
+    [CLIENT_SECRET_FIELD]: await resolveCredential(stored[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD, resolver),
+    [REFRESH_TOKEN_FIELD]: await resolveCredential(stored[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD, resolver),
+    pollIntervalMs: stored.pollIntervalMs,
+    folderIds: stored.folderIds,
+  };
 }
 
 /**
@@ -414,7 +495,7 @@ export function createGoogleDriveConnector(
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       // Re-validate on every pass: a JS caller could mutate it between passes.
-      const config = validateGoogleDriveConfig(args.config);
+      const config = await resolveGoogleDriveConfig(validateGoogleDriveConfig(args.config), args.resolveSecretRef);
       throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
 
       const client = await clientFactory(config);

@@ -31,6 +31,7 @@ import {
 } from "./connectors/live/index.js";
 import { abortError } from "./abort-error.js";
 import type { LiveConnectorsConfig } from "./types.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 
 export type LiveConnectorSkipReason =
   | "disabled"
@@ -138,6 +139,7 @@ export async function runLiveConnectorsOnce(options: {
   now?: LiveConnectorsNow;
   abortSignal?: AbortSignal;
   definitions?: LiveConnectorDefinition[];
+  resolveSecretRef?: ResolveSecretRefFn | null;
 }): Promise<LiveConnectorsRunSummary> {
   const ranAt = resolveNow(options.now);
   const force = options.force === true;
@@ -228,6 +230,7 @@ export async function runLiveConnectorsOnce(options: {
               cursor,
               config: validatedConfig,
               abortSignal: pollAbortSignal,
+              resolveSecretRef: options.resolveSecretRef,
             }),
           ingestFn: async (docs) => {
             throwIfAborted(pollAbortSignal);

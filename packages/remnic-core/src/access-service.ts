@@ -1365,6 +1365,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
   private readonly extractionLivenessWarn = new ExtractionLivenessWarnThrottle();
 
+  private readonly secretRefResolver: ResolveSecretRefFn | null;
   constructor(
     private readonly orchestrator: Orchestrator,
     options: {
@@ -1375,6 +1376,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   ) {
     super();
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
+    this.secretRefResolver = options.resolveSecretRef ?? null;
     // Peer SecretRef tokens resolve at poll time through the host resolver, the
     // same indirection as agentAccessHttp.authToken (review round 1). Absent a
     // resolver, string/${ENV} tokens still work and a SecretRef degrades to a
@@ -3721,6 +3723,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     this.writableNamespaceFor(undefined, undefined, request.authenticatedPrincipal ?? principal);
     return this.orchestrator.runLiveConnectors({
       force: request.force === true,
+      resolveSecretRef: this.secretRefResolver,
     });
   }
 

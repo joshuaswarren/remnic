@@ -138,13 +138,14 @@ The framework is built around three rules:
    disk. Nothing is uploaded to a Remnic-controlled service.
 
 Credential values (OAuth tokens, refresh tokens, API tokens) never live in the
-connector state file. Live connectors read them as plain strings from validated
-config. Operators populate those fields from an external secret source before
-Remnic loads config (env substitution such as `${GOOGLE_DRIVE_CLIENT_ID}`,
-systemd `EnvironmentFile`, or another host secret store). Remnic does not
-resolve OS keychain SecretRefs for connector fields; OpenClaw keychain
-resolution applies to other auth surfaces (for example
-`agentAccessHttp.authToken`), not to live-connector credentials.
+connector state file. A connector reads each credential field as a plain string
+or as a SecretRef. A plain string works with no resolver. Google Drive resolves
+a SecretRef at poll time through the host resolver the access service already
+holds. When a SecretRef is set and no resolver exists, that connector fails
+with one error and the others keep running. The error names the field, never
+the reference target or the value. A resolved value is used for that poll and
+is never written to the state file or to a log. Notion, Gmail, and GitHub still
+read plain strings; they get the same SecretRef form in follow-up changes.
 
 ## Concrete connectors
 
@@ -280,9 +281,8 @@ same MCP tool with `{"force": true}` to bypass the due check during debugging.
 
 ## What's deferred
 
-- **OAuth helpers and credential storage** — connectors read credentials
-  as plain strings from validated config. Resolving credentials through
-  the host SecretRef resolver is tracked in #3358.
+- **OAuth helpers** — connectors do not run an OAuth consent flow. An operator
+  supplies a plain string or, for Google Drive, a SecretRef.
 
 ## File map
 
