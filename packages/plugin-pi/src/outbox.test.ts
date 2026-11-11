@@ -406,3 +406,20 @@ test("classifyObserveFailure keeps rate limits and gateway errors, parks auth, d
   assert.equal(cls(400), "permanent");
   assert.equal(cls(409), "permanent");
 });
+
+test("backoff is clamped to maxRetryAfterMs even after jitter", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("clamp"));
+  await outbox.enqueue(entryInput("kept"));
+  const slept: number[] = [];
+  const realRandom = Math.random;
+  Math.random = () => 0.999999; // worst-case jitter: +jitterRatio
+  try {
+    await outbox.drain(async () => {
+      throw new RemnicHttpError(503, "busy", "buffer_admission_refused", 60_000);
+    }, { maxAttempts: 2, maxRetryAfterMs: 1000, jitterRatio: 0.2, sleep: async (ms) => { slept.push(ms); } });
+  } finally {
+    Math.random = realRandom;
+  }
+  assert.ok(slept.length > 0, "a backoff happened");
+  assert.ok(slept.every((ms) => ms <= 1000), `sleeps stay within the 1000 ms cap (got ${slept.join(", ")})`);
+});

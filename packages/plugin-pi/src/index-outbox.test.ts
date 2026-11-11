@@ -360,3 +360,36 @@ test("session start with a dead daemon returns quickly and keeps the queue intac
   assert.equal(observeCalls, 1, "one cheap attempt at startup, no backoff ladder");
   assert.equal(fs.readFileSync(outboxPath, "utf8").trim().split("\n").length, 1, "the queued capture is still on disk");
 });
+
+test("a failed enqueue is reported to the user instead of losing the turn silently", async (t) => {
+  // The outbox directory cannot be created: its parent path is a regular file.
+  const blocker = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-outbox-")), "not-a-dir");
+  fs.writeFileSync(blocker, "x", "utf8");
+  const config = outboxTestConfig({ observeOutboxPath: path.join(blocker, "observe-outbox.jsonl") });
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => new Response(JSON.stringify({ error: "busy" }), { status: 503 });
+
+  const outbox = new ObserveOutbox(config.observeOutboxPath ?? "");
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = observeCtx("enqueue-fails", (message, level) => notifications.push({ message, level }));
+  await observeMessages(
+    ctx,
+    new RemnicClient(config),
+    [{ id: "e-1", role: "user", content: "cannot be queued" }],
+    new Set<string>(),
+    undefined,
+    config,
+    outbox
+  );
+
+  const failure = notifications.find((n) => /could not be queued/.test(n.message));
+  assert.ok(failure, "the user is told the capture could not be queued");
+  assert.equal(failure.level, "error");
+  assert.ok(
+    !notifications.some((n) => /queued durably/.test(n.message)),
+    "no false claim that the turn was queued durably"
+  );
+});
