@@ -7,6 +7,7 @@ import type {
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "../search/port.js";
+import { reportSearchDegradation } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
@@ -16,6 +17,10 @@ const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
 
 // Short TTL so repeated health polls skip a full QMD re-probe (~1.5s).
 const HEALTH_RESULT_CACHE_TTL_MS = 10_000;
+
+// Each cross-namespace search leg gets this budget; a stalled backend leg
+// degrades its own namespace instead of holding the whole search (#3139).
+export const NAMESPACE_SEARCH_LEG_TIMEOUT_MS = 25_000;
 
 export function namespaceCollectionName(
   baseCollection: string,
@@ -177,41 +182,66 @@ export class NamespaceSearchRouter {
           return { namespace, results: [] as QmdSearchResult[] };
         }
         const backendLimit = backendSearchLimit(record, maxResults);
-        let results: QmdSearchResult[];
+        // One stalled backend leg must not hold the whole cross-namespace
+        // search (#3139). The backend gets the deadline signal so it cancels
+        // its own work, and the await is raced against the same budget. A leg
+        // that outlives its budget degrades only its own namespace; real
+        // backend errors and caller aborts propagate as before.
+        const legAbort = new AbortController();
+        const legTimer = setTimeout(() => legAbort.abort(), NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
+        const legSignal = options.execution?.signal
+          ? AbortSignal.any([options.execution.signal, legAbort.signal])
+          : legAbort.signal;
+        const legExecution: SearchExecutionOptions = { ...options.execution, signal: legSignal };
+        let leg: Promise<QmdSearchResult[]>;
         switch (method) {
           case "hybrid":
-            results = await record.backend.hybridSearch(
+            leg = record.backend.hybridSearch(
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           case "bm25":
-            results = await record.backend.bm25Search(
+            leg = record.backend.bm25Search(
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           case "vector":
-            results = await record.backend.vectorSearch(
+            leg = record.backend.vectorSearch(
               query,
               record.collection,
               backendLimit,
-              options.execution,
+              legExecution,
             );
             break;
           default:
-            results = await record.backend.search(
+            leg = record.backend.search(
               query,
               record.collection,
               backendLimit,
               options.searchOptions,
-              options.execution,
+              legExecution,
             );
             break;
+        }
+        let results: QmdSearchResult[];
+        try {
+          results = await awaitWithAbort(leg, legSignal);
+        } catch (error) {
+          if (options.execution?.signal?.aborted || !legAbort.signal.aborted) throw error;
+          reportSearchDegradation(options.execution, {
+            backend: "qmd",
+            code: "deadline_exceeded",
+            detail: `namespace search deadline exceeded: ${namespace}`,
+          });
+          return { namespace, results: [] };
+        } finally {
+          clearTimeout(legTimer);
         }
         results = filterNamespaceSubtreeResults(record, results)
           .map((result) => ({
