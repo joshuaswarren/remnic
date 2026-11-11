@@ -192,17 +192,19 @@ function negatedScope(clause: string): string {
   return match ? clause.slice(match.index + match[0].length) : clause;
 }
 
+/** The words before a clause's first negator, empty when it has none. */
+function textBeforeNegator(clause: string): string {
+  const match = NEGATOR_PATTERN.exec(clause.replace(/[\u2018\u2019]/gu, "'"));
+  return match ? clause.slice(0, match.index) : "";
+}
+
 /**
- * True when the claim asserts what a quote clause denies or does not assert:
- * "did not approve the budget" or "denied approving it" restated as "approved
- * the budget", "suspects Bob stole funds" or "Is Alice the CEO?" restated as a
- * plain statement. The claim must restate the quote clause, and none of its
- * clauses that share a word with what the negator governs may keep the
- * negator, exclusion word, or reporting marker ("do not X" reworded as "X is
- * excluded", or "Alice reviewed it, but she did not approve it"). A negator in
- * a clause about something else does not count, so a claim that keeps one
- * quote negation can still misstate another quote clause, and a claim clause
- * that shares only the subject does not satisfy the check.
+ * True when the claim asserts what a quote clause denies or does not assert.
+ * A quote denial is kept only by a claim clause that shares what the negator
+ * governs and does not name a different subject, so a negator about Bob does
+ * not keep a denial about Alice. A clause that names no subject of its own
+ * still counts, which keeps a pronoun clause and a subject-less passive. A
+ * quote clause with no subject of its own keeps the clause-level check.
  */
 function misstatesQuote(content: string, quote: string): boolean {
   const claimClauses = splitClaimClauses(content);
@@ -217,8 +219,16 @@ function misstatesQuote(content: string, quote: string): boolean {
       claimClauses.filter((claimClause) => clauseOverlap(tokens, claimClause).shared > 0);
     if (needsNegation) {
       const scopeTokens = [...tokenize(negatedScope(quoteClause))];
+      const subjectTokens = [...tokenize(textBeforeNegator(quoteClause))];
+      const scopeHas = new Set(scopeTokens);
       const related = clausesSharing(scopeTokens.length > 0 ? scopeTokens : clauseTokens);
-      if (!related.some((text) => hasNegation(text) || EXCLUSION_PATTERN.test(text))) return true;
+      const keepsDenial = related.some((text) => {
+        if (!hasNegation(text) && !EXCLUSION_PATTERN.test(text)) return false;
+        if (subjectTokens.length === 0 || clauseOverlap(subjectTokens, text).shared > 0) return true;
+        const ownSubject = [...tokenize(textBeforeNegator(text))].filter((token) => !scopeHas.has(token));
+        return ownSubject.length === 0;
+      });
+      if (!keepsDenial) return true;
     }
     return needsReporting
       && !clausesSharing(clauseTokens).some((text) => hasNonAssertiveReporting(text) || text.trim().endsWith("?"));
