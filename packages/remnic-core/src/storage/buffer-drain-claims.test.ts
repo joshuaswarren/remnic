@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -53,6 +54,50 @@ function setup() {
 function makeLease(ownerId = "worker-1"): DrainLease {
   const now = new Date().toISOString();
   return { ownerId, pid: process.pid, host: hostname(), acquiredAt: now, heartbeatAt: now, leaseMs: 60_000 };
+}
+
+/** The claim body file for `key` inside a setup()'s stateDir. */
+function drainFile(stateDir: string, key: string): string {
+  return path.join(stateDir, "buffer", "drain", bufferSessionFileName(key));
+}
+
+/** The append-only inbox next to the claim body. */
+function inboxFile(stateDir: string, key: string): string {
+  return `${drainFile(stateDir, key)}.inbox.jsonl`;
+}
+
+/** One inbox record as mergeIntoClaim writes it: newline-prefixed JSONL with a
+ * unique id, so a torn tail always ends at the next record's leading newline
+ * and parses as its own (skipped) line. */
+function record(key: string, entryState: BufferEntryState, id = randomUUID()): string {
+  return `\n${JSON.stringify({ id, key, ...entryState })}`;
+}
+
+/** plainIo() with call recording on the seam the cost tests assert on. */
+function spyIo() {
+  const io = plainIo();
+  const readPaths: string[] = [];
+  const writePaths: string[] = [];
+  const appendPaths: string[] = [];
+  return {
+    io: {
+      read: async (filePath: string) => {
+        readPaths.push(filePath);
+        return io.read(filePath);
+      },
+      write: async (filePath: string, content: string) => {
+        writePaths.push(filePath);
+        return io.write(filePath, content);
+      },
+      append: async (filePath: string, content: string) => {
+        appendPaths.push(filePath);
+        return io.append(filePath, content);
+      },
+    },
+    readPaths,
+    writePaths,
+    appendPaths,
+  };
 }
 
 test("claimFromSessionFile moves a session file into the drain dir atomically", async () => {
@@ -770,6 +815,261 @@ test("a late arrival of an ambiguous identity does not replace a source occurren
     const claim = await s.claims.load("sess-1");
     assert.deepEqual(claim?.entry.turns, [same, same], "the source occurrence and the late arrival both stay pending");
     assert.deepEqual(claim?.entry.retainedTurns, [same]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+// ─── Append-only claim inbox ────────────────────────────────────────────────
+
+test("a kill between the inbox append and any body write loses nothing", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const bodyBefore = readFileSync(drainFile(s.stateDir, "sess-1"), "utf8");
+
+    // The owner hands its entry in. Whatever kills the process after this
+    // call resolves must not lose the handed-over turns: the inbox record is
+    // already durable and the claim body is untouched.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a"), turn("b", "2026-11-01T00:01:00.000Z")]));
+
+    assert.equal(readFileSync(drainFile(s.stateDir, "sess-1"), "utf8"), bodyBefore, "mergeIntoClaim must not rewrite the claim body");
+    // Fresh instance = the next process after the kill: it folds the inbox.
+    const revived = new BufferDrainClaims(s.stateDir, plainIo());
+    const claim = await revived.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "b"], "a handed-over record survives a crash before compaction");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a kill between the body write and the inbox delete replays nothing", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t2", "2026-11-01T00:02:00.000Z")]));
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    assert.deepEqual(loaded.entry.turns.map((t) => t.content), ["t1", "t2"]);
+
+    // The drainer retains t2 for retry (moves it to retainedTurns) and is
+    // killed right after the body write lands, before the inbox is deleted.
+    // A replay by identity count alone would re-add t2 to `turns` (its count
+    // there is now zero); only an exact consumed-record marker prevents that.
+    const base = plainIo();
+    const crashingIo = {
+      ...base,
+      write: async (filePath: string, content: string) => {
+        await base.write(filePath, content);
+        if (filePath === drainFile(s.stateDir, "sess-1")) throw new Error("simulated kill after the body write");
+      },
+    };
+    const crashing = new BufferDrainClaims(s.stateDir, crashingIo);
+    await assert.rejects(
+      crashing.writeEntry("sess-1", "worker-1", { ...entry([turn("t1")]), retainedTurns: [turn("t2", "2026-11-01T00:02:00.000Z")] }, loaded.entry),
+      /simulated kill/,
+    );
+    assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), true, "fixture: the kill left the inbox behind");
+
+    const revived = new BufferDrainClaims(s.stateDir, plainIo());
+    const claim = await revived.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["t1"], "the replayed record adds nothing to turns");
+    assert.deepEqual(claim?.entry.retainedTurns?.map((t) => t.content), ["t2"], "t2 stays only in retainedTurns");
+    assert.equal((await revived.load("sess-1"))?.entry.turns.length, 1, "repeated folds add nothing");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a drained turn handed in by a stale owner never reappears through the inbox fold", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
+
+    // The owner's in-memory entry still holds t1: handing it in must not
+    // resurrect the extracted turn, through the body or the inbox.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t1")]));
+
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns, [], "the stale copy stays subtracted after the fold");
+    const revived = new BufferDrainClaims(s.stateDir, plainIo());
+    assert.deepEqual((await revived.load("sess-1"))?.entry.turns, [], "a fresh process folds to the same verdict");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("concurrent appends and a progress write lose nothing and duplicate nothing, and a drainer that lost its lease cannot consume segments", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+
+    // Two live owners hand entries in while the drainer writes progress:
+    // all three serialize on the claim lock and converge without loss.
+    await Promise.all([
+      s.claims.mergeIntoClaim("sess-1", entry([turn("t2", "2026-11-01T00:02:00.000Z")])),
+      s.claims.mergeIntoClaim("sess-1", entry([turn("t3", "2026-11-01T00:03:00.000Z")])),
+      s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry),
+    ]);
+    // One more hand-in after the interleaving: whatever order the lock chose,
+    // the inbox now holds an unconsumed record the fenced drainer must not eat.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t4", "2026-11-01T00:04:00.000Z")]));
+    const claim = await s.claims.load("sess-1");
+    assert.ok(claim);
+    assert.deepEqual(claim.entry.turns.map((t) => t.content).sort(), ["t2", "t3", "t4"], "handed-in turns all survive the interleaving");
+    assert.deepEqual(claim.drained?.map((t) => t.content), ["t1"], "the extracted turn stays tombstoned");
+
+    // A drainer that lost its lease is fenced before it can compact away the
+    // merged records.
+    await assert.rejects(
+      s.claims.writeEntry("sess-1", "intruder", entry([]), claim.entry),
+      /no longer owned by intruder/,
+    );
+    assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), true, "the fenced drainer consumed no segments");
+    const after = await s.claims.load("sess-1");
+    assert.ok(after);
+    assert.equal(after.entry.turns.length, 3, "the fenced write changed nothing");
+
+    // The real owner's next progress write compacts: body holds everything,
+    // inbox consumed.
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), after.entry);
+    assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), false, "compaction consumes the inbox after the body write");
+    const final = await s.claims.load("sess-1");
+    assert.deepEqual(final?.entry.turns, [], "all pending turns are drained");
+    assert.deepEqual(final?.drained?.map((t) => t.content).sort(), ["t1", "t2", "t3", "t4"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("mergeIntoClaim on a large claim never reads or writes the body", async () => {
+  const s = setup();
+  try {
+    const filler = "x".repeat(750_000);
+    const stamps = (i: number): string => `2026-11-01T00:${String(Math.floor(i / 60)).padStart(2, "0")}:${String(i % 60).padStart(2, "0")}.000Z`;
+    const bigEntry = entry(Array.from({ length: 40 }, (_, i) => turn(`${filler}-${i}`, stamps(i))));
+    s.seedSession("sess-1", bigEntry);
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const bodyPath = drainFile(s.stateDir, "sess-1");
+    assert.ok(readFileSync(bodyPath, "utf8").length > 30_000_000, "fixture: the claim body is ~30 MB");
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    await claims.mergeIntoClaim("sess-1", entry([turn("new", "2026-11-01T01:00:00.000Z")]));
+
+    assert.equal(spied.readPaths.filter((p) => p === bodyPath).length, 0, "the body is never read");
+    assert.equal(spied.writePaths.filter((p) => p === bodyPath).length, 0, "the body is never written");
+    assert.deepEqual(spied.appendPaths, [`${bodyPath}.inbox.jsonl`], "exactly one inbox append");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a torn last inbox record is skipped and does not corrupt following records", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    mkdirSync(path.dirname(inboxFile(s.stateDir, "sess-1")), { recursive: true });
+    // A valid record, then a torn tail (a kill mid-append, no trailing
+    // newline) — and then a record appended after the garbage by the next
+    // owner, fused onto the torn bytes by append semantics.
+    writeFileSync(
+      inboxFile(s.stateDir, "sess-1"),
+      `${record("sess-1", entry([turn("b", "2026-11-01T00:01:00.000Z")]))}\n{"turns":[{"rol` +
+        record("sess-1", entry([turn("c", "2026-11-01T00:02:00.000Z")])),
+    );
+
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "b", "c"], "the torn tail is skipped; records around it survive");
+
+    // A fresh append after the garbage lands cleanly and folds in order.
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("d", "2026-11-01T00:03:00.000Z")]));
+    const after = await s.claims.load("sess-1");
+    assert.deepEqual(after?.entry.turns.map((t) => t.content), ["a", "b", "c", "d"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("foldAllInboxes folds every inbox into claim bodies the old format reads", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("b", "2026-11-01T00:01:00.000Z")]));
+
+    assert.equal(await s.claims.foldAllInboxes(), 1, "one claim folded");
+    assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), false, "the inbox is consumed");
+
+    // Old-format reader: the plain body file holds every pending turn.
+    const oldView = JSON.parse(readFileSync(drainFile(s.stateDir, "sess-1"), "utf8")) as {
+      entry?: { turns?: { content: string }[] };
+      turns?: { content: string }[];
+    };
+    const contents = (oldView.entry?.turns ?? oldView.turns ?? []).map((t) => t.content);
+    assert.deepEqual(contents.sort(), ["a", "b"], "the pre-inbox build sees the folded turns");
+
+    assert.equal(await s.claims.foldAllInboxes(), 0, "a second pass finds nothing to fold");
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "b"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("listings count pending turns from the sidecar and inbox without parsing claim bodies", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("b", "2026-11-01T00:01:00.000Z")]));
+    const bodyPath = drainFile(s.stateDir, "sess-1");
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    const page = await claims.listPage(undefined, 10);
+    assert.deepEqual(page.entries.map((e) => e.turnCount), [2], "the listing counts body and inbox turns");
+    assert.equal(spied.readPaths.filter((p) => p === bodyPath).length, 0, "the body is never parsed for a count");
+
+    const listed = await claims.list();
+    assert.deepEqual(listed.map((e) => e.turnCount), [2]);
+
+    // Fallback: a missing sidecar (pre-inbox claim) parses the body once and
+    // still counts the inbox.
+    rmSync(`${bodyPath}.count`, { force: true });
+    const fallback = await claims.listPage(undefined, 10);
+    assert.deepEqual(fallback.entries.map((e) => e.turnCount), [2], "the body-parse fallback stays exact");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("release drops the inbox with the claim and a later claim never inherits it", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("t2", "2026-11-01T00:02:00.000Z")]));
+    await s.claims.release("sess-1");
+    assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), false, "release leaves no orphan inbox");
+
+    // A crash can still leave an orphan inbox next to no body; a fresh claim
+    // for the same key must not replay it.
+    mkdirSync(path.dirname(inboxFile(s.stateDir, "sess-1")), { recursive: true });
+    writeFileSync(inboxFile(s.stateDir, "sess-1"), record("sess-1", entry([turn("stale", "2026-11-01T00:09:00.000Z")])));
+    s.seedSession("sess-1", entry([turn("fresh", "2026-11-01T00:10:00.000Z")]));
+    assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["fresh"], "the orphan record is not replayed into the new claim");
   } finally {
     s.cleanup();
   }
