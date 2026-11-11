@@ -151,6 +151,13 @@ interface GoogleDriveResolvedConfig {
   readonly folderIds: readonly string[];
 }
 
+/** Disk form of a Drive config. A SecretRef clientId is omitted, never written. */
+interface PersistedGoogleDriveConfig {
+  pollIntervalMs: number;
+  folderIds: readonly string[];
+  clientId?: string;
+}
+
 /**
  * Optional injection point for tests. The real connector dynamically imports
  * `googleapis`; tests pass a stub here to avoid the optional-peer-dep
@@ -377,9 +384,14 @@ async function resolveCredential(
   if (resolver == null) {
     throw new Error(`googleDrive: ${key} is a secret reference but no resolver is configured`);
   }
-  const resolved = await resolver(ref);
+  let resolved: unknown;
+  try {
+    resolved = await resolver(ref);
+  } catch {
+    throw new Error(`googleDrive: ${key} secret reference could not be resolved`);
+  }
   if (Object.prototype.toString.call(resolved) !== "[object String]") {
-    throw new Error(`googleDrive: ${key} secret reference resolved to an empty value`);
+    throw new Error(`googleDrive: ${key} secret reference resolved to a non-string value`);
   }
   // SAFETY: the toString check above proves `resolved` is a string.
   const text = (resolved as string).trim();
@@ -486,11 +498,16 @@ export function createGoogleDriveConnector(
 
     persistConfig(validated: ConnectorConfig): ConnectorConfig {
       const config = validateGoogleDriveConfig(validated);
-      return Object.freeze({
-        clientId: config.clientId,
+      const persisted: PersistedGoogleDriveConfig = {
         pollIntervalMs: config.pollIntervalMs,
         folderIds: config.folderIds,
-      });
+      };
+      if (Object.prototype.toString.call(config.clientId) === "[object String]") {
+        // SAFETY: the toString check proves clientId is a string, not a SecretRef.
+        persisted.clientId = config.clientId as string;
+      }
+      return Object.freeze(persisted);
+
     },
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {

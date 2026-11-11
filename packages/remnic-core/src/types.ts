@@ -273,8 +273,9 @@ export interface NativeKnowledgeOpenClawWorkspaceConfig {
  * OpenClaw resolves these at runtime via its built-in secret resolver
  * (e.g. exec providers like `kc_*` for macOS Keychain). Plugins receive
  * the raw object in `pluginConfig` and must call the gateway's resolver
- * before using the value. Standalone Remnic does NOT resolve SecretRefs;
- * operators must use plain strings or `${ENV_VAR}` expansion instead.
+ * before using the value. A live connector credential field resolves a
+ * SecretRef at poll time through the host resolver. Other surfaces still
+ * need a plain string or `${ENV_VAR}` expansion.
  */
 export interface SecretRef {
   source: string;
@@ -2539,21 +2540,20 @@ export interface LiveConnectorsConfig {
  * shape (frozen, post-validation). This interface is the pre-validation
  * shape that `parseConfig` round-trips through.
  *
- * `clientId` / `clientSecret` / `refreshToken` are stored as strings here so
- * the schema can ship in `openclaw.plugin.json` and operators can populate
- * them from a secret store (e.g. an env-substituted plist or systemd
- * EnvironmentFile). They MUST NEVER be committed to source. The repo-wide
- * privacy policy in CLAUDE.md applies.
+ * `clientId` / `clientSecret` / `refreshToken` are a plain string or a
+ * SecretRef. A SecretRef is kept verbatim here and resolved at poll time
+ * through the host resolver. They MUST NEVER be committed to source. The
+ * repo-wide privacy policy in CLAUDE.md applies.
  */
 export interface GoogleDriveLiveConnectorConfig {
   /** Master gate. Default false — operators must opt in explicitly. */
   enabled: boolean;
   /** OAuth2 client id. Populate from a secret store; never commit. */
-  clientId: string;
+  clientId: string | SecretRef;
   /** OAuth2 client secret. Populate from a secret store; never commit. */
-  clientSecret: string;
+  clientSecret: string | SecretRef;
   /** OAuth2 refresh token. Populate from a secret store; never commit. */
-  refreshToken: string;
+  refreshToken: string | SecretRef;
   /** Poll interval in ms. Default 300000 (5 min); min 1000; max 86400000 (24h). */
   pollIntervalMs: number;
   /** Optional folder-id scope. Empty array = all accessible files. */

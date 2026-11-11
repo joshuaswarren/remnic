@@ -19,6 +19,7 @@ import type {
   RecallSectionConfig,
   ReasoningEffort,
   SemanticChunkingConfigShape,
+  SecretRef,
   SessionObserverBandConfig,
   SlotBehaviorConfig,
   SlotMismatchMode,
@@ -3719,16 +3720,33 @@ export function parseConfig(
           ? (rawConnectors.googleDrive as Record<string, unknown>)
           : {};
       const driveEnabled = coerceBool(rawDrive.enabled) === true;
+      const driveClientIdRaw = rawDrive.clientId;
+      // SAFETY: a string value is a string; an object with a string source is a SecretRef, kept verbatim.
       const driveClientId =
-        typeof rawDrive.clientId === "string" ? rawDrive.clientId : "";
+        Object.prototype.toString.call(driveClientIdRaw) === "[object String]"
+          ? (driveClientIdRaw as string)
+          : Object.prototype.toString.call(driveClientIdRaw) === "[object Object]" &&
+            Object.prototype.toString.call((driveClientIdRaw as { source?: object }).source) === "[object String]"
+            ? (driveClientIdRaw as SecretRef)
+            : "";
+      const driveClientSecretRaw = rawDrive[CLIENT_SECRET_FIELD];
+      // SAFETY: a string value is a string; an object with a string source is a SecretRef, kept verbatim.
       const driveClientSecret =
-        typeof rawDrive[CLIENT_SECRET_FIELD] === "string"
-          ? rawDrive[CLIENT_SECRET_FIELD]
-          : "";
+        Object.prototype.toString.call(driveClientSecretRaw) === "[object String]"
+          ? (driveClientSecretRaw as string)
+          : Object.prototype.toString.call(driveClientSecretRaw) === "[object Object]" &&
+            Object.prototype.toString.call((driveClientSecretRaw as { source?: object }).source) === "[object String]"
+            ? (driveClientSecretRaw as SecretRef)
+            : "";
+      const driveRefreshTokenRaw = rawDrive[REFRESH_TOKEN_FIELD];
+      // SAFETY: a string value is a string; an object with a string source is a SecretRef, kept verbatim.
       const driveRefreshToken =
-        typeof rawDrive[REFRESH_TOKEN_FIELD] === "string"
-          ? rawDrive[REFRESH_TOKEN_FIELD]
-          : "";
+        Object.prototype.toString.call(driveRefreshTokenRaw) === "[object String]"
+          ? (driveRefreshTokenRaw as string)
+          : Object.prototype.toString.call(driveRefreshTokenRaw) === "[object Object]" &&
+            Object.prototype.toString.call((driveRefreshTokenRaw as { source?: object }).source) === "[object String]"
+            ? (driveRefreshTokenRaw as SecretRef)
+            : "";
       const drivePollCoerced = coerceNumber(rawDrive.pollIntervalMs);
       let drivePollIntervalMs = 300_000;
       if (drivePollCoerced !== undefined) {
