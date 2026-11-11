@@ -833,10 +833,19 @@ async function observeMessagesForSession(
     }
     // Capacity backpressure or ambiguous failure: the turns are not lost —
     // queue them durably for replay on the next successful contact.
-    await outbox?.enqueue(
-      { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce },
-      (message, level) => session.notify(message, level),
-    );
+    try {
+      await outbox?.enqueue(
+        { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce },
+        (message, level) => session.notify(message, level),
+      );
+    } catch (enqueueErr) {
+      // A lock timeout or write failure must not lose the turn silently.
+      session.notify(
+        `Remnic observe failed and could not be queued: ${errorMessage(enqueueErr)} (original error: ${errorMessage(err)})`,
+        "error",
+      );
+      return;
+    }
     session.notify(
       `Remnic observe deferred (daemon refused or unreachable): ${messages.length} message(s) queued durably for retry — ${errorMessage(err)}`,
       "warning",

@@ -340,7 +340,8 @@ export class ObserveOutbox {
           const hinted = hint !== undefined && Number.isFinite(hint) ? hint : undefined;
           const base = Math.min(hinted ?? backoffBaseMs * 2 ** (failures - 1), maxRetryAfterMs);
           const jitter = 1 + (Math.random() * 2 - 1) * jitterRatio;
-          await sleep(Math.max(0, Math.round(base * jitter)));
+          // Clamp AFTER jitter so the sleep never exceeds the documented cap.
+          await sleep(Math.min(maxRetryAfterMs, Math.max(0, Math.round(base * jitter))));
           continue;
         }
         await this.remove(entry.id);
