@@ -137,10 +137,14 @@ The framework is built around three rules:
 3. **Local cursors.** Cursor state lives in the user's memory directory on
    disk. Nothing is uploaded to a Remnic-controlled service.
 
-Credential storage (OAuth tokens, refresh tokens) is **not** part of this PR
-— that's the design surface for PR 2. Connectors that need credentials will
-read them from the OS keychain or a user-supplied secret store, never from
-the connector state file.
+Credential values (OAuth tokens, refresh tokens, API tokens) never live in the
+connector state file. Live connectors read them as plain strings from validated
+config. Operators populate those fields from an external secret source before
+Remnic loads config (env substitution such as `${GOOGLE_DRIVE_CLIENT_ID}`,
+systemd `EnvironmentFile`, or another host secret store). Remnic does not
+resolve OS keychain SecretRefs for connector fields; OpenClaw keychain
+resolution applies to other auth surfaces (for example
+`agentAccessHttp.authToken`), not to live-connector credentials.
 
 ## Concrete connectors
 
