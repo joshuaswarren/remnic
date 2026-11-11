@@ -49,6 +49,7 @@ sections above are maintained by hand and never touched by automation.
 - [@ramarivera](https://github.com/ramarivera)
 - [@RichardHojunJang](https://github.com/RichardHojunJang)
 - [@rmichelena](https://github.com/rmichelena)
+- [@TheNumberOne](https://github.com/TheNumberOne)
 
 _Linked GitHub accounts only. Anonymous (unlinked) commit authors are
 enumerable through the API (anon=true) but are identified there only by
