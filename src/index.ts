@@ -4187,30 +4187,39 @@ const pluginDefinition = {
                 cfg.openclawReplyMetadataExtractionHintsEnabled
                   ? withReplyExtractionHint(stripped, replyHintMetadata)
                   : stripped;
-              await orchestrator.processTurn(role, extractionContent, sessionKey, {
-                bufferKey: resolveExtractionBufferKey(
-                  sessionKey,
-                  sessionIdentity.logicalSessionKey,
-                ),
-                logicalSessionKey: sessionIdentity.logicalSessionKey,
-                providerThreadId: sessionIdentity.providerThreadId,
-                turnFingerprint: buildTurnFingerprint({
-                  role,
-                  content: extractionContent,
+              try {
+                await orchestrator.processTurn(role, extractionContent, sessionKey, {
+                  bufferKey: resolveExtractionBufferKey(
+                    sessionKey,
+                    sessionIdentity.logicalSessionKey,
+                  ),
                   logicalSessionKey: sessionIdentity.logicalSessionKey,
                   providerThreadId: sessionIdentity.providerThreadId,
-                  maxContentChars: cfg.extractionMaxTurnChars,
-                  turnIndex: persistedTurnIndex,
-                }),
-                persistProcessedFingerprint:
-                  sessionIdentity.codexThreadBound &&
-                  cfg.codexCompat.enabled !== false &&
-                  cfg.codexCompat.fingerprintDedup === true &&
-                  cfg.codexCompat.threadIdBufferKeying !== false &&
-                  !!sessionIdentity.providerThreadId,
-                sourceConnector: "openclaw",
-              });
-              persistedTurnIndex += 1;
+                  turnFingerprint: buildTurnFingerprint({
+                    role,
+                    content: extractionContent,
+                    logicalSessionKey: sessionIdentity.logicalSessionKey,
+                    providerThreadId: sessionIdentity.providerThreadId,
+                    maxContentChars: cfg.extractionMaxTurnChars,
+                    turnIndex: persistedTurnIndex,
+                  }),
+                  persistProcessedFingerprint:
+                    sessionIdentity.codexThreadBound &&
+                    cfg.codexCompat.enabled !== false &&
+                    cfg.codexCompat.fingerprintDedup === true &&
+                    cfg.codexCompat.threadIdBufferKeying !== false &&
+                    !!sessionIdentity.providerThreadId,
+                  sourceConnector: "openclaw",
+                });
+                persistedTurnIndex += 1;
+              } catch (bufferErr) {
+                // A full session-entry cap refuses new sessions (#3366). That must
+                // not skip the LCM archive below; matched by name, not exported.
+                if (!(bufferErr instanceof Error) || bufferErr.name !== "BufferAdmissionRefusedError") {
+                  throw bufferErr;
+                }
+                log.warn(`agent_end: extraction buffer refused the turn: ${bufferErr.message}`);
+              }
             }
           }
 
