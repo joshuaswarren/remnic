@@ -179,7 +179,7 @@ schedule.
   in `connectors.googleDrive` and set `enabled: true`.
 - **Privacy.** No document content is ever logged. OAuth credentials are
   accepted via config but the intended pattern is to populate them from a
-  secret store (env vars, keychain, systemd `EnvironmentFile`) — never
+  secret store (env vars or systemd `EnvironmentFile`) — never
   commit real values. The connector never persists credentials through the
   state-store; it only persists the cursor + sync-status metadata.
 
@@ -280,9 +280,9 @@ same MCP tool with `{"force": true}` to bypass the due check during debugging.
 
 ## What's deferred
 
-- **OAuth helpers and credential storage** — keychain-backed storage is
-  still TODO; connectors currently read credentials directly from the
-  validated config.
+- **OAuth helpers and credential storage** — connectors read credentials
+  as plain strings from validated config. Resolving credentials through
+  the host SecretRef resolver is tracked in #3358.
 
 ## File map
 
