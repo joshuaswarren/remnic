@@ -58,7 +58,7 @@ export function legacyStateToEntries(state: BufferState): Map<string, BufferEntr
 }
 
 /** What a per-session file contains once parsed (written only by this module). */
-export interface SessionFileBody {
+interface SessionFileBody {
   key?: string;
   turns?: BufferTurn[];
   retainedTurns?: BufferTurn[];
@@ -66,9 +66,7 @@ export interface SessionFileBody {
   extractionCount?: number;
 }
 
-/** Parse a per-session / claim-inbox record body: `{key, turns, ...}` with
- * at least one turn array and a non-empty key. Null when the shape is wrong. */
-export function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
+function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
   if (!body || !Array.isArray(body.turns) || (body.key?.length ?? 0) === 0) return null;
   const entry: BufferEntryState = {
     turns: body.turns,

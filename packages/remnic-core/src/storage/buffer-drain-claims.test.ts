@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { hostname } from "node:os";
 import path from "node:path";
+import { z } from "zod";
 import test from "node:test";
 
 import { BufferDrainClaims, type AckOutcome, type DrainLease } from "./buffer-drain-claims.js";
@@ -1012,12 +1013,10 @@ test("foldAllInboxes folds every inbox into claim bodies the old format reads", 
     assert.equal(existsSync(inboxFile(s.stateDir, "sess-1")), false, "the inbox is consumed");
 
     // Old-format reader: the plain body file holds every pending turn.
-    const oldView = JSON.parse(readFileSync(drainFile(s.stateDir, "sess-1"), "utf8")) as {
-      entry?: { turns?: { content: string }[] };
-      turns?: { content: string }[];
-    };
-    const contents = (oldView.entry?.turns ?? oldView.turns ?? []).map((t) => t.content);
-    assert.deepEqual(contents.sort(), ["a", "b"], "the pre-inbox build sees the folded turns");
+    const oldView = z
+      .object({ entry: z.object({ turns: z.array(z.object({ content: z.string() })) }) })
+      .parse(JSON.parse(readFileSync(drainFile(s.stateDir, "sess-1"), "utf8")));
+    assert.deepEqual(oldView.entry.turns.map((t) => t.content).sort(), ["a", "b"], "the pre-inbox build sees the folded turns");
 
     assert.equal(await s.claims.foldAllInboxes(), 0, "a second pass finds nothing to fold");
     const claim = await s.claims.load("sess-1");
