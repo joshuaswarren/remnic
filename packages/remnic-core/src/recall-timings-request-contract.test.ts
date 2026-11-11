@@ -3,6 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test, { mock } from "node:test";
+import { z } from "zod";
 
 import { currentCorrelationId } from "./access-correlation.js";
 import { recordAbstractionNode } from "./abstraction-nodes.js";
@@ -16,7 +17,7 @@ import {
   PHASE2_AWAIT_STATUSES,
   type Phase2AwaitStatus,
 } from "./orchestration/recall-phase2-timing.js";
-import { getRecallTimings, type RecallTimingRecord } from "./recall-timings.js";
+import { getRecallTimings } from "./recall-timings.js";
 import { StorageManager } from "./storage.js";
 import { cleanupDir, eventually } from "./testing/orchestrator-lite.js";
 import type { MemoryFile, QmdSearchResult } from "./types.js";
@@ -34,6 +35,7 @@ interface ConfigOverrides {
   queryAwareIndexingEnabled?: boolean;
   compoundingEnabled?: boolean;
   recallEnrichmentDeadlineMs?: number;
+  recallOuterTimeoutMs?: number;
 }
 
 function makeConfig(memoryDir: string, overrides: ConfigOverrides = {}) {
@@ -128,14 +130,6 @@ function recallRequest(
     body: JSON.stringify(body),
     signal,
   });
-}
-
-async function fetchTimings(server: StartedServer): Promise<RecallTimingRecord[]> {
-  const response = await fetch(`${server.url}/engram/v1/recall/timings`, {
-    headers: { authorization: "Bearer secret-token", "x-engram-principal": "operator" },
-  });
-  const payload: { records: RecallTimingRecord[] } = await response.json();
-  return payload.records;
 }
 
 function assertPhase2(
@@ -238,7 +232,7 @@ test("recall timing requestId equals the HTTP x-request-id response header", asy
     const requestIdHeader = response.headers.get("x-request-id");
     assert.ok(requestIdHeader, "recall response must carry x-request-id");
 
-    const records = await fetchTimings(server);
+    const records = getRecallTimings(config);
     // The record's requestId IS the server-generated HTTP correlation id
     // surfaced as x-request-id — not a second, unrelated uuid.
     assert.equal(records[0]?.requestId, requestIdHeader);
@@ -262,7 +256,7 @@ test("concurrent recalls never cross request ids", async () => {
     const headerIds = responses.map((response) => response.headers.get("x-request-id"));
     assert.equal(new Set(headerIds).size, headerIds.length, "each request gets its own correlation id");
 
-    const recordIds = (await fetchTimings(server)).map((record) => record.requestId);
+    const recordIds = getRecallTimings(config).map((record) => record.requestId);
     for (const id of headerIds) {
       assert.ok(id !== null && recordIds.includes(id), "each request's record carries that request's id");
     }
@@ -285,7 +279,7 @@ test("client-supplied x-request-id never becomes the record's request id", async
     const serverHeader = response.headers.get("x-request-id");
     assert.notEqual(serverHeader, "client-chosen-id");
 
-    const records = await fetchTimings(server);
+    const records = getRecallTimings(config);
     assert.equal(records[0]?.requestId, serverHeader);
     assert.match(records[0]?.requestId ?? "", UUID_PATTERN);
   } finally {
@@ -308,7 +302,7 @@ test("HTTP recall rejected as bad input records outcome error under the x-reques
     const requestIdHeader = response.headers.get("x-request-id");
     assert.ok(requestIdHeader, "error responses carry x-request-id too");
 
-    const records = await fetchTimings(server);
+    const records = getRecallTimings(config);
     assert.equal(records[0]?.requestId, requestIdHeader);
     assert.equal(records[0]?.outcome, "error");
   } finally {
@@ -457,8 +451,7 @@ test("recall response body carries no timing-contract fields", async () => {
   try {
     const response = await recallRequest(server, { query: "body shape probe", sessionKey: "corr:body" });
     assert.equal(response.status, 200);
-    const payload: object = await response.json();
-    const keys = Object.keys(payload);
+    const keys = Object.keys(z.object({}).passthrough().parse(await response.json()));
     for (const expected of ["query", "namespace", "context", "count", "memoryIds", "results", "fallbackUsed", "sourcesUsed"]) {
       assert.ok(keys.includes(expected), `recall body must still carry ${expected}`);
     }
@@ -470,4 +463,26 @@ test("recall response body carries no timing-contract fields", async () => {
     await server.stop();
     await cleanupDir(memoryDir);
   }
+});
+
+test("a recall the outer timeout cuts short records outcome error, not ok", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timing-outer-timeout-"));
+  const config = makeConfig(memoryDir, {
+    qmdEnabled: true,
+    harmonicRetrievalEnabled: true,
+    recallOuterTimeoutMs: 50,
+  });
+  const orchestrator = new Orchestrator(config);
+  const harness = await makeHarmonicHarness(memoryDir);
+  stubQmd(orchestrator, harness);
+  const service = new EngramAccessService(orchestrator);
+  // The entry coordinator swallows the timeout and returns a degraded context,
+  // so the surface call resolves; the record must still say it did not complete.
+  await service.recall({ query: "atlas source lookup", sessionKey: "outer:timeout" });
+  harness.releaseHarmonicRead();
+  const records = getRecallTimings(config);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]?.outcome, "error");
+  assert.equal(records[0]?.phase2HarmonicStatus, undefined, "no phase-2 data from a pipeline that never finished");
+  await cleanupDir(memoryDir);
 });

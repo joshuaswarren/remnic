@@ -671,23 +671,29 @@ export class AccessRecallSurface {
     // tests) it falls back to a generated id in the same field.
     const requestId = currentCorrelationId() ?? randomUUID();
     const startedMs = performance.now();
-    let outcome: RecallTimingOutcome = "ok";
-    let phases: RecallTimingEmission | undefined;
+    const emitted: RecallTimingEmission[] = [];
+    let failure: { abortError: boolean } | undefined;
     try {
       return await this.runRecallAttempt(request, (payload) => {
-        phases = payload;
+        emitted.push(payload);
       });
     } catch (err) {
-      // Settled because the caller cancelled: the request signal fired or the
-      // error itself is an abort. Anything else is an error outcome.
-      outcome = isAbortError(err) || request.abortSignal?.aborted === true
-        ? "aborted"
-        : "error";
+      failure = { abortError: isAbortError(err) };
       throw err;
     } finally {
-      if (outcome === "ok" && request.abortSignal?.aborted === true) {
-        outcome = "aborted";
-      }
+      const phases = emitted.at(-1);
+      // aborted: the request/flight signal fired, or an abort error was thrown
+      // (the pipeline's soft abort returns normally with the signal already
+      // aborted). error: any other throw, or a normal return from a pipeline
+      // that never reached its timing emit (the entry coordinator swallows
+      // outer timeouts, init-gate aborts and internal failures into a degraded
+      // context). ok: the pipeline ran to completion.
+      const outcome: RecallTimingOutcome =
+        request.abortSignal?.aborted === true || failure?.abortError === true
+          ? "aborted"
+          : failure !== undefined || phases === undefined
+            ? "error"
+            : "ok";
       recordRecallTiming(this.deps.orchestrator.config, {
         ...phases,
         requestId,
