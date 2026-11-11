@@ -74,27 +74,35 @@ const DEFAULT_LEASE_MS = 120_000;
  * A `BufferStorage` view of one drain claim: the claim file IS the buffer.
  * Writes are the drain's progress (what is left to extract), so every
  * successfully extracted chunk is durably removed before the next one runs.
+ *
+ * `seen` is the drainer's own view of the claim: the entry it loaded, then the
+ * entry it last wrote. Each progress write is diffed against it, so a write
+ * records only the turns extracted since the previous one.
  */
 export class ClaimBufferStorage implements BufferStorage {
+  private seen: BufferEntryState;
+
   constructor(
     private readonly claims: BufferDrainClaims,
     private readonly key: string,
     private readonly ownerId: string,
-    private readonly entry: BufferEntryState
-  ) {}
+    entry: BufferEntryState
+  ) {
+    this.seen = entry;
+  }
 
   async loadBuffer(): Promise<BufferState> {
     const entries: NonNullable<BufferState["entries"]> = Object.create(null);
     entries[this.key] = {
-      turns: this.entry.turns,
-      retainedTurns: this.entry.retainedTurns,
-      lastExtractionAt: this.entry.lastExtractionAt,
-      extractionCount: this.entry.extractionCount,
+      turns: this.seen.turns,
+      retainedTurns: this.seen.retainedTurns,
+      lastExtractionAt: this.seen.lastExtractionAt,
+      extractionCount: this.seen.extractionCount,
     };
     return {
-      turns: this.entry.turns,
-      lastExtractionAt: this.entry.lastExtractionAt,
-      extractionCount: this.entry.extractionCount,
+      turns: this.seen.turns,
+      lastExtractionAt: this.seen.lastExtractionAt,
+      extractionCount: this.seen.extractionCount,
       entries,
     };
   }
@@ -102,16 +110,21 @@ export class ClaimBufferStorage implements BufferStorage {
   async saveBuffer(state: BufferState): Promise<void> {
     // Whole-state fallback (the claim covers one session): persist the entry.
     const entry = state.entries?.[this.key];
-    await this.claims.writeEntry(
-      this.key,
-      this.ownerId,
-      entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 },
-      this.entry
-    );
+    await this.writeProgress(entry ?? { turns: [], lastExtractionAt: null, extractionCount: 0 });
   }
 
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
-    await this.claims.writeEntry(key, this.ownerId, entry, key === this.key ? this.entry : undefined);
+    if (key !== this.key) {
+      await this.claims.writeEntry(key, this.ownerId, entry, undefined);
+      return;
+    }
+    await this.writeProgress(entry);
+  }
+
+  private async writeProgress(entry: BufferEntryState): Promise<void> {
+    await this.claims.writeEntry(this.key, this.ownerId, entry, this.seen);
+    // Copy the lists: the buffer keeps mutating its own arrays after a save.
+    this.seen = { ...entry, turns: [...entry.turns], retainedTurns: entry.retainedTurns ? [...entry.retainedTurns] : undefined };
   }
 
   async deleteBufferSession(): Promise<void> {
@@ -554,14 +567,25 @@ async function runClaimDrain(
   options: BufferDrainRunnerOptions,
   heartbeat: NodeJS.Timeout
 ): Promise<DrainSessionOutcome> {
+  // Reconcile only identities recorded as durably extracted under this
+  // owner's claim lease. The claim lock is released before entering the live
+  // buffer mutation queue, preserving the buffer→claim lock order used by
+  // concurrent ingress saves.
+  const reconcileDrainedTurns = async (): Promise<void> => {
+    const drained = await ctx.claims.drainedTurnsForOwner(ctx.key, ctx.ownerId);
+    if (drained !== null) await ctx.orchestrator.buffer.save({ key: ctx.key, drained });
+  };
+
   // An emptied claim acks here: the ack verdict is the truth (drained), or
   // live ingress merged between the read and the ack — deferred, source kept.
   if (ctx.turns.length === 0) {
+    await reconcileDrainedTurns();
     const outcome = await ackEmptyClaim(ctx.claims, ctx.key, ctx.ownerId, ctx.turnsAtStart);
     options.onEvent?.({ type: "session_finished", key: ctx.key, outcome });
     return outcome;
   }
   const { groupOutcomes, groupError } = await drainScopeGroups(ctx);
+  await reconcileDrainedTurns();
   // Heartbeat cleared on EVERY exit path: a rejected drain must not keep
   // renewing the lease forever (cleared in the caller's finally).
   const remaining = await ctx.claims.load(ctx.key);

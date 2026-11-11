@@ -300,16 +300,16 @@ export class SmartBuffer {
     this.loaded = true;
   }
 
-  private async saveUnlocked(): Promise<void> {
-    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined);
+  private async saveUnlocked(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
+    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile);
     // A drain tombstone: the turns the drain extracted leave this copy too,
     // so a stale owner never extracts (or persists) them a second time.
     for (const [key, drained] of drainedTurns) {
       const entry = this.peekEntry(key);
       if (!entry) continue;
-      entry.turns = subtractBufferTurns(entry.turns, drained);
+      entry.turns = subtractBufferTurns(entry.turns, drained.turns);
       if (entry.retainedTurns && entry.retainedTurns.length > 0) {
-        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained);
+        entry.retainedTurns = subtractBufferTurns(entry.retainedTurns, drained.retainedTurns);
         if (entry.retainedTurns.length === 0) delete entry.retainedTurns;
       }
       if (key === "default") this.state.turns = entry.turns;
@@ -340,8 +340,8 @@ export class SmartBuffer {
     return bufferEntryCounts(this.state);
   }
 
-  async save(): Promise<void> {
-    await this.enqueueMutation(async () => this.saveUnlocked());
+  async save(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
+    await this.enqueueMutation(async () => this.saveUnlocked(reconcile));
   }
 
   /**

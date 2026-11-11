@@ -1,5 +1,11 @@
 import type { BufferEntryState, BufferState, BufferTurn } from "./types.js";
 
+/** Extracted identities retain whether they came from active or retained turns. */
+export interface DrainedTurnSets {
+  turns: BufferTurn[];
+  retainedTurns: BufferTurn[];
+}
+
 export interface BufferTurnOwner {
   /**
    * Server-resolved principal that owns this session at the authenticated

@@ -1,4 +1,5 @@
-import type { BufferEntryState, BufferState, BufferSurpriseEvent, BufferTurn } from "./types.js";
+import type { DrainedTurnSets } from "./buffer-turn-helpers.js";
+import type { BufferEntryState, BufferState, BufferSurpriseEvent } from "./types.js";
 import type { BufferSessionSaveOutcome } from "./storage/buffer-drain-claims.js";
 
 /**
@@ -26,8 +27,8 @@ export interface BufferStorage {
 export interface BufferPersistOutcome {
   /** Sessions whose in-memory entry moved into a drain claim: the caller must evict them (a claimed session no longer lives in this process). */
   handedOver: string[];
-  /** Per session, the turns a drain already extracted: the caller subtracts them from its in-memory copy. */
-  drainedTurns: Map<string, BufferTurn[]>;
+  /** Per session, the turns a drain extracted, kept in their original lists. */
+  drainedTurns: Map<string, DrainedTurnSets>;
 }
 
 /**
@@ -73,17 +74,20 @@ export class BufferSessionPersistence {
     storage: BufferStorage,
     state: BufferState,
     peekEntry: (key: string) => BufferEntryState | undefined,
+    reconcile?: { key: string; drained: DrainedTurnSets },
   ): Promise<BufferPersistOutcome> {
+    const drainedTurns = new Map<string, DrainedTurnSets>(
+      reconcile ? [[reconcile.key, reconcile.drained]] : [],
+    );
     const saveSession = storage.saveBufferSession?.bind(storage);
     const deleteSession = storage.deleteBufferSession?.bind(storage);
     if (!saveSession || !deleteSession) {
       await storage.saveBuffer(state);
       this.dirty.clear();
       this.deleted.clear();
-      return { handedOver: [], drainedTurns: new Map() };
+      return { handedOver: [], drainedTurns };
     }
     const handedOver: string[] = [];
-    const drainedTurns = new Map<string, BufferTurn[]>();
     for (const key of [...this.deleted]) {
       await deleteSession(key);
       this.deleted.delete(key);
@@ -104,7 +108,12 @@ export class BufferSessionPersistence {
       if (outcome?.status === "handed_over") handedOver.push(key);
       // A drain tombstone: the turns it extracted must leave this process's
       // copy too, or the owner would extract them a second time.
-      if (outcome?.drainedTurns && outcome.drainedTurns.length > 0) drainedTurns.set(key, outcome.drainedTurns);
+      if (
+        outcome?.drainedTurns &&
+        (outcome.drainedTurns.turns.length > 0 || outcome.drainedTurns.retainedTurns.length > 0)
+      ) {
+        drainedTurns.set(key, outcome.drainedTurns);
+      }
     }
     return { handedOver, drainedTurns };
   }
