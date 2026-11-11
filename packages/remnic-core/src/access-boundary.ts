@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import {
+  assertNamespaceAllowed,
   assertOperationAuthorizationAllowed,
   tokenCapabilityStore,
 } from "./access-token-capabilities.js";
@@ -338,6 +339,25 @@ export interface BoundOperation<In = unknown, Out = unknown> {
   readonly run: (rawInput: unknown, ctx: OperationContext) => Promise<Out>;
 }
 
+/**
+ * Dictionary keys that change object shape or prototype resolution. A JSON
+ * body can carry them as own members; the null-strip preprocessors reject
+ * them before copying, so a decoded `__proto__` member cannot become an
+ * inherited schema field (issue #3225 B1).
+ */
+export const RESERVED_PROTO_KEYS: readonly string[] = ["__proto__", "constructor", "prototype"];
+
+/**
+ * Reject the reserved keys with the boundary input-error type, so a client
+ * that submits a magic dictionary key gets a validation error instead of a
+ * silently reshaped request object.
+ */
+export function rejectReservedArgumentKey(key: string): void {
+  if (RESERVED_PROTO_KEYS.includes(key)) {
+    throw new EngramAccessInputError(`${key} is not a permitted argument key`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Shared normalizers the boundary owns (rules 17, 28, 36, 48, 51)
 // ---------------------------------------------------------------------------
@@ -493,6 +513,18 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
       assertOperationAuthorizationAllowed(tokenCapabilityStore.getStore(), spec);
+      // Post-parse namespace re-check (issue #3225 B1): the transports authorize
+      // the RAW namespace before preprocessing. Re-check the PARSED value so a
+      // namespace that only appears after validation cannot bypass the token
+      // allow-list. Absent namespaces keep the transport check; no default is
+      // invented here.
+      if (operationRequiresAuthorizedNamespace(spec.name)) {
+        // SAFETY: namespace-bearing schemas parse `namespace` as an optional string.
+        const parsedNamespace = (parseResult.data as { namespace?: string }).namespace;
+        if (parsedNamespace !== undefined && parsedNamespace.length > 0) {
+          assertNamespaceAllowed(tokenCapabilityStore.getStore(), parsedNamespace);
+        }
+      }
       return spec.handler(parseResult.data, { ...ctx, rawInput });
     },
   };
