@@ -2996,11 +2996,11 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
       "scoped memory_get: the allowed namespace reaches the service",
     );
 
-    // ── a non-namespace-scoped route is unaffected by namespace scoping ──
+    // ── a global-store route is fleet-wide: a namespace-scoped token is denied (issue #3225 B3) ──
     assert.equal(
       (await request("scoped-ns-a", "/engram/v1/peers")).status,
-      200,
-      "a non-namespace-scoped route must be unaffected",
+      403,
+      "peer routes touch global stores, so a namespace-scoped token is denied",
     );
 
     // ── unrestricted token: omitting namespace still reaches the default tenant ──

@@ -2739,26 +2739,38 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     //   DELETE /engram/v1/peers/:id?forget=true — destructive full purge (issue #679 completion)
     //   GET    /engram/v1/peers/:id/profile  — get peer profile
     if (req.method === "GET" && pathname === "/engram/v1/peers") {
-      this.enforceTokenOp("peer_list"); // boundary dispatch (issue #1525)
-      const result = await this.service.peerList();
-      this.respondJson(res, 200, result);
+      const op = getOperation("peer_list"); // boundary dispatch (issue #1525)
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_list");
+      // SAFETY: the registered peer_list handler returns { result } from the service.
+      const output = (await op.run({}, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
       return;
     }
 
     const peerProfileMatch = /^\/engram\/v1\/peers\/([^/]+)\/profile$/.exec(pathname);
     if (peerProfileMatch) {
-      this.enforceTokenOp("peer_profile_get"); // boundary dispatch (issue #1525)
       if (req.method !== "GET") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      const op = getOperation("peer_profile_get"); // boundary dispatch (issue #1525)
+      if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_profile_get");
       const peerId = decodePeerIdSegment(peerProfileMatch[1] ?? "");
-      const result = await this.service.peerProfileGet(peerId);
-      if (!result.found) {
+      // SAFETY: the registered peer_profile_get handler returns { result } from the service.
+      const output = (await op.run({ id: peerId }, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
+      })) as { result: { found: boolean } };
+      if (!output.result.found) {
         this.respondJson(res, 404, { error: "peer_profile_not_found", code: "peer_profile_not_found" });
         return;
       }
-      this.respondJson(res, 200, result);
+      this.respondJson(res, 200, output.result);
       return;
     }
 
@@ -2767,47 +2779,42 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const peerId = decodePeerIdSegment(peerIdMatch[1] ?? "");
 
       if (req.method === "GET") {
-        this.enforceTokenOp("peer_get"); // boundary dispatch (issue #1525)
-        const result = await this.service.peerGet(peerId);
-        if (!result.found) {
+        const op = getOperation("peer_get"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_get");
+        // SAFETY: the registered peer_get handler returns { result } with a found flag.
+        const output = (await op.run({ id: peerId }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: { found: boolean } };
+        if (!output.result.found) {
           this.respondJson(res, 404, { error: "peer_not_found", code: "peer_not_found" });
           return;
         }
-        this.respondJson(res, 200, result);
+        this.respondJson(res, 200, output.result);
         return;
       }
 
       if (req.method === "PUT") {
-        this.enforceTokenOp("peer_set"); // boundary dispatch (issue #1525)
         const body = await this.readJsonBody(req) as Record<string, unknown>;
-        // Reject malformed types up front rather than silently dropping them
-        // to undefined and letting peerSet fall back to defaults
-        // (CLAUDE.md rule 51: no silent defaults on bad input).
-        if ("kind" in body && body.kind !== undefined && typeof body.kind !== "string") {
-          throw new EngramAccessInputError("kind must be a string when provided");
-        }
-        if (
-          "displayName" in body &&
-          body.displayName !== undefined &&
-          typeof body.displayName !== "string"
-        ) {
-          throw new EngramAccessInputError("displayName must be a string when provided");
-        }
-        if ("notes" in body && body.notes !== undefined && typeof body.notes !== "string") {
-          throw new EngramAccessInputError("notes must be a string when provided");
-        }
-        const result = await this.service.peerSet({
+        const op = getOperation("peer_set"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_set");
+        // SAFETY: the registered peer_set handler returns { result } with the upsert outcome.
+        const output = (await op.run({
           id: peerId,
           kind: typeof body.kind === "string" ? body.kind : undefined,
           displayName: typeof body.displayName === "string" ? body.displayName : undefined,
           notes: typeof body.notes === "string" ? body.notes : undefined,
-        });
-        this.respondJson(res, result.created ? 201 : 200, result);
+        }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: { created: boolean } };
+        this.respondJson(res, output.result.created ? 201 : 200, output.result);
         return;
       }
 
       if (req.method === "DELETE") {
-        this.enforceTokenOp("peer_delete"); // boundary dispatch (issue #1525)
         // `?forget=true` triggers the destructive full-purge path (issue #679
         // completion). The caller must also pass `confirm=yes` in the request
         // body; absent confirmation yields 400. Plain DELETE (no ?forget) keeps
@@ -2824,12 +2831,26 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
             });
             return;
           }
-          const result = await this.service.peerForget(peerId, { confirm: "yes" });
-          this.respondJson(res, 200, result);
+          const op = getOperation("peer_forget"); // boundary dispatch (issue #1525)
+          if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_forget");
+          // SAFETY: the registered peer_forget handler returns { result } with the purge outcome.
+          const output = (await op.run({ id: peerId, confirm: "yes" }, {
+            service: this.service,
+            authenticatedPrincipal: this.resolveRequestPrincipal(req),
+            sourceConnector: this.resolveConnector(req),
+          })) as { result: unknown };
+          this.respondJson(res, 200, output.result);
           return;
         }
-        const result = await this.service.peerDelete(peerId);
-        this.respondJson(res, 200, result);
+        const op = getOperation("peer_delete"); // boundary dispatch (issue #1525)
+        if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_delete");
+        // SAFETY: the registered peer_delete handler returns { result } with the delete outcome.
+        const output = (await op.run({ id: peerId }, {
+          service: this.service,
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          sourceConnector: this.resolveConnector(req),
+        })) as { result: unknown };
+        this.respondJson(res, 200, output.result);
         return;
       }
 
