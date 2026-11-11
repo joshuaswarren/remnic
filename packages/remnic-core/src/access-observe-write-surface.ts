@@ -51,6 +51,7 @@ import {
   queueExplicitCaptureForReview,
 } from "./explicit-capture.js";
 import { log } from "./logger.js";
+import { embeddingBacklogExceeds, isSearchHealthDegraded } from "./namespaces/search.js";
 import { recordObjectiveStateSnapshotsFromObservedMessages } from "./objective-state-writers.js";
 import type { Orchestrator } from "./orchestrator.js";
 import { displayErrorDetail } from "./runtime/better-sqlite.js";
@@ -289,7 +290,7 @@ export class AccessObserveWriteSurface {
         /* status probe failed — non-fatal */
       }
     }
-    if (threshold > 0 && pendingEmbeddings !== null && pendingEmbeddings > threshold) {
+    if (embeddingBacklogExceeds(pendingEmbeddings, threshold)) {
       degraded = true;
       degradedReason = `embedding-backlog: ${pendingEmbeddings} pending > threshold ${threshold}`;
     }
@@ -355,14 +356,13 @@ export class AccessObserveWriteSurface {
       const pending = health.pendingEmbeddings ?? null;
       const oldest = health.oldestPendingAgeMs ?? null;
       const threshold = this.deps.orchestrator.config.qmdEmbeddingBacklogThreshold;
-      const backlogDegraded = threshold > 0 && pending !== null && pending > threshold;
-      const degraded = !active || health.collectionState === "unknown" || backlogDegraded;
+      const backlogDegraded = embeddingBacklogExceeds(pending, threshold);
       const mode = !active ? "fallback" : health.daemonMode === true ? "daemon" : "cli";
 
       return {
         enabled: true,
         active,
-        degraded,
+        degraded: isSearchHealthDegraded({ ...health, pendingEmbeddings: pending }, threshold),
         mode,
         collection: health.collection || fallbackCollection,
         collectionState: health.collectionState,

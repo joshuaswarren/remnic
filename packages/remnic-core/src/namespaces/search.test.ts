@@ -1042,6 +1042,74 @@ test("healthForNamespace does not cache a missing-collection answer", async () =
   assert.equal(created.length, 2, "missing-collection answers must not be cached");
 });
 
+function routerWithDegradedFirstProbe(
+  created: FakeBackend[],
+  firstCheck: CollectionState,
+  degradeFirst: (backend: FakeBackend) => void,
+): NamespaceSearchRouter {
+  return new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const isFirst = created.length === 0;
+      const backend = new FakeBackend(false, [], { check: isFirst ? firstCheck : "present" });
+      backend.statusResult = {
+        pendingEmbeddings: 10,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      if (isFirst) degradeFirst(backend);
+      created.push(backend);
+      return backend;
+    },
+  );
+}
+
+test("healthForNamespace does not cache an unknown-collection answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "unknown", () => {});
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.collectionState, "unknown");
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.collectionState, "present", "recovery must be visible on the next probe");
+  assert.equal(created.length, 2, "unknown-collection answers must not be cached");
+});
+
+test("healthForNamespace does not cache an answer whose backend status failed", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "present", (backend) => {
+    backend.statusResult = null;
+  });
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.pendingEmbeddings, null);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.pendingEmbeddings, 10, "backlog data must be visible on the next probe");
+  assert.equal(created.length, 2, "answers without backlog data must not be cached");
+});
+
+test("healthForNamespace does not cache a backlog over the threshold", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "present", (backend) => {
+    backend.statusResult = {
+      pendingEmbeddings: config().qmdEmbeddingBacklogThreshold + 1,
+      oldestPendingAgeMs: 0,
+      totalFiles: 1,
+      embeddedFiles: 1,
+    };
+  });
+
+  await router.healthForNamespace("shared");
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.pendingEmbeddings, 10, "a drained backlog must be visible on the next probe");
+  assert.equal(created.length, 2, "over-threshold answers must not be cached");
+});
+
 test("healthForNamespace dispose drops the health result cache", async () => {
   const created: FakeBackend[] = [];
   const router = new NamespaceSearchRouter(

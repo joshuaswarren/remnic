@@ -75,6 +75,27 @@ export interface NamespaceSearchHealth {
   embeddingBacklogThreshold: number;
 }
 
+/** True when the pending-embedding count is above a positive backlog threshold. */
+export function embeddingBacklogExceeds(pending: number | null, threshold: number): boolean {
+  return threshold > 0 && pending !== null && pending > threshold;
+}
+
+/**
+ * The one definition of a degraded search answer. The readiness consumer
+ * reports it, and `healthForNamespace` refuses to cache it.
+ */
+export function isSearchHealthDegraded(
+  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings">,
+  backlogThreshold: number,
+): boolean {
+  const active = health.available && health.collectionState !== "missing";
+  return (
+    !active ||
+    health.collectionState === "unknown" ||
+    embeddingBacklogExceeds(health.pendingEmbeddings, backlogThreshold)
+  );
+}
+
 type NamespaceScopedSearchConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
 };
@@ -340,12 +361,14 @@ export class NamespaceSearchRouter {
         embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
       };
 
-      // Cache only a healthy answer. Unavailable or missing must re-probe so
-      // readiness polls see recovery immediately, not up to one TTL late.
+      // Cache only a healthy answer that carries backlog data when the backend
+      // reports status. A degraded or incomplete answer must re-probe so a
+      // readiness poll sees recovery on the next call, not one TTL late.
+      const statusMissing = backendStatus === null && "status" in diagnosticBackend;
       if (
         execution?.signal?.aborted !== true &&
-        health.available === true &&
-        health.collectionState !== "missing"
+        !statusMissing &&
+        !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
       ) {
         this.healthResultCache.set(key, {
           expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
