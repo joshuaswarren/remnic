@@ -444,3 +444,36 @@ test("denied recall attempt still records outcome error in finally", async () =>
   assert.equal(record.outcome, "error");
   assert.ok(Number.isFinite(record.httpTotalMs) && record.httpTotalMs >= 0);
 });
+
+test("phase-2 await fields are allowlisted, enum-bounded, and carry no extra content", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-phase2-sanitizer"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "9ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+    outcome: "aborted",
+    phase2HarmonicMs: "7ms",
+    phase2HarmonicStatus: "timeout",
+    phase2HarmonicTotalMs: "30ms",
+    phase2QuestionsMs: "2ms",
+    // A status outside the enum, and a total on an await that has none, drop.
+    phase2QuestionsStatus: "private user question text",
+    phase2QuestionsTotalMs: "5ms",
+    // Not part of the contract at all.
+    phase2SecretMs: "1ms",
+    phase2HarmonicQuery: "private query",
+  });
+  const record = getRecallTimings(config)[0];
+  assert.ok(record);
+  assert.equal(record.outcome, "aborted");
+  assert.equal(record.phase2HarmonicMs, 7);
+  assert.equal(record.phase2HarmonicStatus, "timeout");
+  assert.equal(record.phase2HarmonicTotalMs, 30);
+  assert.equal(record.phase2QuestionsMs, 2);
+  assert.equal("phase2QuestionsStatus" in record, false);
+  assert.equal("phase2QuestionsTotalMs" in record, false);
+  assert.equal("phase2SecretMs" in record, false);
+  assert.equal("phase2HarmonicQuery" in record, false);
+});
