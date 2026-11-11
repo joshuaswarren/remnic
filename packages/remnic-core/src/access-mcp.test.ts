@@ -1295,6 +1295,17 @@ const FLEET_WIDE_MAINTENANCE_TOOLS = [
   "compounding_promote_candidate",
   "compression_guidelines_optimize",
   "compression_guidelines_activate",
+  // Issue #3225 B3: work and peer ops run against GLOBAL stores, so a
+  // namespace argument cannot isolate them — same fleet-wide rule.
+  "work_task",
+  "work_project",
+  "work_board",
+  "peer_list",
+  "peer_get",
+  "peer_set",
+  "peer_delete",
+  "peer_profile_get",
+  "peer_forget",
 ] as const;
 
 test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op, no side effect (issue #1850 round 10)", async () => {
@@ -1319,6 +1330,19 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
     compressionGuidelinesOptimize: track,
     compressionGuidelinesActivate: track,
   } as unknown as EngramAccessService;
+  // Issue #3225 B3: track the global-store methods the fleet-wide guard must
+  // block; the dispatch reads them off this same object at call time.
+  Object.assign(service, {
+    workTask: track,
+    workProject: track,
+    workBoard: track,
+    peerList: track,
+    peerGet: track,
+    peerSet: track,
+    peerDelete: track,
+    peerProfileGet: track,
+    peerForget: track,
+  });
   const server = new EngramMcpServer(service, { principal: "ops" });
   try {
     for (const tool of FLEET_WIDE_MAINTENANCE_TOOLS) {
