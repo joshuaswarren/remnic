@@ -55,17 +55,13 @@ import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Null-prototype accumulator for cleaned request arguments. A plain `{}` lets
- * a copied own `__proto__` member invoke the prototype setter, so an
- * inherited field could reach the zod parse (issue #3225 B1).
- */
-type CleanedRequestArgs = Record<string, unknown>;
-
+// Object.create(null): a plain {} lets a copied own `__proto__` member invoke
+// the prototype setter, so an inherited field could reach the zod parse
+// (issue #3225 B1).
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
-    const cleaned: CleanedRequestArgs = Object.create(null);
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(obj)) {
       rejectReservedArgumentKey(key);
       if (value !== null) cleaned[key] = value;
@@ -87,7 +83,7 @@ function strictSchema<T extends z.ZodRawShape>(shape: T): z.ZodType<Record<strin
  */
 function stripNullsExcept(data: unknown, preserve: readonly string[]): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
-    const cleaned: CleanedRequestArgs = Object.create(null);
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
       rejectReservedArgumentKey(key);
       if (value !== null || preserve.includes(key)) cleaned[key] = value;

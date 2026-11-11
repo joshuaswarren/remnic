@@ -19,12 +19,10 @@ import { EngramAccessInputError } from "./access-errors.js";
  * plain `{}` switches the accumulator's prototype and an inherited field then
  * reaches the zod parse.
  */
-type CleanedRequestArgs = Record<string, unknown>;
-
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
-    const cleaned: CleanedRequestArgs = Object.create(null);
+    const cleaned = Object.create(null);
     for (const [key, value] of Object.entries(obj)) {
       rejectReservedArgumentKey(key);
       if (value !== null) cleaned[key] = value;

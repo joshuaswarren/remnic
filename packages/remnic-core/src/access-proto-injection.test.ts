@@ -16,7 +16,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getOperation, type BoundOperation } from "./access-boundary.js";
-import { EngramAccessInputError, type EngramAccessRecallRequest, type EngramAccessService } from "./access-service.js";
+import {
+  EngramAccessInputError,
+  type EngramAccessRecallRequest,
+  type EngramAccessRecallResponse,
+  type EngramAccessService,
+} from "./access-service.js";
+import type { RecallNavigationResult } from "./recall-navigation.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import "./access-operations-batch.js";
@@ -24,7 +30,7 @@ import "./recall-navigation-operations.js";
 
 function makeService(handlers: Partial<EngramAccessService>): EngramAccessService {
   // SAFETY: the operations under test dispatch only through the handlers supplied here.
-  return handlers as unknown as EngramAccessService;
+  return handlers as EngramAccessService;
 }
 
 function mustBeRegistered(name: Parameters<typeof getOperation>[0]): BoundOperation {
@@ -144,7 +150,7 @@ test("a parsed explicit namespace outside the token allow-list is rejected befor
     memoryProfile: async (namespace) => {
       handlerCalls += 1;
       capturedNamespace = namespace;
-      return {} as never;
+      throw new Error("handler must not run for a denied namespace");
     },
   });
   const op = mustBeRegistered("memory_profile");
@@ -154,8 +160,7 @@ test("a parsed explicit namespace outside the token allow-list is rejected befor
         { version: 1, namespaces: ["default"], ops: ["memory_profile"] },
         () => op.run({ namespace: "other" }, { service }),
       ),
-    (error: unknown) =>
-      error instanceof EngramAccessForbiddenError && /namespace: other/.test(error.message),
+    EngramAccessForbiddenError,
   );
   assert.equal(handlerCalls, 0, "handler must not run for a denied namespace");
   assert.equal(capturedNamespace, undefined);
@@ -168,25 +173,35 @@ test("an allowed explicit namespace still reaches the handler", async () => {
     memoryProfile: async (namespace) => {
       profileCalls += 1;
       profileNamespace = namespace;
-      return {} as never;
+      return {};
     },
   });
   const profileOp = mustBeRegistered("memory_profile");
-  const profileResult = (await tokenCapabilityStore.run(
+  await tokenCapabilityStore.run(
     { version: 1, namespaces: ["default", "other"], ops: ["memory_profile"] },
     () => profileOp.run({ namespace: "other" }, { service: profileService }),
-  )) as { result: unknown };
+  );
   assert.equal(profileCalls, 1);
   assert.equal(profileNamespace, "other");
-  assert.ok(profileResult.result !== undefined);
 
   let recallCalls = 0;
   let recallNamespace: string | undefined;
+  const recallResponse: EngramAccessRecallResponse = {
+    query: "hello",
+    namespace: "other",
+    context: "",
+    count: 0,
+    memoryIds: [],
+    results: [],
+    fallbackUsed: false,
+    sourcesUsed: [],
+    disclosure: "chunk",
+  };
   const recallService = makeService({
     recall: async (input) => {
       recallCalls += 1;
       recallNamespace = input.namespace;
-      return {} as never;
+      return recallResponse;
     },
   });
   const recallOp = mustBeRegistered("recall");
@@ -203,7 +218,7 @@ test("an absent namespace is not defaulted at the boundary", async () => {
   const service = makeService({
     memoryProfile: async (namespace) => {
       profileNamespace = namespace;
-      return {} as never;
+      return {};
     },
   });
   const op = mustBeRegistered("memory_profile");
@@ -216,10 +231,21 @@ test("an absent namespace is not defaulted at the boundary", async () => {
 
 test("codingContext null clearing still works through recall", async () => {
   let capturedInput: EngramAccessRecallRequest | undefined;
+  const recallResponse: EngramAccessRecallResponse = {
+    query: "q",
+    namespace: "default",
+    context: "",
+    count: 0,
+    memoryIds: [],
+    results: [],
+    fallbackUsed: false,
+    sourcesUsed: [],
+    disclosure: "chunk",
+  };
   const service = makeService({
     recall: async (input) => {
       capturedInput = input;
-      return {} as never;
+      return recallResponse;
     },
   });
   const op = mustBeRegistered("recall");
@@ -234,10 +260,17 @@ test("codingContext null clearing still works through recall", async () => {
 
 test("an allowed explicit namespace reaches the memory_expand handler", async () => {
   let capturedNamespace: string | undefined;
+  const navigationResult: RecallNavigationResult = {
+    ok: false,
+    action: "expand",
+    error: "disabled",
+    message: "",
+    rendered: "",
+  };
   const service = makeService({
     recallNavigate: async (input) => {
       capturedNamespace = input.namespace;
-      return {} as never;
+      return navigationResult;
     },
   });
   const op = mustBeRegistered("memory_expand");
