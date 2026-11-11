@@ -66,7 +66,9 @@ test("repeat 503 capacity refusals queue durably, then drain exactly once in ord
     globalThis.fetch = originalFetch;
   });
 
-  const requests: ObserveBody[] = [];
+  // Every POST the client makes, in order. The simulated daemon records a key as ingested ONLY
+  // when it accepts the capture, so a refused (503) capture is never counted as ingested.
+  const attempts: ObserveBody[] = [];
   const ingestCount = new Map<string, number>();
   globalThis.fetch = async (input, init) => {
     const url = String(input);
@@ -77,18 +79,18 @@ test("repeat 503 capacity refusals queue durably, then drain exactly once in ord
     // only reads idempotencyKey/messages and every read is asserted.
     const body = JSON.parse(String(init?.body ?? "{}")) as ObserveBody;
     const key = body.idempotencyKey ?? "";
+    attempts.push(body);
     if (ingestCount.has(key)) {
-      // Server already processed this payload: deduplicated replay, nothing re-ingested.
+      // Already accepted earlier: a deduplicated replay, nothing re-ingested.
       return new Response(JSON.stringify({ ok: true, idempotencyReplay: true }), { status: 200 });
     }
-    ingestCount.set(key, 1);
-    requests.push(body);
-    if (requests.length <= 2) {
+    if (attempts.length <= 2) {
       return new Response(JSON.stringify({ error: "at capacity", code: "capture_capacity_exceeded" }), {
         status: 503,
         headers: { "retry-after": "0" },
       });
     }
+    ingestCount.set(key, 1);
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   };
 
@@ -107,19 +109,23 @@ test("repeat 503 capacity refusals queue durably, then drain exactly once in ord
   // The replay drain runs in the background after each successful live observe.
   await settleObserveOutboxDrain(outbox);
 
-  // Live sends carry ONLY the new turn's messages — queued messages are never re-sent live.
-  assert.equal(requests.length, 3);
+  // Live sends carry ONLY the new turn's messages (queued messages are never re-sent live), then
+  // the two refused captures are replayed once each, in order, after the daemon accepted turn three.
   assert.deepEqual(
-    requests.map((r) => r.messages?.map((m) => m.content)),
-    [["turn one"], ["turn two"], ["turn three"]]
+    attempts.map((r) => r.messages?.map((m) => m.content)),
+    [["turn one"], ["turn two"], ["turn three"], ["turn one"], ["turn two"]]
   );
 
-  // The queued replays went out under the SAME identity as the refused send, so the
-  // server deduplicated them; each distinct payload was ingested exactly once.
-  const keyByContent = new Map(requests.map((r) => [r.messages?.[0]?.content ?? "", r.idempotencyKey ?? ""]));
-  assert.equal(ingestCount.get(keyByContent.get("turn one") ?? ""), 1);
-  assert.equal(ingestCount.get(keyByContent.get("turn two") ?? ""), 1);
-  assert.equal(ingestCount.get(keyByContent.get("turn three") ?? ""), 1);
+  // The replays went out under the SAME identity as the refused sends.
+  assert.equal(attempts[3].idempotencyKey, attempts[0].idempotencyKey);
+  assert.equal(attempts[4].idempotencyKey, attempts[1].idempotencyKey);
+
+  // The two refused captures were never ingested by the refusals; each was ingested exactly once
+  // by its replay, and turn three exactly once live.
+  assert.equal(ingestCount.size, 3, "three distinct captures ingested");
+  for (const attempt of [attempts[0], attempts[1], attempts[2]]) {
+    assert.equal(ingestCount.get(attempt.idempotencyKey ?? ""), 1, `${attempt.messages?.[0]?.content} ingested exactly once`);
+  }
   assert.equal(await outbox.size(), 0, "outbox drained after successful contact");
 
   // Delivered turns are remembered as observed so shutdown replay does not re-send them.
