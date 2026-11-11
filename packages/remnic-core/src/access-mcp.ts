@@ -30,7 +30,9 @@ import {
   validateRequest,
 } from "./access-schema.js";
 import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
-import { unknownToolError } from "./access-errors.js";
+import { EngramAccessForbiddenError, unknownToolError } from "./access-errors.js";
+import { log } from "./logger.js";
+import { McpFrameReader } from "./access-mcp-frames.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -86,6 +88,19 @@ function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
   if (!signal?.aborted) return;
   if (isAbortError(signal.reason)) throw signal.reason;
   throw abortError(message);
+}
+
+/**
+ * Map tools/call failures to a client-safe message. Unexpected backend/fs
+ * errors become a stable generic string; detail stays in the server log.
+ * Intended EngramAccessInputError / EngramAccessForbiddenError stay readable.
+ */
+function mcpToolErrorMessage(err: Error): string {
+  if (err instanceof EngramAccessInputError || err instanceof EngramAccessForbiddenError) {
+    return err.message;
+  }
+  log.error("engram MCP tools/call internal error", err);
+  return "internal error";
 }
 
 type McpRequestOptions = {
@@ -406,7 +421,7 @@ function parseMcpRequest<N extends SchemaName>(schemaName: N, args: Record<strin
 function optionalNonEmptyString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") {
-    throw new Error(`${label} expects a string; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a string; got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -420,11 +435,11 @@ function optionalNonEmptyString(value: unknown, label: string): string | undefin
 function optionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "number" && typeof value !== "string") {
-    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
   }
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-    throw new Error(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
+    throw new EngramAccessInputError(`${label} expects a positive integer; got ${JSON.stringify(value)}`);
   }
   return parsed;
 }
@@ -447,7 +462,7 @@ async function getMcpServerVersion(): Promise<string> {
 }
 
 export class EngramMcpServer {
-  private buffer = Buffer.alloc(0);
+  private readonly frames = new McpFrameReader();
   private flushTask: Promise<void> | null = null;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
@@ -2402,7 +2417,7 @@ export class EngramMcpServer {
         // Cancellation is transport control flow, not a JSON-RPC tool error.
         // Preserve the original AbortError so HTTP can silently end a dead socket.
         if (isAbortError(err)) throw err;
-        const message = err instanceof Error ? err.message : String(err);
+        const message = mcpToolErrorMessage(err instanceof Error ? err : new Error(String(err)));
         return {
           jsonrpc: "2.0",
           id,
@@ -2426,7 +2441,7 @@ export class EngramMcpServer {
 
   async runStdio(input: Readable, output: Writable): Promise<void> {
     input.on("data", (chunk) => {
-      this.buffer = Buffer.concat([this.buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      this.frames.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       this.scheduleFlush(output);
     });
     await new Promise<void>((resolve, reject) => {
@@ -2455,7 +2470,7 @@ export class EngramMcpServer {
         if (this.flushTask === task) {
           this.flushTask = null;
         }
-        if (this.buffer.length > 0) {
+        if (this.frames.hasUnread()) {
           this.scheduleFlush(output);
         }
       });
@@ -2463,30 +2478,15 @@ export class EngramMcpServer {
   }
 
   private async flushBuffer(output: Writable): Promise<void> {
-    while (true) {
-      const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd < 0) return;
-      const headerText = this.buffer.slice(0, headerEnd).toString("utf-8");
-      const headers = headerText.split("\r\n");
-      const contentLengthHeader = headers.find((line) => line.toLowerCase().startsWith("content-length:"));
-      if (!contentLengthHeader) {
-        this.buffer = Buffer.alloc(0);
-        return;
+    for (let frame = this.frames.next(); frame; frame = this.frames.next()) {
+      if (frame.kind === "too-large") {
+        this.writeMessage(output, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "frame too large" } });
+        continue;
       }
-      const contentLength = Number.parseInt(contentLengthHeader.split(":")[1]?.trim() ?? "0", 10);
-      if (!Number.isFinite(contentLength) || contentLength < 0) {
-        this.buffer = Buffer.alloc(0);
-        return;
-      }
-      const messageStart = headerEnd + 4;
-      const messageEnd = messageStart + contentLength;
-      if (this.buffer.length < messageEnd) return;
-      const body = this.buffer.slice(messageStart, messageEnd).toString("utf-8");
-      this.buffer = this.buffer.slice(messageEnd);
-
       let parsed: JsonRpcRequest;
       try {
-        parsed = JSON.parse(body) as JsonRpcRequest;
+        // SAFETY: handleRequest defaults missing fields; a non-object body throws and scheduleFlush answers -32700.
+        parsed = JSON.parse(frame.text) as JsonRpcRequest;
       } catch {
         this.writeMessage(output, {
           jsonrpc: "2.0",
@@ -2620,7 +2620,7 @@ export class EngramMcpServer {
             caps?.ops === undefined || capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? "")
         )
         .map((t) => t.name);
-      throw new Error(unknownToolError(name, visible));
+      throw new EngramAccessInputError(unknownToolError(name, visible));
     }
     const op = getOperation(migrated);
     if (!op) {
