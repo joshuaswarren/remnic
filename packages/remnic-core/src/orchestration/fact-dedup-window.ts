@@ -19,9 +19,6 @@ import { log } from "../logger.js";
  * OUTSIDE the window exactly like the consolidation LLM call stays outside
  * commitConsolidatedProfile.
  */
-export interface FactDedupProbe {
-  hasContentHashDedup(storage: StorageManager, key: string): Promise<boolean>;
-}
 
 interface FactDedupMatchOptions {
   readonly category: string;
@@ -55,28 +52,18 @@ function matchesActiveConnectorDuplicate(memory: MemoryFile, opts: FactDedupMatc
  * silently drop content.
  */
 export async function confirmActiveFactDuplicate(
-  probe: FactDedupProbe,
   storage: StorageManager,
   opts: FactDedupMatchOptions,
 ): Promise<boolean> {
-  let needsCorpusConfirm: boolean;
   try {
-    // Trust a MISS only when the index was authoritative both before and after
-    // the probe. Before: a rebuild that finishes after a stale MISS must not
-    // turn it into a clean not-duplicate. After: a peer write that holds the
-    // index lock between the snapshot and the probe leaves the MISS stale
-    // (#3312 finding 2).
-    const authoritativeBeforeProbe = await storage.isFactContentHashAuthoritative();
-    if (!(await probe.hasContentHashDedup(storage, opts.contentHashDedupKey))) {
-      if (authoritativeBeforeProbe && (await storage.isFactContentHashAuthoritative())) return false;
-      needsCorpusConfirm = true;
-    } else {
-      needsCorpusConfirm = true;
-    }
+    // One lookup returns the MISS together with the authority behind it, so a
+    // stale MISS is never paired with authority from another moment: any
+    // second read of authority can rebuild the index and bless it (#3312).
+    const lookup = await storage.lookupContentHash(opts.contentHashDedupKey);
+    if (!lookup.present && lookup.authoritative) return false;
   } catch {
     // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
     // NOT fail-open into a possible duplicate — confirm against the corpus.
-    needsCorpusConfirm = true;
   }
   try {
     // #2016 cold-tier finding: the authoritative content-hash rebuild unions

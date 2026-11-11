@@ -99,6 +99,15 @@ export class FactHashIndexNotAuthoritativeError extends Error {
   }
 }
 
+/**
+ * One dedup lookup: whether the shared index holds the hash, and whether that
+ * answer can be trusted as a clean MISS. Both fields describe the same instant.
+ */
+export interface ContentHashLookup {
+  readonly present: boolean;
+  readonly authoritative: boolean;
+}
+
 type DiskFingerprint = {
   mtimeMs: number;
   size: number;

@@ -215,6 +215,7 @@ import {
   FactHashIndexNotAuthoritativeError,
   CONTENT_HASH_INDEX_RETRY_MAX_DELAY_MS,
   type ContentHashIndexLockOptions,
+  type ContentHashLookup,
 } from "./storage/content-hash-index.js";
 import {
   TombstoneBlockedCaptureIndexHost,
@@ -4170,6 +4171,20 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   async isFactContentHashAuthoritative(): Promise<boolean> {
     return await this.ensureFactHashIndexAuthoritative();
+  }
+
+  /**
+   * Shared-index membership of `content` plus the authority of that answer,
+   * read in one synchronous step after the freshness check or locked rebuild.
+   * A separate probe and `isFactContentHashAuthoritative()` call can pair a
+   * stale MISS with authority from another moment, because each one may rebuild
+   * the index (#3312). Trust a MISS only when `authoritative`; otherwise
+   * confirm against the corpus.
+   */
+  async lookupContentHash(content: string): Promise<ContentHashLookup> {
+    const index = await this.getFactHashIndex();
+    await this.ensureFactHashIndexAuthoritative();
+    return { present: index.has(content), authoritative: this.factHashIndexAuthoritative === true };
   }
 
   async writeArtifact(
