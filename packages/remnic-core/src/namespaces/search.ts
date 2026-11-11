@@ -14,6 +14,9 @@ import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 const NESTED_NAMESPACE_FILTER_OVERFETCH_FACTOR = 4;
 const NESTED_NAMESPACE_FILTER_OVERFETCH_MIN = 50;
 
+// Short TTL so repeated health polls skip a full QMD re-probe (~1.5s).
+const HEALTH_RESULT_CACHE_TTL_MS = 10_000;
+
 export function namespaceCollectionName(
   baseCollection: string,
   namespace: string,
@@ -72,6 +75,27 @@ export interface NamespaceSearchHealth {
   embeddingBacklogThreshold: number;
 }
 
+/** True when the pending-embedding count is above a positive backlog threshold. */
+export function embeddingBacklogExceeds(pending: number | null, threshold: number): boolean {
+  return threshold > 0 && pending !== null && pending > threshold;
+}
+
+/**
+ * The one definition of a degraded search answer. The readiness consumer
+ * reports it, and `healthForNamespace` refuses to cache it.
+ */
+export function isSearchHealthDegraded(
+  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings">,
+  backlogThreshold: number,
+): boolean {
+  const active = health.available && health.collectionState !== "missing";
+  return (
+    !active ||
+    health.collectionState === "unknown" ||
+    embeddingBacklogExceeds(health.pendingEmbeddings, backlogThreshold)
+  );
+}
+
 type NamespaceScopedSearchConfig = PluginConfig & {
   hostEmbeddingProviderScope?: string;
 };
@@ -84,6 +108,11 @@ type BackendRecordOptions = {
 
 export class NamespaceSearchRouter {
   private readonly cache = new Map<string, Promise<NamespaceBackendRecord>>();
+  private readonly healthResultCache = new Map<
+    string,
+    { expiresAt: number; value: NamespaceSearchHealth }
+  >();
+
   private readonly pendingDisposals = new Set<Promise<void>>();
 
   constructor(
@@ -279,6 +308,11 @@ export class NamespaceSearchRouter {
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
     const key = namespace.trim() || this.config.defaultNamespace;
+    const cached = this.healthResultCache.get(key);
+    if (cached && cached.expiresAt > Date.now()) {
+      return { ...cached.value };
+    }
+
     const record = await this.createBackendRecordFor(
       key,
       execution,
@@ -310,7 +344,7 @@ export class NamespaceSearchRouter {
           ? "missing"
           : record.collectionState;
 
-      return {
+      const health: NamespaceSearchHealth = {
         collection: record.collection,
         memoryDir: record.memoryDir,
         available: liveRecord?.available ?? record.available,
@@ -326,6 +360,22 @@ export class NamespaceSearchRouter {
         oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
         embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
       };
+
+      // Cache only a healthy answer that carries backlog data when the backend
+      // reports status. A degraded or incomplete answer must re-probe so a
+      // readiness poll sees recovery on the next call, not one TTL late.
+      const statusMissing = backendStatus === null && "status" in diagnosticBackend;
+      if (
+        execution?.signal?.aborted !== true &&
+        !statusMissing &&
+        !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
+      ) {
+        this.healthResultCache.set(key, {
+          expiresAt: Date.now() + HEALTH_RESULT_CACHE_TTL_MS,
+          value: { ...health },
+        });
+      }
+      return { ...health };
     } finally {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
       await dispose?.call(record.backend);
@@ -358,6 +408,7 @@ export class NamespaceSearchRouter {
 
   /** Clear cached backend records so the next access re-probes availability. */
   clearCache(): void {
+    this.healthResultCache.clear();
     const pendingRecords = Array.from(this.cache.values());
     this.cache.clear();
     const disposal = Promise.allSettled(pendingRecords).then(async (settled) => {
@@ -379,6 +430,7 @@ export class NamespaceSearchRouter {
   /** Release any per-namespace backend handles held by cached records. */
   async dispose(): Promise<void> {
     await this.drainPendingDisposals();
+    this.healthResultCache.clear();
     const pendingRecords = Array.from(this.cache.values());
     this.cache.clear();
     const settled = await Promise.allSettled(pendingRecords);
@@ -395,6 +447,7 @@ export class NamespaceSearchRouter {
    * has been switched to NoopSearchBackend for a missing collection.
    */
   async disableSearchBackends(): Promise<void> {
+    this.healthResultCache.clear();
     const settled = await Promise.allSettled(this.cache.values());
     await Promise.allSettled(
       settled.flatMap((entry) => {

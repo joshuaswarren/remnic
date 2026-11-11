@@ -831,6 +831,345 @@ test("healthForNamespace stops waiting when namespace availability probe aborts"
   assert.equal(backend.disposed, 1);
 });
 
+test("healthForNamespace reuses a completed result within the TTL without re-probing", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+  try {
+    const created: FakeBackend[] = [];
+    const router = new NamespaceSearchRouter(
+      config(),
+      { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+      () => {
+        const backend = new FakeBackend(false, [], { check: "present" }, false, {
+          debugStatus: "cached-health",
+        });
+        backend.statusResult = {
+          pendingEmbeddings: 3,
+          oldestPendingAgeMs: 1_000,
+          totalFiles: 10,
+          embeddedFiles: 7,
+        };
+        created.push(backend);
+        return backend;
+      },
+    );
+
+    const first = await router.healthForNamespace("shared");
+    const second = await router.healthForNamespace("shared");
+
+    assert.equal(created.length, 1, "second call must not create another backend probe");
+    assert.equal(created[0]?.availabilitySignals.length, 1);
+    assert.deepEqual(created[0]?.checkCollections, ["openclaw-engram--ns-736861726564"]);
+    assert.deepEqual(first, second);
+    assert.equal(first.debugStatus, "cached-health");
+    assert.equal(first.pendingEmbeddings, 3);
+
+    first.available = false;
+    first.debugStatus = "mutated";
+    const third = await router.healthForNamespace("shared");
+    assert.equal(third.available, true, "returned health objects must be copies");
+    assert.equal(third.debugStatus, "cached-health");
+    assert.equal(created.length, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("healthForNamespace re-probes after the health result TTL elapses", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_700_000_000_000 });
+  try {
+    const created: FakeBackend[] = [];
+    const router = new NamespaceSearchRouter(
+      config(),
+      { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+      () => {
+        const backend = new FakeBackend(false, [], { check: "present" });
+        backend.statusResult = {
+          pendingEmbeddings: created.length,
+          oldestPendingAgeMs: 0,
+          totalFiles: 1,
+          embeddedFiles: 1,
+        };
+        created.push(backend);
+        return backend;
+      },
+    );
+
+    const first = await router.healthForNamespace("shared");
+    assert.equal(created.length, 1);
+    assert.equal(first.pendingEmbeddings, 0);
+
+    t.mock.timers.tick(10_000);
+    const second = await router.healthForNamespace("shared");
+
+    assert.equal(created.length, 2, "TTL expiry must force a fresh backend probe");
+    assert.equal(second.pendingEmbeddings, 1);
+    assert.equal(created[0]?.disposed, 1);
+    assert.equal(created[1]?.disposed, 1);
+  } finally {
+    t.mock.timers.reset();
+  }
+});
+
+test("healthForNamespace clearCache forces a re-probe before the TTL", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: created.length + 1,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1);
+  assert.equal(first.pendingEmbeddings, 1);
+
+  router.clearCache();
+  const second = await router.healthForNamespace("shared");
+
+  assert.equal(created.length, 2, "clearCache must drop the health result cache");
+  assert.equal(second.pendingEmbeddings, 2);
+});
+
+test("healthForNamespace does not cache a thrown probe", async () => {
+  let attempts = 0;
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    {
+      storageFor: async (namespace: string) => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new Error("storage unavailable");
+        }
+        return { dir: `/tmp/remnic/${namespace}` };
+      },
+    },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: 9,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  await assert.rejects(
+    () => router.healthForNamespace("shared"),
+    /storage unavailable/,
+  );
+  assert.equal(created.length, 0, "failed call must not create a backend");
+
+  const health = await router.healthForNamespace("shared");
+  assert.equal(health.pendingEmbeddings, 9);
+  assert.equal(created.length, 1);
+
+  const cached = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1, "only the successful result is cached");
+  assert.deepEqual(cached, health);
+});
+
+test("healthForNamespace does not cache an unavailable answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      if (created.length === 0) {
+        backend.available = false;
+      }
+      backend.statusResult = {
+        pendingEmbeddings: created.length,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.available, false);
+  assert.equal(created.length, 1);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.available, true, "recovery must be visible on the next probe");
+  assert.equal(created.length, 2, "unavailable answers must not be cached");
+});
+
+test("healthForNamespace does not cache a missing-collection answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(
+        false,
+        [],
+        created.length === 0 ? { check: "missing" } : { check: "present" },
+      );
+      backend.statusResult = {
+        pendingEmbeddings: created.length,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.collectionState, "missing");
+  assert.equal(created.length, 1);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.collectionState, "present", "collection recovery must re-probe");
+  assert.equal(created.length, 2, "missing-collection answers must not be cached");
+});
+
+function routerWithDegradedFirstProbe(
+  created: FakeBackend[],
+  firstCheck: CollectionState,
+  degradeFirst: (backend: FakeBackend) => void,
+): NamespaceSearchRouter {
+  return new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const isFirst = created.length === 0;
+      const backend = new FakeBackend(false, [], { check: isFirst ? firstCheck : "present" });
+      backend.statusResult = {
+        pendingEmbeddings: 10,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      if (isFirst) degradeFirst(backend);
+      created.push(backend);
+      return backend;
+    },
+  );
+}
+
+test("healthForNamespace does not cache an unknown-collection answer", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "unknown", () => {});
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.collectionState, "unknown");
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.collectionState, "present", "recovery must be visible on the next probe");
+  assert.equal(created.length, 2, "unknown-collection answers must not be cached");
+});
+
+test("healthForNamespace does not cache an answer whose backend status failed", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "present", (backend) => {
+    backend.statusResult = null;
+  });
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(first.pendingEmbeddings, null);
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.pendingEmbeddings, 10, "backlog data must be visible on the next probe");
+  assert.equal(created.length, 2, "answers without backlog data must not be cached");
+});
+
+test("healthForNamespace does not cache a backlog over the threshold", async () => {
+  const created: FakeBackend[] = [];
+  const router = routerWithDegradedFirstProbe(created, "present", (backend) => {
+    backend.statusResult = {
+      pendingEmbeddings: config().qmdEmbeddingBacklogThreshold + 1,
+      oldestPendingAgeMs: 0,
+      totalFiles: 1,
+      embeddedFiles: 1,
+    };
+  });
+
+  await router.healthForNamespace("shared");
+
+  const second = await router.healthForNamespace("shared");
+  assert.equal(second.pendingEmbeddings, 10, "a drained backlog must be visible on the next probe");
+  assert.equal(created.length, 2, "over-threshold answers must not be cached");
+});
+
+test("healthForNamespace dispose drops the health result cache", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: created.length + 1,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1);
+  assert.equal(first.pendingEmbeddings, 1);
+
+  await router.dispose();
+  const second = await router.healthForNamespace("shared");
+
+  assert.equal(created.length, 2, "dispose must drop the health result cache");
+  assert.equal(second.pendingEmbeddings, 2);
+});
+
+test("healthForNamespace disableSearchBackends drops the health result cache", async () => {
+  const created: FakeBackend[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => {
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = {
+        pendingEmbeddings: created.length + 1,
+        oldestPendingAgeMs: 0,
+        totalFiles: 1,
+        embeddedFiles: 1,
+      };
+      created.push(backend);
+      return backend;
+    },
+  );
+
+  const first = await router.healthForNamespace("shared");
+  assert.equal(created.length, 1);
+  assert.equal(first.pendingEmbeddings, 1);
+
+  await router.disableSearchBackends();
+  const second = await router.healthForNamespace("shared");
+
+  assert.equal(created.length, 2, "disableSearchBackends must drop the health result cache");
+  assert.equal(second.pendingEmbeddings, 2);
+});
+
+
+
 test("ensureNamespaceCollection does not cache aborted namespace backend probes", async () => {
   const created: FakeBackend[] = [];
   const router = new NamespaceSearchRouter(
