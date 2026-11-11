@@ -634,7 +634,7 @@ type ObserveBodySpy = {
   messages?: Array<{ content?: string }>;
 };
 
-test("observe bodies carry a stable content-derived idempotencyKey", async (t) => {
+test("observe bodies carry a per-call random idempotencyKey that a replay nonce pins", async (t) => {
   const originalFetch = globalThis.fetch;
   const bodies: ObserveBodySpy[] = [];
   globalThis.fetch = async (_input, init) => {
@@ -648,32 +648,44 @@ test("observe bodies carry a stable content-derived idempotencyKey", async (t) =
   });
 
   const client = new RemnicClient(baseConfig());
-  const message: ObserveMessage = { role: "user", content: "same text" };
+  const message: ObserveMessage = { role: "user", content: "yes" };
+  // Two genuinely separate identical turns ("yes" twice) must NOT share an
+  // identity, or the daemon's idempotency record would drop the second as a replay.
   await client.observe("sess-a", "/tmp/work", [message]);
   await client.observe("sess-a", "/tmp/work", [message]);
+  assert.match(String(bodies[0].idempotencyKey), /^obs-[0-9a-f-]{36}-[0-9a-f]{16}$/);
+  assert.notEqual(bodies[0].idempotencyKey, bodies[1].idempotencyKey, "separate identical turns get distinct keys");
 
-  assert.match(String(bodies[0].idempotencyKey), /^obs-[0-9a-f]{32}$/);
-  assert.equal(bodies[0].idempotencyKey, bodies[1].idempotencyKey, "identical payload ⇒ identical key (response-loss replay is deduplicated)");
+  // A replay of the SAME enqueued entry reuses its nonce, so key and body match.
+  const nonce = "11111111-2222-3333-4444-555555555555";
+  await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
+  await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
+  assert.equal(bodies[2].idempotencyKey, bodies[3].idempotencyKey, "same nonce + same payload => same key");
 
-  await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "different text" }]);
-  assert.notEqual(bodies[1].idempotencyKey, bodies[2].idempotencyKey, "different payload ⇒ different key");
-
-  await client.observe("sess-b", "/tmp/work", [message]);
-  assert.notEqual(bodies[0].idempotencyKey, bodies[3].idempotencyKey, "session is part of the identity");
+  // Same nonce but a re-split/different payload must not reuse a key (server would answer a payload conflict).
+  await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "different" }], { replayNonce: nonce });
+  assert.notEqual(bodies[3].idempotencyKey, bodies[4].idempotencyKey, "same nonce + different payload => different key");
 });
 
-test("chunked observe assigns distinct stable keys per chunk", () => {
+test("chunked observe assigns distinct keys per chunk, stable under the same replay nonce", () => {
   const messages: ObserveMessage[] = Array.from({ length: 40 }, (_, i) => ({
     role: "user" as const,
     content: `message-${i} ${"x".repeat(120)}`,
   }));
   const config = baseConfig();
-  const chunks = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048);
+  const nonce = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const chunks = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, nonce);
   assert.ok(chunks.length > 1, "test payload must split into multiple chunks");
   const keys = chunks.map((chunk) => chunk.idempotencyKey);
   assert.equal(new Set(keys).size, keys.length, "each chunk has its own identity");
-  const again = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048);
-  assert.deepEqual(keys, again.map((chunk) => chunk.idempotencyKey), "keys are stable across identical re-sends");
+  const again = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, nonce);
+  assert.deepEqual(keys, again.map((chunk) => chunk.idempotencyKey), "keys are stable for a replay of the same entry");
+  const other = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee");
+  assert.notDeepEqual(keys, other.map((chunk) => chunk.idempotencyKey), "a different enqueued entry never shares keys");
+  for (const chunk of chunks) {
+    const bytes = Buffer.byteLength(JSON.stringify(chunk), "utf8");
+    assert.ok(bytes <= 2048, `chunk with key stays within the byte budget (${bytes})`);
+  }
 });
 
 test("RemnicHttpError carries the server's retry-after hint", async (t) => {

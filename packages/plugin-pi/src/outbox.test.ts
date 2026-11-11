@@ -225,3 +225,74 @@ test("classifyObserveFailure separates retryable backpressure from permanent rej
   // Unknown failures are ambiguous: bounded retry with a stable idempotency key is safe.
   assert.equal(classifyObserveFailure(new Error("something unexpected")), "retry-ambiguous");
 });
+
+test("replay nonce is persisted with the entry, survives a restart, and reaches the sender", async () => {
+  const file = tmpOutboxPath("nonce");
+  const first = new ObserveOutbox(file);
+  await first.enqueue({ ...entryInput("kept"), replayNonce: "nonce-from-first-attempt" });
+
+  const reloaded = new ObserveOutbox(file);
+  const seen: Array<string | undefined> = [];
+  await reloaded.drain(async (entry) => {
+    seen.push(entry.replayNonce);
+  });
+  assert.deepEqual(seen, ["nonce-from-first-attempt"], "replay reuses the nonce of the original attempt");
+});
+
+test("an old-format entry without a nonce gets a stable one derived from its id", async () => {
+  const file = tmpOutboxPath("legacy-nonce");
+  fs.writeFileSync(file, entryLine("legacy"));
+  const seen: Array<string | undefined> = [];
+  for (let run = 0; run < 2; run += 1) {
+    const outbox = new ObserveOutbox(file);
+    await outbox.drain(async (entry) => {
+      seen.push(entry.replayNonce);
+      throw new RemnicHttpError(503, "busy", "buffer_admission_refused");
+    }, { maxAttempts: 1, jitterRatio: 0, sleep: async () => undefined });
+  }
+  assert.equal(seen[0], "id-legacy", "nonce falls back to the persisted entry id");
+  assert.equal(seen[1], seen[0], "and is identical after a restart");
+});
+
+test("status exposes queued, retried, delivered, dropped counters and the oldest entry age", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("stats"));
+  await outbox.enqueue(entryInput("a"));
+  await outbox.enqueue(entryInput("b"));
+  let failedOnce = false;
+  await outbox.drain(async () => {
+    if (!failedOnce) {
+      failedOnce = true;
+      throw new RemnicHttpError(503, "busy", "buffer_admission_refused");
+    }
+  }, { jitterRatio: 0, sleep: async () => undefined });
+  const done = await outbox.status();
+  assert.deepEqual(
+    { queued: done.queued, retried: done.retried, delivered: done.delivered, dropped: done.dropped, pending: done.pending, oldestAgeMs: done.oldestAgeMs },
+    { queued: 2, retried: 1, delivered: 2, dropped: 0, pending: 0, oldestAgeMs: null },
+  );
+});
+
+test("replaying an entry older than the server idempotency window warns that a duplicate is possible", async () => {
+  const file = tmpOutboxPath("age");
+  const queuedAtMs = Date.parse("2026-01-01T00:00:00.000Z");
+  fs.writeFileSync(file, entryLine("old"));
+  const notifications: Array<{ message: string; level: string }> = [];
+  const outbox = new ObserveOutbox(file);
+  await outbox.drain(async () => undefined, {
+    now: () => queuedAtMs + 16 * 60_000,
+    notify: (message, level) => notifications.push({ message, level }),
+  });
+  assert.equal(notifications.length, 1, "one warning for the one stale replay");
+  assert.match(notifications[0].message, /older than 15 minutes/);
+  assert.match(notifications[0].message, /duplicate/);
+  assert.equal(notifications[0].level, "warning");
+
+  fs.writeFileSync(file, entryLine("fresh"));
+  const quiet: string[] = [];
+  const fresh = new ObserveOutbox(file);
+  await fresh.drain(async () => undefined, {
+    now: () => queuedAtMs + 14 * 60_000,
+    notify: (message) => quiet.push(message),
+  });
+  assert.deepEqual(quiet, [], "no warning inside the window");
+});
