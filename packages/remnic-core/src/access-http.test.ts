@@ -22,6 +22,7 @@ import {
   type TokenCapabilities,
 } from "./access-token-capabilities.js";
 import { BriefingTimeoutError } from "./briefing-deadline.js";
+import { initLogger, resetLogger, type LoggerBackend } from "./logger.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import { createChatSession } from "./chat/chat-session.js";
@@ -815,7 +816,16 @@ test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
   }
 });
 
-test("HTTP observe answers 503 buffer_admission_refused when durable capture hits the entry cap", async () => {
+test("HTTP observe answers 503 buffer_admission_refused when durable capture hits the entry cap", async (t) => {
+  const warns: string[] = [];
+  const backend: LoggerBackend = {
+    info() {},
+    warn(msg) { warns.push(msg); },
+    error() {},
+    debug() {},
+  };
+  initLogger(backend, false, { timestamps: false });
+  t.after(() => resetLogger());
   const refusal = new Error("buffer at session-entry cap");
   refusal.name = "ReplayAdmissionRefusedError";
   // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
@@ -852,6 +862,58 @@ test("HTTP observe answers 503 buffer_admission_refused when durable capture hit
       error: "buffer at session-entry cap",
       code: "buffer_admission_refused",
     });
+    assert.equal(response.headers.get("retry-after"), "5", "503 must carry the advisory backpressure hint");
+    const requestId = response.headers.get("x-request-id");
+    assert.ok(requestId, "the response must expose the correlation id");
+    assert.ok(
+      warns.some((line) => line.includes(requestId) && line.includes("buffer admission refused")),
+      `capacity refusal must log a correlated warn, got ${JSON.stringify(warns)}`,
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP observe missing-storage-target refusal is a non-retryable request fault, not 503 backpressure", async () => {
+  const refusal = new Error(
+    "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
+  );
+  refusal.name = "StorageTargetRequiredError";
+  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
+  const service = Object.assign({} as EngramAccessService, {
+    observe: async () => {
+      throw refusal;
+    },
+  });
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+
+  const status = await server.start();
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/observe`,
+      {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          sessionKey: "missing-target-test-session",
+          messages: [{ role: "user", content: "no target" }],
+        }),
+      },
+    );
+    assert.equal(response.status, 400, "a request with no storage target cannot succeed on retry");
+    assert.deepEqual(await response.json(), {
+      error: refusal.message,
+      code: "storage_target_required",
+    });
+    assert.equal(response.headers.get("retry-after"), null, "no backpressure hint on a permanent fault");
   } finally {
     await server.stop();
   }
