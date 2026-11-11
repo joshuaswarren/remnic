@@ -108,6 +108,28 @@ test("RemnicClient forwards caller aborts to observe requests", async (t) => {
   );
 });
 
+test("observe sends a stable idempotency key and reuses it on a retry", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: string[] = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    bodies.push(String(init?.body ?? ""));
+    calls += 1;
+    if (calls === 1) throw new Error("fetch failed");
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const client = new RemnicClient({ ...baseConfig() });
+  await client.observe("session", "/cwd", [{ role: "user", content: "observe" }], { timeoutMs: 5000, maxRetries: 1 });
+  assert.equal(bodies.length, 2);
+  const first = JSON.parse(bodies[0] ?? "");
+  const second = JSON.parse(bodies[1] ?? "");
+  assert.ok(first.idempotencyKey);
+  assert.equal(second.idempotencyKey, first.idempotencyKey);
+});
+
 function baseConfig(): RemnicPiConfig {
   return {
     remnicDaemonUrl: "http://127.0.0.1:4318",

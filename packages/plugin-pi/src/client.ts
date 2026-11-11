@@ -93,6 +93,7 @@ interface ObserveBody {
   namespace?: string;
   skipExtraction: boolean;
   messages: ObserveMessage[];
+  idempotencyKey?: string;
 }
 
 const encoder = new TextEncoder();
@@ -316,7 +317,11 @@ export class RemnicClient {
       signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
-    const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
+    // One key per chunk, made once and reused on every retry of that chunk, so a
+    // client timeout that re-sends the same chunk does not admit the turns twice.
+    const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes).map(
+      (chunk) => ({ ...chunk, idempotencyKey: randomUUID() }),
+    );
     if (chunks.length === 1) {
       return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
