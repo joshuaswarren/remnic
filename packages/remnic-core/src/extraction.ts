@@ -1122,10 +1122,8 @@ export class ExtractionEngine {
     const groundingSource = boundedTurns
       .map((turn) => turn.content)
       .join("\n\n");
-    const assertionSource = boundedTurns
-      .filter((turn) => turn.extractionContextOnly !== true)
-      .map((turn) => turn.content)
-      .join("\n\n");
+    const assertionTurns = boundedTurns.filter((turn) => turn.extractionContextOnly !== true);
+    const assertionSource = assertionTurns.map((turn) => turn.content).join("\n\n");
     const roleAssertionSources: ExtractionGroundingRoleSources = {
       profile: boundedTurns
         .filter((turn) => turn.role === "user" && turn.extractionContextOnly !== true)
@@ -1171,6 +1169,7 @@ export class ExtractionEngine {
       sourceConnector,
       ambientCapture,
       scopeClassificationEnabled: lifecycleCaps.extractionScopeClassification,
+      turns: assertionTurns.map((turn) => turn.content),
     };
 
     const traceId = crypto.randomUUID();

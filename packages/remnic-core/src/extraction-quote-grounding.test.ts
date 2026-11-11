@@ -593,3 +593,45 @@ test("a quote naming rewritten text is located after temporal anchoring", () => 
   );
   assert.equal(grounded.facts.length, 1);
 });
+
+const TURN_ONE =
+  "The river gauges read high all week near the mill.\n\nAlso the culvert repair is scheduled for next Tuesday at the plant.";
+const TURN_TWO = "A different conversation about the warehouse roof leaks and the insurance claim.";
+const TURNED_SOURCE = `${TURN_ONE}\n\n${TURN_TWO}`;
+
+test("a quote crossing a blank line inside one turn is anchored when turn boundaries are given", () => {
+  const quote = "near the mill. Also the culvert repair is scheduled for next Tuesday at the plant";
+  const anchors = quoteAnchors(quote, TURNED_SOURCE, undefined, [TURN_ONE, TURN_TWO]);
+  assert.equal(anchors.length, 1);
+  assert.equal(anchors[0]!.quote, quote);
+});
+
+test("a quote spanning two turns still yields no anchor even with turn boundaries given", () => {
+  const stitched = "scheduled for next Tuesday at the plant.\n\nA different conversation about the warehouse";
+  assert.deepEqual(quoteAnchors(stitched, TURNED_SOURCE, undefined, [TURN_ONE, TURN_TWO]), []);
+});
+
+test("the anchor window reaches past a blank line to its turn's end, never into the next turn", () => {
+  const [anchor] = quoteAnchors(
+    "The river gauges read high all week near the mill.",
+    TURNED_SOURCE,
+    undefined,
+    [TURN_ONE, TURN_TWO],
+  );
+  assert.ok(anchor !== undefined);
+  assert.ok(anchor.window.includes("culvert repair is scheduled for next Tuesday at the plant"));
+  assert.ok(!anchor.window.includes("warehouse"));
+});
+
+test("without turn boundaries a blank line still rejects the quote and cuts the window", () => {
+  const quote = "near the mill. Also the culvert repair is scheduled for next Tuesday at the plant";
+  assert.deepEqual(quoteAnchors(quote, TURNED_SOURCE), []);
+  const [anchor] = quoteAnchors("The river gauges read high all week near the mill.", TURNED_SOURCE);
+  assert.ok(anchor !== undefined);
+  assert.ok(!anchor.window.includes("culvert repair"));
+});
+
+test("turn texts that do not tile the source fall back to blank-line behavior", () => {
+  const quote = "near the mill. Also the culvert repair is scheduled for next Tuesday at the plant";
+  assert.deepEqual(quoteAnchors(quote, TURNED_SOURCE, undefined, ["a turn that is not in the source"]), []);
+});

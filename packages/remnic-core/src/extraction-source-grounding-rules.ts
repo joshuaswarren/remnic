@@ -43,6 +43,8 @@ export interface ExtractionSourceGroundingOptions {
   spanMode?: "off" | "shadow" | "on";
   /** Rewrite applied to the source before this stage, so a verbatim quote can still be located in it. */
   quoteTransform?: (quote: string) => string;
+  /** Turn texts the sources were joined from, so quote anchors cut at real turn boundaries. */
+  turns?: readonly string[];
 }
 
 export function applyExtractionSourceGrounding(
@@ -68,6 +70,7 @@ export function applyExtractionSourceGrounding(
         ? undefined
         : anchorSource(roleAssertionSources.identity),
     };
+  const anchoredTurns = options.turns === undefined ? undefined : options.turns.map((turn) => anchorSource(turn));
   return filterExtractionResultBySource(
     result,
     anchorSource(sourceText),
@@ -78,6 +81,7 @@ export function applyExtractionSourceGrounding(
     options.anchorTemporalExpressions
       ? (quote) => anchorSource(options.quoteTransform?.(quote) ?? quote)
       : undefined,
+    anchoredTurns,
   );
 }
 
@@ -1117,6 +1121,7 @@ export function filterExtractionResultBySource(
   eventTimeNormalizer?: (eventTime: string) => string,
   spanMode: "off" | "shadow" | "on" = "off",
   quoteTransform?: (quote: string) => string,
+  turns?: readonly string[],
 ): ExtractionResult {
   if (source.trim().length === 0) {
     return {
@@ -1136,7 +1141,7 @@ export function filterExtractionResultBySource(
     result.facts.some((fact) => typeof fact.quote === "string") ? tokenize(quoteSource) : new Set(),
   );
   const facts = result.facts.flatMap((fact) => {
-    const anchors = quoteAnchors(fact.quote, quoteSource, quoteTransform);
+    const anchors = quoteAnchors(fact.quote, quoteSource, quoteTransform, turns);
     const grounded = filterGroundedFact(
       fact,
       source,

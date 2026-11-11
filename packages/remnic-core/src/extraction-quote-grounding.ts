@@ -67,7 +67,18 @@ function normalizeWhitespaceWithMap(source: string): { text: string; originalInd
   return { text: chars.join(""), originalIndex };
 }
 
-function findQuoteAnchors(quote: string, source: string): QuoteAnchor[] {
+function turnStartOffsets(source: string, turns: readonly string[]): readonly number[] | undefined {
+  const offsets: number[] = [];
+  let at = 0;
+  for (const turn of turns) {
+    if (!source.startsWith(turn, at)) return undefined;
+    offsets.push(at);
+    at += turn.length + TURN_SEPARATOR.length;
+  }
+  return at - TURN_SEPARATOR.length === source.length ? offsets : undefined;
+}
+
+function findQuoteAnchors(quote: string, source: string, bounds?: readonly number[]): QuoteAnchor[] {
   const needle = quote.replace(/\s+/gu, " ").trim();
   if (needle.length < QUOTE_ANCHOR_MIN_CHARS) return [];
   const normalized = normalizeWhitespaceWithMap(source);
@@ -79,17 +90,33 @@ function findQuoteAnchors(quote: string, source: string): QuoteAnchor[] {
     from = at + 1;
     const start = normalized.originalIndex[at]!;
     const end = normalized.originalIndex[at + needle.length - 1]! + 1;
-    if (source.slice(start, end).includes(TURN_SEPARATOR)) continue;
 
-    let before = source.slice(Math.max(0, start - QUOTE_ANCHOR_CONTEXT_CHARS), start);
-    const turnStart = before.lastIndexOf(TURN_SEPARATOR);
-    if (turnStart >= 0) before = before.slice(turnStart + TURN_SEPARATOR.length);
-    else if (start > QUOTE_ANCHOR_CONTEXT_CHARS) before = before.replace(/^\S+/u, "");
-
-    let after = source.slice(end, end + QUOTE_ANCHOR_CONTEXT_CHARS);
-    const turnEnd = after.indexOf(TURN_SEPARATOR);
-    if (turnEnd >= 0) after = after.slice(0, turnEnd);
-    else if (source.length - end > QUOTE_ANCHOR_CONTEXT_CHARS) after = after.replace(/\S+$/u, "");
+    let before: string;
+    let after: string;
+    if (bounds === undefined) {
+      if (source.slice(start, end).includes(TURN_SEPARATOR)) continue;
+      before = source.slice(Math.max(0, start - QUOTE_ANCHOR_CONTEXT_CHARS), start);
+      const sepBefore = before.lastIndexOf(TURN_SEPARATOR);
+      if (sepBefore >= 0) before = before.slice(sepBefore + TURN_SEPARATOR.length);
+      else if (start > QUOTE_ANCHOR_CONTEXT_CHARS) before = before.replace(/^\S+/u, "");
+      after = source.slice(end, end + QUOTE_ANCHOR_CONTEXT_CHARS);
+      const sepAfter = after.indexOf(TURN_SEPARATOR);
+      if (sepAfter >= 0) after = after.slice(0, sepAfter);
+      else if (source.length - end > QUOTE_ANCHOR_CONTEXT_CHARS) after = after.replace(/\S+$/u, "");
+    } else {
+      let turnStart = 0;
+      let turnEnd = source.length;
+      for (const bound of bounds) {
+        if (bound <= start) turnStart = bound;
+        else { turnEnd = bound; break; }
+      }
+      if (turnEnd < end) continue;
+      before = source.slice(Math.max(turnStart, start - QUOTE_ANCHOR_CONTEXT_CHARS), start);
+      if (start - QUOTE_ANCHOR_CONTEXT_CHARS > turnStart) before = before.replace(/^\S+/u, "");
+      const contextEnd = Math.min(turnEnd, end + QUOTE_ANCHOR_CONTEXT_CHARS);
+      after = source.slice(end, contextEnd);
+      if (end + QUOTE_ANCHOR_CONTEXT_CHARS < contextEnd) after = after.replace(/\S+$/u, "");
+    }
 
     anchors.push({ quote: needle, window: `${before}${needle.replace(/;/gu, ",")}${after}` });
   }
@@ -109,16 +136,22 @@ function findQuoteAnchors(quote: string, source: string): QuoteAnchor[] {
  * `source` may have been rewritten before grounding (temporal anchoring,
  * pronoun resolution) while the model quoted the original words. When the raw
  * quote is not found, `transformQuote` applies the same rewrite to the quote.
+ *
+ * `turns` are the texts `source` was joined from; when they tile `source`
+ * exactly, quotes and windows cut at real turn boundaries instead of any
+ * blank line. Without them, every `TURN_SEPARATOR` run is a boundary.
  */
 export function quoteAnchors(
   quote: string | undefined,
   source: string,
   transformQuote?: (quote: string) => string,
+  turns?: readonly string[],
 ): QuoteAnchor[] {
   if (typeof quote !== "string") return [];
-  const exact = findQuoteAnchors(quote, source);
+  const bounds = turns === undefined ? undefined : turnStartOffsets(source, turns);
+  const exact = findQuoteAnchors(quote, source, bounds);
   if (exact.length > 0 || transformQuote === undefined) return exact;
-  return findQuoteAnchors(transformQuote(quote), source);
+  return findQuoteAnchors(transformQuote(quote), source, bounds);
 }
 
 export function tokenPool(tokens: ReadonlySet<string>): TokenPool {
