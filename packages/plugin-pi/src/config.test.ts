@@ -412,3 +412,15 @@ test("loadConfig accepts observeMaxRetries: 0 to disable retries (review codex)"
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("an empty observeOutboxPath resolves to the documented default instead of throwing", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-outbox-config-"));
+  try {
+    const configPath = path.join(dir, "remnic.config.json");
+    fs.writeFileSync(configPath, JSON.stringify({ authToken: "t", observeOutboxPath: "" }), "utf8");
+    const config = loadConfig({ configPath, env: {} });
+    assert.equal(config.observeOutboxPath, undefined, "empty means the Pi-home default applies at runtime");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

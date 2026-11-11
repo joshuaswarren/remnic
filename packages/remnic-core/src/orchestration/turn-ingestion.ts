@@ -59,8 +59,8 @@ import {
 
 // The class lives in ../buffer-admission.js next to BufferAdmissionRefusedError;
 // re-exported here so existing importers keep their import path.
-import { ReplayAdmissionRefusedError } from "../buffer-admission.js";
-export { ReplayAdmissionRefusedError };
+import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
+export { ReplayAdmissionRefusedError, StorageTargetRequiredError };
 
 export interface TurnIngestionDeps {
   readonly buffer: SmartBuffer;
@@ -428,7 +428,7 @@ export class TurnIngestionCoordinator {
         ? options.scopeProfileWritePlan?.writeNamespace
         : this.deps.config.defaultNamespace);
     if (!resolvedWriteTarget) {
-      throw new ReplayAdmissionRefusedError(
+      throw new StorageTargetRequiredError(
         "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
       );
     }

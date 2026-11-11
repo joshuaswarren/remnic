@@ -1600,7 +1600,10 @@ test("#3251 namespaced buffered admission without writeNamespaceOverride or plan
         [makeReplayTurn("no-target-sess", "capture without target")],
         bufferedObserveOptions({ sessionOwnerPrincipal: "alice" }),
       ),
-      /requires an explicit storage target/,
+      (err: Error) =>
+        err.name === "StorageTargetRequiredError" &&
+        /requires an explicit storage target/.test(err.message),
+      "the missing-target refusal must be its own non-retryable class, never ReplayAdmissionRefusedError",
     );
     assert.equal(lcmCalls.length, 0, "zero LCM archival on rejected admission");
     assert.equal(queued.length, 0, "zero extraction queued on rejected admission");

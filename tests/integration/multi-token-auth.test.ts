@@ -13,10 +13,14 @@ const ROOT = path.resolve(__dirname, "../..");
 
 test("EngramAccessHttpServer options accepts authTokens array", async () => {
   // Verify the type accepts authTokens
-  const accessHttpPath = path.join(ROOT, "packages/remnic-core/src/access-http.ts");
-  const content = fs.readFileSync(accessHttpPath, "utf-8");
-  assert.ok(content.includes("authTokens"), "access-http.ts must define authTokens option");
+  // The options interface lives in access-http-types.ts (split out of access-http.ts for the
+  // file-size ratchet) and is re-exported from access-http.ts.
+  const typesPath = path.join(ROOT, "packages/remnic-core/src/access-http-types.ts");
+  const content = fs.readFileSync(typesPath, "utf-8");
+  assert.ok(content.includes("authTokens"), "access-http-types.ts must define authTokens option");
   assert.ok(content.includes("authTokens?: string[]"), "authTokens must be string[]");
+  const accessHttp = fs.readFileSync(path.join(ROOT, "packages/remnic-core/src/access-http.ts"), "utf-8");
+  assert.ok(accessHttp.includes("EngramAccessHttpServerOptions"), "access-http.ts must still export the options type");
 });
 
 test("EngramAccessHttpServer isAuthorized checks both primary and connector tokens", async () => {

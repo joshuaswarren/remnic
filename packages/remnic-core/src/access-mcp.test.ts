@@ -150,6 +150,30 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
 });
 
 
+test("MCP reports a missing storage target as a non-retryable storage_target_required error", async () => {
+  const failure = new Error("accepted capture requires an explicit storage target");
+  failure.name = "StorageTargetRequiredError";
+  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
+  const service = Object.assign({} as EngramAccessService, {
+    observe: async () => {
+      throw failure;
+    },
+  });
+  const server = new EngramMcpServer(service);
+  const response = await server.handleRequest(
+    makeToolRequest("engram.observe", {
+      sessionKey: "no-target-session",
+      messages: [{ role: "user", content: "cannot succeed on retry" }],
+    }),
+  );
+  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
+  const result = response as {
+    result?: { isError?: boolean; structuredContent?: { code?: string; retryable?: boolean } };
+  };
+  assert.equal(result.result?.isError, true);
+  assert.deepEqual(result.result?.structuredContent, { code: "storage_target_required", retryable: false }, JSON.stringify(response));
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Finding 2 (#396 new): invalid MCP briefing format values must be rejected
 // ──────────────────────────────────────────────────────────────────────────

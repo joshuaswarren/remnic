@@ -44,6 +44,12 @@ export interface RemnicPiConfig {
    */
   observeMaxRetries: number;
   /**
+   * File backing the durable observe outbox (capacity refusals and ambiguous
+   * failures queue here until the daemon accepts them). Empty/undefined
+   * resolves to `<pi agent home>/remnic/observe-outbox.jsonl`.
+   */
+  observeOutboxPath?: string;
+  /**
    * Cooldown base for the daemon-reachability circuit breaker. When observe/
    * recall fails on a timeout or connection error, subsequent turns skip fast
    * for an exponentially growing window starting at this value (issue #1626).
@@ -305,6 +311,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
       "observeMaxBytes",
     ),
     observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
+    observeOutboxPath: coerceOptionalString(fileConfig.observeOutboxPath, "observeOutboxPath"),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
     recallTimeoutThreshold,
     recallTimeoutWindow,

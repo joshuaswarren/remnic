@@ -130,7 +130,7 @@ test("observe sends a stable idempotency key and reuses it on a retry", async (t
   assert.equal(second.idempotencyKey, first.idempotencyKey);
 });
 
-test("a timed-out observe reuses its key, and a success mints a new one", async (t) => {
+test("a timed-out observe is replayed under its replay nonce, and a new observe mints a new key", async (t) => {
   const originalFetch = globalThis.fetch;
   const bodies: string[] = [];
   let calls = 0;
@@ -151,8 +151,11 @@ test("a timed-out observe reuses its key, and a success mints a new one", async 
   });
   const client = new RemnicClient({ ...baseConfig() });
   const messages = [{ role: "user" as const, content: "observe" }];
-  await assert.rejects(() => client.observe("session", "/cwd", messages, { timeoutMs: 40, maxRetries: 0 }));
-  await client.observe("session", "/cwd", messages, { timeoutMs: 5000, maxRetries: 0 });
+  // The caller owns the replay identity (the live hook and the outbox persist it), so a
+  // replay in a later call or process reuses the key; there is no hidden in-memory map.
+  const replayNonce = "33333333-4444-5555-6666-777777777777";
+  await assert.rejects(() => client.observe("session", "/cwd", messages, { timeoutMs: 40, maxRetries: 0, replayNonce }));
+  await client.observe("session", "/cwd", messages, { timeoutMs: 5000, maxRetries: 0, replayNonce });
   const timedOut = JSON.parse(bodies[0] ?? "");
   const retried = JSON.parse(bodies[1] ?? "");
   assert.equal(retried.idempotencyKey, timedOut.idempotencyKey);
@@ -700,4 +703,99 @@ test("recall shares a per-turn deadline across retries even when the caller omit
     /exceeded the 50ms budget before retry/,
   );
   assert.equal(calls, 1, "recall defaulted to the turn budget and stopped retries instead of looping unbounded");
+});
+
+type ObserveBodySpy = {
+  idempotencyKey?: string;
+  messages?: Array<{ content?: string }>;
+};
+
+test("observe bodies carry a per-call random idempotencyKey that a replay nonce pins", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: ObserveBodySpy[] = [];
+  globalThis.fetch = async (_input, init) => {
+    // SAFETY: this test's own fetch mock serialized the observe request body; the
+    // spy only reads idempotencyKey/messages and every read is asserted.
+    bodies.push(JSON.parse(String(init?.body ?? "{}")) as ObserveBodySpy);
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  const message: ObserveMessage = { role: "user", content: "yes" };
+  // Two genuinely separate identical turns ("yes" twice) must NOT share an
+  // identity, or the daemon's idempotency record would drop the second as a replay.
+  await client.observe("sess-a", "/tmp/work", [message]);
+  await client.observe("sess-a", "/tmp/work", [message]);
+  assert.match(String(bodies[0].idempotencyKey), /^obs-[0-9a-f-]{36}-[0-9a-f]{16}$/);
+  assert.notEqual(bodies[0].idempotencyKey, bodies[1].idempotencyKey, "separate identical turns get distinct keys");
+
+  // A replay of the SAME enqueued entry reuses its nonce, so key and body match.
+  const nonce = "11111111-2222-3333-4444-555555555555";
+  await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
+  await client.observe("sess-a", "/tmp/work", [message], { replayNonce: nonce });
+  assert.equal(bodies[2].idempotencyKey, bodies[3].idempotencyKey, "same nonce + same payload => same key");
+
+  // Same nonce but a re-split/different payload must not reuse a key (server would answer a payload conflict).
+  await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "different" }], { replayNonce: nonce });
+  assert.notEqual(bodies[3].idempotencyKey, bodies[4].idempotencyKey, "same nonce + different payload => different key");
+});
+
+test("chunked observe assigns distinct keys per chunk, stable under the same replay nonce", () => {
+  const messages: ObserveMessage[] = Array.from({ length: 40 }, (_, i) => ({
+    role: "user" as const,
+    content: `message-${i} ${"x".repeat(120)}`,
+  }));
+  const config = baseConfig();
+  const nonce = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const chunks = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, nonce);
+  assert.ok(chunks.length > 1, "test payload must split into multiple chunks");
+  const keys = chunks.map((chunk) => chunk.idempotencyKey);
+  assert.equal(new Set(keys).size, keys.length, "each chunk has its own identity");
+  const again = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, nonce);
+  assert.deepEqual(keys, again.map((chunk) => chunk.idempotencyKey), "keys are stable for a replay of the same entry");
+  const other = chunkObservePayload(config, "sess-a", "/tmp/work", messages, 2048, "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee");
+  assert.notDeepEqual(keys, other.map((chunk) => chunk.idempotencyKey), "a different enqueued entry never shares keys");
+  for (const chunk of chunks) {
+    const bytes = Buffer.byteLength(JSON.stringify(chunk), "utf8");
+    assert.ok(bytes <= 2048, `chunk with key stays within the byte budget (${bytes})`);
+  }
+});
+
+test("RemnicHttpError carries the server's retry-after hint", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let call = 0;
+  globalThis.fetch = async () => {
+    call += 1;
+    if (call === 1) {
+      return new Response(JSON.stringify({ error: "at capacity", code: "capture_capacity_exceeded" }), {
+        status: 503,
+        headers: { "retry-after": "5" },
+      });
+    }
+    return new Response(JSON.stringify({ error: "at capacity", code: "capture_capacity_exceeded" }), { status: 503 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  try {
+    await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "m1" }]);
+    assert.fail("expected the 503 to throw");
+  } catch (err) {
+    if (!(err instanceof RemnicHttpError)) throw err;
+    assert.equal(err.status, 503);
+    assert.equal(err.code, "capture_capacity_exceeded");
+    assert.equal(err.retryAfterMs, 5000, "integer-seconds retry-after is parsed to ms");
+  }
+  try {
+    await client.observe("sess-a", "/tmp/work", [{ role: "user", content: "m1" }]);
+    assert.fail("expected the 503 to throw");
+  } catch (err) {
+    if (!(err instanceof RemnicHttpError)) throw err;
+    assert.equal(err.retryAfterMs, undefined, "no header ⇒ no hint");
+  }
 });

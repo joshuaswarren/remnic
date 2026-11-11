@@ -27,6 +27,19 @@ export class ReplayAdmissionRefusedError extends Error {
 }
 
 /**
+ * Durable observe capture rejected because the request resolves to no storage
+ * target (namespaces ON with neither writeNamespaceOverride nor a plan's
+ * writeNamespace). A property of the request — retrying cannot fix it — so it
+ * must never be classified as retryable backpressure.
+ */
+export class StorageTargetRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StorageTargetRequiredError";
+  }
+}
+
+/**
  * Live-admission bound (#1908 policy, backlog-safe): a NEW session enters
  * only while under the cap or when an EMPTY entry can be reclaimed. Buffered
  * backlog is never dropped for a live capture; the caller refuses instead.

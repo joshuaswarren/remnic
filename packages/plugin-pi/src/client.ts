@@ -44,6 +44,11 @@ export interface RequestOptions {
 export interface ObserveOptions extends RequestOptions {
   /** Soft cap on a single observe POST body in bytes; oversize batches are chunked. */
   maxBytes?: number;
+  /**
+   * Replay identity of ONE enqueued observe. Generated once per logical observe and
+   * reused on every retry or outbox replay of it; omitted means a fresh random one.
+   */
+  replayNonce?: string;
 }
 
 /**
@@ -65,6 +70,8 @@ export class RemnicHttpError extends Error {
     message: string,
     /** Machine-readable error code from the daemon's JSON error body (e.g. `not_ready`). */
     readonly code?: string,
+    /** Server backpressure hint from the `retry-after` header, parsed to ms. */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
   }
@@ -93,6 +100,7 @@ interface ObserveBody {
   namespace?: string;
   skipExtraction: boolean;
   messages: ObserveMessage[];
+  /** Replay identity (`obs-<nonce>-<body hash>`), assigned per chunk in chunkObservePayload. */
   idempotencyKey?: string;
 }
 
@@ -102,9 +110,6 @@ const RETRY_BASE_DELAY_MS = 200;
 const STORE_JITTER_MS = 250;
 const MAX_COOLDOWN_MS = 60_000;
 const TRUNCATION_MARKER = "\n\n[Remnic observe truncated: payload exceeded client size cap]";
-/** Fixed length so the chunker can reserve the key inside the byte cap. A UUID is always 36 characters. */
-const OBSERVE_KEY_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
-const OBSERVE_KEY_LIMIT = 32;
 
 export class RemnicClient {
   private requestId = 0;
@@ -113,53 +118,10 @@ export class RemnicClient {
   // callers skip fast instead of blocking every turn on a doomed request (#1626).
   private unreachableUntil = 0;
   private consecutiveFailures = 0;
-  /** Chunk fingerprint to its nonce, kept until that send is acknowledged. */
-  private observeKeys = new Map<string, string>();
   /** Bumped on every markReachable so a deferred startup probe can drop a stale unreachable. */
   private reachabilityGeneration = 0;
 
   constructor(private readonly config: RemnicPiConfig) {}
-
-  private observeChunkFingerprint(chunk: ObserveBody): string {
-    return createHash("sha256")
-      .update(JSON.stringify({
-        sessionKey: chunk.sessionKey,
-        cwd: chunk.cwd,
-        namespace: chunk.namespace ?? "",
-        skipExtraction: chunk.skipExtraction,
-        messages: chunk.messages,
-      }))
-      .digest("hex");
-  }
-
-  private stableObserveKey(chunk: ObserveBody): string {
-    const fingerprint = this.observeChunkFingerprint(chunk);
-    const existing = this.observeKeys.get(fingerprint);
-    if (existing !== undefined) {
-      this.observeKeys.delete(fingerprint);
-      this.observeKeys.set(fingerprint, existing);
-      return existing;
-    }
-    const key = randomUUID();
-    this.observeKeys.set(fingerprint, key);
-    while (this.observeKeys.size > OBSERVE_KEY_LIMIT) {
-      const oldest = this.observeKeys.keys().next().value;
-      if (oldest === undefined) break;
-      this.observeKeys.delete(oldest);
-    }
-    return key;
-  }
-
-  private dropObserveKey(chunk: ObserveBody): void {
-    this.observeKeys.delete(this.observeChunkFingerprint(chunk));
-  }
-
-  private async sendObserveChunk(chunk: ObserveBody, options: RequestOptions) {
-    const keyed = { ...chunk, idempotencyKey: this.stableObserveKey(chunk) };
-    const result = await this.requestWithRetry("POST", "/engram/v1/observe", keyed, options);
-    this.dropObserveKey(chunk);
-    return result;
-  }
 
   /** True when the daemon is not in a known-unreachable cooldown. */
   isReachable(): boolean {
@@ -363,11 +325,16 @@ export class RemnicClient {
       signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
-    // One key per chunk, made once and reused on every retry of that chunk, so a
-    // client timeout that re-sends the same chunk does not admit the turns twice.
-    const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
+    const chunks = chunkObservePayload(
+      this.config,
+      sessionKey,
+      cwd,
+      messages,
+      maxBytes,
+      options.replayNonce ?? randomUUID(),
+    );
     if (chunks.length === 1) {
-      return this.sendObserveChunk(chunks[0], retryOptions);
+      return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
     // Multiple chunks: send sequentially within the SAME per-turn deadline so
     // the TOTAL observe time stays under turnBudgetMs (not per-chunk), which
@@ -384,7 +351,7 @@ export class RemnicClient {
         );
       }
       const chunkOptions: RequestOptions = { ...retryOptions, timeoutMs: remaining };
-      const result = await this.sendObserveChunk(chunks[i], chunkOptions);
+      const result = await this.requestWithRetry("POST", "/engram/v1/observe", chunks[i], chunkOptions);
       if (result && typeof result === "object") {
         results.push(result);
       }
@@ -547,11 +514,12 @@ export class RemnicClient {
       if (!response.ok) {
         const message = responseErrorMessage(response, text, payload, parseError);
         const code = responseErrorCode(payload, parseError);
+        const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
         if (response.status === 413) {
           const bodyBytes = body === undefined ? 0 : jsonBytes(body);
-          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code);
+          throw new RemnicHttpError(response.status, `${message} (observed body ${bodyBytes} bytes; cap via observeMaxBytes)`, code, retryAfterMs);
         }
-        throw new RemnicHttpError(response.status, message, code);
+        throw new RemnicHttpError(response.status, message, code, retryAfterMs);
       }
       if (parseError) {
         const reason = parseError instanceof Error ? parseError.message : String(parseError);
@@ -706,7 +674,6 @@ function buildObserveEnvelope(config: RemnicPiConfig, sessionKey: string, cwd: s
     namespace: config.namespace,
     skipExtraction: config.observeSkipExtraction,
     messages,
-    idempotencyKey: OBSERVE_KEY_PLACEHOLDER,
   };
 }
 
@@ -722,8 +689,14 @@ export function chunkObservePayload(
   cwd: string,
   messages: ObserveMessage[],
   maxBytes: number,
+  nonce: string = randomUUID(),
 ): ObserveBody[] {
-  const envelopeOverhead = jsonBytes(buildObserveEnvelope(config, sessionKey, cwd, []));
+  const emptyEnvelope = buildObserveEnvelope(config, sessionKey, cwd, []);
+  const envelopeOverhead = jsonBytes(emptyEnvelope) +
+    // The idempotencyKey is appended after hashing, so it adds a fixed number of
+    // serialized bytes (fixed for a given nonce); reserve exactly that much so bodies
+    // still respect observeMaxBytes (#1600 caps).
+    (jsonBytes({ ...emptyEnvelope, idempotencyKey: observeIdempotencyKey(emptyEnvelope, nonce) }) - jsonBytes(emptyEnvelope));
   const messageBudget = maxBytes - envelopeOverhead;
   if (messageBudget <= 0) {
     // The envelope overhead alone meets/exceeds the cap, so no valid body can
@@ -732,7 +705,7 @@ export function chunkObservePayload(
     // budget (<=1024) is NOT degenerate: truncate/pack normally so oversized
     // messages are shrunk to fit instead of bypassing the #1600 safeguards
     // (cursor review).
-    return [buildObserveEnvelope(config, sessionKey, cwd, messages)];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, messages), nonce)];
   }
   const chunks: ObserveMessage[][] = [];
   let current: ObserveMessage[] = [];
@@ -763,9 +736,9 @@ export function chunkObservePayload(
   }
   flush();
   if (chunks.length === 0) {
-    return [buildObserveEnvelope(config, sessionKey, cwd, [])];
+    return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, []), nonce)];
   }
-  return chunks.map((msgs) => buildObserveEnvelope(config, sessionKey, cwd, msgs));
+  return chunks.map((msgs) => withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs), nonce));
 }
 
 const decoder = new TextDecoder();
@@ -851,4 +824,35 @@ function responseErrorCode(payload: unknown, parseError: unknown): string | unde
     return payload.code;
   }
   return undefined;
+}
+
+/**
+ * Parse a `retry-after` header (integer seconds or HTTP-date) into
+ * milliseconds. Returns undefined for missing/garbage values; negative deltas
+ * (already-elapsed date) clamp to 0.
+ */
+export function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (/^\d+$/.test(trimmed)) return Math.max(0, Number(trimmed) * 1000);
+  const dateMs = Date.parse(trimmed);
+  if (!Number.isNaN(dateMs)) return Math.max(0, dateMs - Date.now());
+  return undefined;
+}
+
+/**
+ * Request identity for one observe chunk. The daemon dedupes a replayed observe under
+ * the same `idempotencyKey` + identical payload (#1649), so a request whose response
+ * was lost (server accepted, client timed out) can be replayed without double-ingesting.
+ * The key is `obs-<nonce>-<body hash>`: the nonce is random per logical observe and is
+ * reused only by retries of that same observe, so two genuinely separate identical
+ * turns ("yes" twice) never collide, while the body hash keeps a re-split chunk from
+ * reusing a key with a different payload (which the daemon answers as a conflict).
+ */
+export function observeIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): string {
+  return `obs-${nonce}-${createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 16)}`;
+}
+
+function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): ObserveBody {
+  return { ...body, idempotencyKey: observeIdempotencyKey(body, nonce) };
 }

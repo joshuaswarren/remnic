@@ -22,6 +22,7 @@ import { EngramAccessService } from "./access-service.js";
 import { EngramAccessInputError } from "./access-service.js";
 import { initLogger } from "./logger.js";
 import { Orchestrator } from "./orchestrator.js";
+import { ReplayAdmissionRefusedError } from "./orchestration/turn-ingestion.js";
 import type { EngramAccessObserveRequest } from "./access-service.js";
 import type { CodingContext, PluginConfig } from "./types.js";
 
@@ -323,6 +324,49 @@ test("#2206 project-scope-off ignores ambient coding context in observe idempote
     assert.equal(replay.idempotencyReplay, true);
     assert.equal(probe.extractionCalls.length, 1);
     assert.equal(probe.lcmCalls.length, 1);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1649 a capacity-refused observe does not consume its idempotencyKey", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-cap-idem-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const orch: Orchestrator = probe.orch;
+    const realIngest = orch.ingestReplayBatch.bind(orch);
+    type IngestFn = Orchestrator["ingestReplayBatch"];
+    let armed = true;
+    orch.ingestReplayBatch = async (...args: Parameters<IngestFn>): Promise<void> => {
+      if (armed) {
+        armed = false;
+        throw new ReplayAdmissionRefusedError(
+          "durable observe capture refused: extraction buffer at entry capacity for batch containing pi-geek:abc123",
+        );
+      }
+      return realIngest(...args);
+    };
+    const key = "observe-capacity-pi-geek-abc123-#1";
+
+    // First attempt refuses at entry capacity — the key must stay unused.
+    await assert.rejects(
+      service.observe(observeRequest({ idempotencyKey: key })),
+      (err: Error) => err instanceof ReplayAdmissionRefusedError,
+      "the seeded first attempt must refuse with the capacity backpressure error",
+    );
+    assert.equal(probe.extractionCalls.length, 0, "refused attempt must not ingest");
+
+    // Identical retry, same key: a REAL miss once capacity exists, not a replay
+    // of a response that never happened.
+    const retry = await service.observe(observeRequest({ idempotencyKey: key }));
+    assert.equal(retry.idempotencyReplay, undefined, "refusal must not have cached a response");
+    assert.equal(probe.extractionCalls.length, 1, "retry is admitted exactly once");
+
+    // Third identical request replays — the success bound the key, not the refusal.
+    const replay = await service.observe(observeRequest({ idempotencyKey: key }));
+    assert.equal(replay.idempotencyReplay, true, "post-success identical request replays");
+    assert.equal(probe.extractionCalls.length, 1, "replay must not ingest again");
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }
