@@ -102,9 +102,6 @@ function mcpToolErrorMessage(err: Error): string {
   return "internal error";
 }
 
-
-
-
 type McpRequestOptions = {
   principalOverride?: string;
   namespaceOverride?: string;
@@ -474,7 +471,7 @@ export class EngramMcpServer {
   private flushTask: Promise<void> | null = null;
   /** Body bytes still discarded after an oversized Content-Length refusal. */
   private skipBodyBytes = 0;
-  /** True when flush stopped only because more body bytes are required. */
+  /** True when flush stopped only because the current frame is incomplete. */
   private frameNeedsMore = false;
   private readonly tools: McpTool[];
   private readonly resources: McpResource[];
@@ -2518,6 +2515,8 @@ export class EngramMcpServer {
         if (this.buffer.length > MCP_STDIO_MAX_FRAME_BYTES) {
           this.buffer = Buffer.alloc(0);
           this.writeFrameTooLarge(output);
+        } else {
+          this.frameNeedsMore = true;
         }
         return;
       }
@@ -2585,7 +2584,6 @@ export class EngramMcpServer {
     const message = `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
     output.write(message);
   }
-
 
   private toolAcceptsArgument(name: string, key: string): boolean {
     // Match by canonical name so argument validation resolves whether the

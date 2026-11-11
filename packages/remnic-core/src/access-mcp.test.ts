@@ -1522,79 +1522,77 @@ test("MCP tools/call keeps intended EngramAccessInputError and ForbiddenError me
 });
 
 // ===========================================================================
-// Issue #3225 N1 — stdio Content-Length / header framing must be bounded.
+// Issue #3225 N1 — stdio framing is bounded, refuses an oversized frame,
+// and keeps answering the frames that follow it.
 // ===========================================================================
 
-type StdioJsonRpcError = { message: string };
+type StdioMessage = { id?: number | null; result?: object; error?: { message: string } };
+type StdioRequest = { jsonrpc: "2.0"; id: number; method: string };
 
-function readStdioJsonRpcErrorMessage(raw: string): string | null {
-  const headerEnd = raw.indexOf("\r\n\r\n");
-  if (headerEnd < 0) return null;
-  const header = raw.slice(0, headerEnd);
-  const lengthLine = header.split("\r\n").find((line) => line.toLowerCase().startsWith("content-length:"));
-  const length = Number.parseInt(lengthLine?.split(":")[1]?.trim() ?? "", 10);
-  if (!Number.isFinite(length) || length < 0) return null;
-  const body = raw.slice(headerEnd + 4, headerEnd + 4 + length);
-  let parsed: StdioJsonRpcError | null = null;
-  try {
-    // SAFETY: body is JSON-RPC the server just wrote in this test fixture.
-    const value = JSON.parse(body) as { error?: StdioJsonRpcError };
-    parsed = value.error ?? null;
-  } catch {
-    return null;
+function stdioFrame(payload: StdioRequest): string {
+  const body = JSON.stringify(payload);
+  return `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
+}
+
+function readStdioMessages(raw: string): StdioMessage[] {
+  const messages: StdioMessage[] = [];
+  let rest = raw;
+  while (rest.length > 0) {
+    const headerEnd = rest.indexOf("\r\n\r\n");
+    assert.ok(headerEnd >= 0, "server output must be Content-Length framed");
+    const length = Number.parseInt(rest.slice(0, headerEnd).split(":")[1] ?? "", 10);
+    const message: StdioMessage = JSON.parse(rest.slice(headerEnd + 4, headerEnd + 4 + length));
+    messages.push(message);
+    rest = rest.slice(headerEnd + 4 + length);
   }
-  return parsed?.message ?? null;
+  return messages;
 }
 
-function stdioBufferLength(server: EngramMcpServer): number {
-  // SAFETY: buffer is private transport state inspected only for this bound.
-  const host: { buffer: Buffer } = server as never;
-  return host.buffer.length;
-}
-
-async function runStdioAndCollect(writeInput: (input: PassThrough) => void): Promise<{
-  raw: string;
-  server: EngramMcpServer;
-}> {
+/** Feeds each chunk in its own tick so the server sees separate data events. */
+async function runStdioChunks(chunks: string[]): Promise<StdioMessage[]> {
   const input = new PassThrough();
   const output = new PassThrough();
-  const chunks: Buffer[] = [];
-  output.on("data", (chunk: Buffer | string) => {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  output.setEncoding("utf8");
+  let raw = "";
+  output.on("data", (chunk: string) => {
+    raw += chunk;
   });
-  const server = new EngramMcpServer(makeMockService());
-  const running = server.runStdio(input, output);
-  writeInput(input);
+  const running = new EngramMcpServer(makeMockService()).runStdio(input, output);
+  for (const chunk of chunks) {
+    input.write(chunk);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
   input.end();
   await running;
-  return { raw: Buffer.concat(chunks).toString("utf8"), server };
+  return readStdioMessages(raw);
 }
 
-test("MCP stdio refuses Content-Length above the frame limit without buffering the body", async () => {
+const stdioPing = (id: number) => stdioFrame({ jsonrpc: "2.0", id, method: "ping" });
+
+test("MCP stdio refuses an oversized Content-Length, discards its body, and answers the next frame", async () => {
   const declared = MCP_STDIO_MAX_FRAME_BYTES + 1;
-  const { raw, server } = await runStdioAndCollect((input) => {
-    // Header only — never feed the declared body bytes.
-    input.write(`Content-Length: ${declared}\r\n\r\n`);
-  });
-  const message = readStdioJsonRpcErrorMessage(raw);
-  assert.ok(message != null, "stdio must answer with a JSON-RPC error");
-  assert.match(message, /frame too large/i);
-  assert.ok(
-    stdioBufferLength(server) <= MCP_STDIO_MAX_FRAME_BYTES,
-    `reader must not retain a body of declared size; held ${stdioBufferLength(server)}`,
-  );
+  const messages = await runStdioChunks([
+    `Content-Length: ${declared}\r\n\r\n`,
+    "x".repeat(1000),
+    "x".repeat(declared - 1000),
+    stdioPing(7),
+  ]);
+  assert.equal(messages.length, 2);
+  assert.match(messages[0]?.error?.message ?? "", /frame too large/);
+  assert.equal(messages[1]?.id, 7);
+  assert.ok(messages[1]?.result, "the frame after the refused one is answered normally");
 });
 
-test("MCP stdio refuses a header that grows past the frame limit", async () => {
-  const { raw, server } = await runStdioAndCollect((input) => {
-    // No header terminator — a single growing line past the limit.
-    input.write("A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1));
-  });
-  const message = readStdioJsonRpcErrorMessage(raw);
-  assert.ok(message != null, "stdio must answer with a JSON-RPC error");
-  assert.match(message, /frame too large/i);
-  assert.ok(stdioBufferLength(server) <= MCP_STDIO_MAX_FRAME_BYTES, `held ${stdioBufferLength(server)}`);
+test("MCP stdio refuses a header that never terminates and answers the next frame", async () => {
+  const messages = await runStdioChunks(["A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1), stdioPing(8)]);
+  assert.equal(messages.length, 2);
+  assert.match(messages[0]?.error?.message ?? "", /frame too large/);
+  assert.equal(messages[1]?.id, 8);
 });
 
-
-
+test("MCP stdio reassembles a frame split inside its header and inside its body", async () => {
+  const frame = stdioPing(9);
+  const messages = await runStdioChunks([frame.slice(0, 6), frame.slice(6, frame.length - 4), frame.slice(frame.length - 4)]);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0]?.id, 9);
+});
