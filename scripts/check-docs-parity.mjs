@@ -8,11 +8,11 @@
  *
  *   (a) Command existence — every `remnic <subcommand>` invocation extracted
  *       from fenced code blocks in docs/ and every packages README.md must resolve
- *       to a command registered in the CLI. Until #1532 ships a registrar
- *       table, registration is discovered by grepping the command-definition
- *       strings in packages/remnic-cli/src/index.ts (the `CommandName` union
- *       and `case "..."` dispatch) and packages/remnic-core/src/cli.ts
- *       (`.command("...")` calls). See TODO_REGISTRY below.
+ *       to a command registered in the CLI. Registration is discovered by
+ *       grepping the command-definition strings in
+ *       packages/remnic-cli/src/index.ts (the `CommandName` union and
+ *       `case "..."` dispatch) and packages/remnic-core/src/cli.ts
+ *       (`.command("...")` calls).
  *
  *   (b) Stub-honesty — a memory-extension publisher whose
  *       `PublisherCapabilities` static declares no capabilities (all-false,
@@ -43,11 +43,9 @@ const ROOT = process.env.REMNIC_DOCS_PARITY_ROOT
   ? path.resolve(process.env.REMNIC_DOCS_PARITY_ROOT)
   : path.resolve(SCRIPT_DIR, "..");
 
-// TODO_REGISTRY (#1532): once the CLI registrar table lands, import it and
-// replace collectRegisteredCommands() with a direct lookup. The current
-// approach scans two CLI surfaces (see CLI_FILES below); #1532 unifies them
-// behind a single registrar that both the standalone binary and the plugin
-// runtime read from.
+// No shared registrar table exists. #1532 closed after #1660 delivered the CLI
+// contract tests and the first command-group extraction, so this gate finds
+// commands by scanning the two CLI surfaces listed in CLI_FILES below.
 
 // The `remnic` command surface spans TWO registration sites, and this gate
 // deliberately merges both — they are the same user-facing CLI:
@@ -62,8 +60,8 @@ const ROOT = process.env.REMNIC_DOCS_PARITY_ROOT
 //      children — `secure-store`, `recall`, `tier`, `backup`, `patterns`, …
 //      — are the commands the OpenClaw gateway exposes and that the
 //      standalone binary wires case-by-case (some are not yet wired into
-//      the switch; that dispatch gap is a code-level issue tracked by #1532,
-//      not a docs-parity defect).
+//      the switch; that dispatch gap is a code-level matter, not a
+//      docs-parity defect).
 //
 // Merging is required: 10 documented commands (secure-store, recall, tier,
 // backup, console, dreams, patterns, peer, purge, recall-explain) exist ONLY
@@ -772,7 +770,7 @@ function checkBuildWeekCodexDatasetPaths() {
   return { failures, checked };
 }
 
-// ── Registered-command discovery (TODO: replace with #1532 registrar) ─────
+// ── Registered-command discovery ──────────────────────────────────────────
 
 // remnic-cli/src/index.ts: the authoritative top-level set is the
 // `CommandName` type union. We extract ONLY that one type declaration's
