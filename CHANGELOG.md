@@ -4,11 +4,6 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- Secure-store reads under the memory root no longer follow symlinks (COS-388c Finding C2). A post-init `entities/<id>.md` link to a file outside the store cannot return outside content; the shared `readStoreFileBuffer` path reuses `resolveSafeStoragePath` plus an O_NOFOLLOW open. Entity list still skips the entry, and normal entity files still read.
-
-
 ## [v10.0.81] — 2026-11-10
 
 ### Fixed
