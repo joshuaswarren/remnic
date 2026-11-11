@@ -3,12 +3,14 @@ import test from "node:test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
-import { NamespaceSearchRouter, normalizeQmdResultPath } from "./search.js";
+import { setImmediate } from "node:timers/promises";
+import { NamespaceSearchRouter, NAMESPACE_SEARCH_LEG_TIMEOUT_MS, normalizeQmdResultPath } from "./search.js";
 import { MaintenanceScheduler } from "../orchestration/maintenance.js";
 import type { NamespaceCatalog } from "./catalog.js";
 import type {
   SearchBackend,
   SearchBackendStatus,
+  SearchDegradation,
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "../search/port.js";
@@ -430,6 +432,79 @@ test("searchAcrossNamespaces preserves same path results from distinct namespace
     "/tmp/remnic/main/facts/a.md",
     "/tmp/remnic/shared/facts/a.md",
   ]);
+});
+
+class StalledBackend extends FakeBackend {
+  override async search(): Promise<QmdSearchResult[]> {
+    return new Promise<QmdSearchResult[]>(() => {});
+  }
+}
+
+test("searchAcrossNamespaces degrades only the namespace whose leg never settles", async (t) => {
+  const degradations: SearchDegradation[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    (scopedConfig) =>
+      scopedConfig.memoryDir.endsWith("/stuck")
+        ? new StalledBackend(false)
+        : new FakeBackend(false, [
+            { path: "facts/a.md", docid: "a", score: 0.9, snippet: "main" },
+          ]),
+  );
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const call = router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main", "stuck"],
+    maxResults: 10,
+    execution: { onDegradation: (degradation) => degradations.push(degradation) },
+  });
+  let outcome: "settled" | "rejected" | "stalled" | undefined;
+  const guard = new Promise<"stalled">((resolve) => {
+    setTimeout(() => resolve("stalled"), 60_000);
+  });
+  void Promise.race([
+    call.then(() => "settled" as const, () => "rejected" as const),
+    guard,
+  ]).then((value) => {
+    outcome = value;
+  });
+  await setImmediate();
+  t.mock.timers.tick(NAMESPACE_SEARCH_LEG_TIMEOUT_MS);
+  await setImmediate();
+  if (outcome === undefined) {
+    t.mock.timers.tick(60_000);
+    await setImmediate();
+  }
+  assert.equal(outcome, "settled", "a stalled namespace leg must not hold the whole search");
+  const results = await call;
+  assert.deepEqual(results.map((result) => result.snippet), ["main"]);
+  assert.equal(degradations.length, 1);
+  assert.equal(degradations[0].backend, "qmd");
+  assert.equal(degradations[0].code, "deadline_exceeded");
+  assert.match(degradations[0].detail ?? "", /stuck/);
+});
+
+test("searchAcrossNamespaces still rejects when the caller aborts", async () => {
+  const degradations: SearchDegradation[] = [];
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => new StalledBackend(false),
+  );
+  const caller = new AbortController();
+  const call = router.searchAcrossNamespaces({
+    query: "a",
+    namespaces: ["main"],
+    maxResults: 10,
+    execution: {
+      signal: caller.signal,
+      onDegradation: (degradation) => degradations.push(degradation),
+    },
+  });
+  caller.abort();
+  await assert.rejects(call, { message: "operation aborted" });
+  assert.equal(degradations.length, 0, "a caller abort is not a backend degradation");
 });
 
 test("searchAcrossNamespaces passes scoped collection to backend search methods", async () => {
