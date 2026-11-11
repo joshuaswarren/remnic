@@ -567,6 +567,39 @@ test("scenario: agent_end buffers the last user and assistant turns without live
   });
 });
 
+test("scenario: agent_end still archives the turn in LCM when the buffer refuses a new session at the entry cap", async () => {
+  await withScenarioRegistration(
+    async ({ capture, orchestrator }) => {
+      const agentEnd = registeredHook(capture, "agent_end");
+      const exchange = (topic: string) => ({
+        success: true,
+        messages: [
+          { role: "user", content: `Here is the status of the ${topic} work.` },
+          { role: "assistant", content: `The ${topic} work is on track.` },
+        ],
+      });
+
+      await agentEnd(exchange("dashboard"), { sessionKey: "backlog-session" });
+      assert.equal(
+        orchestrator.buffer.getTurns("backlog-session").length,
+        2,
+        "the first session fills the cap beside the default entry with backlog",
+      );
+
+      await agentEnd(exchange("billing"), { sessionKey: "refused-session" });
+
+      assert.equal(
+        orchestrator.buffer.getTurns("refused-session").length,
+        0,
+        "the buffer refuses the new session at the entry cap",
+      );
+      const stats = await orchestrator.lcmEngine.getStats("refused-session");
+      assert.equal(stats.totalMessages, 2, "the refused turn is still in the lossless archive");
+    },
+    { pluginConfig: { lcmEnabled: true, bufferMaxSessions: 2 } },
+  );
+});
+
 test("scenario: message_received captures bounded thread and reply metadata in transcripts", async () => {
   await withScenarioRegistration(
     async ({ capture, memoryDir }) => {
