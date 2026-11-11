@@ -1025,6 +1025,7 @@ export class LocalLlmClient {
             delete requestBody.response_format;
             requestBodyJson = JSON.stringify(requestBody);
             log.debug("local LLM rejected native JSON schema; retrying without it");
+            response = null;
             response = await postAttempt(requestBodyJson);
             responseBody = await response.text();
           }
