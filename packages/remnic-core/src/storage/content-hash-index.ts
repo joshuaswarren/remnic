@@ -3,7 +3,7 @@
 // rebuild saves plus the deferred durable-retry machinery. storage.ts imports
 // these back and re-exports the class + companion types that were previously
 // part of its public API.
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, stat, utimes } from "node:fs/promises";
 import path from "node:path";
 import { computeContentHash, normalizeContent } from "../content-hash.js";
 import { log } from "../logger.js";
@@ -291,6 +291,25 @@ export class ContentHashIndex {
     );
   }
 
+  /**
+   * Change the durable file's mtime without touching its content. A publish
+   * that throws or stays deferred leaves the file as it was, so a peer that
+   * already synced it keeps answering authoritative MISSes for deltas this
+   * instance holds only in memory (#3355). A new stamp makes every holder of the
+   * old fingerprint, this instance included, fail the freshness check and
+   * confirm against the corpus. Best effort: a file that cannot be stamped
+   * leaves the callers' existing retry and rebuild paths as the only repair.
+   */
+  private async invalidatePeerFreshness(): Promise<void> {
+    try {
+      const { mtimeMs } = await stat(this.filePath);
+      const bumped = new Date(Math.max(Date.now(), mtimeMs + 1));
+      await utimes(this.filePath, bumped, bumped);
+    } catch (err) {
+      log.debug(`content-hash index: could not invalidate peer freshness of ${this.filePath}: ${err}`);
+    }
+  }
+
   /** Check if content already exists in the index. */
   has(content: string): boolean {
     return this.hashes.has(ContentHashIndex.computeHash(content));
@@ -473,9 +492,15 @@ export class ContentHashIndex {
             `content-hash index: lock not acquired for ${this.filePath}; deferring reconcile save (dirty retained, scheduling durable retry)`
           );
           this.scheduleReconcileRetry();
+          await this.invalidatePeerFreshness();
           return;
         }
-        await publish();
+        try {
+          await publish();
+        } catch (err) {
+          await this.invalidatePeerFreshness();
+          throw err;
+        }
         if (this.dirty) {
           // A concurrent add()/remove() landed during publish's disk awaits, so
           // deltas remain unpersisted (PR #2016 thread SD7Tj). Arm a bounded
