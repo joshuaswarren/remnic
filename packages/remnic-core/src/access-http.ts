@@ -2799,6 +2799,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         const body = await this.readJsonBody(req) as Record<string, unknown>;
         const op = getOperation("peer_set"); // boundary dispatch (issue #1525)
         if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_set");
+        // The operation schema strips nulls as "absent", so an explicit null
+        // must fail here or the peer would register with default fields.
+        for (const field of ["kind", "displayName", "notes"]) {
+          if (body[field] === null) throw new EngramAccessInputError(`${field} must be a string when provided`);
+        }
         // Raw body fields: the operation schema rejects malformed types with an
         // input error instead of silently defaulting them (rule 51).
         // SAFETY: the registered peer_set handler returns { result } with the upsert outcome.

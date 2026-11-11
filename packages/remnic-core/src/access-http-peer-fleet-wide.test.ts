@@ -169,6 +169,22 @@ test("HTTP peer routes deny namespace-scoped tokens before the stores, REST poli
       !(await snapshotDir(root)).some((line) => line.startsWith("peers/malformed-peer/")),
       "the rejected write created no peer file",
     );
+
+    // An explicit null is a malformed field too (rule 51): the operation
+    // schema strips nulls, so the route must reject them before dispatch
+    // instead of registering the peer with default kind/name/notes.
+    for (const field of ["kind", "displayName", "notes"]) {
+      const nullField = await call("legacy-operator", `/engram/v1/peers/null-${field}-peer`, {
+        method: "PUT",
+        body: JSON.stringify({ [field]: null }),
+      });
+      assert.equal(nullField.status, 400, `an explicit null ${field} is rejected`);
+      assert.match(await nullField.text(), new RegExp(field));
+      assert.ok(
+        !(await snapshotDir(root)).some((line) => line.startsWith(`peers/null-${field}-peer/`)),
+        `the null ${field} request created no peer file`,
+      );
+    }
   } finally {
     await server.stop();
     await cleanup();
