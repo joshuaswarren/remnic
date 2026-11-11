@@ -35,6 +35,26 @@ const GLOBAL_OPS = [
   "peer_forget",
 ] as const;
 
+type GlobalOpName = (typeof GLOBAL_OPS)[number];
+
+/** Envelope fields the operations under test read; their schemas pass open objects through. */
+interface OpEnvelope {
+  action?: string;
+  id?: string;
+  title?: string;
+  name?: string;
+  projectId?: string;
+  snapshotJson?: string;
+  kind?: string;
+  displayName?: string;
+  confirm?: string;
+}
+
+/** Every registered handler answers with a `result` envelope. */
+interface OpOutput<T> {
+  result: T;
+}
+
 interface Fixture {
   root: string;
   service: EngramAccessService;
@@ -86,16 +106,23 @@ async function snapshotDir(root: string): Promise<string[]> {
   return lines.sort();
 }
 
-function runOp(
-  name: (typeof GLOBAL_OPS)[number],
-  input: Record<string, unknown>,
+/**
+ * Run the real registered operation under an optional capability record.
+ * The generic T names the registered handler's documented result shape.
+ */
+async function runOp<T>(
+  name: GlobalOpName,
+  input: OpEnvelope,
   service: EngramAccessService,
   capabilities?: TokenCapabilities,
-): Promise<unknown> {
+): Promise<OpOutput<T>> {
   const op = getOperation(name);
   assert.ok(op, `operation must be registered: ${name}`);
   const run = () => op.run(input, { service });
-  return capabilities === undefined ? run() : tokenCapabilityStore.run(capabilities, run);
+  // SAFETY: the boundary validates the envelope, then the handler returns its
+  // documented `{ result }` shape; T is that shape as named by the caller.
+  const output = (capabilities === undefined ? await run() : await tokenCapabilityStore.run(capabilities, run)) as OpOutput<T>;
+  return output;
 }
 
 test("B3: a one-namespace token is denied on every global work and peer op BEFORE any read or mutation", async () => {
@@ -104,7 +131,7 @@ test("B3: a one-namespace token is denied on every global work and peer op BEFOR
     await seedGlobalRecords(fixture.root);
     const before = await snapshotDir(fixture.root);
 
-    const MUTATING_INPUT: Record<(typeof GLOBAL_OPS)[number], Record<string, unknown>> = {
+    const mutatingInput = {
       work_task: { action: "create", title: "intruder task" },
       work_project: { action: "create", name: "intruder project" },
       work_board: { action: "import_snapshot", projectId: "proj-x", snapshotJson: "{}" },
@@ -120,8 +147,8 @@ test("B3: a one-namespace token is denied on every global work and peer op BEFOR
       const caps: TokenCapabilities = { version: 1, namespaces };
       for (const name of GLOBAL_OPS) {
         await assert.rejects(
-          () => runOp(name, MUTATING_INPUT[name], fixture.service, caps),
-          (err: unknown) =>
+          () => runOp(name, mutatingInput[name], fixture.service, caps),
+          (err: Error) =>
             err instanceof EngramAccessForbiddenError && /scoped to specific namespaces/.test(err.message),
           `${name} must reject a token restricted to ${JSON.stringify(namespaces)}`,
         );
@@ -140,29 +167,34 @@ test("B3: an ops-scoped token without a namespace axis may use its permitted glo
   try {
     const caps: TokenCapabilities = { version: 1, ops: [...GLOBAL_OPS] };
 
-    const created = (await runOp("work_task", { action: "create", title: "ops token task" }, fixture.service, caps)) as {
-      result: { task: { id: string } };
-    };
+    const created = await runOp<{ task: { id: string } }>(
+      "work_task",
+      { action: "create", title: "ops token task" },
+      fixture.service,
+      caps,
+    );
     assert.ok(created.result.task.id, "ops-scoped token creates a work task");
 
-    const listed = (await runOp("work_task", { action: "list" }, fixture.service, caps)) as {
-      result: { count: number };
-    };
+    const listed = await runOp<{ count: number }>("work_task", { action: "list" }, fixture.service, caps);
     assert.equal(listed.result.count, 1, "ops-scoped token reads its own created task");
 
-    const peer = (await runOp("peer_set", { id: "ops-token-peer", kind: "agent" }, fixture.service, caps)) as {
-      result: { created: boolean };
-    };
+    const peer = await runOp<{ created: boolean }>(
+      "peer_set",
+      { id: "ops-token-peer", kind: "agent" },
+      fixture.service,
+      caps,
+    );
     assert.equal(peer.result.created, true, "ops-scoped token registers a peer");
 
-    const got = (await runOp("peer_get", { id: "ops-token-peer" }, fixture.service, caps)) as {
-      result: { found: boolean };
-    };
+    const got = await runOp<{ found: boolean }>("peer_get", { id: "ops-token-peer" }, fixture.service, caps);
     assert.equal(got.result.found, true, "ops-scoped token reads a peer");
 
-    const forgotten = (await runOp("peer_forget", { id: "ops-token-peer", confirm: "yes" }, fixture.service, caps)) as {
-      result: { purged: boolean };
-    };
+    const forgotten = await runOp<{ purged: boolean }>(
+      "peer_forget",
+      { id: "ops-token-peer", confirm: "yes" },
+      fixture.service,
+      caps,
+    );
     assert.equal(forgotten.result.purged, true, "ops-scoped token may run the destructive purge it is granted");
   } finally {
     await fixture.cleanup();
@@ -174,14 +206,10 @@ test("B3: a legacy unrestricted token (no capability record) retains access to g
   try {
     await seedGlobalRecords(fixture.root);
 
-    const listed = (await runOp("work_task", { action: "list" }, fixture.service)) as {
-      result: { count: number };
-    };
+    const listed = await runOp<{ count: number }>("work_task", { action: "list" }, fixture.service);
     assert.equal(listed.result.count, 1, "legacy token lists work tasks");
 
-    const peers = (await runOp("peer_list", {}, fixture.service)) as {
-      result: { peers: { id: string }[] };
-    };
+    const peers = await runOp<{ peers: { id: string }[] }>("peer_list", {}, fixture.service);
     assert.deepEqual(
       peers.result.peers.map((p) => p.id),
       [PEER_ID],
@@ -198,7 +226,7 @@ test("B3: peer_forget confirmation requirement is unchanged through the boundary
     await seedGlobalRecords(fixture.root);
     await assert.rejects(
       () => runOp("peer_forget", { id: PEER_ID, confirm: "no" }, fixture.service),
-      (err: unknown) => err instanceof Error && /confirm must be 'yes'/.test(err.message),
+      (err: Error) => /confirm must be 'yes'/.test(err.message),
     );
     const files = await snapshotDir(fixture.root);
     assert.ok(files.some((line) => line.includes(`${PEER_ID}/identity.md`)), "peer survives a rejected confirmation");
@@ -206,5 +234,3 @@ test("B3: peer_forget confirmation requirement is unchanged through the boundary
     await fixture.cleanup();
   }
 });
-
-

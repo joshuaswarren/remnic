@@ -1325,6 +1325,10 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
     compoundingPromoteCandidate: track,
     compressionGuidelinesOptimize: track,
     compressionGuidelinesActivate: track,
+  } as unknown as EngramAccessService;
+  // Issue #3225 B3: track the global-store methods the fleet-wide guard must
+  // block; the dispatch reads them off this same object at call time.
+  Object.assign(service, {
     workTask: track,
     workProject: track,
     workBoard: track,
@@ -1334,7 +1338,7 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
     peerDelete: track,
     peerProfileGet: track,
     peerForget: track,
-  } as unknown as EngramAccessService;
+  });
   const server = new EngramMcpServer(service, { principal: "ops" });
   try {
     for (const tool of FLEET_WIDE_MAINTENANCE_TOOLS) {

@@ -2799,12 +2799,14 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         const body = await this.readJsonBody(req) as Record<string, unknown>;
         const op = getOperation("peer_set"); // boundary dispatch (issue #1525)
         if (!op) throw new EngramAccessInputError("access-boundary: operation not registered: peer_set");
+        // Raw body fields: the operation schema rejects malformed types with an
+        // input error instead of silently defaulting them (rule 51).
         // SAFETY: the registered peer_set handler returns { result } with the upsert outcome.
         const output = (await op.run({
           id: peerId,
-          kind: typeof body.kind === "string" ? body.kind : undefined,
-          displayName: typeof body.displayName === "string" ? body.displayName : undefined,
-          notes: typeof body.notes === "string" ? body.notes : undefined,
+          kind: body.kind,
+          displayName: body.displayName,
+          notes: body.notes,
         }, {
           service: this.service,
           authenticatedPrincipal: this.resolveRequestPrincipal(req),

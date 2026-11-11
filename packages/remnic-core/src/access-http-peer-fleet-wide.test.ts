@@ -1,77 +1,63 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessHttpServer } from "./access-http.js";
-import type { EngramAccessService } from "./access-service.js";
+import { EngramAccessService } from "./access-service.js";
+import { Orchestrator } from "./orchestrator.js";
 import { parseConfig } from "./config.js";
+import { writePeer, writePeerProfile } from "./peers/index.js";
 
 // Issue #3225 B3: the HTTP peer routes dispatch to global stores, so REST
 // must enforce the same operation policy as MCP — a namespace-scoped token
-// (any namespaces axis, including []) must be denied before the service is
-// reached, while ops-scoped and legacy tokens keep working.
+// (any namespaces axis, including []) must be denied before any file in the
+// store changes, while ops-scoped and legacy tokens keep working.
 
-interface PeerCallLog {
-  list: number;
-  get: string[];
-  set: string[];
-  delete: string[];
-  forget: string[];
-  profile: string[];
+const PEER_ID = "b3-target-peer";
+const NOW = "2026-11-11T00:00:00.000Z";
+
+async function createService(): Promise<{ root: string; service: EngramAccessService; cleanup: () => Promise<void> }> {
+  const root = await mkdtemp(path.join(tmpdir(), "remnic-http-peer-fleet-wide-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({ memoryDir: root, namespacesEnabled: false, defaultNamespace: "global" }),
+  );
+  const storage = await orchestrator.getStorage();
+  await storage.ensureDirectories();
+  await writePeer(root, {
+    id: PEER_ID,
+    kind: "agent",
+    displayName: "seeded peer",
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+  await writePeerProfile(root, {
+    peerId: PEER_ID,
+    updatedAt: NOW,
+    fields: { communication_style: "seeded" },
+    provenance: {},
+  });
+  return { root, service: new EngramAccessService(orchestrator), cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 
-function makeLoggingService(log: PeerCallLog): EngramAccessService {
-  const service = {
-    configRef: parseConfig({
-      memoryDir: "/tmp/remnic-http-peer-fleet-wide",
-      namespacesEnabled: false,
-      defaultNamespace: "global",
-    }),
-    peerList: async () => {
-      log.list += 1;
-      return { peers: [] };
-    },
-    peerGet: async (peerId: string) => {
-      log.get.push(peerId);
-      return {
-        found: true,
-        peer: { id: peerId, kind: "agent", displayName: peerId, createdAt: "2026-11-11T00:00:00.000Z", updatedAt: "2026-11-11T00:00:00.000Z" },
-      };
-    },
-    peerSet: async (input: { id: string; displayName?: string }) => {
-      log.set.push(input.id);
-      return {
-        ok: true,
-        created: true,
-        peer: { id: input.id, kind: "agent", displayName: input.displayName ?? input.id, createdAt: "2026-11-11T00:00:00.000Z", updatedAt: "2026-11-11T00:00:00.000Z" },
-      };
-    },
-    peerDelete: async (peerId: string) => {
-      log.delete.push(peerId);
-      return { ok: true, deleted: true };
-    },
-    peerForget: async (peerId: string) => {
-      log.forget.push(peerId);
-      return { ok: true, purged: true };
-    },
-    peerProfileGet: async (peerId: string) => {
-      log.profile.push(peerId);
-      return { found: false };
-    },
-  };
-  // SAFETY: the peer routes under test only touch configRef and the six peer
-  // methods stubbed above; no other EngramAccessService member is reachable
-  // from these paths.
-  return service as unknown as EngramAccessService;
+/** Sorted relpath:content lines for every file under root (mutation detector). */
+async function snapshotDir(root: string): Promise<string[]> {
+  const entries = await readdir(root, { recursive: true, withFileTypes: true });
+  const lines: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const abs = path.join(entry.parentPath, entry.name);
+    const content = await readFile(abs, "utf8");
+    lines.push(`${path.relative(root, abs)}:${content}`);
+  }
+  return lines.sort();
 }
 
-function emptyLog(): PeerCallLog {
-  return { list: 0, get: [], set: [], delete: [], forget: [], profile: [] };
-}
-
-test("HTTP peer routes deny namespace-scoped tokens before the service, REST policy matches MCP (issue #3225 B3)", async () => {
-  const log = emptyLog();
+test("HTTP peer routes deny namespace-scoped tokens before the stores, REST policy matches MCP (issue #3225 B3)", async () => {
+  const { root, service, cleanup } = await createService();
   const server = new EngramAccessHttpServer({
-    service: makeLoggingService(log),
+    service,
     port: 0,
     authToken: "legacy-operator",
     authTokenEntriesGetter: () => [
@@ -95,19 +81,21 @@ test("HTTP peer routes deny namespace-scoped tokens before the service, REST pol
     });
 
   try {
+    const before = await snapshotDir(root);
+
     // Namespace-scoped token (single namespace): every peer route is denied
-    // BEFORE the service method runs — including the destructive purge.
+    // BEFORE the store is touched — including the destructive purge.
     assert.equal((await call("ns-scoped", "/engram/v1/peers")).status, 403, "peer_list denied");
-    assert.equal((await call("ns-scoped", "/engram/v1/peers/b3-p")).status, 403, "peer_get denied");
+    assert.equal((await call("ns-scoped", `/engram/v1/peers/${PEER_ID}`)).status, 403, "peer_get denied");
     assert.equal(
-      (await call("ns-scoped", "/engram/v1/peers/b3-p", { method: "PUT", body: JSON.stringify({ displayName: "hijack" }) })).status,
+      (await call("ns-scoped", `/engram/v1/peers/${PEER_ID}`, { method: "PUT", body: JSON.stringify({ displayName: "hijack" }) })).status,
       403,
       "peer_set denied",
     );
-    assert.equal((await call("ns-scoped", "/engram/v1/peers/b3-p", { method: "DELETE" })).status, 403, "peer_delete denied");
+    assert.equal((await call("ns-scoped", `/engram/v1/peers/${PEER_ID}`, { method: "DELETE" })).status, 403, "peer_delete denied");
     assert.equal(
       (
-        await call("ns-scoped", "/engram/v1/peers/b3-p?forget=true", {
+        await call("ns-scoped", `/engram/v1/peers/${PEER_ID}?forget=true`, {
           method: "DELETE",
           body: JSON.stringify({ confirm: "yes" }),
         })
@@ -115,36 +103,42 @@ test("HTTP peer routes deny namespace-scoped tokens before the service, REST pol
       403,
       "peer_forget denied",
     );
-    assert.equal((await call("ns-scoped", "/engram/v1/peers/b3-p/profile")).status, 403, "peer_profile_get denied");
+    assert.equal((await call("ns-scoped", `/engram/v1/peers/${PEER_ID}/profile`)).status, 403, "peer_profile_get denied");
 
     // Empty namespace allow-list: denied too.
     assert.equal((await call("ns-empty", "/engram/v1/peers")).status, 403, "empty namespace list denied");
 
-    // Denials never reached the service — no read, no mutation.
-    assert.deepEqual(
-      log,
-      emptyLog(),
-      "denied requests must not call any peer service method",
-    );
+    // Denials never reached the stores — no file read effect, no mutation.
+    assert.deepEqual(await snapshotDir(root), before, "denied requests must not change any peer file");
 
     // An ops-scoped token without a namespace axis keeps full peer access.
     const listed = await call("ops-peer", "/engram/v1/peers");
     assert.equal(listed.status, 200, "ops-scoped token lists peers");
-    await listed.text();
+    // SAFETY: the peer_list REST route returns the service envelope { peers }.
+    const listedBody = (await listed.json()) as { peers: { id: string }[] };
+    assert.deepEqual(listedBody.peers.map((p) => p.id), [PEER_ID], "ops-scoped token sees the seeded peer");
+
     const created = await call("ops-peer", "/engram/v1/peers/ops-peer-1", {
       method: "PUT",
       body: JSON.stringify({ displayName: "ops token peer" }),
     });
     assert.equal(created.status, 201, "ops-scoped token registers a peer");
-    await created.text();
+    // SAFETY: the peer_set REST route returns the upsert outcome { created, peer }.
+    const createdBody = (await created.json()) as { created: boolean; peer: { displayName: string } };
+    assert.equal(createdBody.created, true);
+    assert.equal(createdBody.peer.displayName, "ops token peer");
+
     const purged = await call("ops-peer", "/engram/v1/peers/ops-peer-1?forget=true", {
       method: "DELETE",
       body: JSON.stringify({ confirm: "yes" }),
     });
     assert.equal(purged.status, 200, "ops-scoped token purges a peer");
     await purged.text();
-    assert.equal(log.set.includes("ops-peer-1"), true, "peer_set ran for the ops-scoped token");
-    assert.equal(log.forget.includes("ops-peer-1"), true, "peer_forget ran for the ops-scoped token");
+    const afterPurge = await snapshotDir(root);
+    assert.ok(
+      !afterPurge.some((line) => line.startsWith("peers/ops-peer-1/")),
+      "the destructive purge removed the peer directory",
+    );
 
     // Legacy unrestricted token (static authToken, no capability record).
     const legacyList = await call("legacy-operator", "/engram/v1/peers");
@@ -152,15 +146,31 @@ test("HTTP peer routes deny namespace-scoped tokens before the service, REST pol
     await legacyList.text();
 
     // Peer-forget confirmation behavior is unchanged: no confirm body, no purge.
-    const unconfirmed = await call("legacy-operator", "/engram/v1/peers/b3-p?forget=true", {
+    const unconfirmed = await call("legacy-operator", `/engram/v1/peers/${PEER_ID}?forget=true`, {
       method: "DELETE",
       body: JSON.stringify({}),
     });
     assert.equal(unconfirmed.status, 400, "missing confirm still fails with 400");
-    const unconfirmedBody = (await unconfirmed.json()) as { code?: string };
-    assert.equal(unconfirmedBody.code, "confirm_required");
-    assert.equal(log.forget.length, 1, "peerForget ran only for the confirmed purge");
+    assert.match(await unconfirmed.text(), /confirm_required/);
+    const seededIntact = await snapshotDir(root);
+    assert.ok(
+      seededIntact.some((line) => line.startsWith(`peers/${PEER_ID}/identity.md`)),
+      "the seeded peer survived the rejected confirmation",
+    );
+
+    // A malformed PUT body still fails loudly instead of silently defaulting.
+    const malformed = await call("legacy-operator", "/engram/v1/peers/malformed-peer", {
+      method: "PUT",
+      body: JSON.stringify({ displayName: 5 }),
+    });
+    assert.equal(malformed.status, 400, "a non-string displayName is rejected");
+    assert.match(await malformed.text(), /displayName/);
+    assert.ok(
+      !(await snapshotDir(root)).some((line) => line.startsWith("peers/malformed-peer/")),
+      "the rejected write created no peer file",
+    );
   } finally {
     await server.stop();
+    await cleanup();
   }
 });
