@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, utimesSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { hostname } from "node:os";
@@ -1069,6 +1069,87 @@ test("release drops the inbox with the claim and a later claim never inherits it
     s.seedSession("sess-1", entry([turn("fresh", "2026-11-01T00:10:00.000Z")]));
     assert.equal(await s.claims.claimFromSessionFile("sess-1", makeLease()), "claimed");
     assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["fresh"], "the orphan record is not replayed into the new claim");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/** Forge the cached counts a same-size, same-mtime rewrite could leave behind. */
+function forgeSummary(stateDir: string, key: string, counts: { pending: number; drained: number }): void {
+  const bodyPath = drainFile(stateDir, key);
+  const fixed = new Date("2026-11-01T00:00:00.000Z");
+  utimesSync(bodyPath, fixed, fixed);
+  const { size, mtimeMs } = statSync(bodyPath);
+  writeFileSync(`${bodyPath}.count`, JSON.stringify({ key, size, mtimeMs, ...counts }));
+}
+
+test("a stale count summary can never make a claim with pending turns read as drained", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.releaseLease("sess-1", "worker-1");
+    // The body holds one pending turn and nothing drained; the forged cache
+    // claims the opposite under the body's exact size and mtime.
+    forgeSummary(s.stateDir, "sess-1", { pending: 0, drained: 1 });
+
+    assert.equal(await s.claims.isDrained("sess-1"), false, "the cache alone never answers drained");
+    assert.deepEqual((await s.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["t1"], "the pending turn is intact");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("save hands over, never releases, when a stale summary claims a pending claim is drained", async () => {
+  const s = setup();
+  try {
+    const files = new BufferSessionFiles(s.stateDir, plainIo());
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await files.claims.claimFromSessionFile("sess-1", makeLease());
+    await files.claims.releaseLease("sess-1", "worker-1");
+    forgeSummary(s.stateDir, "sess-1", { pending: 0, drained: 1 });
+
+    const outcome = await files.save("sess-1", entry([turn("t2", "2026-11-01T00:02:00.000Z")]));
+
+    assert.equal(outcome.status, "handed_over", "the owner hands in instead of consuming a tombstone");
+    assert.equal(files.claims.isClaimed("sess-1"), true, "the claim is not released");
+    assert.equal(existsSync(s.sessionFile("sess-1")), false, "no session file replaced the claim");
+    assert.deepEqual((await files.claims.load("sess-1"))?.entry.turns.map((t) => t.content), ["t1", "t2"], "no turn was lost");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a pending claim is judged not drained without parsing its body", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.releaseLease("sess-1", "worker-1");
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+
+    assert.equal(await claims.isDrained("sess-1"), false);
+    assert.equal(spied.readPaths.filter((p) => p === drainFile(s.stateDir, "sess-1")).length, 0, "the hot path never reads the body");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a finished drain is verified with one real read before it reads as drained", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("t1")]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
+    await s.claims.releaseLease("sess-1", "worker-1");
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+
+    assert.equal(await claims.isDrained("sess-1"), true);
+    assert.equal(spied.readPaths.filter((p) => p === drainFile(s.stateDir, "sess-1")).length, 1, "the TRUE answer parses the body once");
   } finally {
     s.cleanup();
   }
