@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { registerTools } from "../src/tools.js";
 import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
+import { makeStorageDir } from "./helpers/fake-storage-dir.js";
 
 // Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
 // callers now write via `writeSealedMemory`. Test doubles keep stubbing
@@ -205,7 +206,7 @@ test("#1645 Yhp: memory_action_apply reports a tombstone-blocked write as queued
   assert.deepEqual(recordedEvents[0].outputMemoryIds, ["fact-blocked-2"], "pending_review id is still recorded");
 });
 
-test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for review", async () => {
+test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for review", async (t) => {
   type RegisteredTool = {
     execute: (
       toolCallId: string,
@@ -219,6 +220,7 @@ test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for
     },
   };
   const maintenanceReasons: string[] = [];
+  const storageDir = await makeStorageDir(t);
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -229,6 +231,7 @@ test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for
       memoryDir: "/nonexistent-dir-for-store-test",
     },
     getStorage: async () => withSealedWrite({
+      dir: storageDir,
       readAllMemories: async () => [],
       // Destination tombstone blocks the explicit capture (pending_review).
       writeMemory: async (_category: string, content: string) => ({
@@ -275,9 +278,10 @@ test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for
   assert.doesNotMatch(text, /Memory stored:/, "a blocked capture must not be reported as 'Memory stored'");
 });
 
-test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result", async () => {
+test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result", async (t) => {
   const { persistExplicitCapture, validateExplicitCaptureInput } = await import("../src/explicit-capture.js");
   const storage = {
+    dir: await makeStorageDir(t),
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => false,
     readAllMemories: async () => [],

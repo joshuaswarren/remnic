@@ -20,6 +20,7 @@ import { Orchestrator } from "@remnic/core/orchestrator";
 import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { registerTools } from "../src/tools.js";
 import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
+import { makeStorageDir } from "./helpers/fake-storage-dir.js";
 
 // Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
 // callers now write via `writeSealedMemory`. Test doubles keep stubbing
@@ -236,10 +237,10 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
 // catalog WRITE so the default namespace's `lastWriteAt` is updated for
 // `writtenSince`/maintenance consumers. The storage chokepoint fires the
 // write touch after writeMemory completes (#1522).
-test("persistExplicitCapture records a catalog write for the DEFAULT namespace", async () => {
+test("persistExplicitCapture records a catalog write for the DEFAULT namespace", async (t) => {
   let catalogTouched = false;
   const storage = {
-    dir: "/synthetic/memory",
+    dir: await makeStorageDir(t),
     onCatalogWrite: undefined as (() => void) | undefined,
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
@@ -801,11 +802,12 @@ test("queueExplicitCaptureForReview preserves requested namespace isolation when
   assert.deepEqual(requestedNamespaces, []);
 });
 
-test("persistExplicitCapture attributes lifecycle actors to the correct tool source", async () => {
+test("persistExplicitCapture attributes lifecycle actors to the correct tool source", async (t) => {
   const lifecycleEvents: Array<{ actor: string; memoryId: string }> = [];
   const sources: string[] = [];
   let nextId = 1;
   const storage = {
+    dir: await makeStorageDir(t),
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [],
@@ -897,8 +899,9 @@ test("queueExplicitCaptureForReview attributes queued suggestion submissions to 
   );
 });
 
-test("fact duplicate checks short-circuit without a full corpus scan when authoritative hash index misses", async () => {
+test("fact duplicate checks short-circuit without a full corpus scan when authoritative hash index misses", async (t) => {
   const storage = {
+    dir: await makeStorageDir(t),
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [],
@@ -989,8 +992,9 @@ test("explicit capture duplicate normalization stays aligned with fact hash norm
   assert.equal(ContentHashIndex.normalizeContent(a), ContentHashIndex.normalizeContent(b));
 });
 
-test("explicit capture duplicate checks preserve punctuation that changes technical meaning", async () => {
+test("explicit capture duplicate checks preserve punctuation that changes technical meaning", async (t) => {
   const storage = {
+    dir: await makeStorageDir(t),
     hasFactContentHash: async () => true,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [
@@ -1016,7 +1020,7 @@ test("explicit capture duplicate checks preserve punctuation that changes techni
   assert.equal(result.id, "fact-c");
 });
 
-test("memory_store and memory_capture share explicit validation and duplicate handling", async () => {
+test("memory_store and memory_capture share explicit validation and duplicate handling", async (t) => {
   type RegisteredTool = {
     execute: (
       toolCallId: string,
@@ -1042,6 +1046,7 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
     frontmatter: { id: string; created: string; tags: string[]; category: string; status?: string };
   }> = [];
   const maintenanceReasons: string[] = [];
+  const storageDir = await makeStorageDir(t);
   let appendedEvents = 0;
   const orchestrator = {
     config: {
@@ -1053,6 +1058,7 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
       memoryDir: "/tmp/engram-explicit-tools",
     },
     getStorage: async () => withSealedWrite({
+      dir: storageDir,
       readAllMemories: async () => memories,
       writeMemory: async (category: string, content: string, options: { tags?: string[] }) => {
         const id = `fact-${memories.length + 1}`;
