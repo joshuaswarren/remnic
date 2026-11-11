@@ -5497,7 +5497,11 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   // Buffer persistence: one file per session (storage/buffer-session-files.ts).
   private bufferFiles?: BufferSessionFiles;
   private bufferSessionFiles(): BufferSessionFiles {
-    const io = { read: (p: string) => this.readStorageSecureFile(p), write: (p: string, c: string) => this.writeStorageSecureFile(p, c) };
+    const io = {
+      read: (p: string) => this.readStorageSecureFile(p),
+      write: (p: string, c: string) => this.writeStorageSecureFile(p, c),
+      append: (p: string, c: string) => this.appendStorageSecureFile(p, c),
+    };
     return (this.bufferFiles ??= new BufferSessionFiles(this.stateDir, io));
   }
   async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }

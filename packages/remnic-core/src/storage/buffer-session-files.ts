@@ -12,6 +12,10 @@ import type { BufferEntryState, BufferState, BufferTurn } from "../types.js";
 export interface BufferFileIo {
   read(filePath: string): Promise<string>;
   write(filePath: string, content: string): Promise<void>;
+  /** Durable append (drain-claim inboxes). Implementations must persist
+   * `content` before resolving; a whole-file read+concat+write rewrite is
+   * acceptable — inbox files stay small between drainer compactions. */
+  append(filePath: string, content: string): Promise<void>;
 }
 
 type FsError = NodeJS.ErrnoException;
@@ -54,7 +58,7 @@ export function legacyStateToEntries(state: BufferState): Map<string, BufferEntr
 }
 
 /** What a per-session file contains once parsed (written only by this module). */
-interface SessionFileBody {
+export interface SessionFileBody {
   key?: string;
   turns?: BufferTurn[];
   retainedTurns?: BufferTurn[];
@@ -62,7 +66,9 @@ interface SessionFileBody {
   extractionCount?: number;
 }
 
-function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
+/** Parse a per-session / claim-inbox record body: `{key, turns, ...}` with
+ * at least one turn array and a non-empty key. Null when the shape is wrong. */
+export function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
   if (!body || !Array.isArray(body.turns) || (body.key?.length ?? 0) === 0) return null;
   const entry: BufferEntryState = {
     turns: body.turns,

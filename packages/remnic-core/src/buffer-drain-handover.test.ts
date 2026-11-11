@@ -10,7 +10,7 @@
 //      claim for the drain worker.
 //   4. default-key mirror: handing over "default" clears the legacy mirror.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -39,6 +39,10 @@ function plainIo() {
     write: async (filePath: string, content: string) => {
       mkdirSync(path.dirname(filePath), { recursive: true });
       writeFileSync(filePath, content);
+    },
+    append: async (filePath: string, content: string) => {
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      appendFileSync(filePath, content);
     },
   };
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, utimesSync } from "node:fs";
 import os from "node:os";
 import { hostname } from "node:os";
 import path from "node:path";
@@ -22,6 +22,10 @@ function plainIo() {
       rmSync(filePath, { force: true });
       writeFileSync(filePath, content);
       rmSync(tmp, { force: true });
+    },
+    append: async (filePath: string, content: string) => {
+      mkdirSync(path.dirname(filePath), { recursive: true });
+      appendFileSync(filePath, content);
     },
   };
 }
