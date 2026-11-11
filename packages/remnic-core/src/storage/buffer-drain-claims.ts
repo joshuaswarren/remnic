@@ -919,16 +919,17 @@ export class BufferDrainClaims {
    */
   async isDrained(key: string): Promise<boolean> {
     if ((await this.readLease(key)) !== null) return false;
-    // This runs on every hand-over save, so the common answers come from the
-    // cached body counts and never parse the body.
+    // This runs on every hand-over save. The cached counts may only answer
+    // FALSE (pending turns, nothing drained): a stale cache in that direction
+    // costs a deferred tombstone. They must never answer TRUE, because the
+    // caller then releases the claim and unlinks whatever is still pending, and
+    // a same-size rewrite inside one mtime tick can leave a stale cache that
+    // says "nothing pending". So a TRUE is verified by one real fold, once per
+    // finished drain.
     const summary = await this.readSummary(this.fileFor(key));
     if (!summary || summary.drained === 0 || summary.pending > 0) return false;
-    if ((await this.readInbox(key)).length === 0) return true;
-    // An unfolded inbox (typically a stale owner re-handing drained turns) can
-    // only be judged by folding it: one O(claim) read, after which the owner
-    // consumes and releases the tombstone.
     const claim = await this.load(key);
-    return claim !== null && pendingTurns(claim.entry) === 0;
+    return claim !== null && (claim.drained?.length ?? 0) + (claim.drainedRetained?.length ?? 0) > 0 && pendingTurns(claim.entry) === 0;
   }
 
   /** Drop the claim entirely (its owner consumed the tombstone), inbox and summary included. */
