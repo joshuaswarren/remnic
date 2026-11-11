@@ -163,11 +163,9 @@ function createInlineCaptureProcessorProbe(
         release();
       }
     },
-    ...(options.authoritativeFactHashMiss
-      ? {
-          lookupContentHash: async () => ({ present: false, authoritative: true }),
-        }
-      : {}),
+    lookupContentHash: options.authoritativeFactHashMiss
+      ? async () => ({ present: false, authoritative: true })
+      : undefined,
     ...(options.tombstoneBlockedCaptureIndexHit !== undefined
       ? {
           checkTombstoneBlockedExplicitCapture: async (content: string, category: string, sourceConnector?: string) => {

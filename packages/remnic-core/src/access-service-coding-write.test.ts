@@ -41,6 +41,7 @@ import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "./write-enve
 // the PRODUCTION mapping (`sealedWriteToLegacyArgs`), so mock behavior
 // cannot drift from the real envelope→options translation.
 function withSealedWrite<T extends { writeMemory: (...args: never[]) => unknown }>(stub: T): T {
+  // SAFETY: the decorated stub only gains writeSealedMemory and dir, both assigned below before any caller reads them.
   const decorated = stub as T & {
     writeSealedMemory?: (envelope: SealedMemoryEnvelope, extras?: Record<string, unknown>) => unknown;
     dir?: string;

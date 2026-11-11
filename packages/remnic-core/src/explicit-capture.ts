@@ -421,7 +421,7 @@ async function findDuplicateExplicitCapture(
   // authoritative miss can therefore skip the corpus scan only after the
   // targeted blocked-row index reports a miss and remains authoritative.
   let authoritativeFactHashMiss = false;
-  if (candidate.category === "fact" && typeof storage.lookupContentHash === "function") {
+  if (candidate.category === "fact") {
     try {
       // One lookup returns the MISS together with the authority behind it, so
       // a stale MISS is never paired with authority from another moment
@@ -505,6 +505,7 @@ async function findDuplicateExplicitCapture(
     : null;
 }
 type PersistedExplicitCapture = { id: string; duplicateOf?: string; tombstoneBlocked?: boolean };
+type RacedDuplicate = { match: { id: string; tombstoneBlocked: boolean } | null };
 
 function duplicatePersistResult(duplicate: { id: string; tombstoneBlocked: boolean }): PersistedExplicitCapture {
   return duplicate.tombstoneBlocked
@@ -572,11 +573,12 @@ async function persistExplicitCaptureUnlocked(
     { source: source === "inline" ? "explicit-inline" : "explicit" }
   );
 
-  const withCaptureLock = <T>(run: () => Promise<T>): Promise<T> => {
-    if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return run();
-    const lockIdentity = buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector);
-    return storage.withTombstoneBlockedCaptureWriteLock(run, lockIdentity);
-  };
+  // Test fakes may omit the lock; the real StorageManager always has it.
+  const withCaptureLock = <T>(run: () => Promise<T>): Promise<T> =>
+    storage.withTombstoneBlockedCaptureWriteLock?.(
+      run,
+      buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector)
+    ) ?? run();
   const writeSealed = (): Promise<PersistedExplicitCapture> =>
     persistSealedExplicitCapture(storage, captureEnvelope, candidate, source);
 
@@ -593,22 +595,19 @@ async function persistExplicitCaptureUnlocked(
   // promotion) acquires the tombstone lock only inside writeMemory, so
   // taking it here first would order tombstone→window against their
   // window→tombstone and stall the capture on the 60s write-lock backoff.
-  let racedDuplicate: { id: string; tombstoneBlocked: boolean } | null = null;
+  const raced: RacedDuplicate = { match: null };
   const outcome = await persistUnderFactDedupWindow(
     storage.dir,
     async () => {
-      racedDuplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
-      return racedDuplicate !== null;
+      raced.match = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+      return raced.match !== null;
     },
     () => withCaptureLock(writeSealed)
   );
   if (!outcome.suppressed) return outcome.result;
-  // The closure assignment is invisible to control-flow analysis; the window
-  // only reports suppressed on a recheck hit, so the match is always set.
-  const matched = racedDuplicate as { id: string; tombstoneBlocked: boolean } | null;
-  if (!matched) throw new Error("explicit capture suppressed by the dedup window without a matched duplicate");
+  if (!raced.match) throw new Error("explicit capture suppressed by the dedup window without a matched duplicate");
   log.info(`dedup: raced explicit capture suppressed in fact-dedup window for ${storage.dir}`);
-  return duplicatePersistResult(matched);
+  return duplicatePersistResult(raced.match);
 }
 
 export async function persistExplicitCapture(
