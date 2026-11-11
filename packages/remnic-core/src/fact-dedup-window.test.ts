@@ -5,9 +5,8 @@ import path from "node:path";
 import test, { mock } from "node:test";
 import { persistExplicitCapture } from "./explicit-capture.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./orchestration/fact-dedup-window.js";
-import type { Orchestrator } from "./orchestrator.js";
+import { Orchestrator } from "./orchestrator.js";
 import { StorageManager } from "./storage.js";
-import type { PluginConfig } from "./types.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
 
 const SKY_OPTS = {
@@ -196,20 +195,9 @@ test("explicit capture and an extraction write race the same new fact to exactly
   const { storage, cleanup } = await makeStorage();
   try {
     const content = "An extraction run and an explicit capture hold this new fact.";
-    const dependencies: Pick<Orchestrator, "config" | "getStorage"> = {
-      // SAFETY: namespacePreResolved skips the namespace resolver, so the capture path never reads config; the fields only satisfy the type.
-      config: {
-        captureMode: "hybrid",
-        defaultNamespace: "default",
-        memoryDir: "",
-        namespacePolicies: [],
-        namespacesEnabled: true,
-        sharedNamespace: "shared",
-      } as PluginConfig,
-      getStorage: async () => storage,
-    };
-    // SAFETY: persistExplicitCapture touches only getStorage here; the rest of the Orchestrator is unused in this race test.
-    const orchestrator = dependencies as Orchestrator;
+    // SAFETY: persistExplicitCapture reads only getStorage here (namespacePreResolved skips the config-based namespace resolver); the prototype stub exists for the type only.
+    const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
+    orchestrator.getStorage = async () => storage;
     const candidate = { content, category: "fact" as const, confidence: 0.9, tags: [], namespacePreResolved: true };
     const extractionCommit = persistUnderFactDedupWindow(
       storage.dir,
