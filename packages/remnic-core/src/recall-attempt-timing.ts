@@ -35,14 +35,15 @@ export function emitRecallTiming(config: PluginConfig, payload: RecallTimingEmis
  * in `finally` so denials, disconnects and assembly failures carry the same
  * trail as successes. `requestId` is the HTTP request's server-generated
  * correlation id (x-request-id); outside HTTP dispatch it falls back to a
- * generated id in the same field. Never derived from client input.
+ * generated `local:<uuid>` id in the same field, so a record says whether it
+ * has an HTTP request behind it. Never derived from client input.
  */
 export async function recordRecallAttempt<T>(
   config: PluginConfig,
   abortSignal: AbortSignal | undefined,
   run: () => Promise<T>,
 ): Promise<T> {
-  const requestId = currentCorrelationId() ?? randomUUID();
+  const requestId = currentCorrelationId() ?? `local:${randomUUID()}`;
   const startedMs = performance.now();
   const emitted: RecallTimingEmission[] = [];
   let failure: { abortError: boolean } | undefined;

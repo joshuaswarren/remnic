@@ -31,7 +31,8 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) 
   });
 }
 
-const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// Outside HTTP dispatch (direct service calls) the id is a generated fallback, marked "local:" in the same field.
+const REQUEST_ID_PATTERN = /^local:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 test("authenticated recall timings route returns two recalls without user-correlatable inputs", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-timings-"));
