@@ -179,7 +179,7 @@ schedule.
   in `connectors.googleDrive` and set `enabled: true`.
 - **Privacy.** No document content is ever logged. OAuth credentials are
   accepted via config but the intended pattern is to populate them from a
-  secret store (env vars, keychain, systemd `EnvironmentFile`) — never
+  secret store (env vars or systemd `EnvironmentFile`) — never
   commit real values. The connector never persists credentials through the
   state-store; it only persists the cursor + sync-status metadata.
 
