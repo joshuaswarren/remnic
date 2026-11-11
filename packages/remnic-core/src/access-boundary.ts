@@ -500,9 +500,11 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
       // allow-list. Absent namespaces keep the transport check; no default is
       // invented here.
       if (operationRequiresAuthorizedNamespace(spec.name)) {
-        // SAFETY: namespace-bearing schemas parse `namespace` as an optional string.
-        const parsedNamespace = (parseResult.data as { namespace?: string }).namespace;
-        if (parsedNamespace !== undefined && parsedNamespace.length > 0) {
+        // SAFETY: namespace-bearing schemas parse `namespace` as a non-empty
+        // string, an explicit null (transport null-for-absent idiom), or
+        // undefined; falsy spellings mean absent and keep the transport check.
+        const parsedNamespace = (parseResult.data as { namespace?: string | null }).namespace;
+        if (parsedNamespace) {
           assertNamespaceAllowed(tokenCapabilityStore.getStore(), parsedNamespace);
         }
       }

@@ -18,6 +18,7 @@ import test from "node:test";
 import { getOperation, type BoundOperation } from "./access-boundary.js";
 import {
   EngramAccessInputError,
+  type EngramAccessMemoryResponse,
   type EngramAccessRecallRequest,
   type EngramAccessRecallResponse,
   type EngramAccessService,
@@ -26,6 +27,7 @@ import { validateRequest, type RecallRequest } from "./access-schema.js";
 import type { RecallNavigationResult } from "./recall-navigation.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { tokenCapabilityStore } from "./access-token-capabilities.js";
+import "./access-operations.js";
 import "./access-operations-batch.js";
 import "./recall-navigation-operations.js";
 
@@ -302,4 +304,21 @@ test("wire request parse still preserves codingContext null clearing", () => {
     assert.ok(Object.hasOwn(result.data, "codingContext"), "codingContext must survive the wire null strip");
     assert.equal(result.data.codingContext, null);
   }
+});
+
+test("an explicit null namespace still reaches the handler (transport null-for-absent idiom)", async () => {
+  let capturedNamespace: string | undefined;
+  const memoryResponse: EngramAccessMemoryResponse = { found: true, namespace: "global" };
+  const service = makeService({
+    memoryGet: async (_memoryId, namespace) => {
+      capturedNamespace = namespace;
+      return memoryResponse;
+    },
+  });
+  const op = mustBeRegistered("memory_get");
+  await tokenCapabilityStore.run(
+    { version: 1, namespaces: ["global"], ops: ["memory_get"] },
+    () => op.run({ memoryId: "fact-1", namespace: null, sessionKey: null }, { service }),
+  );
+  assert.equal(capturedNamespace, undefined, "an explicit null namespace means absent");
 });
