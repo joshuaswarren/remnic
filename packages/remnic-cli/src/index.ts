@@ -5036,7 +5036,7 @@ async function cmdXray(rest: string[]): Promise<void> {
   // cheap (pure + no IO) and avoids a second "validated flags" shape
   // that would drift from the raw-argv contract tests already cover.
   const { rawQuery, options } = extractXrayRawArgs(rest);
-  parseXrayCliOptions(rawQuery, options);
+  const parsed = parseXrayCliOptions(rawQuery, options);
 
   // Remote mode (issue #2448): the X-ray endpoint lives on the remote
   // daemon; no local orchestrator boot.
@@ -5046,7 +5046,7 @@ async function cmdXray(rest: string[]): Promise<void> {
     return;
   }
 
-  initLogger();
+  initCliLogger(parsed.format === "json");
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
@@ -5162,7 +5162,7 @@ export async function runWhyCommand(
  */
 async function cmdWhy(rest: string[]): Promise<void> {
   const { rawQuery, options } = extractWhyRawArgs(rest);
-  parseWhyCliOptions(rawQuery, options);
+  const parsed = parseWhyCliOptions(rawQuery, options);
 
   const remote = resolveRemoteDaemon(resolveConfigPath());
   if (remote) {
@@ -5170,7 +5170,7 @@ async function cmdWhy(rest: string[]): Promise<void> {
     return;
   }
 
-  initLogger();
+  initCliLogger(parsed.format === "json");
   const configPath = resolveConfigPath();
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
