@@ -1,10 +1,10 @@
 /**
- * capsule-import bounds — Finding C3 (gzip bomb / unbounded gunzip).
+ * capsule gunzip bounds — Finding C3 (gzip bomb / unbounded gunzip).
  *
- * importCapsule() previously called gunzipSync with no maxOutputLength, so a
- * small highly-compressible archive could expand into multi-gigabyte buffers.
- * These tests pin the refusal of a real gzip-bomb shape and keep a normal
- * capsule import green.
+ * importCapsule/mergeCapsule previously called gunzipSync with no
+ * maxOutputLength, so a small highly-compressible archive could expand into
+ * multi-gigabyte buffers. These tests pin the refusal of a real gzip-bomb
+ * shape and keep a normal capsule import green.
  */
 
 import assert from "node:assert/strict";
@@ -15,10 +15,8 @@ import { gzipSync } from "node:zlib";
 
 import { makeTempDir } from "../testing/tmp-dir.js";
 import { exportCapsule } from "./capsule-export.js";
-import {
-  CAPSULE_IMPORT_MAX_GUNZIP_BYTES,
-  importCapsule,
-} from "./capsule-import.js";
+import { CAPSULE_IMPORT_MAX_GUNZIP_BYTES } from "./capsule-gunzip.js";
+import { importCapsule } from "./capsule-import.js";
 
 async function writeFact(dir: string, id: string, body: string): Promise<void> {
   await mkdir(path.join(dir, "facts"), { recursive: true });
@@ -44,15 +42,7 @@ test("importCapsule refuses a small gzip that expands past the output bound", as
         root,
         mode: "skip",
       }),
-    (err: unknown) => {
-      assert.ok(err instanceof Error, "must throw an Error");
-      assert.match(
-        err.message,
-        /importCapsule: archive decompressed size exceeds limit of \d+ bytes/,
-        `expected clear oversize error, got: ${err.message}`,
-      );
-      return true;
-    },
+    /importCapsule: archive decompressed size exceeds limit of \d+ bytes/,
   );
 });
 

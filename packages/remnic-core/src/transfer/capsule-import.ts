@@ -1,7 +1,6 @@
 import { lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { gunzipSync } from "node:zlib";
 import { bumpMemoryCorpusVersionForDir } from "../memory-corpus-version.js";
 import {
   HistoricalEntityCanonicalIdCache,
@@ -31,14 +30,7 @@ import {
   type ExportMemoryRecordV1,
 } from "./types.js";
 import { isEncryptedCapsuleFile, decryptCapsuleFileInMemory } from "./capsule-crypto.js";
-
-/**
- * Hard cap on decompressed capsule JSON produced by {@link importCapsule}.
- * `gunzipSync` without `maxOutputLength` will allocate whatever the stream
- * claims, so a small highly-compressible gzip can OOM the process. 64 MiB is
- * enough for ordinary capsules and stops classic bomb shapes at the zlib edge.
- */
-export const CAPSULE_IMPORT_MAX_GUNZIP_BYTES = 64 * 1024 * 1024;
+import { gunzipCapsuleArchive } from "./capsule-gunzip.js";
 
 /**
  * Conflict-resolution mode for {@link importCapsule}. Inverse of the
@@ -205,23 +197,7 @@ export async function importCapsule(
   } else {
     raw = await readFile(archiveAbs);
   }
-  let json: string;
-  try {
-    json = gunzipSync(raw, {
-      maxOutputLength: CAPSULE_IMPORT_MAX_GUNZIP_BYTES,
-    }).toString("utf-8");
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") {
-      throw new Error(
-        `importCapsule: archive decompressed size exceeds limit of ${CAPSULE_IMPORT_MAX_GUNZIP_BYTES} bytes`,
-        { cause: cause as Error },
-      );
-    }
-    throw new Error(
-      `importCapsule: archive is not a valid gzip file: ${archiveAbs}`,
-      { cause: cause as Error },
-    );
-  }
+  const json = gunzipCapsuleArchive(raw, "importCapsule", archiveAbs);
   let parsedJson: unknown;
   try {
     parsedJson = JSON.parse(json);
