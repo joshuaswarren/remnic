@@ -280,9 +280,9 @@ same MCP tool with `{"force": true}` to bypass the due check during debugging.
 
 ## What's deferred
 
-- **OAuth helpers and credential storage** — keychain-backed storage is
-  still TODO; connectors currently read credentials directly from the
-  validated config.
+- **OAuth helpers and credential storage** — connectors read credentials
+  as plain strings from validated config. Resolving credentials through
+  the host SecretRef resolver is tracked in #3358.
 
 ## File map
 
