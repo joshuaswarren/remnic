@@ -114,20 +114,25 @@ export class HourlySummarizer {
   private fallbackLlm: FallbackLlmClient;
   private modelRegistry: ModelRegistry;
   private transcript?: TranscriptManager;
+  /** Orchestrator-owned stop signal: refuses new summaries and aborts the
+   *  in-flight local LLM call once teardown begins. */
+  private readonly shutdownSignal: AbortSignal | undefined;
 
   constructor(
     config: PluginConfig,
     gatewayConfig?: GatewayConfig,
     modelRegistry?: ModelRegistry,
-    transcript?: TranscriptManager
+    transcript?: TranscriptManager,
+    shutdownSignal?: AbortSignal
   ) {
     this.config = config;
     this.summariesDir = path.join(config.memoryDir, "summaries", "hourly");
     this.modelRegistry = modelRegistry ?? new ModelRegistry(config.memoryDir);
     this.transcript = transcript;
+    this.shutdownSignal = shutdownSignal;
 
     // Initialize local LLM client with shared model registry
-    this.localLlm = new LocalLlmClient(config, this.modelRegistry);
+    this.localLlm = new LocalLlmClient(config, this.modelRegistry, shutdownSignal);
 
     // Initialize fallback client with gateway config
     this.fallbackLlm = new FallbackLlmClient(gatewayConfig, fallbackLlmRuntimeContextFromConfig(config));
@@ -190,6 +195,7 @@ export class HourlySummarizer {
     entries: TranscriptEntry[]
   ): Promise<HourlySummary | null> {
     if (entries.length === 0) return null;
+    this.shutdownSignal?.throwIfAborted();
 
     // Format entries for the LLM
     const conversation = entries.map((e) => `[${e.role}] ${e.content}`).join("\n\n");
@@ -399,6 +405,7 @@ Respond with valid JSON matching this schema:
             maxTokens: contextSizes.maxOutputTokens,
             operation: "hourly_summary_extended",
             priority: "background",
+            signal: this.shutdownSignal,
           }
         );
         if (response?.content) {
@@ -489,6 +496,7 @@ Respond with valid JSON matching this schema:
         maxTokens: contextSizes.maxOutputTokens,
         operation: "hourly_summary",
         priority: "background",
+        signal: this.shutdownSignal,
       }
     );
 
@@ -775,6 +783,7 @@ Respond with valid JSON matching this schema:
 
   // Main entry point for cron job
   async runHourly(): Promise<HourlySummarizerRunStats> {
+    this.shutdownSignal?.throwIfAborted();
     log.debug("running hourly summary generation");
 
     // Get active sessions from transcript. The scan outcome is kept LOCAL to

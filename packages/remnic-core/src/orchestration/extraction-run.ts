@@ -113,6 +113,10 @@ export interface ExtractionRunCoordinatorDeps {
    * threshold and honors a foreground-opened breaker (review round).
    */
   providerBreaker?: ProviderCircuitBreaker;
+  /** Orchestrator-owned stop signal, combined into every extraction run's
+   *  abort signal: queued tasks never start and in-flight runs abort the
+   *  moment destroy() begins. Absent for standalone coordinators (tests). */
+  shutdownSignal?: AbortSignal;
 }
 
 // Recall/extraction abort helpers live in orchestrator-helpers.ts since
@@ -692,11 +696,16 @@ export class ExtractionRunCoordinator {
       typeof deadlineMs === "number" && Number.isFinite(deadlineMs)
         ? new AbortController()
         : undefined;
+    const shutdownSignal = this.deps.shutdownSignal;
+    const callerAbortSignal =
+      options.abortSignal && shutdownSignal
+        ? AbortSignal.any([options.abortSignal, shutdownSignal])
+        : (options.abortSignal ?? shutdownSignal);
     const extractionAbortSignal = extractionDeadlineController
-      ? options.abortSignal
-        ? AbortSignal.any([options.abortSignal, extractionDeadlineController.signal])
+      ? callerAbortSignal
+        ? AbortSignal.any([callerAbortSignal, extractionDeadlineController.signal])
         : extractionDeadlineController.signal
-      : options.abortSignal;
+      : callerAbortSignal;
     let extractionDeadlineTimer: NodeJS.Timeout | undefined;
     const clearExtractionDeadlineTimer = (): void => {
       if (extractionDeadlineTimer) {
