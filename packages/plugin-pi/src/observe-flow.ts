@@ -11,9 +11,9 @@ export const MAX_OBSERVED_HASHES = 2000;
 export function rememberObservedHash(observedHashes: Set<string>, hash: string): void {
   if (observedHashes.has(hash)) return;
   while (observedHashes.size >= MAX_OBSERVED_HASHES) {
-    const oldest = observedHashes.keys().next().value;
-    if (typeof oldest !== "string") break;
-    observedHashes.delete(oldest);
+    const oldest = observedHashes.keys().next();
+    if (oldest.done) break;
+    observedHashes.delete(oldest.value);
   }
   observedHashes.add(hash);
 }
