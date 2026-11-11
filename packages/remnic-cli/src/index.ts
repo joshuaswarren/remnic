@@ -85,6 +85,7 @@ import {
   rollbackFromEngramMigration,
   buildBriefing,
   withBriefingDeadline,
+  BriefingTimeoutError,
   parseBriefingWindow,
   parseBriefingFocus,
   validateBriefingFormat,
@@ -4720,7 +4721,7 @@ export function buildQueryRecallRequest(queryText: string): {
   };
 }
 
-async function cmdQuery(queryText: string, json: boolean, explain: boolean): Promise<void> {
+async function cmdQuery(queryText: string, json: boolean, explain: boolean, abortSignal?: AbortSignal): Promise<void> {
   if (!queryText) {
     console.error("Usage: remnic query <text>");
     process.exit(1);
@@ -4749,6 +4750,8 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
   const config = parseConfig(remnicCfg);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
+  // Startup finished after the command deadline; stop here instead of recalling.
+  abortSignal?.throwIfAborted();
   const service = new EngramAccessService(orchestrator);
   const recallRequest = buildQueryRecallRequest(queryText);
 
@@ -12683,7 +12686,15 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const json = rest.includes("--json");
       const explain = rest.includes("--explain");
       const queryText = rest.filter((a) => !a.startsWith("--")).join(" ");
-      await cmdQuery(queryText, json, explain);
+      try {
+        await withBriefingDeadline((signal) => cmdQuery(queryText, json, explain, signal), undefined, "query");
+      } catch (err) {
+        if (json && err instanceof BriefingTimeoutError) {
+          process.stderr.write(`${JSON.stringify({ error: err.message })}\n`);
+          process.exit(1);
+        }
+        throw err;
+      }
       break;
     }
     case "recall":
