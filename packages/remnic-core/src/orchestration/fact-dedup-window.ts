@@ -61,8 +61,12 @@ export async function confirmActiveFactDuplicate(
 ): Promise<boolean> {
   let needsCorpusConfirm: boolean;
   try {
+    // Snapshot authority before the probe. A rebuild that finishes between a
+    // stale MISS and a later authority read must not turn that MISS into a
+    // clean not-duplicate (#3312 finding 2).
+    const authoritativeBeforeProbe = await storage.isFactContentHashAuthoritative();
     if (!(await probe.hasContentHashDedup(storage, opts.contentHashDedupKey))) {
-      if (await storage.isFactContentHashAuthoritative()) return false;
+      if (authoritativeBeforeProbe) return false;
       needsCorpusConfirm = true;
     } else {
       needsCorpusConfirm = true;

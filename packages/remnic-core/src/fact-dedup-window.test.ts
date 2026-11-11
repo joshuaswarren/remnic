@@ -114,3 +114,68 @@ test("persistUnderFactDedupWindow fails closed when a peer holds fact-dedup.lock
     await cleanup();
   }
 });
+
+test("confirmActiveFactDuplicate falls through when authority flips after a stale MISS", async () => {
+  // Race: non-authoritative index answers MISS, then a rebuild finishes before
+  // the authority check — trusting that post-probe true would admit a duplicate.
+  let probed = false;
+  const storage = {
+    dir: "/tmp/fact-dedup-authority-race",
+    isFactContentHashAuthoritative: async () => probed,
+    readAllMemories: async () => [
+      {
+        frontmatter: { category: "fact", status: "active" },
+        content: "the sky is blue",
+      },
+    ],
+    readAllColdMemories: async () => [],
+  };
+  const raceProbe = {
+    hasContentHashDedup: async () => {
+      probed = true;
+      return false;
+    },
+  };
+
+  assert.equal(
+    await confirmActiveFactDuplicate(raceProbe, storage as never, {
+      category: "fact",
+      contentHashDedupKey: "the sky is blue",
+      connector: undefined,
+      citationEnabled: false,
+      citationTemplate: "",
+    }),
+    true,
+    "stale MISS under non-authoritative index must confirm against the corpus",
+  );
+});
+
+test("confirmActiveFactDuplicate keeps the authoritative MISS fast path", async () => {
+  let corpusReads = 0;
+  const storage = {
+    dir: "/tmp/fact-dedup-authoritative-miss",
+    isFactContentHashAuthoritative: async () => true,
+    readAllMemories: async () => {
+      corpusReads += 1;
+      return [];
+    },
+    readAllColdMemories: async () => {
+      corpusReads += 1;
+      return [];
+    },
+  };
+  const missProbe = { hasContentHashDedup: async () => false };
+
+  assert.equal(
+    await confirmActiveFactDuplicate(missProbe, storage as never, {
+      category: "fact",
+      contentHashDedupKey: "the sky is blue",
+      connector: undefined,
+      citationEnabled: false,
+      citationTemplate: "",
+    }),
+    false,
+  );
+  assert.equal(corpusReads, 0, "authoritative MISS must not scan the corpus");
+});
+
