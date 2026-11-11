@@ -137,6 +137,7 @@ test("confirmActiveFactDuplicate falls through when authority flips after a stal
     },
   };
 
+  // SAFETY: confirmActiveFactDuplicate reads only isFactContentHashAuthoritative, readAllMemories and readAllColdMemories; the stub above implements exactly those.
   assert.equal(
     await confirmActiveFactDuplicate(raceProbe, storage as never, {
       category: "fact",
@@ -166,6 +167,7 @@ test("confirmActiveFactDuplicate keeps the authoritative MISS fast path", async 
   };
   const missProbe = { hasContentHashDedup: async () => false };
 
+  // SAFETY: the authoritative fast path reads only the stub methods above; the corpus readers stay unused.
   assert.equal(
     await confirmActiveFactDuplicate(missProbe, storage as never, {
       category: "fact",
