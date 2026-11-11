@@ -288,13 +288,29 @@ test("an allowed explicit namespace reaches the memory_expand handler", async ()
 test("own __proto__ member cannot smuggle a namespace through the wire request parse", () => {
   // validateRequest is the shared entry the HTTP REST body reader
   // (readValidatedBody) and the MCP wire-schema parse (parseMcpRequest) run.
+  // A reserved key returns the documented validation failure, not a throw.
   const recallExploit = JSON.parse('{"__proto__":{"namespace":"other"},"query":"hello"}');
-  assert.throws(
-    () => validateRequest<RecallRequest>("recall", recallExploit),
-    EngramAccessInputError,
-  );
-  const observeExploit = JSON.parse('{"__proto__":{"namespace":"other"}}');
-  assert.throws(() => validateRequest("observe", observeExploit), EngramAccessInputError);
+  const recallResult = validateRequest<RecallRequest>("recall", recallExploit);
+  assert.equal(recallResult.success, false);
+  if (!recallResult.success) {
+    assert.equal(recallResult.error.error, "request validation failed");
+    assert.equal(recallResult.error.code, "validation_error");
+    assert.ok(
+      recallResult.error.details.some(
+        (detail) => detail.field === "(root)" && /__proto__/.test(detail.message),
+      ),
+      "the details must name the reserved key",
+    );
+  }
+  const observeResult = validateRequest("observe", JSON.parse('{"__proto__":{"namespace":"other"}}'));
+  assert.equal(observeResult.success, false);
+  if (!observeResult.success) {
+    assert.equal(observeResult.error.code, "validation_error");
+    assert.ok(
+      observeResult.error.details.some((detail) => /__proto__/.test(detail.message)),
+      "the details must name the reserved key",
+    );
+  }
 });
 
 test("wire request parse still preserves codingContext null clearing", () => {
