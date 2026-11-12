@@ -228,7 +228,43 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
   });
 });
 
-test("an entry older than the TTL is rebuilt", async (t) => {
+// Recall waits for the graph build, so a cache miss costs every recall that lands on it. Production: a
+// 2106 node, 9174 anchor graph rebuilt in 5 s standalone, 7 s inside the daemon, and 17 to 32 s when two
+// recalls overlapped and each ran its own build.
+async function until(condition: () => Promise<boolean>) {
+  for (let i = 0; i < 400; i += 1) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("condition not reached in 2 s");
+}
+
+test("concurrent reads on a cold cache share one build", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "theta shared fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "theta shared fact", [memory.id]) });
+    const before = { ...harmonicGraphCacheStats };
+    const [a, b, c] = await Promise.all([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.equal(harmonicGraphCacheStats.misses, before.misses + 1, "one build, not one per caller");
+    assert.equal(a, b);
+    assert.equal(b, c);
+  });
+});
+
+test("a caller that aborts leaves the shared build for the others", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "iota abort fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "iota abort fact", [memory.id]) });
+    const controller = new AbortController();
+    const aborted = readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal });
+    const other = read(memoryDir);
+    controller.abort();
+    await assert.rejects(aborted);
+    assert.equal((await other).nodes.length, 1);
+  });
+});
+
+test("a read past the TTL answers from the stale graph and refreshes behind it", async (t) => {
   await withDir(async (memoryDir, storage) => {
     const memory = await storage.writeMemory("fact", "zeta ttl fact", { source: "test" });
     const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "zeta ttl fact", [memory.id]) });
@@ -238,7 +274,23 @@ test("an entry older than the TTL is rebuilt", async (t) => {
     await rm(nodeFile, { force: true });
     clock.mock.mockImplementation(() => start + 29_000);
     assert.equal((await read(memoryDir)).nodes.length, 1, "still cached inside the TTL");
+    const missesBefore = harmonicGraphCacheStats.misses;
     clock.mock.mockImplementation(() => start + 31_000);
-    assert.equal((await read(memoryDir)).nodes.length, 0, "rebuilt past the TTL");
+    assert.equal((await read(memoryDir)).nodes.length, 1, "past the TTL the caller does not wait for a rebuild");
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "a refresh was started");
+    await until(async () => (await read(memoryDir)).nodes.length === 0);
+  });
+});
+
+test("a graph past the stale limit is rebuilt before it is served", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "kappa limit fact", { source: "test" });
+    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "kappa limit fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    await rm(nodeFile, { force: true });
+    clock.mock.mockImplementation(() => start + 301_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "too stale to serve");
   });
 });

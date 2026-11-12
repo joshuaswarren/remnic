@@ -1,7 +1,8 @@
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
-import { throwIfAborted } from "./abort-error.js";
+import { raceAbort, throwIfAborted } from "./abort-error.js";
+import { log } from "./logger.js";
 import { readHarmonicGraphStamp } from "./harmonic-graph-version.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
  import {
@@ -462,6 +463,11 @@ async function buildProjectedHarmonicGraph(options: {
 }
 
 const GRAPH_CACHE_TTL_MS = 30_000;
+/**
+ * Past the TTL a graph whose stamp is unchanged is still served while a refresh runs behind it, so no
+ * recall waits for a rebuild just because the TTL lapsed. Past this limit it is rebuilt first.
+ */
+const GRAPH_CACHE_MAX_STALE_MS = 300_000;
 const GRAPH_CACHE_MAX_ENTRIES = 8;
 
 interface GraphCacheEntry {
@@ -470,9 +476,16 @@ interface GraphCacheEntry {
   graph: ProjectedHarmonicGraph;
 }
 
+interface GraphBuild {
+  stamp: string;
+  promise: Promise<ProjectedHarmonicGraph>;
+}
+
 const graphCache = new Map<string, GraphCacheEntry>();
-/** Counters for tests and diagnostics. */
-export const harmonicGraphCacheStats = { hits: 0, misses: 0 };
+/** One build per cache key at a time: every recall that lands on a miss waits for the same build. */
+const graphBuilds = new Map<string, GraphBuild>();
+/** Counters for tests and diagnostics. `stale` hits also count as `hits`. */
+export const harmonicGraphCacheStats = { hits: 0, misses: 0, stale: 0, shared: 0 };
 
 /** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
 function deepFreeze<T extends object>(value: T): T {
@@ -485,6 +498,42 @@ function deepFreeze<T extends object>(value: T): T {
 
 export function clearHarmonicGraphCache(): void {
   graphCache.clear();
+  graphBuilds.clear();
+}
+
+type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
+
+/**
+ * Start the one build for `key`. The build is shared and outlives any single caller, so it takes no
+ * caller's abort signal; each caller races its own signal against the shared promise instead.
+ */
+function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): Promise<ProjectedHarmonicGraph> {
+  harmonicGraphCacheStats.misses++;
+  const startedAtMs = Date.now();
+  const promise: Promise<ProjectedHarmonicGraph> = buildProjectedHarmonicGraph({
+    memoryDir: options.memoryDir,
+    abstractionNodeStoreDir: options.abstractionNodeStoreDir,
+    anchorsEnabled: options.anchorsEnabled,
+    temporalExpiredInInjection: options.temporalExpiredInInjection,
+  })
+    .then((built) => {
+      const graph = { nodes: deepFreeze(built.nodes), anchors: deepFreeze(built.anchors) };
+      // A cleared cache or a newer build for this key has replaced this one: do not store a stale graph.
+      if (graphBuilds.get(key)?.promise !== promise) return graph;
+      graphCache.delete(key);
+      graphCache.set(key, { stamp, startedAtMs, graph });
+      while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
+        const oldest = graphCache.keys().next().value;
+        if (oldest === undefined) break;
+        graphCache.delete(oldest);
+      }
+      return graph;
+    })
+    .finally(() => {
+      if (graphBuilds.get(key)?.promise === promise) graphBuilds.delete(key);
+    });
+  graphBuilds.set(key, { stamp, promise });
+  return promise;
 }
 
 /**
@@ -495,9 +544,12 @@ export function clearHarmonicGraphCache(): void {
  * cold-write version sentinels (bumped by every memory write, in any process) and
  * the graph version sentinel (bumped by node and anchor writes). A stamp read is
  * four stats, not a scan of the memories. The TTL bounds the one input a sentinel
- * cannot see, which is wall-clock validity expiry. An explicit `nowMs` bypasses the
- * cache so tests stay deterministic. The cached arrays are frozen: callers must not
- * mutate them.
+ * cannot see, which is wall-clock validity expiry; past it the stale graph is served
+ * while one refresh runs (up to GRAPH_CACHE_MAX_STALE_MS). A changed stamp always
+ * waits for a fresh build, because a stale graph could carry governed metadata of a
+ * memory that left the active set. Concurrent misses share one build. An explicit
+ * `nowMs` bypasses the cache so tests stay deterministic. The cached arrays are
+ * frozen: callers must not mutate them.
  */
 export async function readProjectedHarmonicGraph(options: {
   memoryDir: string;
@@ -521,28 +573,24 @@ export async function readProjectedHarmonicGraph(options: {
   // The stamp is read BEFORE the build, so a write that lands mid-build leaves the
   // entry stale and the next call rebuilds.
   const stamp = readHarmonicGraphStamp(options.memoryDir, nodeStoreDir);
-  const startedAtMs = Date.now();
+  const ageMs = (entry: GraphCacheEntry) => Date.now() - entry.startedAtMs;
   const hit = graphCache.get(key);
-  if (hit && hit.stamp === stamp && startedAtMs - hit.startedAtMs < GRAPH_CACHE_TTL_MS) {
+  if (hit && hit.stamp === stamp && ageMs(hit) < GRAPH_CACHE_MAX_STALE_MS) {
     harmonicGraphCacheStats.hits++;
     graphCache.delete(key);
     graphCache.set(key, hit);
+    if (ageMs(hit) >= GRAPH_CACHE_TTL_MS && graphBuilds.get(key)?.stamp !== stamp) {
+      harmonicGraphCacheStats.stale++;
+      startGraphBuild(key, stamp, options).catch((err) => log.debug(`harmonic graph refresh failed: ${err}`));
+    }
     return hit.graph;
   }
-  harmonicGraphCacheStats.misses++;
-  const built = await buildProjectedHarmonicGraph(options);
-  const graph = {
-    nodes: deepFreeze(built.nodes),
-    anchors: deepFreeze(built.anchors),
-  };
-  graphCache.delete(key);
-  graphCache.set(key, { stamp, startedAtMs, graph });
-  while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
-    const oldest = graphCache.keys().next().value;
-    if (oldest === undefined) break;
-    graphCache.delete(oldest);
+  const running = graphBuilds.get(key);
+  if (running?.stamp === stamp) {
+    harmonicGraphCacheStats.shared++;
+    return raceAbort(running.promise, options.abortSignal, "harmonic retrieval aborted");
   }
-  return graph;
+  return raceAbort(startGraphBuild(key, stamp, options), options.abortSignal, "harmonic retrieval aborted");
 }
 
 export async function searchHarmonicRetrieval(options: {
