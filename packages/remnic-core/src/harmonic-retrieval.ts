@@ -2,6 +2,7 @@ import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
 import { throwIfAborted } from "./abort-error.js";
+import { readHarmonicGraphStamp } from "./harmonic-graph-version.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
  import {
    HARMONIC_SOURCE_MEMORY_INSERTED_AT_KEY,
@@ -403,7 +404,7 @@ export interface ProjectedHarmonicGraph {
  *   one of that node's surviving active sources, and is dropped once no
  *   reference survives.
  */
-export async function readProjectedHarmonicGraph(options: {
+async function buildProjectedHarmonicGraph(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
   anchorsEnabled: boolean;
@@ -460,6 +461,79 @@ export async function readProjectedHarmonicGraph(options: {
   return { nodes: projectedNodes, anchors };
 }
 
+const GRAPH_CACHE_TTL_MS = 30_000;
+const GRAPH_CACHE_MAX_ENTRIES = 8;
+
+interface GraphCacheEntry {
+  stamp: string;
+  startedAtMs: number;
+  graph: ProjectedHarmonicGraph;
+}
+
+const graphCache = new Map<string, GraphCacheEntry>();
+/** Counters for tests and diagnostics. */
+export const harmonicGraphCacheStats = { hits: 0, misses: 0 };
+
+export function clearHarmonicGraphCache(): void {
+  graphCache.clear();
+}
+
+/**
+ * `readProjectedHarmonicGraph` with an opt-in in-memory cache. Every recall used
+ * to re-read all nodes, anchors and source memories from disk (about 4.7 s on a
+ * 2107 node, 9199 anchor, 4105 source graph). With `useCache` a completed graph is
+ * reused while the stamp below is unchanged: the memory corpus, memory status and
+ * cold-write version sentinels (bumped by every memory write, in any process) and
+ * the graph version sentinel (bumped by node and anchor writes). A stamp read is
+ * four stats, not a scan of the memories. The TTL bounds the one input a sentinel
+ * cannot see, which is wall-clock validity expiry. An explicit `nowMs` bypasses the
+ * cache so tests stay deterministic. The cached arrays are frozen: callers must not
+ * mutate them.
+ */
+export async function readProjectedHarmonicGraph(options: {
+  memoryDir: string;
+  abstractionNodeStoreDir?: string;
+  anchorsEnabled: boolean;
+  abortSignal?: AbortSignal;
+  temporalExpiredInInjection?: boolean;
+  nowMs?: number;
+  useCache?: boolean;
+}): Promise<ProjectedHarmonicGraph> {
+  if (options.useCache !== true || options.nowMs !== undefined) return buildProjectedHarmonicGraph(options);
+  const nodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
+  const key = JSON.stringify([
+    options.memoryDir,
+    nodeStoreDir,
+    options.anchorsEnabled === true,
+    options.temporalExpiredInInjection === true,
+  ]);
+  // The stamp is read BEFORE the build, so a write that lands mid-build leaves the
+  // entry stale and the next call rebuilds.
+  const stamp = readHarmonicGraphStamp(options.memoryDir, nodeStoreDir);
+  const startedAtMs = Date.now();
+  const hit = graphCache.get(key);
+  if (hit && hit.stamp === stamp && startedAtMs - hit.startedAtMs < GRAPH_CACHE_TTL_MS) {
+    harmonicGraphCacheStats.hits++;
+    graphCache.delete(key);
+    graphCache.set(key, hit);
+    return hit.graph;
+  }
+  harmonicGraphCacheStats.misses++;
+  const built = await buildProjectedHarmonicGraph(options);
+  const graph = {
+    nodes: Object.freeze(built.nodes) as AbstractionNode[],
+    anchors: Object.freeze(built.anchors) as CueAnchor[],
+  };
+  graphCache.delete(key);
+  graphCache.set(key, { stamp, startedAtMs, graph });
+  while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
+    const oldest = graphCache.keys().next().value;
+    if (oldest === undefined) break;
+    graphCache.delete(oldest);
+  }
+  return graph;
+}
+
 export async function searchHarmonicRetrieval(options: {
   memoryDir: string;
   abstractionNodeStoreDir?: string;
@@ -469,6 +543,8 @@ export async function searchHarmonicRetrieval(options: {
   anchorsEnabled: boolean;
   abortSignal?: AbortSignal;
   temporalExpiredInInjection?: boolean;
+  /** Share one projected graph between recalls until a write bumps a version sentinel (see readProjectedHarmonicGraph). */
+  useGraphCache?: boolean;
 }): Promise<HarmonicRetrievalResult[]> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
@@ -476,7 +552,10 @@ export async function searchHarmonicRetrieval(options: {
 
   // One projection for every graph reader: nodes and anchors both arrive
   // already narrowed to the namespace's current active memories.
-  const { nodes: eligibleNodes, anchors } = await readProjectedHarmonicGraph(options);
+  const { nodes: eligibleNodes, anchors } = await readProjectedHarmonicGraph({
+    ...options,
+    useCache: options.useGraphCache === true,
+  });
   const candidates = new Map<string, HarmonicCandidate>();
 
   for (const node of eligibleNodes) {
