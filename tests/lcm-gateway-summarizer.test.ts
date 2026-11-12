@@ -115,26 +115,9 @@ async function captureLcmGatewaySummary(
     return [...calls];
   } finally {
     restoreRunner();
-    const teardown = orchestrator as unknown as {
-      abortDeferredInit(): void;
-      deferredReady: Promise<void>;
-      qmd: { dispose?(): void | Promise<void> };
-      qmdMaintenanceTimer?: NodeJS.Timeout | null;
-      _orchestratorInitCoordinator?: { drainStartupWarmups(): Promise<void> };
-    };
-    teardown.abortDeferredInit();
-    if (teardown.qmdMaintenanceTimer) {
-      clearTimeout(teardown.qmdMaintenanceTimer);
-      teardown.qmdMaintenanceTimer = null;
-    }
-    await Promise.race([
-      teardown.deferredReady.catch(() => undefined),
-      new Promise((resolve) => setTimeout(resolve, 500)),
-    ]);
-    // This teardown skips destroy(); wait for the startup fact-hash warm-up so
-    // it cannot still be writing state/ while rm runs (ENOTEMPTY).
-    await teardown._orchestratorInitCoordinator?.drainStartupWarmups();
-    await teardown.qmd.dispose?.();
+    // destroy() drains the startup fact-hash warm-up, so nothing is still
+    // writing state/ when rm runs (a hand-rolled teardown raced it: ENOTEMPTY).
+    await orchestrator.destroy();
     orchestrator.lcmEngine?.close();
     await rm(memoryDir, { recursive: true, force: true });
   }
