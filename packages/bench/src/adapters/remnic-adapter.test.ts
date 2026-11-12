@@ -2753,21 +2753,24 @@ test("direct adapter session reset clears caller-owned cold replay state", async
       extractionMinUserTurns: 999,
     },
   };
+  // The caller-owned directory already holds these cold memories when the
+  // adapter opens it. A separate StorageManager rooted at cold/ cannot
+  // invalidate the adapter's corpus read cache, and daemon start now reads the
+  // corpus early (fact-hash warm-up), so writing after open would be stale.
+  const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
+  const { id: resetColdId } = await coldStorage.writeMemory(
+    "fact",
+    "Remember the stale cold reset code is frost-77.",
+    { source: benchReplaySourceForTest("owned-cold-reset-session") },
+  );
+  const { id: otherColdId } = await coldStorage.writeMemory(
+    "fact",
+    "Remember the other cold reset code is ember-88.",
+    { source: benchReplaySourceForTest("owned-cold-other-session") },
+  );
   const adapter = await createRemnicAdapter(adapterOptions);
 
   try {
-    const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
-    const { id: resetColdId } = await coldStorage.writeMemory(
-      "fact",
-      "Remember the stale cold reset code is frost-77.",
-      { source: benchReplaySourceForTest("owned-cold-reset-session") },
-    );
-    const { id: otherColdId } = await coldStorage.writeMemory(
-      "fact",
-      "Remember the other cold reset code is ember-88.",
-      { source: benchReplaySourceForTest("owned-cold-other-session") },
-    );
-
     await adapter.reset?.("owned-cold-reset-session");
 
     const coldMemories = await new StorageManager(memoryDir).readAllColdMemories();
