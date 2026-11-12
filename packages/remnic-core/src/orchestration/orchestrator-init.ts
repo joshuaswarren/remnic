@@ -115,6 +115,7 @@ export class OrchestratorInitCoordinator {
     | { epoch: number; controller: AbortController }
     | undefined;
   private readonly startupStorageWrites = new Set<Promise<void>>();
+  private readonly startupWarmups = new Set<Promise<void>>();
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -136,6 +137,11 @@ export class OrchestratorInitCoordinator {
     } finally {
       this.startupStorageWrites.delete(write);
     }
+  }
+
+  /** Wait for background startup warm-ups; destroy() only, never the deferredReady gate. */
+  async drainStartupWarmups(): Promise<void> {
+    await Promise.allSettled([...this.startupWarmups]);
   }
 
   async drainEntityMigrations(): Promise<void> {
@@ -656,6 +662,25 @@ export class OrchestratorInitCoordinator {
     }
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
+
+    // Build the default namespace's authoritative fact-hash index now, in the
+    // background. The first explicit save otherwise pays the whole hot+cold
+    // corpus rebuild (measured 3.1 s CPU, 11 to 33 s wall on jarvis-ml). A save
+    // that arrives mid-build joins this same in-flight promise inside
+    // StorageManager, so the rebuild never runs twice. Not awaited: the
+    // deferredReady gate must not wait on it, and a failure only means the first
+    // save builds the index itself, as before.
+    const factHashWarm = (async () => {
+      const storage = await this.deps.storageRouter.storageFor(this.deps.config.defaultNamespace);
+      await storage.isFactContentHashAuthoritative();
+    })().catch((err) => {
+      log.debug(`fact-hash index startup warm-up failed (non-fatal): ${err}`);
+    });
+    // Tracked apart from startupStorageWrites: destroy() waits for it so the
+    // rebuild never touches state/ after teardown, but the deferredReady gate
+    // (which drains startupStorageWrites) must not.
+    this.startupWarmups.add(factHashWarm);
+    void factHashWarm.finally(() => this.startupWarmups.delete(factHashWarm));
 
     // Warmup: run cheap searches to pre-load QMD embedding models and the
     // embedding-fallback JSON index so the first real recall is fast.

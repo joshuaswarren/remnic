@@ -1595,3 +1595,62 @@ for (const namespace of ["default", "shared"]) {
     }
   });
 }
+
+test("daemon start builds the fact-hash index once in the background and a save right after start joins it", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-warm-fact-hash-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  try {
+    const storage = await orchestrator.getStorage("default");
+    const realRead = storage.readAllMemories.bind(storage);
+    let corpusReads = 0;
+    let signalStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    let releaseCorpus!: () => void;
+    const corpusHeld = new Promise<void>((resolve) => { releaseCorpus = resolve; });
+    storage.readAllMemories = async () => {
+      corpusReads += 1;
+      signalStarted();
+      await corpusHeld;
+      return realRead();
+    };
+
+    await withTestDeadline(orchestrator.initialize());
+    // SAFETY: test reads the private deferredReady gate, as the neighbouring tests do.
+    await withTestDeadline((orchestrator as any).deferredReady);
+    let giveUp: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      rebuildStarted.then(() => "started" as const),
+      new Promise<"not-started">((resolve) => { giveUp = setTimeout(() => resolve("not-started"), 3_000); }),
+    ]);
+    clearTimeout(giveUp);
+    assert.equal(outcome, "started", "start must begin the fact-hash corpus rebuild before any save arrives");
+
+    // Two saves landing while the warm-up still runs: both wait on that one flight.
+    const saves = Promise.all([storage.lookupContentHash("first save"), storage.lookupContentHash("second save")]);
+    releaseCorpus();
+    const results = await withTestDeadline(saves);
+    if (results === "deadline") assert.fail("saves joining the warm-up never settled");
+    assert.equal(corpusReads, 1, "the saves must not start a second corpus rebuild");
+    assert.deepEqual(results.map((r) => r.authoritative), [true, true]);
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});

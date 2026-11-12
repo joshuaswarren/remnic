@@ -1009,6 +1009,7 @@ export class Orchestrator {
     this.abortDeferredInit();
     this.extractionQueueCoordinator.stopAccepting();
     await this._orchestratorInitCoordinator?.drainEntityMigrations();
+    await this._orchestratorInitCoordinator?.drainStartupWarmups();
     if (this.wearablesAutoSyncHandle) {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
