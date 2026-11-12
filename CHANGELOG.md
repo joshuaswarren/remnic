@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.94] — 2026-11-12
+
 ### Performance
 
 - A buffer owner handing turns into a drain claim now appends one record to an append-only inbox beside the claim instead of reading, merging and rewriting the whole claim file under its lock, so the observe path's cost no longer grows with the claim's size. Readers fold the inbox over the claim with the same identity-aware merge, the drainer's progress write and ack compact it, and a kill between the claim write and the inbox delete replays nothing. Claim listings and the hand-over gate read a cached turn count instead of parsing every claim body. To roll back to an older build, first run `remnic buffer drain --fold-inboxes` (see `docs/ops/buffer-drain.md`).
