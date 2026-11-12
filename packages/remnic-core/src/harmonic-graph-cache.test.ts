@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -292,5 +292,71 @@ test("a graph past the stale limit is rebuilt before it is served", async (t) =>
     await rm(nodeFile, { force: true });
     clock.mock.mockImplementation(() => start + 301_000);
     assert.equal((await read(memoryDir)).nodes.length, 0, "too stale to serve");
+  });
+});
+
+// Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
+// (a corrupt node file would not: readAbstractionNodes skips those on purpose).
+async function breakNodeStore(memoryDir: string) {
+  const nodesDir = path.join(memoryDir, "state", "abstraction-nodes", "nodes");
+  const parked = `${nodesDir}.parked`;
+  await rename(nodesDir, parked);
+  await writeFile(nodesDir, "not a directory");
+  return async () => {
+    await rm(nodesDir, { force: true });
+    await rename(parked, nodesDir);
+  };
+}
+
+test("a source whose invalid_at passes inside the stale window is never served", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    const memory = await storage.writeMemory("fact", "lambda expiry fact", {
+      source: "test",
+      invalidAt: new Date(start + 60_000).toISOString(),
+    });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "lambda expiry fact", [memory.id]) });
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    clock.mock.mockImplementation(() => start + 31_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "past the TTL but before the invalid_at: stale is fine");
+    await until(async () => harmonicGraphCacheStats.stale >= 1);
+    clock.mock.mockImplementation(() => start + 61_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "after the invalid_at the graph is rebuilt before it is served");
+  });
+});
+
+test("a failed build leaves no poisoned entry, so the next read retries and succeeds", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "mu retry fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "mu retry fact", [memory.id]) });
+    const restore = await breakNodeStore(memoryDir);
+    await assert.rejects(read(memoryDir));
+    await restore();
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+  });
+});
+
+test("a failing refresh is retried at most once per TTL, not on every stale read", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "nu backoff fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "nu backoff fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    const restore = await breakNodeStore(memoryDir);
+    clock.mock.mockImplementation(() => start + 31_000);
+    const missesBefore = harmonicGraphCacheStats.misses;
+    assert.equal((await read(memoryDir)).nodes.length, 1, "the stale graph is still served");
+    await until(async () => harmonicGraphCacheStats.misses === missesBefore + 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    clock.mock.mockImplementation(() => start + 40_000);
+    for (let i = 0; i < 5; i += 1) await read(memoryDir);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "no new build inside the backoff");
+    await restore();
+    clock.mock.mockImplementation(() => start + 62_000);
+    await read(memoryDir);
+    await until(async () => harmonicGraphCacheStats.misses === missesBefore + 2);
   });
 });
