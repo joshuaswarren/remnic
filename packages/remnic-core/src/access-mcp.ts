@@ -2494,9 +2494,8 @@ export class EngramMcpServer {
 
   private async flushBuffer(output: Writable): Promise<void> {
     for (let frame = this.frames.next(); frame; frame = this.frames.next()) {
-      this.replyForm ??= frame.form;
       if (frame.kind === "too-large") {
-        this.writeMessage(output, { jsonrpc: "2.0", id: null, error: { code: -32600, message: "frame too large" } });
+        this.writeRefusal(output, frame.form, -32600, "frame too large");
         continue;
       }
       let parsed: JsonRpcRequest;
@@ -2504,16 +2503,10 @@ export class EngramMcpServer {
         // SAFETY: handleRequest defaults missing fields; a non-object body throws and scheduleFlush answers -32700.
         parsed = JSON.parse(frame.text) as JsonRpcRequest;
       } catch {
-        this.writeMessage(output, {
-          jsonrpc: "2.0",
-          id: null,
-          error: {
-            code: -32700,
-            message: "Parse error",
-          },
-        });
+        this.writeRefusal(output, frame.form, -32700, "Parse error");
         continue;
       }
+      this.replyForm ??= frame.form;
       const response = await this.handleRequest(parsed);
       if (response) {
         this.writeMessage(output, response);
@@ -2522,11 +2515,19 @@ export class EngramMcpServer {
   }
 
   private writeMessage(output: Writable, payload: Record<string, unknown>): void {
-    const body = JSON.stringify(payload);
-    const message = this.replyForm === "line"
+    output.write(this.frameBody(JSON.stringify(payload), this.replyForm));
+  }
+
+  /** Answers a frame that held no valid JSON in its own form, without fixing the connection's reply form. */
+  private writeRefusal(output: Writable, frameForm: McpFrameForm, code: number, message: string): void {
+    const body = JSON.stringify({ jsonrpc: "2.0", id: null, error: { code, message } });
+    output.write(this.frameBody(body, this.replyForm ?? frameForm));
+  }
+
+  private frameBody(body: string, form: McpFrameForm | null): string {
+    return form === "line"
       ? `${body}\n`
       : `Content-Length: ${Buffer.byteLength(body, "utf-8")}\r\n\r\n${body}`;
-    output.write(message);
   }
 
   private toolAcceptsArgument(name: string, key: string): boolean {

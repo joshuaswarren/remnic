@@ -1647,7 +1647,7 @@ function readStdioMessages(raw: string): StdioMessage[] {
 }
 
 /** Feeds each chunk in its own tick so the server sees separate data events. */
-async function runStdioChunks(chunks: string[]): Promise<StdioMessage[]> {
+async function runStdioRaw(chunks: string[]): Promise<string> {
   const input = new PassThrough();
   const output = new PassThrough();
   output.setEncoding("utf8");
@@ -1662,7 +1662,11 @@ async function runStdioChunks(chunks: string[]): Promise<StdioMessage[]> {
   }
   input.end();
   await running;
-  return readStdioMessages(raw);
+  return raw;
+}
+
+async function runStdioChunks(chunks: string[]): Promise<StdioMessage[]> {
+  return readStdioMessages(await runStdioRaw(chunks));
 }
 
 const stdioPing = (id: number) => stdioFrame({ jsonrpc: "2.0", id, method: "ping" });
@@ -1726,10 +1730,22 @@ test("MCP stdio answers a Content-Length initialize and tools/list with Content-
 
 test("MCP stdio refuses an oversized newline-delimited line and answers the next line", async () => {
   const messages = await runStdioChunks([
-    `${"A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1)}\n`,
+    `{${"A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1)}\n`,
     stdioLine({ jsonrpc: "2.0", id: 4, method: "ping" }),
   ]);
   assert.equal(messages.length, 2);
   assert.match(messages[0]?.error?.message ?? "", /frame too large/);
   assert.equal(messages[1]?.id, 4);
+});
+
+test("MCP stdio takes the reply form from the first JSON frame, not from a refused first frame", async () => {
+  const raw = await runStdioRaw([
+    "A".repeat(MCP_STDIO_MAX_FRAME_BYTES + 1),
+    stdioLine({ jsonrpc: "2.0", id: 5, method: "ping" }),
+    stdioLine({ jsonrpc: "2.0", id: 6, method: "ping" }),
+  ]);
+  assert.equal(raw.split("Content-Length").length - 1, 1, "only the reply to the refused frame is Content-Length framed");
+  const afterHeader = raw.slice(raw.indexOf("\r\n\r\n") + 4);
+  const replies = afterHeader.slice(afterHeader.indexOf("}}") + 2).split("\n").filter((line) => line.length > 0);
+  assert.deepEqual(replies.map((line) => JSON.parse(line).id), [5, 6]);
 });
