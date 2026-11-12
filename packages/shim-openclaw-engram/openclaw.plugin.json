@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.91",
+  "version": "10.0.92",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -1259,17 +1259,47 @@
                 "description": "Master gate. Default off - set to true to enable Drive imports. The connector additionally requires clientId, clientSecret, and refreshToken to be populated before it will run."
               },
               "clientId": {
-                "anyOf": [{"type": "string"}, {"type": "object", "required": ["source"]}],
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "source"
+                    ]
+                  }
+                ],
                 "default": "",
                 "description": "OAuth2 client id. A string or a SecretRef resolved at poll time."
               },
               "clientSecret": {
-                "anyOf": [{"type": "string"}, {"type": "object", "required": ["source"]}],
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "source"
+                    ]
+                  }
+                ],
                 "default": "",
                 "description": "OAuth2 client secret. A string or a SecretRef resolved at poll time."
               },
               "refreshToken": {
-                "anyOf": [{"type": "string"}, {"type": "object", "required": ["source"]}],
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "source"
+                    ]
+                  }
+                ],
                 "default": "",
                 "description": "OAuth2 refresh token. A string or a SecretRef resolved at poll time."
               },
