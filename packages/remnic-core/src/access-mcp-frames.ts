@@ -4,8 +4,8 @@
  * The MCP spec sends one JSON message per line. Some clients send a
  * `Content-Length` header instead. `push` appends raw bytes. `next` returns one
  * frame at a time and `null` when the buffered bytes hold no complete frame
- * yet. A buffer that starts with `Content-Length:` is a header frame. Any other
- * buffer is read up to the next newline. Each form is bounded to
+ * yet. A buffer whose first non-blank byte is `{` or `[` is read up to the next
+ * newline. Any other buffer is a header block. Each form is bounded to
  * MCP_STDIO_MAX_FRAME_BYTES, so a peer cannot grow the buffer without limit.
  */
 export const MCP_STDIO_MAX_FRAME_BYTES = 131072;
@@ -22,13 +22,20 @@ export class McpFrameReader {
   private buffer = Buffer.alloc(0);
   /** Body bytes of a refused oversized header frame that have not arrived yet. */
   private skipBytes = 0;
+  /** True while the rest of a refused oversized line has not arrived yet. */
+  private skipLine = false;
   /** Buffer length when `next` last stopped on an incomplete frame. */
   private waitingBytes = 0;
 
   push(chunk: Buffer): void {
     const dropped = Math.min(this.skipBytes, chunk.length);
     this.skipBytes -= dropped;
-    const kept = chunk.subarray(dropped);
+    let kept = chunk.subarray(dropped);
+    if (this.skipLine) {
+      const newline = kept.indexOf("\n");
+      this.skipLine = newline < 0;
+      kept = kept.subarray(newline < 0 ? kept.length : newline + 1);
+    }
     if (kept.length > 0) this.buffer = Buffer.concat([this.buffer, kept]);
   }
 
@@ -47,10 +54,10 @@ export class McpFrameReader {
     }
   }
 
-  /** A header frame starts with `Content-Length:`. Anything else is a line. */
+  /** A line frame starts with `{` or `[`, as every JSON-RPC message does. Any other first byte starts a header block. */
   private isHeaderFrame(): boolean {
-    if (this.buffer.length < HEADER_PREFIX.length) return false;
-    return this.buffer.subarray(0, HEADER_PREFIX.length).toString("utf-8").toLowerCase() === HEADER_PREFIX;
+    const first = this.buffer.find((byte) => byte > 0x20);
+    return first !== undefined && first !== 0x7b && first !== 0x5b;
   }
 
   private nextHeader(): McpFrame | null {
@@ -88,9 +95,13 @@ export class McpFrameReader {
     const newline = this.buffer.indexOf("\n");
     if (newline < 0) {
       if (this.buffer.length <= MCP_STDIO_MAX_FRAME_BYTES) return this.wait();
+      this.skipLine = true;
       return this.discardBuffer("line");
     }
-    if (newline > MCP_STDIO_MAX_FRAME_BYTES) return this.discardBuffer("line");
+    if (newline > MCP_STDIO_MAX_FRAME_BYTES) {
+      this.buffer = this.buffer.subarray(newline + 1);
+      return { kind: "too-large", form: "line" };
+    }
     const text = this.buffer.subarray(0, newline).toString("utf-8").replace(/\r$/, "");
     this.buffer = this.buffer.subarray(newline + 1);
     if (text.trim().length === 0) return "blank";
