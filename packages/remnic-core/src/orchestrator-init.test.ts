@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1650,6 +1650,73 @@ test("daemon start builds the fact-hash index once in the background and a save 
     assert.equal(corpusReads, 1, "the saves must not start a second corpus rebuild");
     assert.deepEqual(results.map((r) => r.authoritative), [true, true]);
   } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+test("destroy persists a buffered turn before it waits on a running fact-hash warm-up", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-warm-destroy-flush-"));
+  const marker = "w7p-buffered-turn-marker";
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      bufferSaveDebounceMs: 600_000,
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let releaseCorpus!: () => void;
+  try {
+    const storage = await orchestrator.getStorage("default");
+    const realRead = storage.readAllMemories.bind(storage);
+    let signalStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const corpusHeld = new Promise<void>((resolve) => { releaseCorpus = resolve; });
+    storage.readAllMemories = async () => {
+      signalStarted();
+      await corpusHeld;
+      return realRead();
+    };
+    await withTestDeadline(orchestrator.initialize());
+    await withTestDeadline(rebuildStarted);
+
+    await orchestrator.buffer.addTurn("warm-destroy-key", {
+      role: "user",
+      content: marker,
+      timestamp: new Date().toISOString(),
+    });
+    const bufferOnDisk = async (): Promise<boolean> => {
+      for (const name of await readdir(memoryDir, { recursive: true })) {
+        if ((await readFile(path.join(memoryDir, name), "utf8").catch(() => "")).includes(marker)) return true;
+      }
+      return false;
+    };
+    assert.equal(await bufferOnDisk(), false, "precondition: the debounced save has not run");
+
+    const destroying = orchestrator.destroy();
+    const startedAt = Date.now();
+    let persisted = false;
+    while (Date.now() - startedAt < 1_500 && !persisted) {
+      persisted = await bufferOnDisk();
+      if (!persisted) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(persisted, true, "the buffered turn must reach disk within 1.5 s of destroy() while the corpus read is held");
+    releaseCorpus();
+    await withTestDeadline(destroying);
+  } finally {
+    releaseCorpus?.();
     await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
