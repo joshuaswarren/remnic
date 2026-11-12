@@ -507,6 +507,41 @@ test("searchAcrossNamespaces still rejects when the caller aborts", async () => 
   assert.equal(degradations.length, 0, "a caller abort is not a backend degradation");
 });
 
+test("searchAcrossNamespaces with an already aborted caller leaves no unhandled backend rejection", async () => {
+  // The backend leg gets the aborted signal and rejects after the router has
+  // already returned its own rejection. Nothing may be left holding that
+  // second rejection: on the daemon it is an unhandled AbortError and the
+  // process exits (jarvis-ml, 12 Nov 2026).
+  class AbortingBackend extends FakeBackend {
+    override async search(): Promise<QmdSearchResult[]> {
+      await setImmediate();
+      throw Object.assign(new Error("QMD inflight search aborted"), { name: "AbortError" });
+    }
+  }
+  const router = new NamespaceSearchRouter(
+    config(),
+    { storageFor: async (namespace: string) => ({ dir: `/tmp/remnic/${namespace}` }) },
+    () => new AbortingBackend(false),
+  );
+  let unhandled = 0;
+  const onUnhandled = () => {
+    unhandled += 1;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const caller = new AbortController();
+    caller.abort();
+    await assert.rejects(
+      router.searchAcrossNamespaces({ query: "a", namespaces: ["main"], maxResults: 10, execution: { signal: caller.signal } }),
+      { message: "operation aborted" },
+    );
+    for (let i = 0; i < 5; i += 1) await setImmediate();
+    assert.equal(unhandled, 0);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
 test("searchAcrossNamespaces propagates backend errors instead of masking them", async () => {
   const degradations: SearchDegradation[] = [];
   class ThrowingBackend extends FakeBackend {
