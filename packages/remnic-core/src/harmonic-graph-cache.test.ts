@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { recordAbstractionNode, upsertAbstractionNodes, type AbstractionNode } from "./abstraction-nodes.js";
 import { pruneOrphanCueAnchors, recordCueAnchor, upsertCueAnchors, type CueAnchor } from "./cue-anchors.js";
 import {
   clearHarmonicGraphCache,
   harmonicGraphCacheStats,
+  type ProjectedHarmonicGraph,
   readProjectedHarmonicGraph,
   searchHarmonicRetrieval,
 } from "./harmonic-retrieval.js";
@@ -228,6 +229,61 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
   });
 });
 
+// Recall waits for the graph build, so a cache miss costs every recall that lands on it. Production: a
+// 2106 node, 9174 anchor graph rebuilt in 5 s standalone, 7 s inside the daemon, and 17 to 32 s when two
+// recalls overlapped and each ran its own build.
+test("concurrent reads on a cold cache share one build", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "theta shared fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "theta shared fact", [memory.id]) });
+    const before = { ...harmonicGraphCacheStats };
+    const [a, b, c] = await Promise.all([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.equal(harmonicGraphCacheStats.misses, before.misses + 1, "one build, not one per caller");
+    assert.equal(a, b);
+    assert.equal(b, c);
+  });
+});
+
+test("a caller that aborts leaves the shared build for the others", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "iota abort fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "iota abort fact", [memory.id]) });
+    const controller = new AbortController();
+    const aborted = readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal });
+    const other = read(memoryDir);
+    controller.abort();
+    await assert.rejects(aborted);
+    assert.equal((await other).nodes.length, 1);
+  });
+});
+
+// Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
+// (a corrupt node file would not: readAbstractionNodes skips those on purpose).
+async function breakNodeStore(memoryDir: string) {
+  const nodesDir = path.join(memoryDir, "state", "abstraction-nodes", "nodes");
+  const parked = `${nodesDir}.parked`;
+  await rename(nodesDir, parked);
+  await writeFile(nodesDir, "not a directory");
+  return async () => {
+    await rm(nodesDir, { force: true });
+    await rename(parked, nodesDir);
+  };
+}
+
+test("callers that joined a failing build all reject, and the next read retries and succeeds", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "mu retry fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "mu retry fact", [memory.id]) });
+    const restore = await breakNodeStore(memoryDir);
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const outcomes = await Promise.allSettled([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.deepEqual(outcomes.map((outcome) => outcome.status), ["rejected", "rejected", "rejected"]);
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "the three callers shared one failing build");
+    await restore();
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+  });
+});
+
 test("an entry older than the TTL is rebuilt", async (t) => {
   await withDir(async (memoryDir, storage) => {
     const memory = await storage.writeMemory("fact", "zeta ttl fact", { source: "test" });
@@ -240,5 +296,134 @@ test("an entry older than the TTL is rebuilt", async (t) => {
     assert.equal((await read(memoryDir)).nodes.length, 1, "still cached inside the TTL");
     clock.mock.mockImplementation(() => start + 31_000);
     assert.equal((await read(memoryDir)).nodes.length, 0, "rebuilt past the TTL");
+  });
+});
+
+interface BuildHold {
+  release: () => void;
+  reached: Promise<void>;
+  calls: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * Hold the first build inside its source-memory read so a second read can land while it runs. The held call
+ * records the build's own abort signal; builds started after it are not held.
+ */
+function holdFirstBuild(t: TestContext): BuildHold {
+  const original = StorageManager.prototype.readAllMemories;
+  let release = () => {};
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reachedHold = () => {};
+  const reached = new Promise<void>((resolve) => {
+    reachedHold = resolve;
+  });
+  const hold: BuildHold = { release, reached, calls: 0 };
+  t.mock.method(StorageManager.prototype, "readAllMemories", async function (this: StorageManager, ...args: Parameters<typeof original>) {
+    hold.calls++;
+    if (hold.calls === 1) {
+      hold.signal = args[0]?.abortSignal;
+      reachedHold();
+      await opened;
+    }
+    return original.apply(this, args);
+  });
+  return hold;
+}
+
+/** Fail the test instead of hanging when a promise that must settle does not. */
+function within<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error(`${what} did not settle in ${ms} ms`)), ms).unref()),
+  ]);
+}
+
+test("the shared build aborts once every joined caller has aborted, and the next read starts a fresh one", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "nu abort fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "nu abort fact", [memory.id]) });
+    const hold = holdFirstBuild(t);
+    const first = new AbortController();
+    const second = new AbortController();
+    const options = { memoryDir, anchorsEnabled: true, useCache: true };
+    const a = readProjectedHarmonicGraph({ ...options, abortSignal: first.signal });
+    const b = readProjectedHarmonicGraph({ ...options, abortSignal: second.signal });
+    await within(hold.reached, 2000, "build start");
+    assert.equal(hold.calls, 1, "one build for both callers");
+    first.abort();
+    await assert.rejects(within(a, 1000, "first caller"), { name: "AbortError" });
+    assert.equal(hold.signal?.aborted, false, "one caller is still waiting, so the build keeps running");
+    second.abort();
+    await assert.rejects(within(b, 1000, "second caller"), { name: "AbortError" });
+    assert.equal(hold.signal?.aborted, true, "no caller is left, so the build is cancelled");
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const next = read(memoryDir);
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "the next read does not join the cancelled build");
+    assert.equal((await within(next, 5000, "next read")).nodes.length, 1);
+    hold.release();
+  });
+});
+
+test("a read after a stamp change does not join the build that started on the old stamp", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const first = await storage.writeMemory("fact", "xi stamp fact one", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "xi stamp fact one", [first.id]) });
+    const hold = holdFirstBuild(t);
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const stale = read(memoryDir);
+    await within(hold.reached, 2000, "old build start");
+    const second = await storage.writeMemory("fact", "xi stamp fact two", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n2", "xi stamp fact two", [second.id]) });
+    try {
+      const fresh = read(memoryDir);
+      assert.equal(harmonicGraphCacheStats.misses, missesBefore + 2, "the second read started its own build");
+      assert.equal((await within(fresh, 5000, "fresh read")).nodes.length, 2, "and it sees the write");
+    } finally {
+      hold.release();
+    }
+    await stale;
+  });
+});
+
+test("a joined caller that aborts rejects at once, while the build it joined is still running", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "omicron join fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "omicron join fact", [memory.id]) });
+    const hold = holdFirstBuild(t);
+    const owner = read(memoryDir);
+    const controller = new AbortController();
+    const joiner = readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal });
+    controller.abort();
+    try {
+      await assert.rejects(within(joiner, 1000, "aborted joiner"), { name: "AbortError" });
+    } finally {
+      hold.release();
+    }
+    assert.equal((await owner).nodes.length, 1, "the owner is not affected");
+  });
+});
+
+test("clearing the cache drops a running build: the next read starts its own and the old build stores nothing", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "pi clear fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "pi clear fact", [memory.id]) });
+    const hold = holdFirstBuild(t);
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const old = read(memoryDir);
+    await within(hold.reached, 2000, "old build start");
+    clearHarmonicGraphCache();
+    let kept: ProjectedHarmonicGraph;
+    try {
+      const fresh = read(memoryDir);
+      assert.equal(harmonicGraphCacheStats.misses, missesBefore + 2, "the read after the clear did not join the old build");
+      kept = await within(fresh, 5000, "fresh read");
+    } finally {
+      hold.release();
+    }
+    await old;
+    assert.equal(await read(memoryDir), kept, "the finished old build did not overwrite the newer cache entry");
   });
 });

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { listJsonFilesStrict, readJsonFile } from "./json-store.js";
-import { throwIfAborted } from "./abort-error.js";
+import { raceAbort, throwIfAborted } from "./abort-error.js";
 import { readHarmonicGraphStamp } from "./harmonic-graph-version.js";
 import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-utils.js";
  import {
@@ -471,8 +471,20 @@ interface GraphCacheEntry {
 }
 
 const graphCache = new Map<string, GraphCacheEntry>();
-/** Counters for tests and diagnostics. */
-export const harmonicGraphCacheStats = { hits: 0, misses: 0 };
+
+interface GraphBuild {
+  stamp: string;
+  promise: Promise<ProjectedHarmonicGraph>;
+  /** Cancels the build's source scan; fired when no caller is waiting for it. */
+  controller: AbortController;
+  /** Callers currently waiting for this build. */
+  waiting: number;
+}
+
+/** One build per cache key at a time: every recall that lands on a miss waits for the same build. */
+const graphBuilds = new Map<string, GraphBuild>();
+/** Counters for tests and diagnostics. `shared` counts reads that joined a build already running. */
+export const harmonicGraphCacheStats = { hits: 0, misses: 0, shared: 0 };
 
 /** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
 function deepFreeze<T extends object>(value: T): T {
@@ -485,6 +497,60 @@ function deepFreeze<T extends object>(value: T): T {
 
 export function clearHarmonicGraphCache(): void {
   graphCache.clear();
+  graphBuilds.clear();
+}
+
+type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
+
+/**
+ * Start the one build for `key`. The build owns an abort controller instead of using one caller's signal,
+ * so a caller that leaves does not cancel it for the others; `joinGraphBuild` cancels it when the last caller leaves.
+ */
+function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): GraphBuild {
+  harmonicGraphCacheStats.misses++;
+  const startedAtMs = Date.now();
+  const controller = new AbortController();
+  const promise: Promise<ProjectedHarmonicGraph> = buildProjectedHarmonicGraph({
+    memoryDir: options.memoryDir,
+    abstractionNodeStoreDir: options.abstractionNodeStoreDir,
+    anchorsEnabled: options.anchorsEnabled,
+    temporalExpiredInInjection: options.temporalExpiredInInjection,
+    abortSignal: controller.signal,
+  })
+    .then((built) => {
+      const graph = { nodes: deepFreeze(built.nodes), anchors: deepFreeze(built.anchors) };
+      // A cleared cache or a newer build for this key has replaced this one: do not store a stale graph.
+      if (graphBuilds.get(key)?.promise !== promise) return graph;
+      graphCache.delete(key);
+      graphCache.set(key, { stamp, startedAtMs, graph });
+      while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
+        const oldest = graphCache.keys().next().value;
+        if (oldest === undefined) break;
+        graphCache.delete(oldest);
+      }
+      return graph;
+    })
+    .finally(() => {
+      if (graphBuilds.get(key)?.promise === promise) graphBuilds.delete(key);
+    });
+  const build: GraphBuild = { stamp, promise, controller, waiting: 0 };
+  graphBuilds.set(key, build);
+  return build;
+}
+
+/**
+ * Wait for `build` on behalf of one caller. The caller's own signal ends only its own wait. When the last
+ * waiting caller has left, the build is cancelled and dropped, so abandoned recalls do not leave full scans running
+ * (cancelling a build that already finished does nothing).
+ */
+function joinGraphBuild(key: string, build: GraphBuild, signal: AbortSignal | undefined): Promise<ProjectedHarmonicGraph> {
+  build.waiting++;
+  return raceAbort(build.promise, signal, "harmonic retrieval aborted").finally(() => {
+    build.waiting--;
+    if (build.waiting > 0) return;
+    if (graphBuilds.get(key) === build) graphBuilds.delete(key);
+    build.controller.abort();
+  });
 }
 
 /**
@@ -495,9 +561,9 @@ export function clearHarmonicGraphCache(): void {
  * cold-write version sentinels (bumped by every memory write, in any process) and
  * the graph version sentinel (bumped by node and anchor writes). A stamp read is
  * four stats, not a scan of the memories. The TTL bounds the one input a sentinel
- * cannot see, which is wall-clock validity expiry. An explicit `nowMs` bypasses the
- * cache so tests stay deterministic. The cached arrays are frozen: callers must not
- * mutate them.
+ * cannot see, which is wall-clock validity expiry. Concurrent misses share one
+ * build. An explicit `nowMs` bypasses the cache so tests stay deterministic. The
+ * cached arrays are frozen: callers must not mutate them.
  */
 export async function readProjectedHarmonicGraph(options: {
   memoryDir: string;
@@ -529,20 +595,12 @@ export async function readProjectedHarmonicGraph(options: {
     graphCache.set(key, hit);
     return hit.graph;
   }
-  harmonicGraphCacheStats.misses++;
-  const built = await buildProjectedHarmonicGraph(options);
-  const graph = {
-    nodes: deepFreeze(built.nodes),
-    anchors: deepFreeze(built.anchors),
-  };
-  graphCache.delete(key);
-  graphCache.set(key, { stamp, startedAtMs, graph });
-  while (graphCache.size > GRAPH_CACHE_MAX_ENTRIES) {
-    const oldest = graphCache.keys().next().value;
-    if (oldest === undefined) break;
-    graphCache.delete(oldest);
+  const running = graphBuilds.get(key);
+  if (running?.stamp === stamp) {
+    harmonicGraphCacheStats.shared++;
+    return joinGraphBuild(key, running, options.abortSignal);
   }
-  return graph;
+  return joinGraphBuild(key, startGraphBuild(key, stamp, options), options.abortSignal);
 }
 
 export async function searchHarmonicRetrieval(options: {
