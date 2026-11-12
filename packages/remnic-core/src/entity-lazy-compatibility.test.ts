@@ -6,6 +6,26 @@ import test from "node:test";
 import { StorageManager, parseEntityFile } from "./storage.js";
 import { sleep } from "./utils/sleep.js";
 
+const deferredStores: StorageManager[] = [];
+
+// Opens a store the way the daemon does: the canonical-id migration starts in
+// the background. Registered so teardown can wait for it.
+async function deferStore(dir: string): Promise<StorageManager> {
+  const store = new StorageManager(dir);
+  deferredStores.push(store);
+  await store.ensureDirectories({ waitForEntityMigration: false });
+  return store;
+}
+
+// The deferred migration keeps writing under dir until it settles. Release any
+// lock the test holds, wait for every registered migration, then remove dir.
+async function disposeStore(dir: string): Promise<void> {
+  await rm(path.join(dir, "state", "entity-canonical-id-migration.lock"), { force: true });
+  await Promise.all(deferredStores.splice(0).map((store) => store.drainEntityCanonicalIdMigration()));
+  StorageManager.clearAllStaticCaches();
+  await rm(dir, { recursive: true, force: true });
+}
+
 async function legacyStore() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-lazy-compat-"));
   const seed = new StorageManager(dir);
@@ -15,8 +35,7 @@ async function legacyStore() {
   await rm(journal, { force: true });
   const lock = path.join(dir, "state", "entity-canonical-id-migration.lock");
   await writeFile(lock, `${process.pid} test-holder ${new Date().toISOString()}\n`);
-  const storage = new StorageManager(dir);
-  await storage.ensureDirectories({ waitForEntityMigration: false });
+  const storage = await deferStore(dir);
   return { dir, id, journal, lock, storage };
 }
 
@@ -27,8 +46,7 @@ test("canonical reads find a legacy file without a journal or migration", async 
     await assert.rejects(() => readFile(fixture.journal), { code: "ENOENT" });
     assert.ok(await readFile(fixture.lock));
   } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(fixture.dir, { recursive: true, force: true });
+    await disposeStore(fixture.dir);
   }
 });
 
@@ -39,8 +57,7 @@ test("ambiguous legacy canonical matches are refused rather than picking a claim
     await writeFile(path.join(fixture.dir, "entities", "other-legacy-person.md"), raw);
     await assert.rejects(() => fixture.storage.readEntity(fixture.id), /ambiguous/i);
   } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(fixture.dir, { recursive: true, force: true });
+    await disposeStore(fixture.dir);
   }
 });
 
@@ -50,8 +67,7 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
     const seed = new StorageManager(dir);
     await seed.writeEntity("Existing Person", "person", ["Synthetic fact."]);
     await seed.ensureDirectories();
-    const reader = new StorageManager(dir);
-    await reader.ensureDirectories({ waitForEntityMigration: false });
+    const reader = await deferStore(dir);
     // Bracket access is TypeScript's typed escape hatch for the private reader.
     const originalRead = reader["readStorageSecureFile"].bind(reader);
     const reads: string[] = [];
@@ -63,8 +79,7 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
     assert.equal(await reader.readEntity("person-missing"), "");
     assert.deepEqual(reads, ["person-missing.md", "person-missing.md"], "completed-store misses must not scan entity contents");
   } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await disposeStore(dir);
   }
 });
 
@@ -74,8 +89,7 @@ test("an external entities change invalidates the amortized completion verdict o
     const seed = new StorageManager(dir);
     const id = await seed.writeEntity("Café", "project", ["Synthetic legacy fact."]);
     await seed.ensureDirectories();
-    const reader = new StorageManager(dir);
-    await reader.ensureDirectories({ waitForEntityMigration: false });
+    const reader = await deferStore(dir);
     const canonical = reader.normalizeEntityName("Café", "project");
     // First miss computes and caches the completion verdict.
     assert.equal(await reader.readEntity("project-missing"), "");
@@ -84,8 +98,7 @@ test("an external entities change invalidates the amortized completion verdict o
     await rename(path.join(dir, "entities", `${id}.md`), path.join(dir, "entities", "legacy-cafe.md"));
     assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
   } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await disposeStore(dir);
   }
 });
 
@@ -99,8 +112,7 @@ test("an external aliases change invalidates the amortized completion verdict on
     const journal = await readFile(journalPath, "utf8");
     assert.equal(JSON.parse(journal).complete, true);
 
-    const reader = new StorageManager(dir);
-    await reader.ensureDirectories({ waitForEntityMigration: false });
+    const reader = await deferStore(dir);
     // Warm amortized completion (and any same-reader completion memo) on a miss.
     assert.equal(await reader.readEntity("project-missing"), "");
 
@@ -121,8 +133,7 @@ test("an external aliases change invalidates the amortized completion verdict on
     assert.equal(await readFile(journalPath, "utf8"), journal, "read compatibility must not replay migration");
     assert.ok(await readFile(lock));
   } finally {
-    StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await disposeStore(dir);
   }
 });
 
@@ -146,16 +157,14 @@ for (const change of ["aliases", "raw legacy write"]) {
       }
       const lock = path.join(dir, "state", "entity-canonical-id-migration.lock");
       await writeFile(lock, `${process.pid} test-holder ${new Date().toISOString()}\n`);
-      const reader = new StorageManager(dir);
-      await reader.ensureDirectories({ waitForEntityMigration: false });
+      const reader = await deferStore(dir);
       const canonical = reader.normalizeEntityName("Café", "project");
       if (change === "aliases") assert.notEqual(canonical, previousId);
       assert.match(await reader.readEntity(canonical), /Synthetic legacy fact/);
       assert.equal(await readFile(journalPath, "utf8"), journal, "read compatibility must not replay migration");
       assert.ok(await readFile(lock));
     } finally {
-      StorageManager.clearAllStaticCaches();
-      await rm(dir, { recursive: true, force: true });
+      await disposeStore(dir);
     }
   });
 }
@@ -221,8 +230,7 @@ for (const mutation of mutations) {
       const journal = JSON.parse(await readFile(fixture.journal, "utf8"));
       assert.equal(journal.complete, true);
     } finally {
-      StorageManager.clearAllStaticCaches();
-      await rm(fixture.dir, { recursive: true, force: true });
+      await disposeStore(fixture.dir);
     }
   });
 }
