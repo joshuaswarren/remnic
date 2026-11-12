@@ -6,6 +6,7 @@ import test from "node:test";
 import { parseConfig } from "../config.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { StorageManager } from "../storage.js";
+import { persistUnderFactDedupWindow } from "../orchestration/fact-dedup-window.js";
 import { withTempDir } from "../testing/tmp-dir.js";
 import {
   createJournalMemoryWriter,
@@ -125,5 +126,35 @@ test("tombstoned journal facts are skipped and not written as pending_review", a
     const after = walkFiles(dir).filter((file) => !before.includes(file));
     const pending = after.filter((file) => file.includes("pending_review") || file.includes("pending-review"));
     assert.equal(pending.length, 0, "tombstoned content must not land as a new pending_review file");
+  });
+});
+
+test("a fact an extraction run commits after the journal probe is not written again", async () => {
+  await withTempDir(async (dir) => {
+    const config = parseConfig({ memoryDir: dir });
+    const storage = new StorageManager(config.memoryDir);
+    await storage.ensureDirectories();
+    const real = createJournalMemoryWriter(storage);
+    const deps = extractDeps(storage, "fact");
+    deps.writer = {
+      writeSealedMemory: real.writeSealedMemory,
+      hasJournalMemoryContent: async (content) => {
+        const known = await real.hasJournalMemoryContent(content);
+        assert.equal(known, false, "the probe runs before the other writer commits");
+        await persistUnderFactDedupWindow(storage.dir, async () => false, () => storage.writeMemory("fact", FACT));
+        return known;
+      },
+    };
+    const result = await runJournalReviewExtraction({
+      date: "2026-08-20",
+      journalText: FACT,
+      source: "memoryDir",
+      journalConfig: { extractionMode: "review" },
+      deps,
+    });
+    assert.equal(result.pendingReview, 0);
+    assert.equal(result.skipped, 1);
+    const copies = (await storage.readAllMemories()).filter((memory) => memory.content.includes(FACT));
+    assert.equal(copies.length, 1, "the corpus holds one copy of the fact");
   });
 });

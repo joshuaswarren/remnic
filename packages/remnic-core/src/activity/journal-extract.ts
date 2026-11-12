@@ -11,6 +11,7 @@
  * Per-day change detection lives in journal-state.ts (timeline.json);
  * this module is the pure pass over one day's POST-STRIP text.
  */
+import { persistUnderFactDedupWindow } from "../orchestration/fact-dedup-window.js";
 import { scoreImportance } from "../importance.js";
 import { getVerdictKind, type JudgeCandidate, type JudgeVerdict } from "../extraction-judge.js";
 import { log } from "../logger.js";
@@ -29,6 +30,7 @@ import type { ActivityTimelineJournalConfig } from "./types.js";
 
 /** The subset of StorageManager the journal pass writes through. */
 export interface JournalStorageIo {
+  readonly dir: string;
   writeSealedMemory(
     envelope: SealedMemoryEnvelope,
     extras: { status: MemoryStatus; contentHashSource: string; importance?: ImportanceScore },
@@ -38,7 +40,14 @@ export interface JournalStorageIo {
 }
 
 export interface JournalMemoryWriter {
-  writeSealedMemory: JournalStorageIo["writeSealedMemory"];
+  /**
+   * `duplicate` is true when a concurrent writer committed the same fact
+   * first and nothing was written.
+   */
+  writeSealedMemory(
+    envelope: SealedMemoryEnvelope,
+    extras: { status: MemoryStatus; contentHashSource: string; importance?: ImportanceScore },
+  ): Promise<{ tombstoneBlocked?: boolean; duplicate?: boolean }>;
   /** Dedup beyond the fact-only hash index: scans journal-tagged memories. */
   hasJournalMemoryContent(content: string): Promise<boolean>;
 }
@@ -51,7 +60,19 @@ export interface JournalMemoryWriter {
  */
 export function createJournalMemoryWriter(storage: JournalStorageIo): JournalMemoryWriter {
   return {
-    writeSealedMemory: storage.writeSealedMemory.bind(storage),
+    writeSealedMemory: async (envelope, extras) => {
+      // Facts register in the fact hash index, so extraction and this pass can
+      // commit the same new fact. Commit it under the same window extraction
+      // uses and recheck the index there. The scan in hasJournalMemoryContent
+      // stays outside: it is corpus-sized and the window is bounded.
+      if (envelope.category !== "fact") return storage.writeSealedMemory(envelope, extras);
+      const outcome = await persistUnderFactDedupWindow(
+        storage.dir,
+        () => storage.hasFactContentHash(extras.contentHashSource),
+        () => storage.writeSealedMemory(envelope, extras),
+      );
+      return outcome.suppressed ? { duplicate: true } : outcome.result;
+    },
     hasJournalMemoryContent: async (content: string) => {
       if (await storage.hasFactContentHash(content)) return true;
       const needle = stripAttributesSuffix(content);
@@ -210,7 +231,7 @@ export async function runJournalReviewExtraction(input: {
       contentHashSource: normalizedKey,
       importance: scoreImportance(fact.content, fact.category, fact.tags),
     });
-    if (write.tombstoneBlocked) {
+    if (write.tombstoneBlocked || write.duplicate) {
       result.skipped += 1;
       continue;
     }

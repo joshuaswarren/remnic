@@ -298,6 +298,7 @@ test("memoryDir source provenance differs only in the attribute value", async ()
 test("createJournalMemoryWriter dedups journal-tagged memories beyond the fact hash", async () => {
   const calls: string[] = [];
   const storage = {
+    dir: "/tmp/journal-writer-test-unused",
     writeSealedMemory: async () => ({}),
     hasFactContentHash: async (content: string) => {
       calls.push(`hash:${content}`);
