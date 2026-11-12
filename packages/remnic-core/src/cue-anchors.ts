@@ -1,6 +1,7 @@
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveAbstractionNodeStoreDir, validateAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
+import { bumpHarmonicGraphVersion } from "./harmonic-graph-version.js";
 import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
 import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
 import { isNotFoundError } from "./utils/errno.js";
@@ -163,7 +164,11 @@ export async function recordCueAnchor(options: {
   const anchorDir = path.join(rootDir, bounded.anchorType);
   const filePath = path.join(anchorDir, `${bounded.anchorId}.json`);
   await mkdir(anchorDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(bounded, null, 2), "utf8");
+  try {
+    await writeFile(filePath, JSON.stringify(bounded, null, 2), "utf8");
+  } finally {
+    bumpHarmonicGraphVersion(abstractionNodeStoreDir);
+  }
   return filePath;
 }
 
@@ -247,7 +252,7 @@ export async function upsertCueAnchors(options: {
       filePaths.push(filePath);
     }
     return filePaths;
-  });
+  }).finally(() => bumpHarmonicGraphVersion(abstractionNodeStoreDir));
 }
 
 function compareIncomingCueAnchors(left: CueAnchor, right: CueAnchor): number {
@@ -351,7 +356,7 @@ export async function pruneOrphanCueAnchors(options: {
       }
     }
     return removed;
-  });
+  }).finally(() => bumpHarmonicGraphVersion(abstractionNodeStoreDir));
 }
 
 export async function getCueAnchorStoreStatus(options: {

@@ -1,6 +1,7 @@
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { listJsonFilesStrict, readJsonFile, withJsonStoreMutationLock, writeJsonFileAtomic } from "./json-store.js";
+import { bumpHarmonicGraphVersion } from "./harmonic-graph-version.js";
 import { compareDeterministicStrings, mergeSortedUniqueStrings } from "./deterministic-order.js";
 import { isNotFoundError } from "./utils/errno.js";
 import {
@@ -107,7 +108,11 @@ export async function recordAbstractionNode(options: {
   const nodesDir = path.join(rootDir, "nodes", day);
   const filePath = path.join(nodesDir, `${validated.nodeId}.json`);
   await mkdir(nodesDir, { recursive: true });
-  await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  try {
+    await writeFile(filePath, JSON.stringify(validated, null, 2), "utf8");
+  } finally {
+    bumpHarmonicGraphVersion(rootDir);
+  }
   return filePath;
 }
 
@@ -269,7 +274,7 @@ export async function upsertAbstractionNodes(options: {
       filePaths.push(filePath);
     }
     return filePaths;
-  });
+  }).finally(() => bumpHarmonicGraphVersion(rootDir));
 }
 
 export async function upsertAbstractionNode(options: {

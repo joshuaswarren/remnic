@@ -1537,7 +1537,7 @@ export class RecallInternalCoordinator {
               sessionKey,
               anchorsEnabled: resolveConsolidationCapabilities(this.deps.config).abstractionAnchors,
               temporalExpiredInInjection: this.deps.config.temporalExpiredInInjection,
-              abortSignal: harmonicRetrievalAbort.signal,
+              abortSignal: harmonicRetrievalAbort.signal, useGraphCache: true,
             }),
           ),
         );
