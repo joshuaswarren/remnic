@@ -281,6 +281,8 @@ export class HourlySummarizer {
       }
     }
 
+    if (this.shutdownSignal?.aborted) return null;
+
     // Fall back to gateway's default AI
     log.info("summary generation: falling back to gateway default AI");
 
@@ -428,6 +430,8 @@ Respond with valid JSON matching this schema:
         log.info("extended summary: local failed, falling back:", err);
       }
     }
+
+    if (this.shutdownSignal?.aborted) return null;
 
     try {
       const result = await this.fallbackLlm.parseWithSchema(

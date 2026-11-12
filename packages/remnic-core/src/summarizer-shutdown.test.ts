@@ -13,7 +13,7 @@ import { HourlySummarizer } from "./summarizer.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import type { TranscriptEntry } from "./types.js";
 
-function createConfig(memoryDir: string) {
+function createConfig(memoryDir: string, extended = false) {
   return parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -25,7 +25,7 @@ function createConfig(memoryDir: string) {
     localLlmRetry5xxCount: 1,
     localLlmRetryBackoffMs: 30_000,
     hourlySummariesEnabled: true,
-    hourlySummariesExtendedEnabled: false,
+    hourlySummariesExtendedEnabled: extended,
     debug: false,
   });
 }
@@ -149,3 +149,47 @@ test("an already-aborted summarizer refuses to start new work and never contacts
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+for (const extended of [false, true]) {
+  test(`a shutdown abort during the local call does not start a gateway call (${extended ? "extended" : "standard"} summary)`, async () => {
+    quietLogger();
+    const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-summary-shutdown-gateway-"));
+    const stub: LlmStub = { calls: [] };
+    let gatewayCalls = 0;
+    try {
+      const controller = new AbortController();
+      const summarizer = new HourlySummarizer(
+        createConfig(memoryDir, extended),
+        undefined,
+        undefined,
+        undefined,
+        controller.signal,
+      );
+      stubLocalLlm(summarizer, stub);
+      // SAFETY: fallbackLlm is a private field, stubbed at the same field seam
+      // as localLlm; the stub counts gateway calls and returns no result.
+      (summarizer as any).fallbackLlm = {
+        parseWithSchema: async (): Promise<null> => {
+          gatewayCalls += 1;
+          return null;
+        },
+      };
+
+      const hourStart = new Date(Date.now() - 3_600_000);
+      hourStart.setMinutes(0, 0, 0);
+      const pending = summarizer.generateSummary("sess-summary-shutdown", hourStart, entriesFor());
+      await withTestDeadline((async () => {
+        while (stub.calls.length === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      })(), 5_000, "LLM stub to be entered");
+      controller.abort();
+
+      assert.equal(await withTestDeadline(pending, 2_000, "in-flight summarizer abort"), null);
+      assert.equal(gatewayCalls, 0, "no gateway call may start after the shutdown abort");
+    } finally {
+      resetLogger();
+      await rm(memoryDir, { recursive: true, force: true });
+    }
+  });
+}
