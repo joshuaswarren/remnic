@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -225,6 +225,61 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
     assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 2 });
     assert.equal(await pruneOrphanCueAnchors({ memoryDir }), 1);
     assert.deepEqual(await counts(memoryDir), { nodes: 1, anchors: 1 });
+  });
+});
+
+// Recall waits for the graph build, so a cache miss costs every recall that lands on it. Production: a
+// 2106 node, 9174 anchor graph rebuilt in 5 s standalone, 7 s inside the daemon, and 17 to 32 s when two
+// recalls overlapped and each ran its own build.
+test("concurrent reads on a cold cache share one build", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "theta shared fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "theta shared fact", [memory.id]) });
+    const before = { ...harmonicGraphCacheStats };
+    const [a, b, c] = await Promise.all([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.equal(harmonicGraphCacheStats.misses, before.misses + 1, "one build, not one per caller");
+    assert.equal(a, b);
+    assert.equal(b, c);
+  });
+});
+
+test("a caller that aborts leaves the shared build for the others", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "iota abort fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "iota abort fact", [memory.id]) });
+    const controller = new AbortController();
+    const aborted = readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal });
+    const other = read(memoryDir);
+    controller.abort();
+    await assert.rejects(aborted);
+    assert.equal((await other).nodes.length, 1);
+  });
+});
+
+// Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
+// (a corrupt node file would not: readAbstractionNodes skips those on purpose).
+async function breakNodeStore(memoryDir: string) {
+  const nodesDir = path.join(memoryDir, "state", "abstraction-nodes", "nodes");
+  const parked = `${nodesDir}.parked`;
+  await rename(nodesDir, parked);
+  await writeFile(nodesDir, "not a directory");
+  return async () => {
+    await rm(nodesDir, { force: true });
+    await rename(parked, nodesDir);
+  };
+}
+
+test("callers that joined a failing build all reject, and the next read retries and succeeds", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "mu retry fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "mu retry fact", [memory.id]) });
+    const restore = await breakNodeStore(memoryDir);
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const outcomes = await Promise.allSettled([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.deepEqual(outcomes.map((outcome) => outcome.status), ["rejected", "rejected", "rejected"]);
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "the three callers shared one failing build");
+    await restore();
+    assert.equal((await read(memoryDir)).nodes.length, 1);
   });
 });
 
