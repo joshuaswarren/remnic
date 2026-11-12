@@ -143,7 +143,8 @@ or as a SecretRef. A plain string works with no resolver. Google Drive resolves
 a SecretRef at poll time through the host resolver the access service already
 holds. When a SecretRef is set and no resolver exists, that connector fails
 with one error and the others keep running. The error names the field, never
-the reference target or the value. A resolved value is used for that poll and
+the reference target or the value. The resolver wait ends when the sync aborts or
+after 30 seconds. A resolved value is used for that poll and
 is never written to the state file or to a log. Notion, Gmail, and GitHub still
 read plain strings; they get the same SecretRef form in follow-up changes.
 

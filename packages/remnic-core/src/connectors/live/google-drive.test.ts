@@ -14,6 +14,7 @@ import {
   type GoogleDriveClientFactory,
   type GoogleDriveSyncResult,
 } from "./index.js";
+import { SECRET_RESOLVE_DEADLINE_MS } from "./google-drive.js";
 import type { ConnectorConfig, ConnectorCursor } from "./framework.js";
 
 /**
@@ -121,6 +122,44 @@ test("a SecretRef with no resolver fails the connector and hides the reference",
   assert.match(message, /clientSecret is a secret reference but no resolver is configured/);
   assert.equal(message.includes("projects/drive-secret"), false);
   assert.equal(message.includes("keychain"), false);
+});
+
+const DRIVE_REF_CONFIG: ConnectorConfig = {
+  ...SYNTHETIC_CREDS,
+  clientSecret: { source: "keychain", id: "projects/drive-secret" },
+};
+
+async function driveSyncError(args: { resolveSecretRef: () => Promise<string | undefined>; abortSignal?: AbortSignal }): Promise<Error> {
+  const connector = createGoogleDriveConnector({ clientFactory: makeFactory(makeMockClient({})) });
+  try {
+    await connector.syncIncremental({ cursor: null, config: DRIVE_REF_CONFIG, ...args });
+  } catch (err) {
+    return err instanceof Error ? err : new Error("non-error thrown");
+  }
+  return new Error("sync did not fail");
+}
+
+test("a SecretRef resolver that never settles is cut off by the abort signal", async () => {
+  const controller = new AbortController();
+  const failure = driveSyncError({ resolveSecretRef: () => new Promise(() => undefined), abortSignal: controller.signal });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort();
+  assert.equal((await failure).name, "AbortError");
+});
+
+test("a SecretRef resolver that never settles fails at the deadline", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const failure = driveSyncError({ resolveSecretRef: () => new Promise(() => undefined) });
+  await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(SECRET_RESOLVE_DEADLINE_MS);
+  const err = await failure;
+  assert.match(err.message, /clientSecret secret reference was not resolved within 30000 ms/);
+  assert.equal(err.message.includes("projects/drive-secret"), false);
+});
+
+test("a SecretRef that resolves to no value says the resolver may be unavailable", async () => {
+  const err = await driveSyncError({ resolveSecretRef: async () => undefined });
+  assert.match(err.message, /resolved to no value \(the host secret resolver may be unavailable\)/);
 });
 
 test("validateGoogleDriveConfig rejects non-object input", () => {

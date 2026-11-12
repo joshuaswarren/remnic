@@ -64,7 +64,7 @@ import type {
   SyncIncrementalResult,
 } from "./framework.js";
 import { isTransientHttpError } from "./transient-errors.js";
-import { throwIfAborted } from "../../abort-error.js";
+import { raceAbort, throwIfAborted } from "../../abort-error.js";
 import type { ResolveSecretRefFn } from "../../resolve-auth-token.js";
 import type { SecretRef } from "../../types.js";
 
@@ -370,10 +370,37 @@ function requireNonEmptyString(value: unknown, key: string): string {
 }
 
 
+/** Longest wait for the host secret resolver, so a stalled secret store cannot hold the sync loop. */
+export const SECRET_RESOLVE_DEADLINE_MS = 30_000;
+
+async function resolveWithinDeadline(
+  ref: SecretRef,
+  key: string,
+  resolver: ResolveSecretRefFn,
+  abortSignal: AbortSignal | undefined,
+): Promise<string | undefined> {
+  throwIfAborted(abortSignal, "googleDrive: sync aborted");
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), SECRET_RESOLVE_DEADLINE_MS);
+  const signal = abortSignal ? AbortSignal.any([abortSignal, deadline.signal]) : deadline.signal;
+  try {
+    return await raceAbort(Promise.resolve(resolver(ref)), signal, "googleDrive: secret resolve aborted");
+  } catch {
+    throwIfAborted(abortSignal, "googleDrive: sync aborted");
+    if (deadline.signal.aborted) {
+      throw new Error(`googleDrive: ${key} secret reference was not resolved within ${SECRET_RESOLVE_DEADLINE_MS} ms`);
+    }
+    throw new Error(`googleDrive: ${key} secret reference could not be resolved`);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function resolveCredential(
   value: DriveCredential,
   key: string,
   resolver: ResolveSecretRefFn | null | undefined,
+  abortSignal: AbortSignal | undefined,
 ): Promise<string> {
   if (Object.prototype.toString.call(value) !== "[object Object]") {
     // SAFETY: a DriveCredential that is not an object is the plain string form.
@@ -384,17 +411,14 @@ async function resolveCredential(
   if (resolver == null) {
     throw new Error(`googleDrive: ${key} is a secret reference but no resolver is configured`);
   }
-  let resolved: unknown;
-  try {
-    resolved = await resolver(ref);
-  } catch {
-    throw new Error(`googleDrive: ${key} secret reference could not be resolved`);
+  const resolved = await resolveWithinDeadline(ref, key, resolver, abortSignal);
+  if (resolved === undefined) {
+    throw new Error(`googleDrive: ${key} secret reference resolved to no value (the host secret resolver may be unavailable)`);
   }
   if (Object.prototype.toString.call(resolved) !== "[object String]") {
     throw new Error(`googleDrive: ${key} secret reference resolved to a non-string value`);
   }
-  // SAFETY: the toString check above proves `resolved` is a string.
-  const text = (resolved as string).trim();
+  const text = resolved.trim();
   if (text.length === 0) {
     throw new Error(`googleDrive: ${key} secret reference resolved to an empty value`);
   }
@@ -404,11 +428,12 @@ async function resolveCredential(
 async function resolveGoogleDriveConfig(
   stored: GoogleDriveConnectorConfig,
   resolver: ResolveSecretRefFn | null | undefined,
+  abortSignal: AbortSignal | undefined,
 ): Promise<GoogleDriveResolvedConfig> {
   return {
-    clientId: await resolveCredential(stored.clientId, "clientId", resolver),
-    [CLIENT_SECRET_FIELD]: await resolveCredential(stored[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD, resolver),
-    [REFRESH_TOKEN_FIELD]: await resolveCredential(stored[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD, resolver),
+    clientId: await resolveCredential(stored.clientId, "clientId", resolver, abortSignal),
+    [CLIENT_SECRET_FIELD]: await resolveCredential(stored[CLIENT_SECRET_FIELD], CLIENT_SECRET_FIELD, resolver, abortSignal),
+    [REFRESH_TOKEN_FIELD]: await resolveCredential(stored[REFRESH_TOKEN_FIELD], REFRESH_TOKEN_FIELD, resolver, abortSignal),
     pollIntervalMs: stored.pollIntervalMs,
     folderIds: stored.folderIds,
   };
@@ -512,7 +537,11 @@ export function createGoogleDriveConnector(
 
     async syncIncremental(args: SyncIncrementalArgs): Promise<SyncIncrementalResult> {
       // Re-validate on every pass: a JS caller could mutate it between passes.
-      const config = await resolveGoogleDriveConfig(validateGoogleDriveConfig(args.config), args.resolveSecretRef);
+      const config = await resolveGoogleDriveConfig(
+        validateGoogleDriveConfig(args.config),
+        args.resolveSecretRef,
+        args.abortSignal,
+      );
       throwIfAborted(args.abortSignal, "googleDrive: sync aborted");
 
       const client = await clientFactory(config);
