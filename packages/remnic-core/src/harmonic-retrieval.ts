@@ -475,6 +475,10 @@ const graphCache = new Map<string, GraphCacheEntry>();
 interface GraphBuild {
   stamp: string;
   promise: Promise<ProjectedHarmonicGraph>;
+  /** Cancels the build's source scan; fired when no caller is waiting for it. */
+  controller: AbortController;
+  /** Callers currently waiting for this build. */
+  waiting: number;
 }
 
 /** One build per cache key at a time: every recall that lands on a miss waits for the same build. */
@@ -499,17 +503,19 @@ export function clearHarmonicGraphCache(): void {
 type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
 
 /**
- * Start the one build for `key`. The build is shared and outlives any single caller, so it takes no
- * caller's abort signal; each caller races its own signal against the shared promise instead.
+ * Start the one build for `key`. The build owns an abort controller instead of using one caller's signal,
+ * so a caller that leaves does not cancel it for the others; `joinGraphBuild` cancels it when the last caller leaves.
  */
-function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): Promise<ProjectedHarmonicGraph> {
+function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): GraphBuild {
   harmonicGraphCacheStats.misses++;
   const startedAtMs = Date.now();
+  const controller = new AbortController();
   const promise: Promise<ProjectedHarmonicGraph> = buildProjectedHarmonicGraph({
     memoryDir: options.memoryDir,
     abstractionNodeStoreDir: options.abstractionNodeStoreDir,
     anchorsEnabled: options.anchorsEnabled,
     temporalExpiredInInjection: options.temporalExpiredInInjection,
+    abortSignal: controller.signal,
   })
     .then((built) => {
       const graph = { nodes: deepFreeze(built.nodes), anchors: deepFreeze(built.anchors) };
@@ -527,8 +533,24 @@ function startGraphBuild(key: string, stamp: string, options: GraphReadOptions):
     .finally(() => {
       if (graphBuilds.get(key)?.promise === promise) graphBuilds.delete(key);
     });
-  graphBuilds.set(key, { stamp, promise });
-  return promise;
+  const build: GraphBuild = { stamp, promise, controller, waiting: 0 };
+  graphBuilds.set(key, build);
+  return build;
+}
+
+/**
+ * Wait for `build` on behalf of one caller. The caller's own signal ends only its own wait. When the last
+ * waiting caller has left, the build is cancelled and dropped, so abandoned recalls do not leave full scans running
+ * (cancelling a build that already finished does nothing).
+ */
+function joinGraphBuild(key: string, build: GraphBuild, signal: AbortSignal | undefined): Promise<ProjectedHarmonicGraph> {
+  build.waiting++;
+  return raceAbort(build.promise, signal, "harmonic retrieval aborted").finally(() => {
+    build.waiting--;
+    if (build.waiting > 0) return;
+    if (graphBuilds.get(key) === build) graphBuilds.delete(key);
+    build.controller.abort();
+  });
 }
 
 /**
@@ -576,9 +598,9 @@ export async function readProjectedHarmonicGraph(options: {
   const running = graphBuilds.get(key);
   if (running?.stamp === stamp) {
     harmonicGraphCacheStats.shared++;
-    return raceAbort(running.promise, options.abortSignal, "harmonic retrieval aborted");
+    return joinGraphBuild(key, running, options.abortSignal);
   }
-  return raceAbort(startGraphBuild(key, stamp, options), options.abortSignal, "harmonic retrieval aborted");
+  return joinGraphBuild(key, startGraphBuild(key, stamp, options), options.abortSignal);
 }
 
 export async function searchHarmonicRetrieval(options: {
