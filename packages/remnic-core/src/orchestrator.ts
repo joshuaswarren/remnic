@@ -1025,6 +1025,9 @@ export class Orchestrator {
     } catch (err) {
       bufferFlushError = err;
     }
+    // After the buffer flush: a long fact-hash warm-up must never delay
+    // persisting unsent turns (a kill during the wait would lose them).
+    await this._orchestratorInitCoordinator?.drainStartupWarmups();
     const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
       this.extractionQueueCoordinator,
       this._dependencyPropagationDelivery,

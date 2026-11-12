@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1595,3 +1595,134 @@ for (const namespace of ["default", "shared"]) {
     }
   });
 }
+
+test("daemon start builds the fact-hash index once in the background and a save right after start joins it", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-warm-fact-hash-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let releaseCorpus: (() => void) | undefined;
+  try {
+    const storage = await orchestrator.getStorage("default");
+    const realRead = storage.readAllMemories.bind(storage);
+    let corpusReads = 0;
+    let signalStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const corpusHeld = new Promise<void>((resolve) => { releaseCorpus = resolve; });
+    storage.readAllMemories = async () => {
+      corpusReads += 1;
+      signalStarted();
+      await corpusHeld;
+      return realRead();
+    };
+
+    assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
+    // SAFETY: test reads the private deferredReady gate, as the neighbouring tests do.
+    assert.notEqual(
+      await withTestDeadline((orchestrator as any).deferredReady),
+      "deadline",
+      "deferredReady must not wait on the held rebuild",
+    );
+    let giveUp: NodeJS.Timeout | undefined;
+    const outcome = await Promise.race([
+      rebuildStarted.then(() => "started" as const),
+      new Promise<"not-started">((resolve) => { giveUp = setTimeout(() => resolve("not-started"), 3_000); }),
+    ]);
+    clearTimeout(giveUp);
+    assert.equal(outcome, "started", "start must begin the fact-hash corpus rebuild before any save arrives");
+
+    // Two saves landing while the warm-up still runs: both wait on that one flight.
+    const saves = Promise.all([storage.lookupContentHash("first save"), storage.lookupContentHash("second save")]);
+    releaseCorpus?.();
+    const results = await withTestDeadline(saves);
+    if (results === "deadline") assert.fail("saves joining the warm-up never settled");
+    assert.equal(corpusReads, 1, "the saves must not start a second corpus rebuild");
+    assert.deepEqual(results.map((r) => r.authoritative), [true, true]);
+  } finally {
+    releaseCorpus?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+test("destroy persists a buffered turn before it waits on a running fact-hash warm-up", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-warm-destroy-flush-"));
+  const marker = "w7p-buffered-turn-marker";
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      bufferSaveDebounceMs: 600_000,
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let releaseCorpus: (() => void) | undefined;
+  try {
+    const storage = await orchestrator.getStorage("default");
+    const realRead = storage.readAllMemories.bind(storage);
+    let signalStarted!: () => void;
+    const rebuildStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+    const corpusHeld = new Promise<void>((resolve) => { releaseCorpus = resolve; });
+    storage.readAllMemories = async () => {
+      signalStarted();
+      await corpusHeld;
+      return realRead();
+    };
+    assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
+    assert.notEqual(await withTestDeadline(rebuildStarted), "deadline", "the warm-up must start the rebuild");
+
+    await orchestrator.buffer.addTurn("warm-destroy-key", {
+      role: "user",
+      content: marker,
+      timestamp: new Date().toISOString(),
+    });
+    const bufferOnDisk = async (): Promise<boolean> => {
+      for (const name of await readdir(memoryDir, { recursive: true })) {
+        if ((await readFile(path.join(memoryDir, name), "utf8").catch(() => "")).includes(marker)) return true;
+      }
+      return false;
+    };
+    assert.equal(await bufferOnDisk(), false, "precondition: the debounced save has not run");
+
+    const destroying = orchestrator.destroy();
+    const startedAt = Date.now();
+    let persisted = false;
+    while (Date.now() - startedAt < 1_500 && !persisted) {
+      persisted = await bufferOnDisk();
+      if (!persisted) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    assert.equal(persisted, true, "the buffered turn must reach disk within 1.5 s of destroy() while the corpus read is held");
+    releaseCorpus?.();
+    assert.notEqual(await withTestDeadline(destroying), "deadline", "destroy must finish once the rebuild is released");
+  } finally {
+    releaseCorpus?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
