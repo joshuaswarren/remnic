@@ -354,10 +354,10 @@ test("the shared build aborts once every joined caller has aborted, and the next
     await within(hold.reached, 2000, "build start");
     assert.equal(hold.calls, 1, "one build for both callers");
     first.abort();
-    await assert.rejects(within(a, 1000, "first caller"));
+    await assert.rejects(within(a, 1000, "first caller"), { name: "AbortError" });
     assert.equal(hold.signal?.aborted, false, "one caller is still waiting, so the build keeps running");
     second.abort();
-    await assert.rejects(within(b, 1000, "second caller"));
+    await assert.rejects(within(b, 1000, "second caller"), { name: "AbortError" });
     assert.equal(hold.signal?.aborted, true, "no caller is left, so the build is cancelled");
     const missesBefore = harmonicGraphCacheStats.misses;
     const next = read(memoryDir);
@@ -374,6 +374,7 @@ test("a read after a stamp change does not join the build that started on the ol
     const hold = holdFirstBuild(t);
     const missesBefore = harmonicGraphCacheStats.misses;
     const stale = read(memoryDir);
+    await within(hold.reached, 2000, "old build start");
     const second = await storage.writeMemory("fact", "xi stamp fact two", { source: "test" });
     await recordAbstractionNode({ memoryDir, node: node("n2", "xi stamp fact two", [second.id]) });
     try {
@@ -397,7 +398,7 @@ test("a joined caller that aborts rejects at once, while the build it joined is 
     const joiner = readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal });
     controller.abort();
     try {
-      await assert.rejects(within(joiner, 1000, "aborted joiner"));
+      await assert.rejects(within(joiner, 1000, "aborted joiner"), { name: "AbortError" });
     } finally {
       hold.release();
     }
@@ -412,6 +413,7 @@ test("clearing the cache drops a running build: the next read starts its own and
     const hold = holdFirstBuild(t);
     const missesBefore = harmonicGraphCacheStats.misses;
     const old = read(memoryDir);
+    await within(hold.reached, 2000, "old build start");
     clearHarmonicGraphCache();
     let kept: ProjectedHarmonicGraph;
     try {
