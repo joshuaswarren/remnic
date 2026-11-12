@@ -115,6 +115,31 @@ test("cached arrays are frozen", async () => {
   });
 });
 
+test("cached node records are deep frozen, so a caller cannot change later reads", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "zeta deep frozen fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "zeta deep frozen fact", [memory.id]) });
+    const graph = await read(memoryDir);
+    const cached = graph.nodes[0]!;
+    assert.throws(() => { (cached as { title: string }).title = "changed"; }, TypeError);
+    assert.throws(() => (cached.sourceMemoryIds as string[]).push("x"), TypeError);
+    assert.equal((await read(memoryDir)).nodes[0]!.title, "zeta deep frozen fact");
+  });
+});
+
+test("an aborted signal rejects even when the graph is cached", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "eta abort fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "eta abort fact", [memory.id]) });
+    await read(memoryDir);
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: true, useCache: true, abortSignal: controller.signal }),
+    );
+  });
+});
+
 function anchor(anchorId: string, nodeRef: string, memoryId: string): CueAnchor {
   return {
     schemaVersion: 1,

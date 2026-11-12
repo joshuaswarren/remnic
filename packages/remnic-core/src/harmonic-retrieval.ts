@@ -474,6 +474,15 @@ const graphCache = new Map<string, GraphCacheEntry>();
 /** Counters for tests and diagnostics. */
 export const harmonicGraphCacheStats = { hits: 0, misses: 0 };
 
+/** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
 export function clearHarmonicGraphCache(): void {
   graphCache.clear();
 }
@@ -500,6 +509,8 @@ export async function readProjectedHarmonicGraph(options: {
   useCache?: boolean;
 }): Promise<ProjectedHarmonicGraph> {
   if (options.useCache !== true || options.nowMs !== undefined) return buildProjectedHarmonicGraph(options);
+  // Same cancellation contract as the builder: a cache hit must not mask an aborted signal.
+  throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const nodeStoreDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const key = JSON.stringify([
     options.memoryDir,
@@ -521,8 +532,8 @@ export async function readProjectedHarmonicGraph(options: {
   harmonicGraphCacheStats.misses++;
   const built = await buildProjectedHarmonicGraph(options);
   const graph = {
-    nodes: Object.freeze(built.nodes) as AbstractionNode[],
-    anchors: Object.freeze(built.anchors) as CueAnchor[],
+    nodes: deepFreeze(built.nodes) as AbstractionNode[],
+    anchors: deepFreeze(built.anchors) as CueAnchor[],
   };
   graphCache.delete(key);
   graphCache.set(key, { stamp, startedAtMs, graph });
