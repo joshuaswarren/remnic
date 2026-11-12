@@ -61,6 +61,9 @@ export class McpFrameReader {
   }
 
   private nextHeader(): McpFrame | null {
+    // Blank lines before a header block carry no message; drop them so they
+    // cannot end up inside the first header line.
+    this.buffer = this.release(this.buffer.subarray(this.buffer.findIndex((byte) => byte > 0x20)));
     const headerEnd = this.buffer.indexOf("\r\n\r\n");
     if (headerEnd < 0) {
       if (this.buffer.length <= MCP_STDIO_MAX_FRAME_BYTES) return this.wait();
@@ -80,13 +83,13 @@ export class McpFrameReader {
     if (contentLength > MCP_STDIO_MAX_FRAME_BYTES) {
       const rest = this.buffer.subarray(bodyStart);
       this.skipBytes = Math.max(0, contentLength - rest.length);
-      this.buffer = rest.subarray(Math.min(contentLength, rest.length));
+      this.buffer = this.release(rest.subarray(Math.min(contentLength, rest.length)));
       return { kind: "too-large", form: "header" };
     }
     const bodyEnd = bodyStart + contentLength;
     if (this.buffer.length < bodyEnd) return this.wait();
     const text = this.buffer.subarray(bodyStart, bodyEnd).toString("utf-8");
-    this.buffer = this.buffer.subarray(bodyEnd);
+    this.buffer = this.release(this.buffer.subarray(bodyEnd));
     return { kind: "body", text, form: "header" };
   }
 
@@ -99,13 +102,18 @@ export class McpFrameReader {
       return this.discardBuffer("line");
     }
     if (newline > MCP_STDIO_MAX_FRAME_BYTES) {
-      this.buffer = this.buffer.subarray(newline + 1);
+      this.buffer = this.release(this.buffer.subarray(newline + 1));
       return { kind: "too-large", form: "line" };
     }
     const text = this.buffer.subarray(0, newline).toString("utf-8").replace(/\r$/, "");
-    this.buffer = this.buffer.subarray(newline + 1);
+    this.buffer = this.release(this.buffer.subarray(newline + 1));
     if (text.trim().length === 0) return "blank";
     return { kind: "body", text, form: "line" };
+  }
+
+  /** An empty view would keep the old allocation alive while the connection idles. */
+  private release(view: Buffer<ArrayBuffer>): Buffer<ArrayBuffer> {
+    return view.length === 0 ? Buffer.alloc(0) : view;
   }
 
   private wait(): null {

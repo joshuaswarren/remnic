@@ -93,3 +93,10 @@ test("an oversized line that is complete in the buffer does not drop the line af
   assert.deepEqual(reader.next(), { kind: "body", text: '{"id":2}', form: "line" });
   assert.equal(reader.next(), null);
 });
+
+test("a blank line in the same read as a header block does not swallow the request", () => {
+  const reader = new McpFrameReader();
+  reader.push(Buffer.from(`\r\n\nContent-Length: 2\r\n\r\n{}`, "utf-8"));
+  assert.deepEqual(reader.next(), { kind: "body", text: "{}", form: "header" });
+  assert.equal(reader.next(), null);
+});
