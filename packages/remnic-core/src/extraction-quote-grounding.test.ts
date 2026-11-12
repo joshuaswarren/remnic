@@ -459,6 +459,26 @@ test("a negator in a claim clause that shares only the subject does not keep the
   assert.equal(grounded.facts.length, 0);
 });
 
+test("a negated clause about another subject does not keep the quote's denial (#3356)", () => {
+  const source =
+    "Alice did not approve the budget. Bob did not approve the budget either. Carol asked about the plan.";
+  const quote = "Alice did not approve the budget.";
+  const kept = [
+    "Alice did not approve the budget.",
+    "The budget was not approved by Alice.",
+    "The budget was not approved.",
+  ];
+  const grounded = filterExtractionResultBySource(
+    resultOf([
+      { content: "Alice approved the budget, but Bob did not approve the budget.", quote },
+      ...kept.map((content) => ({ content, quote })),
+    ]),
+    source,
+    source,
+  );
+  assert.deepEqual(keptContents(grounded), kept);
+});
+
 test("a claim that inverts a denial verb in the quote is rejected", () => {
   const source = "Notes: Alice denied approving the budget. Bob reviewed it.";
   const grounded = filterExtractionResultBySource(
