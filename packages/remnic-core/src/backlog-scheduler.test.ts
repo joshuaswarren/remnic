@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { hostname } from "node:os";
+import { log } from "./logger.js";
 import {
   BacklogScheduler,
   type BacklogSchedulerDeps,
@@ -387,6 +388,53 @@ test("the in-flight bound is the queue's own maxConcurrency", async () => {
     await scheduler.settleForTest();
   } finally {
     await scheduler.stop();
+  }
+});
+
+test("stop returns within its settle bound and names a drain that ignores abort", async () => {
+  const queue = new ExtractionQueueCoordinator(1);
+  const state: StubState = {
+    counts: new Map([["stuck-key", { turns: 3, retainedTurns: 0 }]]),
+    claimed: new Set(),
+    claimTurns: new Map(),
+    claimedThisRun: new Set(),
+    outcomes: [],
+    drained: [],
+  };
+  const entered = Promise.withResolvers<void>();
+  const forever = new Promise<DrainSessionOutcome>(() => {});
+  const scheduler = new BacklogScheduler(
+    {
+      ...makeDeps(state, queue),
+      // Ignores options.signal entirely: the shape that held a daemon stop
+      // until the 700 s systemd kill.
+      drainKey: async () => {
+        entered.resolve();
+        return forever;
+      },
+    },
+    { pollMs: 3_600_000, stopSettleTimeoutMs: 50 }
+  );
+  const warnings: string[] = [];
+  const originalWarn = log.warn;
+  log.warn = (msg: string) => {
+    warnings.push(msg);
+  };
+  try {
+    scheduler.start();
+    await scheduler.tickForTest();
+    await entered.promise;
+    const outcome = await Promise.race([
+      scheduler.stop().then(() => "returned"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("hung"), 2_000)),
+    ]);
+    assert.equal(outcome, "returned", "stop must not wait forever on a drain that ignores abort");
+    assert.ok(
+      warnings.some((w) => w.includes("stuck-key")),
+      `the stuck key is named in a warning: ${JSON.stringify(warnings)}`
+    );
+  } finally {
+    log.warn = originalWarn;
   }
 });
 

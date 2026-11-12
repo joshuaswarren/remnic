@@ -236,3 +236,9 @@ export async function completeStartupReadiness(options: {
     options.shutdownSignal?.removeEventListener("abort", onShutdown);
   }
 }
+
+/** Daemon.log otherwise has no listener marker, so a slow start cannot be split
+ *  into "listener late" vs "listener up but requests starved". */
+export function logListenerBound(host: string, port: number): void {
+  log.info(`listener bound on ${host}:${port} ${Math.round(process.uptime() * 1000)}ms after process start`);
+}

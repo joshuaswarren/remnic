@@ -60,6 +60,7 @@ import {
 // The class lives in ../buffer-admission.js next to BufferAdmissionRefusedError;
 // re-exported here so existing importers keep their import path.
 import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
+import { createTaskExit } from "./task-exit.js";
 export { ReplayAdmissionRefusedError, StorageTargetRequiredError };
 
 export interface TurnIngestionDeps {
@@ -798,13 +799,7 @@ export class TurnIngestionCoordinator {
       abortSignal?: AbortSignal;
       /** Automatic buffered work only. Replay and import must not set this. */
       preemptable?: boolean;
-      /**
-       * Invoked when the queued closure has FULLY exited (after settlement).
-       * Settlement can fire before the closure exits — e.g. an abort listener
-       * settles while persistence is still in flight — so callers that
-       * release resources on settlement (claim leases) can use this to wait
-       * for the actual task exit first.
-       */
+      /** Fires once when the task is done: closure exited, or settled before it started. */
       onTaskExit?: () => void;
       /** Fail-closed force-flush only. Not implied by failOnExtractionFailure. */
       preemptRunning?: boolean;
@@ -845,6 +840,7 @@ export class TurnIngestionCoordinator {
         : undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    const exit = createTaskExit(options.onTaskExit);
     const clearQueueWaitTimer = (): void => {
       if (timeout) {
         clearTimeout(timeout);
@@ -867,6 +863,7 @@ export class TurnIngestionCoordinator {
       clearQueueWaitTimer();
       clearAbortListener();
       options.onTaskSettled?.(error, result);
+      exit.settled();
       return true;
     };
     if (options.abortSignal) {
@@ -910,6 +907,7 @@ export class TurnIngestionCoordinator {
     const queuedTurnsSource: { chain: SnapshotChain } | { direct: BufferTurn[] } =
       sharingNode ? { chain: sharingNode } : { direct: turnsToExtract };
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
+      exit.start();
       try {
         await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
@@ -1094,13 +1092,13 @@ export class TurnIngestionCoordinator {
       });
       } finally {
         if (sharingNode) this.snapshotSharing.release(sharingNode);
-        options.onTaskExit?.();
+        exit.report();
       }
     }, { front: options.preemptRunning === true, key: bufferKey });
     if (!accepted) {
       if (sharingNode) this.snapshotSharing.release(sharingNode);
       settleTask(new Error("extraction queue is stopped"));
-      options.onTaskExit?.();
+      exit.report();
       return;
     }
 

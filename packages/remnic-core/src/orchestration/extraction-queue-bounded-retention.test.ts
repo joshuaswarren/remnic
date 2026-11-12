@@ -299,6 +299,26 @@ test("abort while queued: settled task starts, skips extraction, queue drains", 
   assert.equal(settled.length, 1, "queued task settles exactly once from the abort");
 });
 
+test("abort while queued: onTaskExit fires at once, not after the queue head finishes", async () => {
+  const h = makeHarness();
+  const controller = new AbortController();
+  // Occupies the single worker; the drain stays blocked until release().
+  await h.coordinator.processTurn("user", "running", "k");
+  let exited = 0;
+  await h.coordinator.queueBufferedExtraction([makeTurn("queued then aborted")], "trigger_mode", {
+    bufferKey: "k",
+    preemptable: true,
+    abortSignal: controller.signal,
+    onTaskExit: () => { exited += 1; },
+  });
+  controller.abort();
+  // A claim-lease owner waiting on this exit must not be held by an unrelated
+  // running extraction: nothing of this task ever ran.
+  assert.equal(exited, 1, "queued task that never started reports exit on abort");
+  await h.release();
+  assert.equal(exited, 1, "the later no-op closure run does not report a second exit");
+});
+
 test("sharing bound: distinct reference slots equal the union, not the snapshot sum", async () => {
   const h = makeHarness();
   const turns = 30;
