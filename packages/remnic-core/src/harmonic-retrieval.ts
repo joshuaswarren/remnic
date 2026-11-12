@@ -475,11 +475,11 @@ const graphCache = new Map<string, GraphCacheEntry>();
 export const harmonicGraphCacheStats = { hits: 0, misses: 0 };
 
 /** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
-function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
+function deepFreeze<T extends object>(value: T): T {
+  // isFrozen is true for primitives and null, and a frozen value is not revisited, so this ends on cycles too.
+  if (Object.isFrozen(value)) return value;
+  Object.freeze(value);
+  for (const child of Object.values(value)) deepFreeze(child);
   return value;
 }
 
@@ -532,8 +532,8 @@ export async function readProjectedHarmonicGraph(options: {
   harmonicGraphCacheStats.misses++;
   const built = await buildProjectedHarmonicGraph(options);
   const graph = {
-    nodes: deepFreeze(built.nodes) as AbstractionNode[],
-    anchors: deepFreeze(built.anchors) as CueAnchor[],
+    nodes: deepFreeze(built.nodes),
+    anchors: deepFreeze(built.anchors),
   };
   graphCache.delete(key);
   graphCache.set(key, { stamp, startedAtMs, graph });

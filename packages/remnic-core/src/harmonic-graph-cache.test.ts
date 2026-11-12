@@ -111,7 +111,7 @@ test("cached arrays are frozen", async () => {
     const memory = await storage.writeMemory("fact", "epsilon frozen fact", { source: "test" });
     await recordAbstractionNode({ memoryDir, node: node("n1", "epsilon frozen fact", [memory.id]) });
     const graph = await read(memoryDir);
-    assert.throws(() => (graph.nodes as AbstractionNode[]).push(node("x", "x", [])), TypeError);
+    assert.throws(() => graph.nodes.push(node("x", "x", [])), TypeError);
   });
 });
 
@@ -121,8 +121,8 @@ test("cached node records are deep frozen, so a caller cannot change later reads
     await recordAbstractionNode({ memoryDir, node: node("n1", "zeta deep frozen fact", [memory.id]) });
     const graph = await read(memoryDir);
     const cached = graph.nodes[0]!;
-    assert.throws(() => { (cached as { title: string }).title = "changed"; }, TypeError);
-    assert.throws(() => (cached.sourceMemoryIds as string[]).push("x"), TypeError);
+    assert.throws(() => { cached.title = "changed"; }, TypeError);
+    assert.throws(() => cached.sourceMemoryIds?.push("x"), TypeError);
     assert.equal((await read(memoryDir)).nodes[0]!.title, "zeta deep frozen fact");
   });
 });
@@ -173,27 +173,27 @@ async function counts(memoryDir: string) {
 
 const storeWrites: Array<{
   name: string;
-  write: (memoryDir: string, ids: { m1: string; m2: string }) => Promise<unknown>;
+  write: (memoryDir: string, ids: { m1: string; m2: string }) => Promise<void>;
   expected: { nodes: number; anchors: number };
 }> = [
   {
     name: "recordAbstractionNode",
-    write: (memoryDir, ids) => recordAbstractionNode({ memoryDir, node: node("n3", "seed three", [ids.m1]) }),
+    write: async (memoryDir, ids) => { await recordAbstractionNode({ memoryDir, node: node("n3", "seed three", [ids.m1]) }); },
     expected: { nodes: 3, anchors: 1 },
   },
   {
     name: "upsertAbstractionNodes",
-    write: (memoryDir, ids) => upsertAbstractionNodes({ memoryDir, nodes: [node("n3", "seed three", [ids.m1])] }),
+    write: async (memoryDir, ids) => { await upsertAbstractionNodes({ memoryDir, nodes: [node("n3", "seed three", [ids.m1])] }); },
     expected: { nodes: 3, anchors: 1 },
   },
   {
     name: "recordCueAnchor",
-    write: (memoryDir, ids) => recordCueAnchor({ memoryDir, anchor: anchor("a2", "n2", ids.m2) }),
+    write: async (memoryDir, ids) => { await recordCueAnchor({ memoryDir, anchor: anchor("a2", "n2", ids.m2) }); },
     expected: { nodes: 2, anchors: 2 },
   },
   {
     name: "upsertCueAnchors",
-    write: (memoryDir, ids) => upsertCueAnchors({ memoryDir, anchors: [anchor("a2", "n2", ids.m2)] }),
+    write: async (memoryDir, ids) => { await upsertCueAnchors({ memoryDir, anchors: [anchor("a2", "n2", ids.m2)] }); },
     expected: { nodes: 2, anchors: 2 },
   },
 ];
