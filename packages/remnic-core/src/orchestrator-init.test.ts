@@ -1616,13 +1616,13 @@ test("daemon start builds the fact-hash index once in the background and a save 
       knowledgeIndexEnabled: false,
     }),
   );
+  let releaseCorpus: (() => void) | undefined;
   try {
     const storage = await orchestrator.getStorage("default");
     const realRead = storage.readAllMemories.bind(storage);
     let corpusReads = 0;
     let signalStarted!: () => void;
     const rebuildStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
-    let releaseCorpus!: () => void;
     const corpusHeld = new Promise<void>((resolve) => { releaseCorpus = resolve; });
     storage.readAllMemories = async () => {
       corpusReads += 1;
@@ -1631,9 +1631,13 @@ test("daemon start builds the fact-hash index once in the background and a save 
       return realRead();
     };
 
-    await withTestDeadline(orchestrator.initialize());
+    assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
     // SAFETY: test reads the private deferredReady gate, as the neighbouring tests do.
-    await withTestDeadline((orchestrator as any).deferredReady);
+    assert.notEqual(
+      await withTestDeadline((orchestrator as any).deferredReady),
+      "deadline",
+      "deferredReady must not wait on the held rebuild",
+    );
     let giveUp: NodeJS.Timeout | undefined;
     const outcome = await Promise.race([
       rebuildStarted.then(() => "started" as const),
@@ -1644,12 +1648,13 @@ test("daemon start builds the fact-hash index once in the background and a save 
 
     // Two saves landing while the warm-up still runs: both wait on that one flight.
     const saves = Promise.all([storage.lookupContentHash("first save"), storage.lookupContentHash("second save")]);
-    releaseCorpus();
+    releaseCorpus?.();
     const results = await withTestDeadline(saves);
     if (results === "deadline") assert.fail("saves joining the warm-up never settled");
     assert.equal(corpusReads, 1, "the saves must not start a second corpus rebuild");
     assert.deepEqual(results.map((r) => r.authoritative), [true, true]);
   } finally {
+    releaseCorpus?.();
     await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
@@ -1677,7 +1682,7 @@ test("destroy persists a buffered turn before it waits on a running fact-hash wa
       knowledgeIndexEnabled: false,
     }),
   );
-  let releaseCorpus!: () => void;
+  let releaseCorpus: (() => void) | undefined;
   try {
     const storage = await orchestrator.getStorage("default");
     const realRead = storage.readAllMemories.bind(storage);
@@ -1689,8 +1694,8 @@ test("destroy persists a buffered turn before it waits on a running fact-hash wa
       await corpusHeld;
       return realRead();
     };
-    await withTestDeadline(orchestrator.initialize());
-    await withTestDeadline(rebuildStarted);
+    assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
+    assert.notEqual(await withTestDeadline(rebuildStarted), "deadline", "the warm-up must start the rebuild");
 
     await orchestrator.buffer.addTurn("warm-destroy-key", {
       role: "user",
@@ -1713,8 +1718,8 @@ test("destroy persists a buffered turn before it waits on a running fact-hash wa
       if (!persisted) await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.equal(persisted, true, "the buffered turn must reach disk within 1.5 s of destroy() while the corpus read is held");
-    releaseCorpus();
-    await withTestDeadline(destroying);
+    releaseCorpus?.();
+    assert.notEqual(await withTestDeadline(destroying), "deadline", "destroy must finish once the rebuild is released");
   } finally {
     releaseCorpus?.();
     await orchestrator.destroy().catch(() => undefined);
