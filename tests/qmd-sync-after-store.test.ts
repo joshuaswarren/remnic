@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { registerTools } from "../src/tools.js";
 import { sealedWriteToLegacyArgs, type SealedMemoryEnvelope } from "@remnic/core/write-envelope";
+import { makeStorageDir } from "./helpers/fake-storage-dir.js";
 
 // Sealed-write stub fidelity (issue #1989 PR2; AGENTS.md §21): production
 // callers now write via `writeSealedMemory`. Test doubles keep stubbing
@@ -73,7 +74,7 @@ test("QmdClient.update() passes collection flag to qmd subprocess", async () => 
   );
 });
 
-test("memory_store queues orchestrator-maintained QMD sync after write", async () => {
+test("memory_store queues orchestrator-maintained QMD sync after write", async (t) => {
   type RegisteredTool = {
     name: string;
     execute: (
@@ -103,6 +104,7 @@ test("memory_store queues orchestrator-maintained QMD sync after write", async (
   };
 
   const writeCalls: Array<{ category: string; content: string }> = [];
+  const storageDir = await makeStorageDir(t);
   let maintenanceRequests = 0;
   let lifecycleEvents = 0;
   const orchestrator = {
@@ -113,6 +115,7 @@ test("memory_store queues orchestrator-maintained QMD sync after write", async (
       namespacesEnabled: false,
     },
     getStorage: async () => withSealedWrite({
+      dir: storageDir,
       readAllMemories: async () => [],
       writeMemory: async (category: string, content: string) => {
         writeCalls.push({ category, content });

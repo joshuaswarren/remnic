@@ -1,4 +1,6 @@
 import { composeMemoryEnvelope, TAG_LIMITS } from "./write-envelope.js";
+import type { SealedMemoryEnvelope } from "./write-envelope.js";
+import { persistUnderFactDedupWindow } from "./orchestration/fact-dedup-window.js";
 import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
@@ -419,19 +421,18 @@ async function findDuplicateExplicitCapture(
   // authoritative miss can therefore skip the corpus scan only after the
   // targeted blocked-row index reports a miss and remains authoritative.
   let authoritativeFactHashMiss = false;
-  if (candidate.category === "fact" && typeof storage.hasFactContentHash === "function") {
+  if (candidate.category === "fact") {
     try {
-      const hasHash = await storage.hasFactContentHash(candidate.content);
-      if (!hasHash) {
-        const authoritative =
-          typeof storage.isFactContentHashAuthoritative === "function"
-            ? await storage.isFactContentHashAuthoritative()
-            : false;
-        authoritativeFactHashMiss = authoritative;
+      // One lookup returns the MISS together with the authority behind it, so
+      // a stale MISS is never paired with authority from another moment
+      // (#3312, #3354 — each separate call may rebuild the index).
+      const lookup = await storage.lookupContentHash(sanitizeMemoryContent(candidate.content).text);
+      if (!lookup.present && lookup.authoritative) {
+        authoritativeFactHashMiss = true;
       }
     } catch (err) {
       // Fail open: hash indexes are only an optimization, so fall back to the
-      // full corpus scan when either index cannot answer.
+      // full corpus scan when the lookup cannot answer.
       void err;
     }
   }
@@ -503,37 +504,21 @@ async function findDuplicateExplicitCapture(
       }
     : null;
 }
-async function persistExplicitCaptureUnlocked(
-  orchestrator: Orchestrator,
-  candidate: ValidExplicitCapture,
-  source: ExplicitCaptureSource,
-  resolvedNamespace: string | undefined,
-  storage: StorageManager
-): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
-  const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
-  if (duplicate) {
-    return duplicate.tombstoneBlocked
-      ? { id: duplicate.id, duplicateOf: duplicate.id, tombstoneBlocked: true }
-      : { id: duplicate.id, duplicateOf: duplicate.id };
-  }
+type PersistedExplicitCapture = { id: string; duplicateOf?: string; tombstoneBlocked?: boolean };
+type RacedDuplicate = { match: { id: string; tombstoneBlocked: boolean } | null };
 
-  // #1645 (review thread yG-): surface the tombstone block so callers
-  // (memory_store tool, access-service HTTP/MCP) can report the capture as
-  // queued for review instead of a successfully stored active memory.
-  // Sealed-envelope write (issue #1989 PR2).
-  const captureEnvelope = composeMemoryEnvelope(
-    {
-      content: candidate.content,
-      category: candidate.category,
-      confidence: candidate.confidence,
-      tags: candidate.tags,
-      ...(candidate.entityRef ? { entityRef: candidate.entityRef } : {}),
-      ...(candidate.expiresAt ? { ttl: candidate.expiresAt } : {}),
-      ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
-      ...(candidate.sourceReason ? { sourceReason: candidate.sourceReason } : {}),
-    },
-    { source: source === "inline" ? "explicit-inline" : "explicit" }
-  );
+function duplicatePersistResult(duplicate: { id: string; tombstoneBlocked: boolean }): PersistedExplicitCapture {
+  return duplicate.tombstoneBlocked
+    ? { id: duplicate.id, duplicateOf: duplicate.id, tombstoneBlocked: true }
+    : { id: duplicate.id, duplicateOf: duplicate.id };
+}
+
+async function persistSealedExplicitCapture(
+  storage: StorageManager,
+  captureEnvelope: SealedMemoryEnvelope,
+  candidate: ValidExplicitCapture,
+  source: ExplicitCaptureSource
+): Promise<PersistedExplicitCapture> {
   const { id, duplicateOf, tombstoneBlocked } = await storage.writeSealedMemory(captureEnvelope);
   if (duplicateOf) return { id, duplicateOf, tombstoneBlocked };
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
@@ -554,19 +539,87 @@ async function persistExplicitCaptureUnlocked(
   return { id, duplicateOf, tombstoneBlocked };
 }
 
+async function persistExplicitCaptureUnlocked(
+  orchestrator: Orchestrator,
+  candidate: ValidExplicitCapture,
+  source: ExplicitCaptureSource,
+  resolvedNamespace: string | undefined,
+  storage: StorageManager
+): Promise<PersistedExplicitCapture> {
+  const isFact = candidate.category === "fact";
+  // Facts take a cheap early exit here and re-check inside the dedup window.
+  // Every other category checks only under the capture lock, so its gate and
+  // its write stay one atomic step per dedup key (#3354).
+  if (isFact) {
+    const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+    if (duplicate) return duplicatePersistResult(duplicate);
+  }
+
+  // #1645 (review thread yG-): surface the tombstone block so callers
+  // (memory_store tool, access-service HTTP/MCP) can report the capture as
+  // queued for review instead of a successfully stored active memory.
+  // Sealed-envelope write (issue #1989 PR2).
+  const captureEnvelope = composeMemoryEnvelope(
+    {
+      content: candidate.content,
+      category: candidate.category,
+      confidence: candidate.confidence,
+      tags: candidate.tags,
+      ...(candidate.entityRef ? { entityRef: candidate.entityRef } : {}),
+      ...(candidate.expiresAt ? { ttl: candidate.expiresAt } : {}),
+      ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
+      ...(candidate.sourceReason ? { sourceReason: candidate.sourceReason } : {}),
+    },
+    { source: source === "inline" ? "explicit-inline" : "explicit" }
+  );
+
+  // Test fakes may omit the lock; the real StorageManager always has it.
+  const withCaptureLock = <T>(run: () => Promise<T>): Promise<T> =>
+    storage.withTombstoneBlockedCaptureWriteLock?.(
+      run,
+      buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector)
+    ) ?? run();
+  const writeSealed = (): Promise<PersistedExplicitCapture> =>
+    persistSealedExplicitCapture(storage, captureEnvelope, candidate, source);
+
+  if (!isFact) {
+    return await withCaptureLock(async () => {
+      const duplicate = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+      return duplicate ? duplicatePersistResult(duplicate) : await writeSealed();
+    });
+  }
+  // #3354: fact captures commit inside the per-dir fact-dedup window so a
+  // concurrent extraction write of the same fact is caught by the recheck
+  // instead of racing the persist-time gate. The tombstone capture write
+  // lock stays INSIDE the window: every other window writer (extraction,
+  // promotion) acquires the tombstone lock only inside writeMemory, so
+  // taking it here first would order tombstone→window against their
+  // window→tombstone and stall the capture on the 60s write-lock backoff.
+  const raced: RacedDuplicate = { match: null };
+  const outcome = await persistUnderFactDedupWindow(
+    storage.dir,
+    async () => {
+      raced.match = await findDuplicateExplicitCapture(orchestrator, resolvedNamespace, candidate, storage);
+      return raced.match !== null;
+    },
+    () => withCaptureLock(writeSealed)
+  );
+  if (!outcome.suppressed) return outcome.result;
+  if (!raced.match) throw new Error("explicit capture suppressed by the dedup window without a matched duplicate");
+  log.info(`dedup: raced explicit capture suppressed in fact-dedup window for ${storage.dir}`);
+  return duplicatePersistResult(raced.match);
+}
+
 export async function persistExplicitCapture(
   orchestrator: Orchestrator,
   candidate: ValidExplicitCapture,
   source: ExplicitCaptureSource
-): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
+): Promise<PersistedExplicitCapture> {
   const resolvedNamespace = candidate.namespacePreResolved
     ? asTrimmed(candidate.namespace)
     : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
   const storage = await orchestrator.getStorage(resolvedNamespace);
-  const persist = () => persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
-  if (typeof storage.withTombstoneBlockedCaptureWriteLock !== "function") return await persist();
-  const lockIdentity = buildExplicitCaptureDedupKey(candidate.content, candidate.category, candidate.sourceConnector);
-  return await storage.withTombstoneBlockedCaptureWriteLock(persist, lockIdentity);
+  return await persistExplicitCaptureUnlocked(orchestrator, candidate, source, resolvedNamespace, storage);
 }
 
 function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: string): string {

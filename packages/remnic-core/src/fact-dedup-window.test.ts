@@ -6,6 +6,8 @@ import path from "node:path";
 import { StorageManager } from "./storage.js";
 import { withHeldFileLock } from "./utils/serialize-mutations.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./orchestration/fact-dedup-window.js";
+import { persistExplicitCapture } from "./explicit-capture.js";
+import { Orchestrator } from "./orchestrator.js";
 
 const SKY_OPTS = {
   category: "fact",
@@ -180,6 +182,41 @@ test("two managers on one directory commit the same fact through the window exac
     assert.equal(outcomes.filter((outcome) => !outcome.suppressed).length, 1, "one writer wins, the other is suppressed");
     const stored = await new StorageManager(storage["baseDir"]).readAllMemories();
     assert.equal(stored.filter((memory) => memory.content.includes("sky is blue")).length, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("explicit capture and an extraction write race the same new fact to exactly one active copy (#3354)", async () => {
+  const { storage, cleanup } = await makeStorage();
+  try {
+    const content = "An extraction run and an explicit capture hold this new fact.";
+    // SAFETY: persistExplicitCapture reads only getStorage here (namespacePreResolved skips the config-based namespace resolver); the prototype stub exists for the type only.
+    const orchestrator = Object.create(Orchestrator.prototype) as Orchestrator;
+    orchestrator.getStorage = async () => storage;
+    const candidate = { content, category: "fact" as const, confidence: 0.9, tags: [], namespacePreResolved: true };
+    const extractionCommit = persistUnderFactDedupWindow(
+      storage.dir,
+      () => confirmActiveFactDuplicate(storage, { ...SKY_OPTS, contentHashDedupKey: content }),
+      () => storage.writeMemory("fact", content),
+    );
+    const [capture, extraction] = await Promise.all([
+      persistExplicitCapture(orchestrator, candidate, "memory_store"),
+      extractionCommit,
+    ]);
+    const stored = await storage.readAllMemories();
+    const active = stored.filter(
+      (memory) => memory.frontmatter.category === "fact" && (memory.frontmatter.status ?? "active") === "active",
+    );
+    assert.equal(active.length, 1, `exactly one active copy of the raced fact, got ${active.length}`);
+    const winner = active[0];
+    assert.ok(winner, "the single active copy must exist");
+    assert.ok(winner.content.includes(content));
+    if (capture.duplicateOf === undefined) {
+      assert.equal(extraction.suppressed, true, "the extraction write is the loser and must be suppressed");
+    } else {
+      assert.equal(winner.frontmatter.id, capture.duplicateOf, "the capture reports the winning copy");
+    }
   } finally {
     await cleanup();
   }

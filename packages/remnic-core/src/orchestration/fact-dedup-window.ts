@@ -1,6 +1,10 @@
 import path from "node:path";
 import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
-import { ContentHashIndex, type StorageManager } from "../index.js";
+// Import from the real modules, NOT the ../index.js barrel: a barrel edge
+// from orchestration code that explicit-capture.ts imports re-orders module
+// initialization and leaves access-boundary's registry in TDZ (#3354).
+import { ContentHashIndex } from "../storage/content-hash-index.js";
+import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
 import { normalizeStoredHashSource } from "./extraction-persist-citation.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
