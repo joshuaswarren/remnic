@@ -70,6 +70,8 @@ export interface BacklogSchedulerOptions {
   pollMs?: number;
   retryBaseMs?: number;
   retryMaxMs?: number;
+  /** Bound on `stop()`'s wait for aborted drains to settle. */
+  stopSettleTimeoutMs?: number;
   now?: () => number;
 }
 
@@ -114,6 +116,9 @@ interface KeyState {
 const DEFAULT_POLL_MS = 15_000;
 const DEFAULT_RETRY_BASE_MS = 30_000;
 const DEFAULT_RETRY_MAX_MS = 15 * 60_000;
+// Aborted drains normally settle within seconds (a chunk boundary); this only
+// bounds the pathological case, well inside the daemon's stop budget.
+const DEFAULT_STOP_SETTLE_TIMEOUT_MS = 30_000;
 
 export class BacklogScheduler {
   private readonly deps: BacklogSchedulerDeps;
@@ -141,6 +146,7 @@ export class BacklogScheduler {
       pollMs: options.pollMs ?? DEFAULT_POLL_MS,
       retryBaseMs: options.retryBaseMs ?? DEFAULT_RETRY_BASE_MS,
       retryMaxMs: options.retryMaxMs ?? DEFAULT_RETRY_MAX_MS,
+      stopSettleTimeoutMs: options.stopSettleTimeoutMs ?? DEFAULT_STOP_SETTLE_TIMEOUT_MS,
       now: options.now,
     };
   }
@@ -155,7 +161,10 @@ export class BacklogScheduler {
   }
 
   /** Idempotent. Stops the timer, aborts in-flight drains (their claims stay
-   *  retryable) and waits for them to settle. */
+   *  retryable) and waits up to `stopSettleTimeoutMs` for them to settle. A
+   *  drain that ignores abort is named in a warning and left behind: the
+   *  caller's later shutdown phases (orchestrator flush and dispose) must
+   *  still run before the service manager's kill. */
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
@@ -168,7 +177,19 @@ export class BacklogScheduler {
       entry.controller.abort(new Error("backlog scheduler stopping"));
       aborts.push(entry.settled);
     }
-    await Promise.allSettled(aborts);
+    const bound = Promise.withResolvers<"timeout">();
+    const boundTimer = setTimeout(() => bound.resolve("timeout"), this.options.stopSettleTimeoutMs);
+    try {
+      const result = await Promise.race([Promise.allSettled(aborts), bound.promise]);
+      if (result === "timeout") {
+        log.warn(
+          `backlog scheduler stop: ${this.inFlight.size} drain(s) ignored abort for ${this.options.stopSettleTimeoutMs}ms; ` +
+            `continuing shutdown (stuck keys: ${[...this.inFlight.keys()].join(", ")})`,
+        );
+      }
+    } finally {
+      clearTimeout(boundTimer);
+    }
   }
 
   /** Bounded snapshot for ops/watchers: counters + per-key states + live sets. */

@@ -871,6 +871,9 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let backlogScheduler: BacklogScheduler | undefined;
   try {
     ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron();
+    // Daemon.log otherwise has no listener marker, so a slow start cannot be
+    // split into "listener late" vs "listener up but requests starved".
+    log.info(`listener bound on ${host}:${port} ${Math.round(process.uptime() * 1000)}ms after process start`);
     // The daemon owns extraction-backlog draining: the bounded scheduler
     // starts AFTER the listener and stops before the orchestrator.
     backlogScheduler = startBacklogScheduler(orchestrator);

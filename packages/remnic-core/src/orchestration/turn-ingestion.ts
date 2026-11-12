@@ -845,6 +845,16 @@ export class TurnIngestionCoordinator {
         : undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let settled = false;
+    // A task settled (abort, queue deadline) before its closure ever ran has
+    // nothing to exit: report that at once so a claim-lease owner waiting on
+    // the exit is not held behind an unrelated running extraction.
+    let started = false;
+    let exitReported = false;
+    const reportExit = (): void => {
+      if (exitReported) return;
+      exitReported = true;
+      options.onTaskExit?.();
+    };
     const clearQueueWaitTimer = (): void => {
       if (timeout) {
         clearTimeout(timeout);
@@ -867,6 +877,7 @@ export class TurnIngestionCoordinator {
       clearQueueWaitTimer();
       clearAbortListener();
       options.onTaskSettled?.(error, result);
+      if (!started) reportExit();
       return true;
     };
     if (options.abortSignal) {
@@ -910,6 +921,7 @@ export class TurnIngestionCoordinator {
     const queuedTurnsSource: { chain: SnapshotChain } | { direct: BufferTurn[] } =
       sharingNode ? { chain: sharingNode } : { direct: turnsToExtract };
     const accepted = this.deps.extractionQueueCoordinator.enqueue(async (preemptHandle) => {
+      started = true;
       try {
         await this.deps.extractionQueueCoordinator.runPreemptable(preemptHandle, preemptable, options.abortSignal, async (abortSignal) => {
       if (settled) return;
@@ -1094,13 +1106,13 @@ export class TurnIngestionCoordinator {
       });
       } finally {
         if (sharingNode) this.snapshotSharing.release(sharingNode);
-        options.onTaskExit?.();
+        reportExit();
       }
     }, { front: options.preemptRunning === true, key: bufferKey });
     if (!accepted) {
       if (sharingNode) this.snapshotSharing.release(sharingNode);
       settleTask(new Error("extraction queue is stopped"));
-      options.onTaskExit?.();
+      reportExit();
       return;
     }
 
