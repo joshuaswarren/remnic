@@ -52,8 +52,9 @@ OpenClaw installs default new Remnic entries to `modelSource: "gateway"` so LLM 
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `connectors.googleDrive.clientSecret` | `""` | OAuth2 client secret for the Google Drive connector; use a secret reference |
-| `connectors.googleDrive.refreshToken` | `""` | OAuth2 refresh token for the Google Drive connector; use a secret reference |
+| `connectors.googleDrive.clientId` | `""` | OAuth2 client id for the Google Drive connector; plain string or a SecretRef object (`clientId.source` names the secret store) resolved at poll time |
+| `connectors.googleDrive.clientSecret` | `""` | OAuth2 client secret for the Google Drive connector; plain string or a SecretRef object (`clientSecret.source` names the secret store) resolved at poll time |
+| `connectors.googleDrive.refreshToken` | `""` | OAuth2 refresh token for the Google Drive connector; plain string or a SecretRef object resolved at poll time. `connectors.googleDrive.clientId.source` follows the same form for the client id |
 | `connectors.gmail.clientSecret` | `""` | OAuth2 client secret for the Gmail connector; use a secret reference |
 | `connectors.gmail.refreshToken` | `""` | OAuth2 refresh token for the Gmail connector; use a secret reference |
 

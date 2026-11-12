@@ -6107,8 +6107,7 @@ export function registerCli(
                   priorState: state,
                   syncFn: (cursor) =>
                     connector.syncIncremental({
-                      cursor,
-                      config: validatedCfg,
+                      cursor, config: validatedCfg, resolveSecretRef: hostSecretRefResolver(registerOptions),
                     }),
                   ingestFn: sharedIngestFn,
                   writeCursorFn: makeWriteCursorFn(name),

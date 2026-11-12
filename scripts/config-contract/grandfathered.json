@@ -461,11 +461,6 @@
   },
   {
     "kind": "undocumented-key",
-    "key": "connectors.googleDrive.clientId",
-    "issue": "#1990"
-  },
-  {
-    "kind": "undocumented-key",
     "key": "connectors.googleDrive.enabled",
     "issue": "#1990"
   },

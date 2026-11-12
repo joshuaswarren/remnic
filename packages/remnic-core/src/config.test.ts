@@ -1891,6 +1891,23 @@ test("parseConfig connectors.googleDrive accepts valid overrides", () => {
   ]);
 });
 
+test("parseConfig connectors.googleDrive keeps a SecretRef credential verbatim", () => {
+  const secretRef = { source: "keychain", id: "projects/drive-secret" };
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    connectors: {
+      googleDrive: {
+        enabled: true,
+        clientId: "synthetic-client",
+        clientSecret: secretRef,
+        refreshToken: "synthetic-token",
+      },
+    },
+  });
+  assert.deepEqual(result.connectors.googleDrive.clientSecret, secretRef);
+  assert.equal(result.connectors.googleDrive.clientId, "synthetic-client");
+});
+
 test("parseConfig rejects malformed connectors top-level", () => {
   assert.throws(
     () => parseConfig({ openaiApiKey: "sk-test", connectors: "nope" }),

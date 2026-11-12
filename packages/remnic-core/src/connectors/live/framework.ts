@@ -1,3 +1,5 @@
+import type { ResolveSecretRefFn } from "../../resolve-auth-token.js";
+
 /**
  * @remnic/core — Live Connectors Framework (issue #683 PR 1/N)
  *
@@ -139,6 +141,12 @@ export interface SyncIncrementalArgs {
   readonly config: ConnectorConfig;
   /** Optional abort signal. Connectors SHOULD honor it for cooperative cancellation. */
   readonly abortSignal?: AbortSignal;
+  /**
+   * Host resolver for credential fields that hold a SecretRef. A connector
+   * resolves those at poll time. Absent a resolver, a plain string still works
+   * and a SecretRef fails that connector only.
+   */
+  readonly resolveSecretRef?: ResolveSecretRefFn | null;
 }
 
 /**

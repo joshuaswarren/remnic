@@ -272,6 +272,7 @@
     "connectors.gmail.userId",
     "connectors.googleDrive",
     "connectors.googleDrive.clientId",
+    "connectors.googleDrive.clientId.source",
     "connectors.googleDrive.clientSecret",
     "connectors.googleDrive.enabled",
     "connectors.googleDrive.folderIds",

@@ -236,6 +236,7 @@ import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
 } from "./live-connectors-runner.js";
+import type { ResolveSecretRefFn } from "./resolve-auth-token.js";
 import {
   runPatternReinforcement,
   type PatternReinforcementResult,
@@ -2116,20 +2117,19 @@ export class Orchestrator {
   async runLiveConnectors(options: {
     force?: boolean;
     abortSignal?: AbortSignal;
+    resolveSecretRef?: ResolveSecretRefFn | null;
   } = {}): Promise<LiveConnectorsRunSummary> {
     return runLiveConnectorsOnce({
       memoryDir: this.config.memoryDir,
       connectors: this.config.connectors,
       force: options.force === true,
       abortSignal: options.abortSignal,
+      resolveSecretRef: options.resolveSecretRef,
       ingestDocuments: async (docs) => {
         const fetchedAt = new Date().toISOString();
         const turns = docs.map((doc) => ({
-          role: "assistant" as const,
-          content: doc.title
-            ? `# ${doc.title}\n\n${doc.content}`
-            : doc.content,
-          timestamp: fetchedAt,
+          role: "assistant" as const, timestamp: fetchedAt,
+          content: doc.title ? `# ${doc.title}\n\n${doc.content}` : doc.content,
         }));
         await this.ingestBulkImportBatch(turns);
       },
