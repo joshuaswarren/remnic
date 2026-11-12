@@ -516,8 +516,35 @@ interface GraphBuild {
 const graphCache = new Map<string, GraphCacheEntry>();
 /** One build per cache key at a time: every recall that lands on a miss waits for the same build. */
 const graphBuilds = new Map<string, GraphBuild>();
-/** When a background refresh last failed, per key: stale reads retry at most once per TTL. */
+/** When a background refresh last failed, per key: stale reads retry at most once per TTL. Capped like the cache. */
 const refreshFailedAtMs = new Map<string, number>();
+
+function rememberRefreshFailure(key: string): void {
+  refreshFailedAtMs.delete(key);
+  refreshFailedAtMs.set(key, Date.now());
+  while (refreshFailedAtMs.size > GRAPH_CACHE_MAX_ENTRIES) {
+    const oldest = refreshFailedAtMs.keys().next().value;
+    if (oldest === undefined) break;
+    refreshFailedAtMs.delete(oldest);
+  }
+}
+
+/**
+ * A source's `invalid_at` can pass while the build is still reading anchors, which would hand every caller
+ * that joined this build a graph that is already expired. Rebuild until the graph is unexpired at completion.
+ * Each round drops the sources that expired, so the set of future deadlines shrinks and the loop ends.
+ */
+async function buildUnexpiredHarmonicGraph(options: GraphReadOptions): Promise<ExpiringHarmonicGraph> {
+  for (;;) {
+    const built = await buildExpiringHarmonicGraph({
+      memoryDir: options.memoryDir,
+      abstractionNodeStoreDir: options.abstractionNodeStoreDir,
+      anchorsEnabled: options.anchorsEnabled,
+      temporalExpiredInInjection: options.temporalExpiredInInjection,
+    });
+    if (Date.now() < built.validUntilMs) return built;
+  }
+}
 /** Counters for tests and diagnostics. `stale` hits also count as `hits`. */
 export const harmonicGraphCacheStats = { hits: 0, misses: 0, stale: 0, shared: 0 };
 
@@ -544,12 +571,7 @@ type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
  */
 function startGraphBuild(key: string, stamp: string, options: GraphReadOptions): Promise<ProjectedHarmonicGraph> {
   harmonicGraphCacheStats.misses++;
-  const promise: Promise<ProjectedHarmonicGraph> = buildExpiringHarmonicGraph({
-    memoryDir: options.memoryDir,
-    abstractionNodeStoreDir: options.abstractionNodeStoreDir,
-    anchorsEnabled: options.anchorsEnabled,
-    temporalExpiredInInjection: options.temporalExpiredInInjection,
-  })
+  const promise: Promise<ProjectedHarmonicGraph> = buildUnexpiredHarmonicGraph(options)
     .then((built) => {
       const graph = { nodes: deepFreeze(built.nodes), anchors: deepFreeze(built.anchors) };
       // A cleared cache or a newer build for this key has replaced this one: do not store a stale graph.
@@ -622,7 +644,7 @@ export async function readProjectedHarmonicGraph(options: {
       const backingOff = failedAtMs !== undefined && nowMs - failedAtMs < GRAPH_CACHE_TTL_MS;
       if (graphBuilds.get(key)?.stamp !== stamp && !backingOff) {
         startGraphBuild(key, stamp, options).catch((err) => {
-          refreshFailedAtMs.set(key, Date.now());
+          rememberRefreshFailure(key);
           log.debug(`harmonic graph refresh failed: ${err}`);
         });
       }

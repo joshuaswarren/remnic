@@ -326,12 +326,15 @@ test("a source whose invalid_at passes inside the stale window is never served",
   });
 });
 
-test("a failed build leaves no poisoned entry, so the next read retries and succeeds", async () => {
+test("callers that joined a failing build all reject, and the next read retries and succeeds", async () => {
   await withDir(async (memoryDir, storage) => {
     const memory = await storage.writeMemory("fact", "mu retry fact", { source: "test" });
     await recordAbstractionNode({ memoryDir, node: node("n1", "mu retry fact", [memory.id]) });
     const restore = await breakNodeStore(memoryDir);
-    await assert.rejects(read(memoryDir));
+    const missesBefore = harmonicGraphCacheStats.misses;
+    const outcomes = await Promise.allSettled([read(memoryDir), read(memoryDir), read(memoryDir)]);
+    assert.deepEqual(outcomes.map((outcome) => outcome.status), ["rejected", "rejected", "rejected"]);
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "the three callers shared one failing build");
     await restore();
     assert.equal((await read(memoryDir)).nodes.length, 1);
   });
@@ -358,5 +361,46 @@ test("a failing refresh is retried at most once per TTL, not on every stale read
     clock.mock.mockImplementation(() => start + 62_000);
     await read(memoryDir);
     await until(async () => harmonicGraphCacheStats.misses === missesBefore + 2);
+  });
+});
+
+// The build's own clock reading is taken before it reads the anchors, so an invalid_at can pass while a
+// build is still running. Every caller that joined that build must still get an unexpired graph.
+test("a source that expires while the build is running is not served from that build", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const sources: Array<{ id: string; path: string }> = [];
+    for (let i = 0; i < 120; i += 1) {
+      const memory = await storage.writeMemory("fact", `xi race fact ${i}`, { source: "test" });
+      await recordAbstractionNode({ memoryDir, node: node(`n${i}`, `xi race fact ${i}`, [memory.id]) });
+      sources.push({ id: memory.id, path: (await storage.getMemoryById(memory.id))!.path });
+    }
+    // Anchors are read after the sources are projected, so many of them make the tail the deadline falls in.
+    await upsertCueAnchors({
+      memoryDir,
+      anchors: Array.from({ length: 1500 }, (_, i) => anchor(`xi-a${i}`, `n${i % 120}`, sources[i % 120]!.id)),
+    });
+    // Calibrate: how long one cold build takes on this machine.
+    const calibrationStart = Date.now();
+    await read(memoryDir);
+    const buildMs = Date.now() - calibrationStart;
+    clearHarmonicGraphCache();
+    // n0's source expires near the end of the next build, which started before the deadline.
+    const first = sources[0]!;
+    const deadlineMs = Date.now() + Math.max(2, Math.floor(buildMs * 0.85));
+    await writeFile(
+      first.path,
+      (await readFile(first.path, "utf8")).replace("category: fact", `category: fact\ninvalidAt: ${new Date(deadlineMs).toISOString()}`),
+    );
+    // The storage layer caches parsed memories by corpus version, so an out-of-band edit needs the documented bump.
+    bumpMemoryCorpusVersionForDir(memoryDir);
+    const graph = await read(memoryDir);
+    const returnedAtMs = Date.now();
+    const served = graph.nodes.some((candidate) => candidate.nodeId === "n0");
+    // A build that finished before the deadline may legitimately include n0 (a 25 ms margin covers the
+    // hand-off); one that returned after it must not.
+    if (returnedAtMs >= deadlineMs + 25) {
+      assert.equal(served, false, `expired source served; build took about ${buildMs} ms`);
+      assert.equal(graph.nodes.length, 119);
+    }
   });
 });
