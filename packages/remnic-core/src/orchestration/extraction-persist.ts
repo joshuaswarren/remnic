@@ -2217,6 +2217,24 @@ export class ExtractionPersistCoordinator {
           const tombstoneBlocked = parentWrite.tombstoneBlocked;
           const postWriteGuard =
             faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+          // #3288: the parent is durable now. Track it before any post-write step
+          // that can throw (non-chunked rule, #3231); a retry exact-dedupes it.
+          trackBehaviorSignals(
+            targetStorage,
+            buildBehaviorSignalsForMemory({
+              memoryId: parentId,
+              category: writeCategory,
+              content: fact.content,
+              namespace: this.deps.storageDirNamespace(targetStorage.dir),
+              confidence: fact.confidence,
+              source: "extraction",
+            }),
+          );
+          trackPersistedId(targetStorage, parentId, {
+            pendingReview: postWriteGuard,
+            category: writeCategory,
+            harmonicFact,
+          });
           // #1645: defer contradiction auto-resolve until tombstone status is
           // known (see applyDeferredContradictionResolve).
           const contradictionOutcome = await this.deps.applyDeferredContradictionResolve(
@@ -2312,11 +2330,6 @@ export class ExtractionPersistCoordinator {
           log.debug(
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
-          trackPersistedId(targetStorage, parentId, {
-            pendingReview: postWriteGuard,
-            category: writeCategory,
-            harmonicFact,
-          });
           await anchorSnapshots.replace(targetStorage, parentId, writeCategory, memoryPathById);
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
@@ -2496,17 +2509,6 @@ export class ExtractionPersistCoordinator {
           } finally {
             // #1522: the catalog write touch lives in the storage chokepoint.
           }
-          trackBehaviorSignals(
-            targetStorage,
-            buildBehaviorSignalsForMemory({
-              memoryId: parentId,
-              category: writeCategory,
-              content: fact.content,
-              namespace: this.deps.storageDirNamespace(targetStorage.dir),
-              confidence: fact.confidence,
-              source: "extraction",
-            }),
-          );
           continue; // Skip the normal write below
         }
       }

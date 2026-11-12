@@ -30,8 +30,12 @@ type BranchCase = {
   later: Partial<ExtractionResult>;
   /** Installs the failure and returns the error the pass must rethrow. */
   inject: (orchestrator: Orchestrator, storage: StorageManager, memoryDir: string) => Promise<Error>;
-  /** Proves the failing branch had already committed its own write when it threw. */
-  committedBeforeFailure?: (storage: StorageManager) => Promise<void>;
+  /**
+   * Proves the failing branch had already committed its own write when it
+   * threw and returns that write's id. It is durable too, so batch-end
+   * finalization must cover it as well as the earlier fact.
+   */
+  committedBeforeFailure?: (storage: StorageManager) => Promise<string>;
 };
 
 async function assertEarlierFactFinalized(branch: BranchCase): Promise<void> {
@@ -48,11 +52,16 @@ async function assertEarlierFactFinalized(branch: BranchCase): Promise<void> {
   const orchestrator = new Orchestrator(config);
   const storage = await orchestrator.getStorageForNamespace();
   const temporalIdBatches: string[][] = [];
+  // Finalization starts the temporal/tag update without awaiting it; cleanup
+  // waits for it so the temp dir is not removed under its lock.
+  const temporalUpdates: Promise<void>[] = [];
   // Bracket access is TypeScript's typed escape hatch for the private method; the spy only wraps it.
   const originalTemporal = orchestrator["updateTemporalTagIndexes"].bind(orchestrator);
-  orchestrator["updateTemporalTagIndexes"] = async (target, persistedIds) => {
+  orchestrator["updateTemporalTagIndexes"] = (target, persistedIds) => {
     temporalIdBatches.push([...persistedIds]);
-    return originalTemporal(target, persistedIds);
+    const update = originalTemporal(target, persistedIds);
+    temporalUpdates.push(update);
+    return update;
   };
   let qmdMaintenanceCalls = 0;
   const originalQmd = orchestrator.requestQmdMaintenance.bind(orchestrator);
@@ -79,7 +88,7 @@ async function assertEarlierFactFinalized(branch: BranchCase): Promise<void> {
       (error: Error) => error === failure,
       "the branch failure must reach the caller unchanged",
     );
-    await branch.committedBeforeFailure?.(storage);
+    const branchWriteId = await branch.committedBeforeFailure?.(storage);
 
     const earlier = (await storage.readAllMemories()).filter((m) => m.frontmatter.category === "preference");
     assert.equal(earlier.length, 1, "the earlier fact must stay durable");
@@ -90,16 +99,17 @@ async function assertEarlierFactFinalized(branch: BranchCase): Promise<void> {
       ),
       "the earlier fact's behavior signal must land before the rethrow",
     );
-    assert.ok(
-      ((await harmonicNodeStoreStatus(memoryDir)).latestNode?.sourceMemoryIds ?? []).includes(factId),
-      "the earlier fact's harmonic node must land before the rethrow",
-    );
-    assert.ok(
-      temporalIdBatches.some((ids) => ids.includes(factId)),
-      "the earlier fact's temporal/tag index update must run before the rethrow",
-    );
+    const harmonicSources = (await harmonicNodeStoreStatus(memoryDir)).latestNode?.sourceMemoryIds ?? [];
+    for (const id of branchWriteId ? [factId, branchWriteId] : [factId]) {
+      assert.ok(harmonicSources.includes(id), `the harmonic node must cover durable write ${id} before the rethrow`);
+      assert.ok(
+        temporalIdBatches.some((ids) => ids.includes(id)),
+        `the temporal/tag index update must cover durable write ${id} before the rethrow`,
+      );
+    }
     assert.ok(qmdMaintenanceCalls > 0, "the partial batch must still schedule QMD maintenance");
   } finally {
+    await Promise.allSettled(temporalUpdates);
     orchestrator.requestQmdMaintenance = originalQmd;
     orchestrator["updateTemporalTagIndexes"] = originalTemporal;
     try {
@@ -144,6 +154,7 @@ test("#3288: a chunk write failure after the chunked parent is durable finalizes
     committedBeforeFailure: async (storage) => {
       const parents = (await storage.readAllMemories()).filter((m) => m.frontmatter.tags?.includes("chunked"));
       assert.equal(parents.length, 1, "the chunked parent must be durable before the chunk write throws");
+      return parents[0]!.frontmatter.id;
     },
   });
 });
@@ -224,6 +235,7 @@ test("#3288: a semantic-merge post-effect failure after the merge commits finali
     committedBeforeFailure: async (storage) => {
       const target = await storage.getMemoryByIdIncludingArchived(MERGE_TARGET_ID);
       assert.ok(target?.content.includes(MERGE_INCOMING), "the merge must be committed before the post effect throws");
+      return MERGE_TARGET_ID;
     },
   });
 });
