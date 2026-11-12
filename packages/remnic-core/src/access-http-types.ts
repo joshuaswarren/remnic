@@ -42,6 +42,8 @@ export interface EngramAccessHttpServerOptions {
   tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   principal?: string;
   maxBodyBytes?: number;
+  /** How long stop() lets in-flight requests finish before it cuts their connections (default 10000 ms). */
+  stopGraceMs?: number;
   /**
    * Max non-replayed write requests per rolling window before 429
    * `write_rate_limited` (issue #1937). Positive integer; defaults to 30.
