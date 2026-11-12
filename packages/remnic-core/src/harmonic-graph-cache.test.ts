@@ -232,6 +232,14 @@ test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
 // Recall waits for the graph build, so a cache miss costs every recall that lands on it. Production: a
 // 2106 node, 9174 anchor graph rebuilt in 5 s standalone, 7 s inside the daemon, and 17 to 32 s when two
 // recalls overlapped and each ran its own build.
+async function until(condition: () => Promise<boolean>) {
+  for (let i = 0; i < 400; i += 1) {
+    if (await condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail("condition not reached in 2 s");
+}
+
 test("concurrent reads on a cold cache share one build", async () => {
   await withDir(async (memoryDir, storage) => {
     const memory = await storage.writeMemory("fact", "theta shared fact", { source: "test" });
@@ -257,6 +265,37 @@ test("a caller that aborts leaves the shared build for the others", async () => 
   });
 });
 
+test("a read past the TTL answers from the stale graph and refreshes behind it", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "zeta ttl fact", { source: "test" });
+    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "zeta ttl fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    await rm(nodeFile, { force: true });
+    clock.mock.mockImplementation(() => start + 29_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "still cached inside the TTL");
+    const missesBefore = harmonicGraphCacheStats.misses;
+    clock.mock.mockImplementation(() => start + 31_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "past the TTL the caller does not wait for a rebuild");
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "a refresh was started");
+    await until(async () => (await read(memoryDir)).nodes.length === 0);
+  });
+});
+
+test("a graph past the stale limit is rebuilt before it is served", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "kappa limit fact", { source: "test" });
+    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "kappa limit fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    await rm(nodeFile, { force: true });
+    clock.mock.mockImplementation(() => start + 301_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "too stale to serve");
+  });
+});
+
 // Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
 // (a corrupt node file would not: readAbstractionNodes skips those on purpose).
 async function breakNodeStore(memoryDir: string) {
@@ -269,6 +308,24 @@ async function breakNodeStore(memoryDir: string) {
     await rename(parked, nodesDir);
   };
 }
+
+test("a source whose invalid_at passes inside the stale window is never served", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    const memory = await storage.writeMemory("fact", "lambda expiry fact", {
+      source: "test",
+      invalidAt: new Date(start + 60_000).toISOString(),
+    });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "lambda expiry fact", [memory.id]) });
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    clock.mock.mockImplementation(() => start + 31_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "past the TTL but before the invalid_at: stale is fine");
+    await until(async () => harmonicGraphCacheStats.stale >= 1);
+    clock.mock.mockImplementation(() => start + 61_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "after the invalid_at the graph is rebuilt before it is served");
+  });
+});
 
 test("callers that joined a failing build all reject, and the next read retries and succeeds", async () => {
   await withDir(async (memoryDir, storage) => {
@@ -284,18 +341,68 @@ test("callers that joined a failing build all reject, and the next read retries 
   });
 });
 
-test("an entry older than the TTL is rebuilt", async (t) => {
+test("a failing refresh is retried at most once per TTL, not on every stale read", async (t) => {
   await withDir(async (memoryDir, storage) => {
-    const memory = await storage.writeMemory("fact", "zeta ttl fact", { source: "test" });
-    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "zeta ttl fact", [memory.id]) });
+    const memory = await storage.writeMemory("fact", "nu backoff fact", { source: "test" });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "nu backoff fact", [memory.id]) });
     const start = Date.now();
     const clock = t.mock.method(Date, "now", () => start);
     assert.equal((await read(memoryDir)).nodes.length, 1);
-    await rm(nodeFile, { force: true });
-    clock.mock.mockImplementation(() => start + 29_000);
-    assert.equal((await read(memoryDir)).nodes.length, 1, "still cached inside the TTL");
+    const restore = await breakNodeStore(memoryDir);
     clock.mock.mockImplementation(() => start + 31_000);
-    assert.equal((await read(memoryDir)).nodes.length, 0, "rebuilt past the TTL");
+    const missesBefore = harmonicGraphCacheStats.misses;
+    assert.equal((await read(memoryDir)).nodes.length, 1, "the stale graph is still served");
+    await until(async () => harmonicGraphCacheStats.misses === missesBefore + 1);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    clock.mock.mockImplementation(() => start + 40_000);
+    for (let i = 0; i < 5; i += 1) await read(memoryDir);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "no new build inside the backoff");
+    await restore();
+    clock.mock.mockImplementation(() => start + 62_000);
+    await read(memoryDir);
+    await until(async () => harmonicGraphCacheStats.misses === missesBefore + 2);
+  });
+});
+
+// The build's own clock reading is taken before it reads the anchors, so an invalid_at can pass while a
+// build is still running. Every caller that joined that build must still get an unexpired graph.
+test("a source that expires while the build is running is not served from that build", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const sources: Array<{ id: string; path: string }> = [];
+    for (let i = 0; i < 120; i += 1) {
+      const memory = await storage.writeMemory("fact", `xi race fact ${i}`, { source: "test" });
+      await recordAbstractionNode({ memoryDir, node: node(`n${i}`, `xi race fact ${i}`, [memory.id]) });
+      sources.push({ id: memory.id, path: (await storage.getMemoryById(memory.id))!.path });
+    }
+    // Anchors are read after the sources are projected, so many of them make the tail the deadline falls in.
+    await upsertCueAnchors({
+      memoryDir,
+      anchors: Array.from({ length: 1500 }, (_, i) => anchor(`xi-a${i}`, `n${i % 120}`, sources[i % 120]!.id)),
+    });
+    // Calibrate: how long one cold build takes on this machine.
+    const calibrationStart = Date.now();
+    await read(memoryDir);
+    const buildMs = Date.now() - calibrationStart;
+    clearHarmonicGraphCache();
+    // n0's source expires near the end of the next build, which started before the deadline.
+    const first = sources[0]!;
+    const deadlineMs = Date.now() + Math.max(2, Math.floor(buildMs * 0.85));
+    await writeFile(
+      first.path,
+      (await readFile(first.path, "utf8")).replace("category: fact", `category: fact\ninvalidAt: ${new Date(deadlineMs).toISOString()}`),
+    );
+    // The storage layer caches parsed memories by corpus version, so an out-of-band edit needs the documented bump.
+    bumpMemoryCorpusVersionForDir(memoryDir);
+    const graph = await read(memoryDir);
+    const returnedAtMs = Date.now();
+    const served = graph.nodes.some((candidate) => candidate.nodeId === "n0");
+    // A build that finished before the deadline may legitimately include n0 (a 25 ms margin covers the
+    // hand-off); one that returned after it must not.
+    if (returnedAtMs >= deadlineMs + 25) {
+      assert.equal(served, false, `expired source served; build took about ${buildMs} ms`);
+      assert.equal(graph.nodes.length, 119);
+    }
   });
 });
 
