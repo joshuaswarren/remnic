@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+import { persistUnderFactDedupWindow } from "../orchestration/fact-dedup-window.js";
 import { StorageManager } from "../storage.js";
+import { composeMemoryEnvelope } from "../write-envelope.js";
+import { createWearableMemoryWriter } from "./service.js";
 
 function makeStorage(): { storage: StorageManager; dir: string } {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-wearable-io-"));
@@ -326,6 +329,28 @@ test("a symlinked _fusion dir that resolves INSIDE the memory dir is refused, no
     // never written through the symlink.
     const after = await readFile(rawFile, "utf-8");
     assert.equal(after, "RAW SOURCE TRANSCRIPT\n", "raw source file must not be overwritten");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a wearable fact write loses to a fact another writer committed first and writes nothing", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    await storage.ensureDirectories();
+    const fact = "Dana moved the review meeting to Thursday afternoon.";
+    const writer = createWearableMemoryWriter(storage);
+    const envelope = composeMemoryEnvelope(
+      { content: fact, category: "fact", tags: ["wearable"] },
+      { source: "wearable:limitless" },
+    );
+    await persistUnderFactDedupWindow(storage.dir, async () => false, () => storage.writeMemory("fact", fact));
+
+    const written = await writer.writeSealedMemory(envelope, { contentHashSource: fact, status: "active" });
+
+    assert.deepEqual(written, { duplicate: true });
+    const copies = (await storage.readAllMemories()).filter((memory) => memory.content.includes(fact));
+    assert.equal(copies.length, 1, "the corpus holds one copy of the fact");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

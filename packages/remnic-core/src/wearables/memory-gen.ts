@@ -92,6 +92,11 @@ export function memoryStatusForMode(
   return mode === "auto" || mode === "smart" ? "active" : "pending_review";
 }
 
+/** A fact write the fact-dedup window suppressed because a concurrent writer committed the same fact first. */
+export interface WearableDuplicateWrite {
+  readonly duplicate: true;
+}
+
 /** Narrow writer interface satisfied by `StorageManager`. */
 export interface WearableMemoryWriter {
   /**
@@ -106,7 +111,7 @@ export interface WearableMemoryWriter {
       status?: MemoryStatus;
       memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
     },
-  ): Promise<MemoryWriteResult>;
+  ): Promise<MemoryWriteResult | WearableDuplicateWrite>;
   hasFactContentHash(content: string): Promise<boolean>;
   /**
    * Locate an earlier wearable write of the same content (any status).
@@ -663,7 +668,9 @@ export async function generateWearableMemories(
     // #1645: a tombstone-blocked wearable write lands pending_review (no active
     // copy) — count it as blocked, NOT created, so the sync summary and callers
     // don't report blocked content as successfully created active memories.
-    if (writeResult.tombstoneBlocked) {
+    if ("duplicate" in writeResult) {
+      skip("duplicate-existing");
+    } else if (writeResult.tombstoneBlocked) {
       result.tombstoneBlocked += 1;
     } else {
       result.created += 1;
@@ -872,11 +879,11 @@ export async function importNativeMemories(
     // #1645: a tombstone-blocked native import lands pending_review (no active
     // copy) — count it as blocked, NOT imported. Still record the provider id in
     // importedIds so the next sync doesn't re-import and duplicate the pending
-    // row; the block is permanent for this content.
-    if (nativeWriteResult.tombstoneBlocked) {
-      tombstoneBlocked += 1;
-    } else {
-      imported += 1;
+    // row; the block is permanent for this content. A write the dedup window
+    // suppressed (a concurrent writer committed the fact first) counts as neither.
+    if (!("duplicate" in nativeWriteResult)) {
+      if (nativeWriteResult.tombstoneBlocked) tombstoneBlocked += 1;
+      else imported += 1;
     }
     importedIds.push(memory.id);
   }
