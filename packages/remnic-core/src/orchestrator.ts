@@ -739,6 +739,9 @@ export class Orchestrator {
   private _dependencyPropagationRecovery: Promise<void> | null = null;
   private destroyed = false;
   private acceptingEntityMigrationMaintenance = true;
+  /** Aborted at the start of destroy(); stops every local-LLM client and extraction task at once. */
+  private readonly shutdownController = new AbortController();
+  readonly shutdownSignal: AbortSignal = this.shutdownController.signal;
 
   private get dependencyPropagationDelivery(): DependencyPropagationDelivery {
     if (this.destroyed) throw new Error("orchestrator has been destroyed");
@@ -770,9 +773,8 @@ export class Orchestrator {
     return this._providerBreaker;
   }
 
-  /** The run-coordinator deps bundle, parameterized by its buffer accessor so
-   * an isolated claim-backed drain can bind its own SmartBuffer (the daemon
-   * backlog scheduler) while live extraction keeps `this.buffer`. */
+  /** The run-coordinator deps bundle, parameterized by its buffer accessor:
+   * an isolated claim-backed drain binds its own SmartBuffer (backlog scheduler). */
   private extractionRunDeps(getBuffer: () => SmartBuffer): ExtractionRunCoordinatorDeps {
     return {
       config: this.config,
@@ -795,7 +797,24 @@ export class Orchestrator {
       runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
       recordProcessedExtractionFingerprint: (storage, fingerprint, preloadedMeta) =>
         this.recordProcessedExtractionFingerprint(storage, fingerprint, preloadedMeta),
+      shutdownSignal: this.shutdownSignal,
     };
+  }
+
+  /** Fast-tier client: low latency at all costs, thinking always suppressed. */
+  private buildFastLlm(config: PluginConfig): LocalLlmClient {
+    const client = new LocalLlmClient(
+      {
+        ...config,
+        localLlmModel: config.localLlmFastModel || config.localLlmModel,
+        localLlmUrl: config.localLlmFastUrl,
+        localLlmTimeoutMs: config.localLlmFastTimeoutMs,
+      },
+      this.modelRegistry,
+      this.shutdownSignal,
+    );
+    client.disableThinking = true;
+    return client;
   }
 
   private get extractionRunCoordinator(): ExtractionRunCoordinator {
@@ -983,6 +1002,8 @@ export class Orchestrator {
    * commands should call it before returning to let Node exit naturally.
    */
   async destroy(): Promise<void> {
+    // First, always: every client and extraction task holds this signal.
+    this.shutdownController.abort();
     this.acceptingEntityMigrationMaintenance = false;
     this._orchestratorInitCoordinator?.retireStartupEpoch();
     this.abortDeferredInit();
@@ -996,23 +1017,29 @@ export class Orchestrator {
     await this.maintenanceScheduler.dispose();
     await this._dependencyPropagationRecovery;
     this._dependencyPropagationRecovery = null;
-    const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
-      this.extractionQueueCoordinator,
-      this._dependencyPropagationDelivery,
-    );
-    this.destroyed = true;
-    this._dependencyPropagationDelivery = undefined;
-    await drainRecallWrites(this);
-    await this.persistenceIndexCoordinator
-      .drainContentHashReconcileRetries()
-      .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
-    // Save buffered turns before catalog flush; rethrow save failures after teardown.
+    // Persist unsent turns BEFORE the extraction drain: buffered turns must
+    // already be on disk when shutdown abandons or bounds the drain's wait.
     let bufferFlushError: unknown;
     try {
       await this.buffer.flushPendingSave({ throwOnFailure: true });
     } catch (err) {
       bufferFlushError = err;
     }
+    const extractionDrainError = await drainExtractionAndShutdownDependencyPropagation(
+      this.extractionQueueCoordinator,
+      this._dependencyPropagationDelivery,
+    );
+    // After the drain, never before: an extraction already in its persist
+    // stage reads dependencyPropagationDelivery, and this flag gates that
+    // getter ("orchestrator has been destroyed").
+    this.destroyed = true;
+    this._dependencyPropagationDelivery = undefined;
+    // Persist post-drain removals; a failed write stays pending for next boot.
+    await this.buffer.flushPendingSave().catch(() => undefined);
+    await drainRecallWrites(this);
+    await this.persistenceIndexCoordinator
+      .drainContentHashReconcileRetries()
+      .catch((err) => log.warn(`content-hash reconcile drain failed during destroy: ${err}`));
     try {
       // Flush catalog touches before backend disposal.
       await this.namespaceCatalog.flushPendingTouches().catch(() => undefined);
@@ -1668,35 +1695,16 @@ export class Orchestrator {
       config.gatewayConfig,
       this.modelRegistry,
       this.transcript,
+      this.shutdownSignal,
     );
     this.judgeVerdictCache = createVerdictCache();
     this.judgeDeferCounts = createDeferCountMap();
-    this.localLlm = new LocalLlmClient(config, this.modelRegistry);
-    // Issue #548: the main local-LLM client is used by extraction,
-    // consolidation, and other structured-output tasks that gain
-    // nothing from chain-of-thought reasoning.  Apply the operator's
-    // configured preference (default true) so thinking-capable models
-    // skip reasoning tokens and avoid the common 60s extraction
-    // timeout.  Operators can set `localLlmDisableThinking: false`
-    // when they want thinking enabled for narrative paths.
+    this.localLlm = new LocalLlmClient(config, this.modelRegistry, this.shutdownSignal);
+    // Operator-controlled thinking suppression for structured-output ops;
+    // full rationale on THINKING_SUPPRESSED_OPERATIONS in local-llm.ts (issue #548).
     this.localLlm.disableThinking = config.localLlmDisableThinking;
     this.fastLlm = resolvePipelineProcessingCapabilities(this.config).localLlmFast
-      ? (() => {
-          const client = new LocalLlmClient(
-            {
-              ...config,
-              localLlmModel: config.localLlmFastModel || config.localLlmModel,
-              localLlmUrl: config.localLlmFastUrl,
-              localLlmTimeoutMs: config.localLlmFastTimeoutMs,
-            },
-            this.modelRegistry,
-          );
-          // Fast-tier always suppresses thinking — the contract of
-          // `fastLlm` is "low latency at all costs" and that is
-          // independent of the main-client config.
-          client.disableThinking = true;
-          return client;
-        })()
+      ? this.buildFastLlm(config)
       : this.localLlm;
     this.semanticConsolidationCoordinator = new SemanticConsolidationCoordinator({
       config,
@@ -1715,11 +1723,7 @@ export class Orchestrator {
         )
       : null;
     if (config.modelSource === "gateway") {
-      log.debug(
-        `orchestrator: gateway model source active` +
-          (config.gatewayAgentId ? ` (primary: ${config.gatewayAgentId})` : "") +
-          (config.fastGatewayAgentId ? ` (fast: ${config.fastGatewayAgentId})` : ""),
-      );
+      log.debug(`orchestrator: gateway model source active (primary: ${config.gatewayAgentId ?? "none"}, fast: ${config.fastGatewayAgentId ?? "none"})`);
     }
     this.extraction = new ExtractionEngine(
       config,
@@ -1973,18 +1977,11 @@ export class Orchestrator {
     };
   }
 
-  /**
-   * Build a briefing follow-up generator backed by the configured LLM chain
-   * (gateway model source or local LLM). Returns `undefined` when no chain
-   * is available so `buildBriefing` can surface a clear unavailable reason
-   * instead of failing at call time. Used by the access service and CLI as
-   * the fallback when no direct `openaiApiKey` is configured, so briefing
-   * follow-ups ride the same routing as every other fast-tier LLM feature.
-   */
+  /** Briefing follow-up generator over the configured LLM chain, or
+   * `undefined` when no chain is available (see buildBriefing). */
   get briefingChainFollowupGenerator(): BriefingFollowupGenerator | undefined {
-    // Plugin mode gates on `localLlmEnabled` alone: `LocalLlmClient.chatCompletion`
-    // returns null when the master switch is off, so `localLlmFastEnabled` by
-    // itself cannot serve requests (Cursor review on PR #1463).
+    // Plugin mode gates on `localLlmEnabled` alone: chatCompletion returns
+    // null when the master switch is off (Cursor review on PR #1463).
     const chainAvailable =
       this.config.modelSource === "gateway"
         ? this._fastGatewayLlm?.isAvailable(

@@ -20,6 +20,7 @@ import {
   type ProbeFetchResult,
   normalizeBackendTripReason,
   waitForRetryBackoff,
+  combineClientAbortSignals,
   SingleFlightProbe,
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
@@ -201,10 +202,14 @@ export class LocalLlmClient {
   private static readonly HEALTH_CHECK_INTERVAL_MS = 60000; // 1 minute
   private static readonly LMS_CACHE_INTERVAL_MS = 30000; // 30 seconds
   private readonly chatTransport = new ChatTransport();
+  /** Orchestrator-owned stop signal: aborts every in-flight and queued
+   *  request (and their retry backoffs) the moment teardown begins. */
+  private readonly shutdownSignal: AbortSignal | undefined;
 
-  constructor(config: PluginConfig, modelRegistry?: ModelRegistry) {
+  constructor(config: PluginConfig, modelRegistry?: ModelRegistry, shutdownSignal?: AbortSignal) {
     this.config = config;
     this.modelRegistry = modelRegistry;
+    this.shutdownSignal = shutdownSignal;
   }
 
   /**
@@ -829,7 +834,7 @@ export class LocalLlmClient {
 
   private async runQueuedRequest(next: LocalLlmQueuedRequest): Promise<void> {
     try {
-      if (next.options.signal?.aborted) {
+      if (combineClientAbortSignals(next.options.signal, this.shutdownSignal)?.aborted) {
         next.resolve(null);
         return;
       }
@@ -879,8 +884,9 @@ export class LocalLlmClient {
     }
 
     try {
-      if (options.signal?.aborted) return null;
-      const isAvailable = await this.checkAvailability(options.signal);
+      const signal = combineClientAbortSignals(options.signal, this.shutdownSignal);
+      if (signal?.aborted) return null;
+      const isAvailable = await this.checkAvailability(signal);
       if (!isAvailable) {
         log.debug(
           `local LLM: checkAvailability returned false for ${this.config.localLlmUrl}`,
@@ -977,7 +983,7 @@ export class LocalLlmClient {
         response = null;
         responseBody = "";
         // Wait out the shared endpoint backoff, then take a concurrency slot.
-        const gate = await rateLimit.beforeAttempt(options.signal);
+        const gate = await rateLimit.beforeAttempt(signal);
         if (gate.kind === "skip") {
           log.warn(gate.reason === "queue"
             ? `local LLM concurrency queue exceeded the ${effectiveTimeoutMs}ms request budget; skipping request (op=${operation})`
@@ -989,24 +995,25 @@ export class LocalLlmClient {
         if (gate.kind === "aborted") return null;
         const attemptAbort = new AbortController();
         const onCallerAbort = (): void => {
-          attemptAbort.abort(options.signal?.reason);
+          attemptAbort.abort(signal?.reason);
         };
-        if (options.signal) {
-          if (options.signal.aborted) {
+        if (signal) {
+          if (signal.aborted) {
             onCallerAbort();
           } else {
-            options.signal.addEventListener("abort", onCallerAbort, { once: true });
+            signal.addEventListener("abort", onCallerAbort, { once: true });
           }
         }
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
+        const postAttempt = (bodyJson: string): Promise<Response> => this.chatTransport.post({
+          url: chatUrl,
+          headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
+          body: bodyJson,
+          signal: attemptAbort.signal,
+          budgetMs: this.config.localLlmTimeoutMs,
+        });
         try {
-          response = await this.chatTransport.post({
-            url: chatUrl,
-            headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
-            body: requestBodyJson,
-            signal: attemptAbort.signal,
-            budgetMs: this.config.localLlmTimeoutMs,
-          });
+          response = await postAttempt(requestBodyJson);
           responseBody = await response.text();
           if (
             response.status === 400 &&
@@ -1019,18 +1026,12 @@ export class LocalLlmClient {
             requestBodyJson = JSON.stringify(requestBody);
             log.debug("local LLM rejected native JSON schema; retrying without it");
             response = null;
-            response = await this.chatTransport.post({
-              url: chatUrl,
-              headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
-              body: requestBodyJson,
-              signal: attemptAbort.signal,
-              budgetMs: this.config.localLlmTimeoutMs,
-            });
+            response = await postAttempt(requestBodyJson);
             responseBody = await response.text();
           }
         } catch (err) {
           const error = err instanceof Error ? err : new Error(String(err));
-          if (options.signal?.aborted) {
+          if (signal?.aborted) {
             response = null;
             lastAbortError = error;
             break;
@@ -1046,12 +1047,12 @@ export class LocalLlmClient {
             log.warn(
               `local LLM request aborted: op=${operation} attempt=${attempt}/${maxAttempts} timeoutMs=${effectiveTimeoutMs} model=${this.config.localLlmModel}; retrying after ${backoffMs}ms`,
             );
-            if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
+            if (!(await waitForRetryBackoff(backoffMs, signal))) return null;
             continue;
           }
         } finally {
           clearTimeout(attemptTimeout);
-          options.signal?.removeEventListener("abort", onCallerAbort);
+          signal?.removeEventListener("abort", onCallerAbort);
           gate.release();
         }
 
@@ -1085,7 +1086,7 @@ export class LocalLlmClient {
         log.warn(
           `local LLM request got ${response.status}; retrying (attempt ${attempt + 1}/${maxAttempts}) after ${backoffMs}ms`,
         );
-        if (!(await waitForRetryBackoff(backoffMs, options.signal))) return null;
+        if (!(await waitForRetryBackoff(backoffMs, signal))) return null;
       }
       log.debug(
         `local LLM: received response, status=${response?.status}, ok=${response?.ok}`,
@@ -1401,13 +1402,14 @@ export class LocalLlmClient {
     }
     if (options.priority) {
       const priority = options.priority;
+      const signal = combineClientAbortSignals(options.signal, this.shutdownSignal);
       return await new Promise<LocalLlmChatCompletionResult | null>((resolve) => {
         let settled = false;
         let onAbort: (() => void) | undefined;
         const finish = (value: LocalLlmChatCompletionResult | null): void => {
           if (settled) return;
           settled = true;
-          if (onAbort) options.signal?.removeEventListener("abort", onAbort);
+          if (onAbort) signal?.removeEventListener("abort", onAbort);
           resolve(value);
         };
         const queued: LocalLlmQueuedRequest = {
@@ -1424,8 +1426,8 @@ export class LocalLlmClient {
           finish(null);
         };
         this.requestQueues[priority].push(queued);
-        if (options.signal?.aborted) onAbort();
-        else if (options.signal) options.signal.addEventListener("abort", onAbort, { once: true });
+        if (signal?.aborted) onAbort();
+        else if (signal) signal.addEventListener("abort", onAbort, { once: true });
         this.scheduleQueueDrain();
       });
     }

@@ -40,6 +40,18 @@ export function isAbortError(err: unknown): boolean {
   );
 }
 
+/** Caller signal combined with a client-wide shutdown signal, so a daemon
+ *  stop aborts in-flight requests and retry loops at once — even for
+ *  callers that pass no signal of their own. */
+export function combineClientAbortSignals(
+  caller: AbortSignal | undefined,
+  shutdown: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (shutdown === undefined) return caller;
+  if (caller === undefined) return shutdown;
+  return AbortSignal.any([caller, shutdown]);
+}
+
 export function waitForRetryBackoff(backoffMs: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;

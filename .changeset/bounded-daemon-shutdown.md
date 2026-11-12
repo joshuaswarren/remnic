@@ -1,0 +1,8 @@
+---
+"@remnic/core": patch
+"@remnic/server": patch
+---
+
+Bounded daemon shutdown. On 2026-11-11 a SIGTERM on the production daemon host took 11 minutes 40 seconds to reach exit and every observe in that window got connection refused, because the HTTP listener closed while teardown kept running local LLM work: an in-flight extraction call timed out after its 600 second budget and then sat out a retry backoff, and the hourly summarizer and LCM drains kept their own calls alive. The stop now works like this. The orchestrator owns a shutdown abort signal, aborted as the first step of destroy(), and hands it to every local LLM client it creates (extraction, fast tier, hourly summarizer), so in-flight requests abort at once and retry loops neither sleep out a backoff nor start another attempt after it. Extraction runs fold the signal into their abort signal, so queued tasks never start and in-flight runs abort the moment teardown begins, and an aborted extraction leaves its buffered turns in the buffer; nothing is marked extracted from an aborted call. destroy() persists the buffer before the extraction drain instead of after, so unsent turns are durable no matter how the drain ends. The server teardown chain bounds the destroy phase at 60 seconds (ORCHESTRATOR_DESTROY_DEADLINE_MS); on expiry it logs `shutdown-phase-timeout phase=...` with the duration and still runs the finish step, so stop reaches process exit well inside the 700 second systemd TimeoutStopSec even if a drain wedges past its abort. The hourly summarizer refuses new summaries once the signal is aborted.
+
+Stability: stable

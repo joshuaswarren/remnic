@@ -1331,8 +1331,10 @@ test("#1909 round 11: the restart rebuild reflects the current corpus (archived 
 test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE catalog touches", async () => {
   // The buffer save fires a coalesced namespace-catalog touch; if catalog touches
   // were flushed first, that shutdown-time touch would queue after and be lost.
-  // destroy() must flush the buffer first so its touch folds into the catalog
-  // flush and both settle before destroy() returns.
+  // destroy() flushes the buffer before the extraction drain and again after it
+  // (post-drain removals); every buffer flush must run before the one catalog
+  // flush so each shutdown-time touch folds into it and settles before destroy()
+  // returns.
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-destroy-order-"));
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -1363,10 +1365,12 @@ test("#1909 round 11 finding 2: destroy() flushes the debounced buffer BEFORE ca
 
   await priv.destroy();
   assert.deepEqual(
-    order,
-    ["buffer", "catalog"],
-    "buffer flush must run before the catalog-touch flush on shutdown",
+    order.filter((step) => step === "catalog"),
+    ["catalog"],
+    "the catalog-touch flush runs exactly once",
   );
+  assert.equal(order.at(-1), "catalog", "no buffer flush may run after the catalog-touch flush");
+  assert.ok(order.includes("buffer"), "destroy() flushes the buffer");
 });
 test("#1909 round 14: destroy() surfaces a buffer flush failure and still completes teardown", async () => {
   // Graceful-shutdown durability contract: a failed shutdown buffer flush must
