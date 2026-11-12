@@ -1,7 +1,7 @@
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
-import { rethrowAfterCommittedWriteFinalization } from "./extraction-persist-failure.js";
+import { type ArgsAfterFinalization, CommittedWriteFinalization, rethrowAfterCommittedWriteFinalization } from "./extraction-persist-failure.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
 /**
  * Extraction persistence coordinator (issue #1526, seam 16).
@@ -152,7 +152,13 @@ export class ExtractionPersistCoordinator {
     return this.deps.getDependencyPropagationDelivery();
   }
 
-  async persistExtraction(
+  persistExtraction(...args: ArgsAfterFinalization<Parameters<ExtractionPersistCoordinator["persistExtractionPass"]>>): Promise<ExtractionPersistResult> {
+    const finalization = new CommittedWriteFinalization(); // #3288: one batch-end finalization boundary per pass
+    return finalization.run(() => this.persistExtractionPass(finalization, ...args));
+  }
+
+  private async persistExtractionPass(
+    finalization: CommittedWriteFinalization,
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
@@ -1125,7 +1131,7 @@ export class ExtractionPersistCoordinator {
       0,
       this.deps.config.extractionMaxProfileUpdatesPerRun,
     );
-    const finalizeCommittedWrites = async (scheduleQmd: boolean): Promise<void> => {
+    const finalizeCommittedWrites = finalization.bind(async (scheduleQmd: boolean): Promise<void> => {
       await finalizeExtractionCommittedWrites({
         saveContentHashIndexes: () => this.deps.saveContentHashIndexes(),
         behaviorSignalsByStorage: behaviorSignalsByStorage.values(),
@@ -1150,7 +1156,7 @@ export class ExtractionPersistCoordinator {
         requestQmdMaintenance: () => this.deps.requestQmdMaintenance(),
         scheduleQmd,
       });
-    };
+    });
 
     if (
       facts.length < result.facts.length ||
@@ -2967,7 +2973,7 @@ export class ExtractionPersistCoordinator {
     }
 
     // Shared batch-end finalization (hash, behavior, harmonic, temporal).
-    // Failure paths call the same helper with scheduleQmd=true (#3231).
+    // Failure paths call it with scheduleQmd=true (#3231); it runs once per pass (#3288).
     await finalizeCommittedWrites(false);
 
     const dedupSuffix = `${dedupedCount > 0 ? ` (${dedupedCount} deduped)` : ""}${semanticMergedCount > 0 ? ` (${semanticMergedCount} merged)` : ""}`;
