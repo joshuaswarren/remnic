@@ -13,6 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
+import { persistUnderFactDedupWindow } from "../orchestration/fact-dedup-window.js";
 import type { LocationConfig } from "../location/types.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import {
@@ -194,7 +195,19 @@ export function createWearableMemoryWriter(
   storage: WearableStorageIo,
 ): WearableMemoryGenDeps["writer"] {
   return {
-    writeSealedMemory: storage.writeSealedMemory.bind(storage),
+    writeSealedMemory: async (envelope, extras) => {
+      // Facts register in the fact hash index, so extraction and a wearable sync
+      // can commit the same new fact. Commit it under the window extraction uses
+      // and recheck the index there. Other categories keep the direct write: the
+      // index does not cover them, and the corpus scan stays outside the window.
+      if (envelope.category !== "fact") return storage.writeSealedMemory(envelope, extras);
+      const outcome = await persistUnderFactDedupWindow(
+        storage.dir,
+        () => storage.hasFactContentHash(extras.contentHashSource ?? envelope.content),
+        () => storage.writeSealedMemory(envelope, extras),
+      );
+      return outcome.suppressed ? { duplicate: true } : outcome.result;
+    },
     findWearableMemoryByContent: async (content: string) =>
       (await storage.findWearableMemoryByContent(content)) as
         | { id: string; status: import("../types.js").MemoryStatus | undefined }

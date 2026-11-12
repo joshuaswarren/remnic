@@ -224,6 +224,26 @@ test("auto mode writes active status", async () => {
   assert.equal(writes[0].options.status, "active");
 });
 
+test("a fact write the dedup window suppressed counts as skipped, not created", async () => {
+  const { writer } = makeWriter();
+  writer.writeSealedMemory = async () => ({ duplicate: true });
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings({ memoryMode: "auto" }),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "fact", content: "Vendor call happens tomorrow morning.", confidence: 0.8, tags: [] },
+      ]),
+      writer,
+    },
+  );
+  assert.equal(result.created, 0);
+  assert.equal(result.skippedByReason["duplicate-existing"], 1);
+});
+
 test("auto mode still refuses to write a high-impact personal claim active (#2294)", async () => {
   // `auto` has no trust scoring, and an operator may lower minConfidence to or
   // below the speculative ceiling the ambient clamp writes — which would let a
