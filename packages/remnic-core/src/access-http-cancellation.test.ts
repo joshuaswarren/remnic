@@ -96,6 +96,51 @@ test("HTTP recall aborts in-flight work when the client disconnects", async () =
   }
 });
 
+test("stop() does not wait for an in-flight request longer than the grace period", async () => {
+  // An in-flight recall or observe holds server.close() open. On jarvis-ml a
+  // restart sat in listener-closure until systemd's 700 s stop timeout killed
+  // the process. After the grace period stop() must cut the connection, which
+  // also aborts the request's signal.
+  const started = deferred<void>();
+  const settled = deferred<void>();
+  let observedSignal: AbortSignal | undefined;
+  const stub: Pick<EngramAccessService, "recall"> = {
+    recall: async (input: EngramAccessRecallRequest) => {
+      observedSignal = input.abortSignal;
+      started.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        input.abortSignal?.addEventListener("abort", () => reject(input.abortSignal?.reason), { once: true });
+      }).finally(() => settled.resolve());
+      // SAFETY: the request is aborted before this return is read; the value is never used.
+      return {} as never;
+    },
+  };
+  // SAFETY: the server calls only recall on this route and the stub implements it.
+  const service = stub as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    stopGraceMs: 50,
+  });
+  const status = await server.start();
+  const client = httpRequest({
+    host: "127.0.0.1",
+    port: status.port,
+    path: "/engram/v1/recall",
+    method: "POST",
+    headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+  });
+  client.on("error", () => {});
+  client.end(JSON.stringify({ query: "never finishes" }));
+  await waitFor(started.promise);
+
+  await waitFor(server.stop(), 2_000);
+  await waitFor(settled.promise);
+  assert.equal(observedSignal?.aborted, true);
+});
+
 test("a queued recall rejects immediately on abort — before the holder releases — and never starts", async () => {
   const firstStarted = deferred<void>();
   const releaseFirst = deferred<void>();

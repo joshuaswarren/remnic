@@ -289,6 +289,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
   private readonly tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   private readonly authenticatedPrincipal?: string;
   protected readonly maxBodyBytes: number;
+  private readonly stopGraceMs: number;
   private readonly adminConsoleEnabled: boolean;
   protected readonly adminConsolePublicDir: string;
   private readonly adminConsolePrefillToken?: string;
@@ -338,6 +339,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     this.authTokenEntriesGetter = options.authTokenEntriesGetter;
     this.tokenPathPolicy = options.tokenPathPolicy;
     this.authenticatedPrincipal = options.principal?.trim() || undefined;
+    this.stopGraceMs = Number.isFinite(options.stopGraceMs) ? Math.max(0, Math.floor(options.stopGraceMs ?? 10_000)) : 10_000;
     this.maxBodyBytes = Number.isFinite(options.maxBodyBytes)
       ? Math.max(1, Math.floor(options.maxBodyBytes ?? 131072))
       : 131072;
@@ -516,9 +518,19 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       try { res.end(); } catch { /* ignore */ }
     }
     this.sseClients.clear();
-    await new Promise<void>((resolve, reject) => {
+    // server.close() waits for every open request. An in-flight recall or
+    // observe (extraction can run for minutes) kept it open until systemd's
+    // 700 s stop timeout killed the process. Let requests finish for the grace
+    // period, then cut their connections; that also aborts their signals.
+    const closed = new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
+    const cutTimer = setTimeout(() => server.closeAllConnections(), this.stopGraceMs);
+    try {
+      await closed;
+    } finally {
+      clearTimeout(cutTimer);
+    }
   }
 
   /**
