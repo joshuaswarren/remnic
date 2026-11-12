@@ -3,7 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { recordAbstractionNode, type AbstractionNode } from "./abstraction-nodes.js";
+import { recordAbstractionNode, upsertAbstractionNodes, type AbstractionNode } from "./abstraction-nodes.js";
+import { pruneOrphanCueAnchors, recordCueAnchor, upsertCueAnchors, type CueAnchor } from "./cue-anchors.js";
 import {
   clearHarmonicGraphCache,
   harmonicGraphCacheStats,
@@ -111,5 +112,108 @@ test("cached arrays are frozen", async () => {
     await recordAbstractionNode({ memoryDir, node: node("n1", "epsilon frozen fact", [memory.id]) });
     const graph = await read(memoryDir);
     assert.throws(() => (graph.nodes as AbstractionNode[]).push(node("x", "x", [])), TypeError);
+  });
+});
+
+function anchor(anchorId: string, nodeRef: string, memoryId: string): CueAnchor {
+  return {
+    schemaVersion: 1,
+    anchorId,
+    anchorType: "entity",
+    anchorValue: anchorId,
+    normalizedCue: anchorId,
+    recordedAt: new Date().toISOString(),
+    sessionKey: "agent:test",
+    nodeRefs: [nodeRef],
+    sourceMemoryIdsByNodeRef: { [nodeRef]: [memoryId] },
+  };
+}
+
+// Each case seeds node n1 (source m1) and, for the anchor cases, anchor a1, fills the cache, then runs ONE
+// store write with no memory write after it. The next read must miss and show the new count; with the
+// graph version bump removed these fail because the corpus sentinels never move.
+async function seedForWrite(memoryDir: string, storage: StorageManager) {
+  const m1 = await storage.writeMemory("fact", "seed one", { source: "test" });
+  const m2 = await storage.writeMemory("fact", "seed two", { source: "test" });
+  await recordAbstractionNode({ memoryDir, node: node("n1", "seed one", [m1.id]) });
+  await recordAbstractionNode({ memoryDir, node: node("n2", "seed two", [m2.id]) });
+  await recordCueAnchor({ memoryDir, anchor: anchor("a1", "n1", m1.id) });
+  return { m1, m2 };
+}
+
+async function counts(memoryDir: string) {
+  const graph = await read(memoryDir);
+  return { nodes: graph.nodes.length, anchors: graph.anchors.length };
+}
+
+const storeWrites: Array<{
+  name: string;
+  write: (memoryDir: string, ids: { m1: string; m2: string }) => Promise<unknown>;
+  expected: { nodes: number; anchors: number };
+}> = [
+  {
+    name: "recordAbstractionNode",
+    write: (memoryDir, ids) => recordAbstractionNode({ memoryDir, node: node("n3", "seed three", [ids.m1]) }),
+    expected: { nodes: 3, anchors: 1 },
+  },
+  {
+    name: "upsertAbstractionNodes",
+    write: (memoryDir, ids) => upsertAbstractionNodes({ memoryDir, nodes: [node("n3", "seed three", [ids.m1])] }),
+    expected: { nodes: 3, anchors: 1 },
+  },
+  {
+    name: "recordCueAnchor",
+    write: (memoryDir, ids) => recordCueAnchor({ memoryDir, anchor: anchor("a2", "n2", ids.m2) }),
+    expected: { nodes: 2, anchors: 2 },
+  },
+  {
+    name: "upsertCueAnchors",
+    write: (memoryDir, ids) => upsertCueAnchors({ memoryDir, anchors: [anchor("a2", "n2", ids.m2)] }),
+    expected: { nodes: 2, anchors: 2 },
+  },
+];
+
+for (const { name, write, expected } of storeWrites) {
+  test(`${name} alone invalidates the cached graph`, async () => {
+    await withDir(async (memoryDir, storage) => {
+      const { m1, m2 } = await seedForWrite(memoryDir, storage);
+      assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 1 });
+      const hitsBefore = harmonicGraphCacheStats.hits;
+      assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 1 });
+      assert.equal(harmonicGraphCacheStats.hits, hitsBefore + 1);
+
+      await write(memoryDir, { m1: m1.id, m2: m2.id });
+      const missesBefore = harmonicGraphCacheStats.misses;
+      assert.deepEqual(await counts(memoryDir), expected);
+      assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1);
+    });
+  });
+}
+
+test("pruneOrphanCueAnchors alone invalidates the cached graph", async () => {
+  await withDir(async (memoryDir, storage) => {
+    const { m2 } = await seedForWrite(memoryDir, storage);
+    await recordCueAnchor({ memoryDir, anchor: anchor("a2", "n2", m2.id) });
+    assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 2 });
+    // n2's file goes away behind the cache's back, which makes a2 an orphan. Only the prune below bumps.
+    await rm(path.join(memoryDir, "state", "abstraction-nodes", "nodes", new Date().toISOString().slice(0, 10), "n2.json"), { force: true });
+    assert.deepEqual(await counts(memoryDir), { nodes: 2, anchors: 2 });
+    assert.equal(await pruneOrphanCueAnchors({ memoryDir }), 1);
+    assert.deepEqual(await counts(memoryDir), { nodes: 1, anchors: 1 });
+  });
+});
+
+test("an entry older than the TTL is rebuilt", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "zeta ttl fact", { source: "test" });
+    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "zeta ttl fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    await rm(nodeFile, { force: true });
+    clock.mock.mockImplementation(() => start + 29_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "still cached inside the TTL");
+    clock.mock.mockImplementation(() => start + 31_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "rebuilt past the TTL");
   });
 });
