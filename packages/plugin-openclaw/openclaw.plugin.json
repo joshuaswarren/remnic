@@ -1267,7 +1267,13 @@
                     "type": "object",
                     "required": [
                       "source"
-                    ]
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
                   }
                 ],
                 "default": "",
@@ -1282,7 +1288,13 @@
                     "type": "object",
                     "required": [
                       "source"
-                    ]
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
                   }
                 ],
                 "default": "",
@@ -1297,7 +1309,13 @@
                     "type": "object",
                     "required": [
                       "source"
-                    ]
+                    ],
+                    "properties": {
+                      "source": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    }
                   }
                 ],
                 "default": "",
