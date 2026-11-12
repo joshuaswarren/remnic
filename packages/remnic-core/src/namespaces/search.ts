@@ -622,7 +622,13 @@ class NamespaceSearchAbortError extends Error {
 
 function awaitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return operation;
-  if (signal.aborted) return Promise.reject(new NamespaceSearchAbortError());
+  if (signal.aborted) {
+    // The operation was started with this same aborted signal and will reject
+    // on its own. Without a handler that second rejection is unhandled and
+    // ends the process.
+    operation.catch(() => {});
+    return Promise.reject(new NamespaceSearchAbortError());
+  }
 
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
