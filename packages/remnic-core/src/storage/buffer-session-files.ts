@@ -12,6 +12,10 @@ import type { BufferEntryState, BufferState, BufferTurn } from "../types.js";
 export interface BufferFileIo {
   read(filePath: string): Promise<string>;
   write(filePath: string, content: string): Promise<void>;
+  /** Durable append (drain-claim inboxes). Implementations must persist
+   * `content` before resolving; a whole-file read+concat+write rewrite is
+   * acceptable — inbox files stay small between drainer compactions. */
+  append(filePath: string, content: string): Promise<void>;
 }
 
 type FsError = NodeJS.ErrnoException;

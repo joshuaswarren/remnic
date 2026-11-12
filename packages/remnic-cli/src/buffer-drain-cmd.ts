@@ -37,6 +37,8 @@ Options:
   --session <key>     Only drain this session (repeatable)
   --namespace <ns>    Only drain sessions captured for this namespace
   --dry-run           Report what would be drained; change nothing
+  --fold-inboxes      Fold every claim's hand-in inbox into its claim file and
+                      exit; run before rolling back to a build without inboxes
   --json              Print the summary as JSON
   -h, --help          Show this help
 
@@ -51,6 +53,8 @@ export interface BufferDrainOptions {
   namespace?: string;
   dryRun: boolean;
   json: boolean;
+  /** Rollback helper: fold claim inboxes into their bodies instead of draining. */
+  foldInboxes?: boolean;
 }
 
 export type BufferDrainArgs =
@@ -72,6 +76,10 @@ export function parseBufferDrainArgs(argv: readonly string[]): BufferDrainArgs {
     }
     if (arg === "--json") {
       options.json = true;
+      continue;
+    }
+    if (arg === "--fold-inboxes") {
+      options.foldInboxes = true;
       continue;
     }
     if (arg === "--concurrency") {
@@ -189,6 +197,17 @@ export async function runBufferDrain(argv: readonly string[], deps: BufferDrainD
   } catch (err) {
     deps.stderr(`remnic buffer drain: cannot open the memory store: ${err instanceof Error ? err.message : String(err)}`);
     return 2;
+  }
+
+  if (options.foldInboxes) {
+    try {
+      const folded = await storage.bufferDrainClaims().foldAllInboxes();
+      deps.stdout(`Folded ${folded} claim inbox(es) into their claim files.`);
+      return 0;
+    } catch (err) {
+      deps.stderr(`remnic buffer drain: fold failed: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
   }
 
   if (options.dryRun) {

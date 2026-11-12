@@ -62,6 +62,23 @@ extracted yet.
 - **Two drains at once are safe.** A claim carries a lease (owner, pid, host,
   heartbeat). The second drainer skips a session whose lease is alive, and
   takes over a lease whose owner died.
+- **Handing in is cheap.** The daemon's hand-in appends one record to an
+  append-only inbox next to the claim file (`<claim>.inbox.jsonl`) instead of
+  rewriting the claim, so its cost does not grow with the claim's size. A
+  reader sees the claim file with every inbox record merged in; the drainer's
+  next progress write (and its ack) folds the inbox into the claim file and
+  then deletes it. A kill between those two steps replays nothing, and a torn
+  last record is skipped because its writer never saw the append succeed.
+  Beside each claim file a small `<claim>.count` file caches the turn counts so
+  listings never parse a claim; it is rebuilt when missing or stale. While an
+  inbox is unfolded, a listing's turn count is an upper bound.
+
+### Rolling back to a build without inboxes
+
+An older build never reads an inbox, so turns still sitting in one would look
+lost. Before downgrading, run `remnic buffer drain --fold-inboxes`: it folds
+every inbox into its claim file and deletes the inbox. Run it with the daemon
+stopped, then start the older build.
 
 ## Concurrency and memory
 
