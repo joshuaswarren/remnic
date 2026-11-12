@@ -68,6 +68,8 @@ test("completed migration skips corpus reads on repeated misses in a fresh read-
     await seed.writeEntity("Existing Person", "person", ["Synthetic fact."]);
     await seed.ensureDirectories();
     const reader = await deferStore(dir);
+    // Let the startup migration finish so only the readEntity calls below are counted.
+    await reader.drainEntityCanonicalIdMigration();
     // Bracket access is TypeScript's typed escape hatch for the private reader.
     const originalRead = reader["readStorageSecureFile"].bind(reader);
     const reads: string[] = [];
