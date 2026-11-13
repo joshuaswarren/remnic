@@ -493,6 +493,7 @@ function registerCommands(
         state,
       );
       client.markReachable();
+      refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
   });

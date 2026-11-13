@@ -1181,6 +1181,50 @@ test("restarting a session against a reachable daemon clears the stale offline f
   assert.equal(statuses.length, 2, "the ready label is already shown, so the observe has nothing to refresh");
 });
 
+test("a successful manual /remnic-recall refreshes the offline label when auto recall and observe are off", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async () => {
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
+  };
+  const config = {
+    ...baseConfig(),
+    authToken: "manual-recall-refresh-test-token",
+    namespace: "proj",
+    recallEnabled: false,
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: true,
+    daemonCooldownMs: 0,
+  };
+  t.after(() => {
+    resetProcessRecallBreakerForTest(config);
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  await createRemnicPiExtension({ config })(pi);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "manual-recall-refresh-test" },
+  };
+
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length === 1, "offline label from the startup probe");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
+
+  daemonUp = true;
+  await runCommand("remnic-recall", "anything", ctx);
+  assert.deepEqual(statuses, [
+    ["remnic", "Remnic offline"],
+    ["remnic", "Remnic (proj)"],
+  ]);
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {
