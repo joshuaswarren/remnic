@@ -984,7 +984,7 @@ function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefin
   return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
 }
 
-/** The probe probed once and wrote "Remnic offline"; the first later successful daemon call refreshes that stale label once. */
+/** The first later successful recall or observe refreshes the offline label once. */
 function refreshOfflineStatusLabel(
   session: PiContextSnapshot,
   state: PiSessionState,
