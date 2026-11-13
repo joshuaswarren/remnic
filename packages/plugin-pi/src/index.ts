@@ -26,6 +26,14 @@ import { createMcpRegistration } from "./mcp-registration.js";
 import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from "./startup-probe.js";
 import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
 import {
+  emitRecallTimeoutTrip,
+  RECALL_DISABLED_STATUS,
+  refreshOfflineStatusLabel,
+  remnicStatusLabel,
+  type DaemonProbeResult,
+} from "./status-label.js";
+
+import {
   MAX_OBSERVED_HASHES,
   drainObserveOutboxAtStartup,
   liveReplayKey,
@@ -34,6 +42,7 @@ import {
   rememberObservedHash,
   skipLiveObservedReplayMessages,
 } from "./observe-flow.js";
+export type { DaemonProbeResult } from "./status-label.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -117,6 +126,8 @@ type PiSessionState = {
   /** Set once a first-turn hook has joined the startup probe, so the bounded verdict wait runs once per session. */
   startupProbeJoined: boolean;
   startupEpoch: number; // bumped each session_start; a startup chain is current only while its epoch matches
+  /** True while the last status label this session wrote is the offline one; the next successful daemon call clears it. */
+  statusOffline: boolean;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
@@ -186,7 +197,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
     const loadPhase = createLoadPhaseEntryQueue(pi);
     const ensureMcpTools = createMcpRegistration((registered) =>
       config.mcpToolsEnabled && config.authToken
-        ? registerMcpTools(pi, client, config, recallTimeoutBreaker, registered, loadPhase.append)
+        ? registerMcpTools(pi, client, config, recallTimeoutBreaker, sessionStates, registered, loadPhase.append)
         : Promise.resolve(true),
     );
     pi.on("session_start", async (_event, ctx) => {
@@ -199,6 +210,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       state.recallCompleted = false;
       state.startupProbeJoined = false;
       state.startupEpoch += 1;
+      state.statusOffline = false;
 
       // Drain captures queued by a previous process/crash while the daemon
       // refused work. Runs before the background startup chain so the replay
@@ -255,8 +267,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               pi,
               session,
               config,
+              state,
             );
             client.markReachable();
+            refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
             const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
             if (context) {
               state.cachedContext = context;
@@ -288,7 +302,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       // Observe is a first-turn daemon call gated on isReachable(): join the in-flight probe first.
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state, recallTimeoutBreaker);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -298,7 +312,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state, recallTimeoutBreaker);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -309,7 +323,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox, state, recallTimeoutBreaker);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -359,7 +373,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       };
     });
 
-    registerCommands(pi, client, config, recallTimeoutBreaker, ensureMcpTools);
+    registerCommands(pi, client, config, recallTimeoutBreaker, sessionStates, ensureMcpTools);
     await ensureMcpTools();
     loadPhase.markLoaded();
   };
@@ -437,6 +451,7 @@ function registerCommands(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  sessionStates: Map<string, PiSessionState>,
   ensureMcpTools: () => Promise<void>,
 ): void {
   pi.registerCommand("remnic-status", {
@@ -464,6 +479,7 @@ function registerCommands(
         notifyRecallDisabled(session);
         return;
       }
+      const { state } = getSessionState(session.sessionKey, sessionStates);
       const result = await executeRecallWithBreaker(
         (signal) =>
           client.recall(query, session.sessionKey, session.cwd, {
@@ -474,8 +490,10 @@ function registerCommands(
         pi,
         session,
         config,
+        state,
       );
       client.markReachable();
+      refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
   });
@@ -542,6 +560,7 @@ async function registerMcpTools(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  sessionStates: Map<string, PiSessionState>,
   registered: Set<string>,
   appendEntry: AppendEntryFn = (customType, data) => pi.appendEntry(customType, data),
 ): Promise<boolean> {
@@ -629,6 +648,7 @@ async function registerMcpTools(
               pi,
               session,
               config,
+              getSessionState(session.sessionKey, sessionStates).state,
             )
           : await client.mcpTool(match.serverToolName, toolArguments, { signal });
         return {
@@ -747,6 +767,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       startupProbe: null,
       startupProbeJoined: false,
       startupEpoch: 0,
+      statusOffline: false,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
@@ -785,6 +806,8 @@ async function observeMessagesForSession(
   config?: RemnicPiConfig,
   forceAttempt = false,
   outbox?: ObserveOutbox | null,
+  state?: PiSessionState,
+  recallTimeoutBreaker?: RecallTimeoutBreaker,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
@@ -823,6 +846,7 @@ async function observeMessagesForSession(
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
     if (config) client.markReachable();
+    if (state && config) refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker?.isTripped() ?? false);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
       for (const message of messages) {
@@ -931,8 +955,6 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
-/** Result of the session_start daemon probe. */
-export type DaemonProbeResult = "ready" | "starting" | "unreachable";
 
 /**
  * Probe the daemon and return the verdict plus the shared-breaker action the
@@ -965,12 +987,6 @@ async function probeDaemonHealth(
   }
 }
 
-/** Status-line label for the session_start probe outcome. */
-function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefined): string {
-  if (probe === "unreachable") return "Remnic offline";
-  if (probe === "starting") return "Remnic starting";
-  return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
-}
 
 function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): PiContextSnapshot | null {
   const sessionKey = safeSessionKeyFromContext(ctx);
@@ -1127,29 +1143,6 @@ function notifyRecallDisabled(session: PiContextSnapshot): string {
   return message;
 }
 
-const RECALL_DISABLED_STATUS = "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)";
-
-function emitRecallTimeoutTrip(pi: PiApi, session: PiContextSnapshot, config: RemnicPiConfig, err: unknown): void {
-  const message =
-    `Remnic recall has been paused because repeated timeouts delayed operations ` +
-    `(${config.recallTimeoutThreshold} timeouts in the last ${config.recallTimeoutWindow} recall attempts). ` +
-    `It retries automatically after a 5 minute cooldown.`;
-  session.notify(message, "warning");
-  if (config.statusEnabled) {
-    session.setStatus("remnic", RECALL_DISABLED_STATUS);
-  }
-  pi.appendEntry(STATE_CUSTOM_TYPE, {
-    level: "warning",
-    code: "RECALL_TIMEOUT_TRIP",
-    threshold: config.recallTimeoutThreshold,
-    window: config.recallTimeoutWindow,
-    reason: "Recall paused because timeouts delayed operations; auto-retries after cooldown",
-    message,
-    error: errorMessage(err),
-    disabledAt: new Date().toISOString(),
-    persistent: true,
-  });
-}
 
 async function executeRecallWithBreaker<T>(
   operation: (signal: AbortSignal) => Promise<T>,
@@ -1157,6 +1150,7 @@ async function executeRecallWithBreaker<T>(
   pi: PiApi,
   session: PiContextSnapshot,
   config: RemnicPiConfig,
+  state: PiSessionState,
 ): Promise<T> {
   if (breaker.isTripped()) throw new RemnicRequestAbortedError();
   try {
@@ -1166,7 +1160,9 @@ async function executeRecallWithBreaker<T>(
   } catch (err) {
     if (!(breaker.isTripped() && err instanceof RemnicRequestAbortedError)) {
       const tripped = breaker.record(isRecallTimeoutError(err) ? "timeout" : "failure");
-      if (tripped) emitRecallTimeoutTrip(pi, session, config, err);
+      if (tripped) {
+        emitRecallTimeoutTrip(session, config, state, errorMessage(err), (data) => pi.appendEntry(STATE_CUSTOM_TYPE, data));
+      }
     }
     throw err;
   }
