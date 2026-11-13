@@ -15,6 +15,7 @@ const expectedPublishDirs = [
   "packages/capture-screen",
   "packages/capture-native-darwin-arm64",
   "packages/capture-native-darwin-x64",
+  "packages/capture-native-linux",
   "packages/export-weclone",
   "packages/import-weclone",
   "packages/import-chatgpt",

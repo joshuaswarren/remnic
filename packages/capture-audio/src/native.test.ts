@@ -59,10 +59,13 @@ const CHUNK = (over: Partial<ChunkEvent> = {}): string =>
     ...over,
   });
 
-test("helperPackageSpecifier maps darwin arch and rejects everything else", () => {
+test("helperPackageSpecifier maps darwin arch, serves Linux with one package and rejects everything else", () => {
   assert.equal(helperPackageSpecifier("darwin", "arm64"), "@remnic/capture-native-darwin-arm64");
   assert.equal(helperPackageSpecifier("darwin", "x64"), "@remnic/capture-native-darwin-x64");
-  assert.throws(() => helperPackageSpecifier("linux", "x64"), CaptureConfigError);
+  // The Linux helper is a Node script, so every CPU architecture shares one package.
+  assert.equal(helperPackageSpecifier("linux", "x64"), "@remnic/capture-native-linux");
+  assert.equal(helperPackageSpecifier("linux", "arm64"), "@remnic/capture-native-linux");
+  assert.throws(() => helperPackageSpecifier("win32", "x64"), CaptureConfigError);
   assert.throws(() => helperPackageSpecifier("darwin", "ia32"), CaptureConfigError);
 });
 
@@ -130,6 +133,39 @@ test("resolveHelperBinary reports an actionable install hint when the package is
       /Build the Swift helper from source/.test(err.message) &&
       /REMNIC_CAPTURE_HELPER_BIN/.test(err.message),
   );
+});
+
+test("resolveHelperBinary on Linux names the Linux package and the override when the package is absent", () => {
+  assert.throws(
+    () =>
+      resolveHelperBinary({
+        env: {},
+        platform: "linux",
+        arch: "arm64",
+        resolve: () => {
+          throw new Error("Cannot find module");
+        },
+      }),
+    (err: Error) =>
+      err instanceof CaptureConfigError &&
+      /npm install @remnic\/capture-native-linux/.test(err.message) &&
+      !/Swift/.test(err.message) &&
+      /REMNIC_CAPTURE_HELPER_BIN/.test(err.message),
+  );
+});
+
+test("resolveHelperBinary on Linux finds the bin of @remnic/capture-native-linux", () => {
+  const res = resolveHelperBinary({
+    env: {},
+    platform: "linux",
+    arch: "x64",
+    resolve: (spec) => {
+      assert.equal(spec, "@remnic/capture-native-linux");
+      return "/pkgs/capture-native-linux/index.js";
+    },
+    readFile: () => JSON.stringify({ bin: { "remnic-capture-helper": "bin/remnic-capture-helper" } }),
+  });
+  assert.equal(res.binaryPath, "/pkgs/capture-native-linux/bin/remnic-capture-helper");
 });
 
 test("resolveHelperBinary resolves the bin relative to the package entry (exports-safe)", () => {
