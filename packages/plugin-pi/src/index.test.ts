@@ -1134,6 +1134,53 @@ test("a successful observe in another session does not show ready while the shar
   ]);
 });
 
+test("restarting a session against a reachable daemon clears the stale offline flag", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async () => {
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const config = {
+    ...baseConfig(),
+    authToken: "restart-clears-offline-test-token",
+    namespace: "proj",
+    recallEnabled: false,
+    observeEnabled: true,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: true,
+    daemonCooldownMs: 0,
+    observeMaxRetries: 0,
+  };
+  t.after(() => {
+    resetProcessRecallBreakerForTest(config);
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  await createRemnicPiExtension({ config })(pi);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "restart-clears-offline-test" },
+  };
+
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length === 1, "offline label from the first startup probe");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
+
+  daemonUp = true;
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length === 2, "ready label from the second startup probe");
+  assert.deepEqual(statuses.at(-1), ["remnic", "Remnic (proj)"]);
+
+  await emit("message_end", { message: { role: "user", content: "observe after the restart" } }, ctx);
+  await flushBackgroundChains();
+  assert.equal(statuses.length, 2, "the ready label is already shown, so the observe has nothing to refresh");
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {
