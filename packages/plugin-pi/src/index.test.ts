@@ -789,6 +789,58 @@ test("statusEnabled: false never calls setStatus even when a later recall succee
   assert.equal(statuses.length, 0, "no status after a successful recall with the status UI off");
 });
 
+test("a late failed startup probe preserves the ready status from a successful recall", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let healthStarted = false;
+  const { promise: heldHealth, resolve: releaseHealth } = Promise.withResolvers<void>();
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/live")) {
+      healthStarted = true;
+      await heldHealth;
+      throw new Error("The socket connection was closed unexpectedly.");
+    }
+    if (url.endsWith("/engram/v1/recall")) {
+      return new Response(JSON.stringify({ context: "recalled context" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "late-probe-test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      startupRequestTimeoutMs: 60_000,
+      turnRequestTimeoutMs: 2,
+      daemonCooldownMs: 60_000,
+    },
+  });
+  await extension(pi);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "late-startup-probe-test" },
+  };
+  await emit("session_start", {}, ctx);
+  await waitFor(() => healthStarted, "startup health request held in flight");
+  await emit("before_agent_start", { prompt: "hello", systemPrompt: "" }, ctx);
+  assert.deepEqual(statuses, [], "the held startup probe has not written a status yet");
+
+  releaseHealth();
+  await waitFor(() => statuses.length > 0, "status after late startup health failure");
+  assert.deepEqual(statuses, [["remnic", "Remnic ready"]], "the newer successful recall must defeat the stale offline verdict");
+});
+
 test("a successful observe refreshes a stale 'Remnic offline' label exactly once", async (t) => {
   const originalFetch = globalThis.fetch;
   let daemonUp = false;

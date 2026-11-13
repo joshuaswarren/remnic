@@ -78,15 +78,19 @@ class StartupProbeChain {
       const verdict = await probeHealth(client, config);
       this.applyBreaker(verdict, reachabilityGeneration);
       const probe = verdict.result;
+      const statusProbe =
+        probe === "unreachable" && client.reachabilityGenerationToken() !== reachabilityGeneration
+          ? "ready"
+          : probe;
       if (probe !== "unreachable") {
         await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
       }
       if (config.statusEnabled && this.isCurrent()) {
-        const label = recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(probe, config.namespace);
+        const label = recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(statusProbe, config.namespace);
         session.setStatus("remnic", label);
         // Only the offline write counts as stale: the recall-disabled label means
         // recall is paused, not that the daemon is down, and the ready label needs no refresh.
-        if (probe === "unreachable" && label !== recallDisabledStatus) {
+        if (statusProbe === "unreachable" && label !== recallDisabledStatus) {
           this.ctx.state.statusOffline = true;
         }
       }
