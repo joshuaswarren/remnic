@@ -11,6 +11,7 @@ import {
   type ProjectedHarmonicGraph,
   readProjectedHarmonicGraph,
   searchHarmonicRetrieval,
+  settleHarmonicGraphBuilds,
 } from "./harmonic-retrieval.js";
 import { bumpMemoryCorpusVersionForDir } from "./memory-corpus-version.js";
 import { StorageManager } from "./storage.js";
@@ -291,8 +292,44 @@ test("a graph past the stale limit is rebuilt before it is served", async (t) =>
     const clock = t.mock.method(Date, "now", () => start);
     assert.equal((await read(memoryDir)).nodes.length, 1);
     await rm(nodeFile, { force: true });
-    clock.mock.mockImplementation(() => start + 301_000);
-    assert.equal((await read(memoryDir)).nodes.length, 0, "too stale to serve");
+    clock.mock.mockImplementation(() => start + 330_000);
+    assert.equal((await read(memoryDir)).nodes.length, 0, "the stale window ends 300 s after the TTL, at 330 s");
+  });
+});
+
+test("a graph is still served stale one millisecond before the stale window ends", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const memory = await storage.writeMemory("fact", "kappa edge fact", { source: "test" });
+    const nodeFile = await recordAbstractionNode({ memoryDir, node: node("n1", "kappa edge fact", [memory.id]) });
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    await rm(nodeFile, { force: true });
+    clock.mock.mockImplementation(() => start + 329_999);
+    assert.equal((await read(memoryDir)).nodes.length, 1, "up to 300 s past the TTL the stale graph is served");
+    await settleHarmonicGraphBuilds();
+  });
+});
+
+test("an ineligible source's invalid_at does not end the cache entry", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    const live = await storage.writeMemory("fact", "pi eligible fact", { source: "test" });
+    const gone = await storage.writeMemory("fact", "pi quarantined fact", {
+      source: "test",
+      invalidAt: new Date(start + 10_000).toISOString(),
+    });
+    const gonePath = (await storage.getMemoryById(gone.id))!.path;
+    await writeFile(gonePath, (await readFile(gonePath, "utf8")).replace("category: fact", "category: fact\nstatus: quarantined"));
+    bumpMemoryCorpusVersionForDir(memoryDir); // the out-of-band status edit needs the documented bump, as in the status test above
+    await recordAbstractionNode({ memoryDir, node: node("n1", "pi mixed fact", [live.id, gone.id]) });
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    const before = { ...harmonicGraphCacheStats };
+    clock.mock.mockImplementation(() => start + 20_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    assert.equal(harmonicGraphCacheStats.misses, before.misses, "the quarantined source's invalid_at passing starts no rebuild");
+    assert.equal(harmonicGraphCacheStats.hits, before.hits + 1);
   });
 });
 
@@ -352,11 +389,12 @@ test("a failing refresh is retried at most once per TTL, not on every stale read
     clock.mock.mockImplementation(() => start + 31_000);
     const missesBefore = harmonicGraphCacheStats.misses;
     assert.equal((await read(memoryDir)).nodes.length, 1, "the stale graph is still served");
-    await until(async () => harmonicGraphCacheStats.misses === missesBefore + 1);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The failing build bumps `misses` before it reads the broken store: wait for it to settle, not for a time.
+    await settleHarmonicGraphBuilds();
+    assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "one refresh was started");
     clock.mock.mockImplementation(() => start + 40_000);
     for (let i = 0; i < 5; i += 1) await read(memoryDir);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await settleHarmonicGraphBuilds();
     assert.equal(harmonicGraphCacheStats.misses, missesBefore + 1, "no new build inside the backoff");
     await restore();
     clock.mock.mockImplementation(() => start + 62_000);

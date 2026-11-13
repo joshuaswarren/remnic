@@ -171,6 +171,20 @@ function parseSourceMemoryInsertedAt(node: AbstractionNode): Map<string, string>
   return insertedAtById;
 }
 
+/**
+ * Whether a source memory can back a projected node at all. Shared with `earliestInvalidAtMs`, so the cache
+ * deadline only follows a source that the projection would use.
+ * #2332: a private support-passport record leaves the eligible set the same way a rejected one does — a node
+ * title or anchor attribution rebuilt from it would leak governed metadata into the deep-recall frontier (and
+ * every other graph reader) before any content check runs.
+ */
+function isEligibleSourceMemory(memory: MemoryFile, memoryDir: string): boolean {
+  return (
+    !isSupportPassportPrivateMemory(memory) &&
+    inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active"
+  );
+}
+
 function projectSourceBackedNode(
   node: AbstractionNode,
   sourceMemories: SourceMemoryMap,
@@ -185,12 +199,7 @@ function projectSourceBackedNode(
     const memory = sourceMemories.get(memoryId);
     return (
       memory !== undefined &&
-      // #2332: a private support-passport record leaves the eligible set the
-      // same way a rejected one does — a node title or anchor attribution
-      // rebuilt from it would leak governed metadata into the deep-recall
-      // frontier (and every other graph reader) before any content check runs.
-      !isSupportPassportPrivateMemory(memory) &&
-      inferMemoryStatus(memory.frontmatter, toMemoryPathRel(memoryDir, memory.path)) === "active" &&
+      isEligibleSourceMemory(memory, memoryDir) &&
       (temporalExpiredInInjection || !isValidityExpiredNow(memory.frontmatter, nowMs))
     );
   });
@@ -410,9 +419,11 @@ interface ExpiringHarmonicGraph extends ProjectedHarmonicGraph {
   validUntilMs: number;
 }
 
-function earliestInvalidAtMs(sourceMemories: SourceMemoryMap, nowMs: number): number {
+function earliestInvalidAtMs(sourceMemories: SourceMemoryMap, memoryDir: string, nowMs: number): number {
   let earliest = Number.POSITIVE_INFINITY;
   for (const memory of sourceMemories.values()) {
+    // An ineligible source drops out of the projection whatever its `invalid_at`, so its deadline changes nothing.
+    if (!isEligibleSourceMemory(memory, memoryDir)) continue;
     const invalidAtMs = Date.parse(memory.frontmatter.invalid_at?.trim() ?? "");
     if (Number.isFinite(invalidAtMs) && invalidAtMs > nowMs && invalidAtMs < earliest) earliest = invalidAtMs;
   }
@@ -454,7 +465,7 @@ async function buildExpiringHarmonicGraph(options: {
   // With temporalExpiredInInjection the validity filter is off, so no `invalid_at` can age the graph.
   const validUntilMs = options.temporalExpiredInInjection === true
     ? Number.POSITIVE_INFINITY
-    : earliestInvalidAtMs(sourceMemories, nowMs);
+    : earliestInvalidAtMs(sourceMemories, options.memoryDir, nowMs);
   // A node whose full stored source set survived projection keeps legacy
   // anchor attribution (an anchor written before per-node source ids existed).
   const legacyCompatibleNodeRefs = new Set<string>();
@@ -495,7 +506,7 @@ async function buildExpiringHarmonicGraph(options: {
 const GRAPH_CACHE_TTL_MS = 30_000;
 /**
  * Past the TTL a graph whose stamp is unchanged is still served while a refresh runs behind it, so no
- * recall waits for a rebuild just because the TTL lapsed. Past this limit it is rebuilt first.
+ * recall waits for a rebuild just because the TTL lapsed. This is how long past the TTL; after it the graph is rebuilt first.
  */
 const GRAPH_CACHE_MAX_STALE_MS = 300_000;
 const GRAPH_CACHE_MAX_ENTRIES = 8;
@@ -566,6 +577,15 @@ export function clearHarmonicGraphCache(): void {
   graphCache.clear();
   graphBuilds.clear();
   refreshFailedAtMs.clear();
+}
+
+/**
+ * Resolves once every build running now has settled, and after the failure bookkeeping of a background
+ * refresh (that handler was attached when the refresh started, so it runs first). For tests: a time-based
+ * wait races a slow build.
+ */
+export async function settleHarmonicGraphBuilds(): Promise<void> {
+  await Promise.allSettled([...graphBuilds.values()].map((build) => build.promise));
 }
 
 type GraphReadOptions = Parameters<typeof buildProjectedHarmonicGraph>[0];
@@ -656,7 +676,7 @@ export async function readProjectedHarmonicGraph(options: {
   const hit = graphCache.get(key);
   // A source's `invalid_at` passing changes the projection without bumping the stamp, so it ends the entry
   // at the exact instant, however fresh the entry is.
-  if (hit && hit.stamp === stamp && nowMs < hit.validUntilMs && nowMs - hit.builtAtMs < GRAPH_CACHE_MAX_STALE_MS) {
+  if (hit && hit.stamp === stamp && nowMs < hit.validUntilMs && nowMs - hit.builtAtMs < GRAPH_CACHE_TTL_MS + GRAPH_CACHE_MAX_STALE_MS) {
     harmonicGraphCacheStats.hits++;
     graphCache.delete(key);
     graphCache.set(key, hit);
