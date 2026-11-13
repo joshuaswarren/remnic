@@ -214,6 +214,7 @@ test("chat completion passes an undici dispatcher to fetch", async () => {
   }
 });
 
+/** finish_reason must land on the failureDiag object the caller handed in, not only on the return value — the extraction diagnostic reads it there after a null or unusable reply. */
 test("failureDiag carries the completion's finish_reason (issue #3387)", { concurrency: false }, async () => {
   const original = globalThis.fetch;
   // SAFETY: the stub satisfies the only fetch call this client makes.

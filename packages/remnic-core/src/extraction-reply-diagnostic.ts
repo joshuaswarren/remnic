@@ -15,6 +15,12 @@ export function looksLikeExtractionResultPayload(parsed: JsonValue): boolean {
   return object.success && PAYLOAD_KEYS.some((key) => key in object.data);
 }
 
+/**
+ * Identifier-shaped top-level key names of a parsed object, in insertion order,
+ * capped at MAX_TOP_LEVEL_KEYS. Keys failing the identifier shape (emails,
+ * long strings, anything that could carry or point at content) are dropped, so
+ * the array is safe to log by construction.
+ */
 function safeTopLevelKeys(parsed: JsonValue): string[] {
   const object = JsonObject.safeParse(parsed);
   const keys: string[] = [];
@@ -79,6 +85,11 @@ export function buildUnusableReplyDiagnostic(
   };
 }
 
+/**
+ * Render one greppable warn line from a diagnostic. Only reads fields already
+ * reduced to counts, booleans, and validated names, so reply content cannot
+ * reach the log through formatting.
+ */
 export function formatUnusableReplyDiagnostic(d: UnusableReplyDiagnostic): string {
   return [
     "extractWithLocalLlm: unusable local reply",
