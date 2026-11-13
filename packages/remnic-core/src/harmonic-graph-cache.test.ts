@@ -333,6 +333,26 @@ test("an ineligible source's invalid_at does not end the cache entry", async (t)
   });
 });
 
+test("a private support passport source's invalid_at does not end the cache entry", async (t) => {
+  await withDir(async (memoryDir, storage) => {
+    const start = Date.now();
+    const clock = t.mock.method(Date, "now", () => start);
+    const live = await storage.writeMemory("fact", "rho eligible fact", { source: "test" });
+    const card = await storage.writeMemory("fact", "rho passport card fact", {
+      source: "test",
+      tags: ["support-passport-card"],
+      invalidAt: new Date(start + 10_000).toISOString(),
+    });
+    await recordAbstractionNode({ memoryDir, node: node("n1", "rho mixed fact", [live.id, card.id]) });
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    const before = { ...harmonicGraphCacheStats };
+    clock.mock.mockImplementation(() => start + 20_000);
+    assert.equal((await read(memoryDir)).nodes.length, 1);
+    assert.equal(harmonicGraphCacheStats.misses, before.misses, "the passport source's invalid_at passing starts no rebuild");
+    assert.equal(harmonicGraphCacheStats.hits, before.hits + 1);
+  });
+});
+
 // Unreadable node store: a file where the nodes directory belongs is not ENOENT, so the strict listing throws
 // (a corrupt node file would not: readAbstractionNodes skips those on purpose).
 async function breakNodeStore(memoryDir: string) {
