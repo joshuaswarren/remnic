@@ -26,6 +26,14 @@ import { createMcpRegistration } from "./mcp-registration.js";
 import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from "./startup-probe.js";
 import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
 import {
+  emitRecallTimeoutTrip,
+  RECALL_DISABLED_STATUS,
+  refreshOfflineStatusLabel,
+  remnicStatusLabel,
+  type DaemonProbeResult,
+} from "./status-label.js";
+
+import {
   MAX_OBSERVED_HASHES,
   drainObserveOutboxAtStartup,
   liveReplayKey,
@@ -34,6 +42,7 @@ import {
   rememberObservedHash,
   skipLiveObservedReplayMessages,
 } from "./observe-flow.js";
+export type { DaemonProbeResult } from "./status-label.js";
 
 export type PiApi = {
   on(event: string, handler: (event: any, ctx: any) => unknown | Promise<unknown>): void;
@@ -944,8 +953,6 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
-/** Result of the session_start daemon probe. */
-export type DaemonProbeResult = "ready" | "starting" | "unreachable";
 
 /**
  * Probe the daemon and return the verdict plus the shared-breaker action the
@@ -978,23 +985,6 @@ async function probeDaemonHealth(
   }
 }
 
-/** Status-line label for the session_start probe outcome. */
-function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefined): string {
-  if (probe === "unreachable") return "Remnic offline";
-  if (probe === "starting") return "Remnic starting";
-  return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
-}
-
-/** The first later successful recall or observe refreshes the offline label once. */
-function refreshOfflineStatusLabel(
-  session: PiContextSnapshot,
-  state: PiSessionState,
-  config: RemnicPiConfig,
-): void {
-  if (!state.statusOffline || !config.statusEnabled) return;
-  state.statusOffline = false;
-  session.setStatus("remnic", remnicStatusLabel("ready", config.namespace));
-}
 
 function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): PiContextSnapshot | null {
   const sessionKey = safeSessionKeyFromContext(ctx);
@@ -1151,36 +1141,6 @@ function notifyRecallDisabled(session: PiContextSnapshot): string {
   return message;
 }
 
-const RECALL_DISABLED_STATUS = "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)";
-
-function emitRecallTimeoutTrip(
-  pi: PiApi,
-  session: PiContextSnapshot,
-  config: RemnicPiConfig,
-  state: PiSessionState,
-  errorText: string,
-): void {
-  const message =
-    `Remnic recall has been paused because repeated timeouts delayed operations ` +
-    `(${config.recallTimeoutThreshold} timeouts in the last ${config.recallTimeoutWindow} recall attempts). ` +
-    `It retries automatically after a 5 minute cooldown.`;
-  session.notify(message, "warning");
-  if (config.statusEnabled) {
-    state.statusOffline = false;
-    session.setStatus("remnic", RECALL_DISABLED_STATUS);
-  }
-  pi.appendEntry(STATE_CUSTOM_TYPE, {
-    level: "warning",
-    code: "RECALL_TIMEOUT_TRIP",
-    threshold: config.recallTimeoutThreshold,
-    window: config.recallTimeoutWindow,
-    reason: "Recall paused because timeouts delayed operations; auto-retries after cooldown",
-    message,
-    error: errorText,
-    disabledAt: new Date().toISOString(),
-    persistent: true,
-  });
-}
 
 async function executeRecallWithBreaker<T>(
   operation: (signal: AbortSignal) => Promise<T>,
@@ -1198,7 +1158,9 @@ async function executeRecallWithBreaker<T>(
   } catch (err) {
     if (!(breaker.isTripped() && err instanceof RemnicRequestAbortedError)) {
       const tripped = breaker.record(isRecallTimeoutError(err) ? "timeout" : "failure");
-      if (tripped) emitRecallTimeoutTrip(pi, session, config, state, errorMessage(err));
+      if (tripped) {
+        emitRecallTimeoutTrip(session, config, state, errorMessage(err), (data) => pi.appendEntry(STATE_CUSTOM_TYPE, data));
+      }
     }
     throw err;
   }
