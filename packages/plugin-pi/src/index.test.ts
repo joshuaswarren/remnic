@@ -651,6 +651,144 @@ test("session_start renders 'Remnic starting' when health answers 503 not_ready 
   assert.deepEqual(statuses, [["remnic", "Remnic starting"]]);
 });
 
+test("a successful recall refreshes a stale 'Remnic offline' label once the daemon answers", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async (input) => {
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    if (String(input).endsWith("/engram/v1/recall")) {
+      return new Response(JSON.stringify({ context: "recalled context" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      namespace: "proj",
+      recallEnabled: true,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      daemonCooldownMs: 60_000,
+    },
+  });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "offline-refresh-test", getEntries: () => [] },
+  };
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length > 0, "offline status after the startup probe fails");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
+
+  daemonUp = true;
+  // The same production path that clears a stale cooldown: any daemon answer marks the client reachable.
+  await runCommand("remnic-status", "", ctx);
+  await emit("before_agent_start", { prompt: "hello", systemPrompt: "" }, ctx);
+  await waitFor(() => statuses.length > 1, "refreshed ready status after a successful recall");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"], ["remnic", "Remnic (proj)"]]);
+});
+
+test("a session whose startup probe succeeded never gets a second setStatus", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/engram/v1/recall")) {
+      return new Response(JSON.stringify({ context: "recalled context" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: true,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+    },
+  });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "healthy-session-test", getEntries: () => [] },
+  };
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length > 0, "ready status after a successful probe");
+  assert.deepEqual(statuses, [["remnic", "Remnic ready"]]);
+
+  await emit("before_agent_start", { prompt: "hello", systemPrompt: "" }, ctx);
+  await flushBackgroundChains();
+  assert.deepEqual(statuses, [["remnic", "Remnic ready"]], "a successful recall on an already-ready session must not rewrite the status");
+});
+
+test("statusEnabled: false never calls setStatus even when a later recall succeeds", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async (input) => {
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    if (String(input).endsWith("/engram/v1/recall")) {
+      return new Response(JSON.stringify({ context: "recalled context" }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: true,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      daemonCooldownMs: 60_000,
+    },
+  });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "status-disabled-test", getEntries: () => [] },
+  };
+  await emit("session_start", {}, ctx);
+  await flushBackgroundChains();
+  assert.equal(statuses.length, 0, "no status while the daemon is down and the status UI is off");
+
+  daemonUp = true;
+  await runCommand("remnic-status", "", ctx);
+  await emit("before_agent_start", { prompt: "hello", systemPrompt: "" }, ctx);
+  await flushBackgroundChains();
+  assert.equal(statuses.length, 0, "no status after a successful recall with the status UI off");
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {

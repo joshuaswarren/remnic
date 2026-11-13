@@ -117,6 +117,8 @@ type PiSessionState = {
   /** Set once a first-turn hook has joined the startup probe, so the bounded verdict wait runs once per session. */
   startupProbeJoined: boolean;
   startupEpoch: number; // bumped each session_start; a startup chain is current only while its epoch matches
+  /** True while the last status label this session wrote is the offline one; the next successful daemon call clears it. */
+  statusOffline: boolean;
 };
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
@@ -199,6 +201,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       state.recallCompleted = false;
       state.startupProbeJoined = false;
       state.startupEpoch += 1;
+      state.statusOffline = false;
 
       // Drain captures queued by a previous process/crash while the daemon
       // refused work. Runs before the background startup chain so the replay
@@ -257,6 +260,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               config,
             );
             client.markReachable();
+            refreshOfflineStatusLabel(session, state, config);
             const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
             if (context) {
               state.cachedContext = context;
@@ -288,7 +292,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       // Observe is a first-turn daemon call gated on isReachable(): join the in-flight probe first.
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -298,7 +302,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -309,7 +313,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox, state);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -747,6 +751,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       startupProbe: null,
       startupProbeJoined: false,
       startupEpoch: 0,
+      statusOffline: false,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
@@ -785,6 +790,7 @@ async function observeMessagesForSession(
   config?: RemnicPiConfig,
   forceAttempt = false,
   outbox?: ObserveOutbox | null,
+  state?: PiSessionState,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
@@ -823,6 +829,7 @@ async function observeMessagesForSession(
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
     if (config) client.markReachable();
+    if (state && config) refreshOfflineStatusLabel(session, state, config);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
       for (const message of messages) {
@@ -970,6 +977,17 @@ function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | undefin
   if (probe === "unreachable") return "Remnic offline";
   if (probe === "starting") return "Remnic starting";
   return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
+}
+
+/** The probe probed once and wrote "Remnic offline"; the first later successful daemon call refreshes that stale label once. */
+function refreshOfflineStatusLabel(
+  session: PiContextSnapshot,
+  state: PiSessionState,
+  config: RemnicPiConfig,
+): void {
+  if (!state.statusOffline || !config.statusEnabled) return;
+  state.statusOffline = false;
+  session.setStatus("remnic", remnicStatusLabel("ready", config.namespace));
 }
 
 function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): PiContextSnapshot | null {

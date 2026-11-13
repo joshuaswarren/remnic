@@ -31,7 +31,7 @@ type StartupProbeContext = {
   config: RemnicPiConfig;
   recallTimeoutBreaker: RecallTimeoutBreaker;
   /** The live session state plus this chain's epoch; the chain is current only while `state.startupEpoch === epoch`. */
-  state: { startupEpoch: number };
+  state: { startupEpoch: number; statusOffline?: boolean };
   epoch: number;
   /** True while the session is still live (its state is the host map's entry). */
   isLive: () => boolean;
@@ -82,10 +82,13 @@ class StartupProbeChain {
         await client.warnIfVersionMismatch({ timeoutMs: config.startupRequestTimeoutMs });
       }
       if (config.statusEnabled && this.isCurrent()) {
-        session.setStatus(
-          "remnic",
-          recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(probe, config.namespace),
-        );
+        const label = recallTimeoutBreaker.isTripped() ? recallDisabledStatus : statusLabel(probe, config.namespace);
+        session.setStatus("remnic", label);
+        // Only the offline write counts as stale: the recall-disabled label means
+        // recall is paused, not that the daemon is down, and the ready label needs no refresh.
+        if (probe === "unreachable" && label !== recallDisabledStatus) {
+          this.ctx.state.statusOffline = true;
+        }
       }
       if (this.isCurrent()) {
         await this.runNamespacePreflight();
