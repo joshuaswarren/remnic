@@ -364,7 +364,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       };
     });
 
-    registerCommands(pi, client, config, recallTimeoutBreaker, ensureMcpTools);
+    registerCommands(pi, client, config, recallTimeoutBreaker, sessionStates, ensureMcpTools);
     await ensureMcpTools();
     loadPhase.markLoaded();
   };
@@ -442,6 +442,7 @@ function registerCommands(
   client: RemnicClient,
   config: RemnicPiConfig,
   recallTimeoutBreaker: RecallTimeoutBreaker,
+  sessionStates: Map<string, PiSessionState>,
   ensureMcpTools: () => Promise<void>,
 ): void {
   pi.registerCommand("remnic-status", {
@@ -1157,7 +1158,7 @@ function emitRecallTimeoutTrip(
   session: PiContextSnapshot,
   config: RemnicPiConfig,
   state: PiSessionState,
-  err: unknown,
+  errorText: string,
 ): void {
   const message =
     `Remnic recall has been paused because repeated timeouts delayed operations ` +
@@ -1175,7 +1176,7 @@ function emitRecallTimeoutTrip(
     window: config.recallTimeoutWindow,
     reason: "Recall paused because timeouts delayed operations; auto-retries after cooldown",
     message,
-    error: errorMessage(err),
+    error: errorText,
     disabledAt: new Date().toISOString(),
     persistent: true,
   });
@@ -1197,7 +1198,7 @@ async function executeRecallWithBreaker<T>(
   } catch (err) {
     if (!(breaker.isTripped() && err instanceof RemnicRequestAbortedError)) {
       const tripped = breaker.record(isRecallTimeoutError(err) ? "timeout" : "failure");
-      if (tripped) emitRecallTimeoutTrip(pi, session, config, state, err);
+      if (tripped) emitRecallTimeoutTrip(pi, session, config, state, errorMessage(err));
     }
     throw err;
   }
