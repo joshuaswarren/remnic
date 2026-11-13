@@ -5,8 +5,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import { z } from "zod";
+
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
+import { estimateTokenCount } from "./token-estimate.js";
 
 type SummarizeFn = (text: string, targetTokens: number, aggressive: boolean) => Promise<string | null>;
 
@@ -17,6 +20,8 @@ interface LcmEngineTestSurface {
 interface ChatStub {
   url: string;
   hits: () => number;
+  /** Raw chat-completion request bodies, in arrival order. */
+  requests: () => string[];
   close: () => Promise<void>;
 }
 
@@ -27,6 +32,7 @@ interface ChatStub {
  */
 async function startChatStub(label: string): Promise<ChatStub> {
   let hits = 0;
+  const requests: string[] = [];
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => {
@@ -35,6 +41,7 @@ async function startChatStub(label: string): Promise<ChatStub> {
     req.on("end", () => {
       if (req.url?.endsWith("/chat/completions")) {
         hits += 1;
+        requests.push(body);
         res.setHeader("content-type", "application/json");
         res.end(
           JSON.stringify({
@@ -66,6 +73,7 @@ async function startChatStub(label: string): Promise<ChatStub> {
   return {
     url: `http://127.0.0.1:${address.port}/v1`,
     hits: () => hits,
+    requests: () => requests,
     close: () => {
       const closed = Promise.withResolvers<void>();
       server.close(() => closed.resolve());
@@ -130,6 +138,55 @@ test("LCM summarize falls back to the main client when the fast lane is disabled
 
     assert.equal(result, "summary from main", "with no fast lane the main client serves the call");
     assert.equal(mainStub.hits(), 1);
+  } finally {
+    await mainStub?.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+/** The chat-completion request fields the budget test asserts on. */
+const ChatRequestSchema = z.object({
+  max_tokens: z.number().int(),
+  messages: z.array(z.object({ role: z.string(), content: z.string() })),
+});
+
+test("LCM summarize sizes the completion budget by the text it sends, not the whole batch", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-budget-"));
+  let mainStub: ChatStub | null = null;
+  try {
+    mainStub = await startChatStub("main");
+    const config = parseConfig({
+      memoryDir,
+      qmdEnabled: false,
+      lcmEnabled: true,
+      localLlmEnabled: true,
+      localLlmUrl: mainStub.url,
+      localLlmModel: "main-model",
+      localLlmFastEnabled: false,
+    });
+    const engine = new Orchestrator(config).lcmEngine;
+    assert.ok(engine, "LCM engine must exist with lcmEnabled");
+    const summarizeFn = engine["summarizeFn"];
+
+    // A long leaf batch: LcmSummarizer targets 25% of the whole batch, but the
+    // call sends only a prefix. Batch sizing would request well over 16,384.
+    const batch = "[user] the deploy failed at step three; retry it with the cached artifact.\n\n".repeat(3_000);
+    const batchTarget = Math.max(64, Math.ceil(estimateTokenCount(batch) * 0.25));
+    assert.ok(batchTarget * 2 > 16_384, "fixture must exceed a common provider output cap under batch sizing");
+
+    const result = await summarizeFn(batch, batchTarget, false);
+
+    assert.equal(result, "summary from main");
+    const [rawRequest] = mainStub.requests();
+    const request = ChatRequestSchema.parse(JSON.parse(rawRequest));
+    const [system, user] = request.messages;
+    const sentTokens = estimateTokenCount(user.content);
+    assert.ok(user.content.length < batch.length, "only a prefix of the batch is sent");
+    assert.ok(
+      request.max_tokens <= 2 * (Math.ceil(sentTokens * 0.25) + 1),
+      `max_tokens ${request.max_tokens} must track the ${sentTokens} tokens sent`,
+    );
+    assert.ok(system.content.includes(`maximum ${request.max_tokens / 2} tokens`));
   } finally {
     await mainStub?.close();
     await rm(memoryDir, { recursive: true, force: true });

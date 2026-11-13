@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- LCM summarize sizes its prompt target and `max_tokens` budget by the text it actually sends (the first 12,000 characters), not by the whole batch.
+  - Before: a long leaf or rollup batch asked for more than 16,384 completion tokens for a prompt of about 3k tokens. Endpoints with an output cap, such as the bundled Hermes bridge, answered HTTP 400, and the node degraded to the aggressive or deterministic summary.
+  - Batches that fit in one call are unchanged (#3407).
+
 ## [v10.0.94] — 2026-11-12
 
 ### Performance
