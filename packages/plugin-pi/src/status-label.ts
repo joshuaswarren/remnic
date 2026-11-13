@@ -27,15 +27,20 @@ export function remnicStatusLabel(probe: DaemonProbeResult, namespace: string | 
   return `Remnic ${namespace ? `(${namespace})` : "ready"}`;
 }
 
-/** The first later successful recall or observe refreshes the offline label once. */
+/**
+ * The first later successful recall or observe refreshes the offline label once.
+ * The recall breaker is shared by every session in the process, so while it is
+ * tripped the label is the paused one, not ready (the same rule as the startup probe).
+ */
 export function refreshOfflineStatusLabel(
   session: Pick<StatusSession, "setStatus">,
   state: OfflineStatusState,
   config: Pick<RemnicPiConfig, "statusEnabled" | "namespace">,
+  recallPaused: boolean,
 ): void {
   if (!state.statusOffline || !config.statusEnabled) return;
   state.statusOffline = false;
-  session.setStatus("remnic", remnicStatusLabel("ready", config.namespace));
+  session.setStatus("remnic", recallPaused ? RECALL_DISABLED_STATUS : remnicStatusLabel("ready", config.namespace));
 }
 
 export function emitRecallTimeoutTrip(

@@ -1066,6 +1066,74 @@ test("a successful observe does not overwrite the recall-paused status", async (
   ]);
 });
 
+test("a successful observe in another session does not show ready while the shared recall breaker is tripped", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    if (url.endsWith("/engram/v1/recall")) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+        );
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const config = {
+    ...baseConfig(),
+    authToken: "two-session-paused-test-token",
+    namespace: "proj",
+    recallEnabled: true,
+    observeEnabled: true,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: true,
+    turnRequestTimeoutMs: 2,
+    daemonCooldownMs: 60_000,
+    recallTimeoutThreshold: 1,
+    recallTimeoutWindow: 1,
+    observeMaxRetries: 0,
+  };
+  t.after(() => {
+    resetProcessRecallBreakerForTest(config);
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const statusesA: Array<[string, string]> = [];
+  const statusesB: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({ config });
+  await extension(pi);
+  const ctxFor = (id: string, statuses: Array<[string, string]>) => ({
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => id },
+  });
+  const ctxA = ctxFor("two-session-a", statusesA);
+  const ctxB = ctxFor("two-session-b", statusesB);
+  const paused = "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)";
+
+  await emit("session_start", {}, ctxA);
+  await waitFor(() => statusesA.length > 0, "session A offline label");
+  assert.deepEqual(statusesA, [["remnic", "Remnic offline"]]);
+
+  daemonUp = true;
+  await emit("session_start", {}, ctxB);
+  await waitFor(() => statusesB.length > 0, "session B startup label");
+  await emit("before_agent_start", { prompt: "timeout recall", systemPrompt: "" }, ctxB);
+  await waitFor(() => statusesB.at(-1)?.[1] === paused, "session B paused label");
+
+  await runCommand("remnic-status", "", ctxA);
+  await emit("message_end", { message: { role: "user", content: "observe on A while recall is paused" } }, ctxA);
+  await flushBackgroundChains();
+  assert.deepEqual(statusesA, [
+    ["remnic", "Remnic offline"],
+    ["remnic", paused],
+  ]);
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {

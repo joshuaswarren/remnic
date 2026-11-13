@@ -270,7 +270,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               state,
             );
             client.markReachable();
-            refreshOfflineStatusLabel(session, state, config);
+            refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
             const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
             if (context) {
               state.cachedContext = context;
@@ -302,7 +302,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const { state } = getSessionState(session.sessionKey, sessionStates);
       // Observe is a first-turn daemon call gated on isReachable(): join the in-flight probe first.
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state, recallTimeoutBreaker);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -312,7 +312,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
       await joinStartupProbe(state, config);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config, false, observeOutbox, state, recallTimeoutBreaker);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -323,7 +323,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox, state);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true, observeOutbox, state, recallTimeoutBreaker);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -806,6 +806,7 @@ async function observeMessagesForSession(
   forceAttempt = false,
   outbox?: ObserveOutbox | null,
   state?: PiSessionState,
+  recallTimeoutBreaker?: RecallTimeoutBreaker,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
@@ -844,7 +845,7 @@ async function observeMessagesForSession(
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
     if (config) client.markReachable();
-    if (state && config) refreshOfflineStatusLabel(session, state, config);
+    if (state && config) refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker?.isTripped() ?? false);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
       for (const message of messages) {
