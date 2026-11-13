@@ -949,6 +949,71 @@ test("the offline label flag is per session: successes flip only their own sessi
   assert.deepEqual(statusesB, [["remnic", "Remnic (proj)"]]);
 });
 
+test("a successful observe does not overwrite the recall-paused status", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let daemonUp = false;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (!daemonUp) throw new Error("The socket connection was closed unexpectedly.");
+    if (url.endsWith("/engram/v1/recall")) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () =>
+          reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+        );
+      });
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const config = {
+    ...baseConfig(),
+    authToken: "paused-status-test-token",
+    recallEnabled: true,
+    observeEnabled: true,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: true,
+    turnRequestTimeoutMs: 2,
+    daemonCooldownMs: 60_000,
+    recallTimeoutThreshold: 1,
+    recallTimeoutWindow: 1,
+    observeMaxRetries: 0,
+  };
+  t.after(() => {
+    resetProcessRecallBreakerForTest(config);
+    globalThis.fetch = originalFetch;
+  });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const statuses: Array<[string, string]> = [];
+  const extension = createRemnicPiExtension({ config });
+  await extension(pi);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: (key: string, value: string) => statuses.push([key, value]), notify: () => {} },
+    sessionManager: { getSessionId: () => "offline-then-paused-test" },
+  };
+
+  await emit("session_start", {}, ctx);
+  await waitFor(() => statuses.length > 0, "offline label from the startup probe");
+  assert.deepEqual(statuses, [["remnic", "Remnic offline"]]);
+
+  daemonUp = true;
+  await runCommand("remnic-status", "", ctx);
+  await emit("before_agent_start", { prompt: "timeout recall", systemPrompt: "" }, ctx);
+  await waitFor(
+    () => statuses.at(-1)?.[1] === "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)",
+    "recall timeout breaker status",
+  );
+
+  await runCommand("remnic-status", "", ctx);
+  await emit("message_end", { message: { role: "user", content: "observe while recall is paused" } }, ctx);
+  await flushBackgroundChains();
+  assert.deepEqual(statuses, [
+    ["remnic", "Remnic offline"],
+    ["remnic", "Remnic recall paused (timeouts delayed operations; auto-retry after cooldown)"],
+  ]);
+});
+
 test("observeMessages only records dedupe hashes after a successful observe", async () => {
   const observedHashes = new Set<string>();
   const ctx = {
