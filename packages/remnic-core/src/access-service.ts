@@ -81,7 +81,7 @@ import {
   type DecisionSurfaceResponse,
   handleCodingDecision,
 } from "./coding/decision-surfaces.js";
-import { resolveGitContext, sharedGitContextCache } from "./coding/git-context.js";
+import { resolveGitContext, sharedNonRepoGitContextCache } from "./coding/git-context.js";
 import { defaultGitInvokerSync } from "./coding/git-context.js";
 import {
   type DeltaSurfaceRequest,
@@ -2591,7 +2591,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // cwd → git resolution
     if (typeof options.cwd === "string" && options.cwd.trim().length > 0) {
       try {
-        const gitCtx = await resolveGitContext(options.cwd, { cache: sharedGitContextCache });
+        const gitCtx = await resolveGitContext(options.cwd, { cache: sharedNonRepoGitContextCache });
         if (gitCtx) {
           this.setCodingContext({
             sessionKey,

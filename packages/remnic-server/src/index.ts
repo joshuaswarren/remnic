@@ -872,7 +872,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let port: number;
   let backlogScheduler: BacklogScheduler | undefined;
   try {
-    ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port); startEventLoopLagMonitor();
+    ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port);
     // The daemon owns extraction-backlog draining: the bounded scheduler
     // starts AFTER the listener and stops before the orchestrator.
     backlogScheduler = startBacklogScheduler(orchestrator);
@@ -880,6 +880,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
   }
+  const stopEventLoopLagMonitor = startEventLoopLagMonitor();
 
   // Fire-and-forget: wait for deferred init (QMD probe, collection setup,
   // warmup) then check QMD availability and retry if needed. This does NOT
@@ -936,6 +937,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
+      stopEventLoopLagMonitor();
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();

@@ -96,6 +96,8 @@ export interface SyncGitInvoker {
 // ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_GIT_TIMEOUT_MS = 2_000;
+const GIT_TIMEOUT_EXIT_CODE = 124;
+const GIT_SPAWN_ERROR_EXIT_CODE = 127;
 
 export function defaultGitInvokerSync(): SyncGitInvoker {
   return (cwd: string, args: string[]) => {
@@ -105,7 +107,7 @@ export function defaultGitInvokerSync(): SyncGitInvoker {
       timeout: DEFAULT_GIT_TIMEOUT_MS,
       shell: false,
     });
-    if (result.error) return { stdout: "", exitCode: 127 };
+    if (result.error) return { stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE };
     return {
       stdout: typeof result.stdout === "string" ? result.stdout : "",
       exitCode: typeof result.status === "number" ? result.status : 1,
@@ -161,7 +163,7 @@ export function defaultGitInvoker(): GitInvoker {
     child.stdout?.on("data", (chunk: string | Buffer) => {
       stdout += chunk.toString();
     });
-    child.once("error", () => finish({ stdout: "", exitCode: 127 }));
+    child.once("error", () => finish({ stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE }));
     child.once("close", (exitCode: number | null) => {
       finish({ stdout, exitCode: typeof exitCode === "number" ? exitCode : 1 });
     });
@@ -173,7 +175,7 @@ export function defaultGitInvoker(): GitInvoker {
     );
     timer = setTimeout(() => {
       child.kill("SIGTERM");
-      finish({ stdout: "", exitCode: 124 });
+      finish({ stdout: "", exitCode: GIT_TIMEOUT_EXIT_CODE });
     }, timeoutMs);
     if (options.abortSignal?.aborted) onAbort();
     return promise;
@@ -334,7 +336,10 @@ export class GitContextCache {
   private readonly maxEntries: number;
   private readonly now: () => number;
 
-  constructor(options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {}) {
+  private readonly cacheRepos: boolean;
+
+  constructor(options: { ttlMs?: number; maxEntries?: number; now?: () => number; cacheRepos?: boolean } = {}) {
+    this.cacheRepos = options.cacheRepos ?? true;
     this.ttlMs = options.ttlMs ?? 30_000;
     this.maxEntries = options.maxEntries ?? 256;
     this.now = options.now ?? Date.now;
@@ -356,6 +361,9 @@ export class GitContextCache {
   }
 
   set(key: string, value: GitContext | null): void {
+    // Negative-only caches never hold a branch, so a session snapshot taken
+    // from them cannot carry a stale one.
+    if (value !== null && !this.cacheRepos) return;
     this.entries.delete(key);
     this.entries.set(key, { value, at: this.now() });
     if (this.entries.size > this.maxEntries) {
@@ -379,14 +387,34 @@ export async function resolveGitContext(
   options: ResolveGitContextOptions = {},
 ): Promise<GitContext | null> {
   const { cache } = options;
-  if (!cache || typeof cwd !== "string" || cwd.length === 0) return resolveGitContextUncached(cwd, options);
+  if (!cache) return resolveGitContextUncached(cwd, options);
+  // A cache hit must not mask cancellation or an exhausted deadline.
+  throwIfInterrupted(options);
   const hit = cache.get(cwd);
   if (hit !== undefined) return hit;
-  // Aborts and deadline expiry reject, so only real answers (including
-  // "not a repo") reach `set`.
-  const value = await resolveGitContextUncached(cwd, options);
-  cache.set(cwd, value);
+  // Timeouts and spawn failures are not answers about the repo, so a lookup
+  // that hit one (even partially) is never cached.
+  let inconclusive = false;
+  const inner = options.invoker ?? defaultGitInvoker();
+  const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
+    const result = await inner(probeCwd, args, invokeOptions);
+    if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) inconclusive = true;
+    return result;
+  };
+  const value = await resolveGitContextUncached(cwd, { ...options, invoker });
+  if (!inconclusive) cache.set(cwd, value);
   return value;
+}
+
+function throwIfInterrupted(options: ResolveGitContextOptions): void {
+  if (options.abortSignal?.aborted) {
+    throw options.abortSignal.reason instanceof Error
+      ? options.abortSignal.reason
+      : abortError("git context resolution aborted");
+  }
+  if (options.deadlineMs !== undefined && (options.now ?? Date.now)() >= options.deadlineMs) {
+    throw abortError("git context resolution deadline exceeded");
+  }
 }
 
 async function resolveGitContextUncached(
@@ -495,5 +523,11 @@ async function resolveGitContextUncached(
   }
 }
 
-/** Process-wide cache for per-request callers (recall, memory_store). */
+/** Process-wide cache for per-request callers (recall scope). */
 export const sharedGitContextCache = new GitContextCache();
+
+/**
+ * Session-attach callers snapshot the branch once per session, so they must
+ * read a repo fresh; they only skip repeat probes of non-repo directories.
+ */
+export const sharedNonRepoGitContextCache = new GitContextCache({ cacheRepos: false });

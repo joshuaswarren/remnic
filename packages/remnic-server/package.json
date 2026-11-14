@@ -22,6 +22,7 @@
     "src/index.ts",
     "src/admin-console-config.ts",
     "src/backlog-drain-lifecycle.ts",
+    "src/event-loop-lag.ts",
     "src/liveness-probe.ts",
     "src/oauth.ts",
     "src/server-env.ts",

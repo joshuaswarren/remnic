@@ -607,3 +607,78 @@ test("GitContextCache is bounded", async () => {
   assert.equal(cache.has("a"), false);
   assert.equal(cache.has("c"), true);
 });
+
+function repoInvoker(onCall?: (args: string[]) => void): GitInvoker {
+  return (_cwd, args) => {
+    onCall?.(args);
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", exitCode: 0 };
+    if (args[0] === "rev-parse") return { stdout: "main\n", exitCode: 0 };
+    return { stdout: "", exitCode: 1 };
+  };
+}
+
+test("a warm cache hit still honors an aborted signal and an expired deadline", async () => {
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/repo", { invoker: repoInvoker(), cache });
+
+  const controller = new AbortController();
+  controller.abort(new Error("stop"));
+  await assert.rejects(
+    resolveGitContext("/repo", { invoker: repoInvoker(), cache, abortSignal: controller.signal }),
+    /stop/,
+  );
+  await assert.rejects(
+    resolveGitContext("/repo", { invoker: repoInvoker(), cache, deadlineMs: 100, now: () => 200 }),
+    /deadline/,
+  );
+});
+
+test("a probe timeout (exit 124) or spawn failure (127) is not cached as 'not a repo'", async () => {
+  for (const exitCode of [124, 127]) {
+    let calls = 0;
+    const flaky: GitInvoker = () => {
+      calls += 1;
+      return { stdout: "", exitCode };
+    };
+    const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+    assert.equal(await resolveGitContext("/repo", { invoker: flaky, cache }), null);
+    assert.equal(await resolveGitContext("/repo", { invoker: flaky, cache }), null);
+    assert.equal(calls, 2, `exit ${exitCode} must be retried, not cached`);
+  }
+});
+
+test("a partial context (later probe timed out) is not cached", async () => {
+  let originCalls = 0;
+  const partial: GitInvoker = (cwd, args) => {
+    if (args[0] === "remote") {
+      originCalls += 1;
+      return { stdout: "", exitCode: 124 };
+    }
+    return repoInvoker()(cwd, args);
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.ok(await resolveGitContext("/repo", { invoker: partial, cache }));
+  assert.ok(await resolveGitContext("/repo", { invoker: partial, cache }));
+  assert.equal(originCalls, 2);
+});
+
+test("a non-repo-only cache remembers non-repos but always re-reads repos", async () => {
+  let calls = 0;
+  const count = () => {
+    calls += 1;
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0, cacheRepos: false });
+  await resolveGitContext("/repo", { invoker: repoInvoker(count), cache });
+  const afterFirst = calls;
+  await resolveGitContext("/repo", { invoker: repoInvoker(count), cache });
+  assert.equal(calls, afterFirst * 2, "repo result must not be served from a non-repo cache");
+
+  let nonRepoCalls = 0;
+  const notRepo: GitInvoker = () => {
+    nonRepoCalls += 1;
+    return { stdout: "", exitCode: 128 };
+  };
+  await resolveGitContext("/tmp/z", { invoker: notRepo, cache });
+  await resolveGitContext("/tmp/z", { invoker: notRepo, cache });
+  assert.equal(nonRepoCalls, 1);
+});
