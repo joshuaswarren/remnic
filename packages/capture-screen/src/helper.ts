@@ -370,7 +370,15 @@ export class NativeHelper {
     const json = await this.#runPinned("ocr-window", args, opts.expectTitle);
     if ("text" in json) {
       const text: unknown = json.text;
-      if (typeof text === "string") return text;
+      if (typeof text === "string") {
+        if (opts.expectTitle === undefined || !this.#titlePinUnsupported.has("ocr-window")) return text;
+        // A helper that cannot pin OCR must say which title it read; text read under any other title is dropped.
+        const read: unknown = json.windowTitle;
+        if (typeof read !== "string") {
+          throw new CaptureInputError("native helper cannot pin ocr-window to a title and did not report the title it read");
+        }
+        return read === opts.expectTitle ? text : "";
+      }
     }
     throw new CaptureInputError("native helper ocr-window did not return a text field");
   }

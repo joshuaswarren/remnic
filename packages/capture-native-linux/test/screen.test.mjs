@@ -242,6 +242,27 @@ test("ocr-window --title on a window retitled while its pixels were read drops t
   assert.deepEqual(result.json(), { text: "", windowTitle: "PRIVATE VAULT" });
 });
 
+test("ocr-window --title checks the title when the pixels are taken, so a rename and a rename back during the OCR does not pass", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
+  const vault = JSON.stringify([{ ...EDITOR, title: "PRIVATE VAULT" }]);
+  const allowed = JSON.stringify([EDITOR]);
+  const bin = path.join(desktop.dir, "bin");
+  writeFileSync(path.join(bin, "grim"), `#!/bin/sh\nprintf '%s' '${vault}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
+  writeFileSync(path.join(bin, "tesseract"), `#!/bin/sh\n/bin/cat > /dev/null\nprintf '%s' '${allowed}' > "$FAKE_DIR/clients.json"\n/bin/cat "$FAKE_DIR/ocr.txt"\n`);
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: "", windowTitle: "PRIVATE VAULT" });
+});
+
+test("ocr-window --title drops the text of a window that moved while its pixels were read", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "SOMEONE ELSE'S PIXELS" });
+  const moved = JSON.stringify([{ ...EDITOR, at: [900, 400] }]);
+  writeFileSync(path.join(desktop.dir, "bin", "grim"), `#!/bin/sh\nprintf '%s' '${moved}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.json().text, "");
+});
+
 test("a window with no text gives an empty string, not an error", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "  \n" });
   const result = await helper(["ocr-window"], desktop);

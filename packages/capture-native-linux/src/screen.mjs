@@ -82,8 +82,9 @@ export async function axSnapshot({ pid, windowId, expectTitle, windowOnly = fals
  * `ocr-window`: the text of one window. The pixels come from the output at the window's rectangle and go
  * through two pipes, so nothing is written to disk. A window that is hidden, off screen or covered is refused.
  * With `--title T`, a window that no longer has the title T is answered with no text and its new title, and no
- * pixels are read. The title is checked again after the pixels are read: a window retitled during the read
- * gives no text either, so text is never stored under a title the deny list did not see.
+ * pixels are read. The window is read again right after the pixels are taken, before any OCR: a window that was
+ * retitled, moved or resized, or is now covered, gives no text. The pixels are taken in one instant, so the
+ * window as it was at that instant is the one whose title was checked; what happens during the OCR no longer matters.
  */
 export async function ocrWindow({ windowId, expectTitle }) {
   const target = windowId === undefined ? await focusedWindow() : { address: windowId };
@@ -98,12 +99,14 @@ export async function ocrWindow({ windowId, expectTitle }) {
   const [width, height] = window.size;
   const hint = (name) => `install the ${name} package`;
   const png = await runTool("grim", ["-g", `${x},${y} ${width}x${height}`, "-t", "png", "-"], { hint: hint("grim") });
-  const text = await runTool("tesseract", ["stdin", "stdout", "-l", "eng"], { input: png, hint: hint("tesseract") });
-  const after = await windowById(target.address);
-  if (retitled(after)) {
+  const after = await readableWindow(target.address);
+  const [ax, ay] = after.at;
+  const [aw, ah] = after.size;
+  if (retitled(after) || ax !== x || ay !== y || aw !== width || ah !== height) {
     refuse(after);
     return 0;
   }
+  const text = await runTool("tesseract", ["stdin", "stdout", "-l", "eng"], { input: png, hint: hint("tesseract") });
   process.stdout.write(`${JSON.stringify({ text: text.toString("utf8").trimEnd() })}\n`);
   return 0;
 }

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
 import { CaptureProcessor } from "./capture.js";
@@ -118,4 +121,22 @@ test("a helper that answered with the full snapshot is not asked for it a second
   const decision = await captureViaHelper(helper, new CaptureProcessor(config), config, AT);
   assert.deepEqual(calls, ["windowContext"]);
   assert.equal(decision.action, "store");
+});
+
+test("a helper that cannot pin OCR and read a deny-listed title stores nothing under the old title", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "csr-live-"));
+  const file = path.join(dir, "legacy.js");
+  writeFileSync(
+    file,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes("--title")) process.exit(2);
+process.stdout.write(JSON.stringify({ text: "PRIVATE VAULT CONTENT", windowTitle: "PRIVATE VAULT" }));
+`,
+  );
+  chmodSync(file, 0o755);
+  const config = defaultDaemonConfig();
+  const snap: AxSnapshot = { app: "kitty", windowTitle: "shell", windowId: "A", tree: { role: "AXWindow" } };
+  const decision = await captureFromSnapshot(snap, new NativeHelper(file), new CaptureProcessor(config), config, AT);
+  assert.notEqual(decision.action, "store");
 });

@@ -153,7 +153,7 @@ test("helperPackageName is one package for Linux, whatever the arch", () => {
 });
 
 /** A helper that logs its argv. `windowOnly` is its answer to --window-only and `title` its answer to --title: "ok" or an exit status. */
-function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok") {
+function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok", ocrTitle: string | null = "shell") {
   const log = path.join(dir, `${name}.log`);
   const file = fakeHelper(
     name,
@@ -162,7 +162,7 @@ const args = process.argv.slice(2);
 const full = { app: "kitty", windowTitle: "shell", windowId: "0xa1", tree: { role: "AXWindow" } };
 if (args[0] === "ocr-window") {
   ${title === "ok" ? "" : `if (args.includes("--title")) process.exit(${title});`}
-  process.stdout.write(JSON.stringify({ text: "ocr text" }));
+  process.stdout.write(JSON.stringify({ text: "ocr text"${ocrTitle === null ? "" : `, windowTitle: ${JSON.stringify(ocrTitle)}`} }));
 } else if (args.includes("--title")) {
   ${title === "ok" ? `process.stdout.write(JSON.stringify(full));` : `process.exit(${title});`}
 } else if (args.includes("--window-only")) {
@@ -260,4 +260,21 @@ test("any other failure of a pinned OCR read is an error, never a read without t
   const { file, calls } = loggingHelper("ocr-pin-broken.js", "ok", 1);
   await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
   assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
+});
+
+test("a helper that cannot pin OCR but reports a different title than the pin gives no text", async () => {
+  const { file } = loggingHelper("ocr-legacy-vault.js", "ok", 2, "PRIVATE VAULT");
+  assert.equal(await new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
+});
+
+test("a helper that cannot pin OCR and does not report the title it read is refused", async () => {
+  const { file } = loggingHelper("ocr-legacy-silent.js", "ok", 2, null);
+  await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+});
+
+test("the title check stays on after the helper's refusal is remembered", async () => {
+  const { file } = loggingHelper("ocr-legacy-twice.js", "ok", 2, "PRIVATE VAULT");
+  const helper = new NativeHelper(file);
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
 });
