@@ -274,6 +274,27 @@ test("ocr-window drops the frame when another window covers the target while its
   assert.doesNotMatch(result.stdout, /COVERING WINDOW CONTENT/);
 });
 
+test("ocr-window gives no text when another window appears over the screen while its pixels are taken", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
+  writeFileSync(
+    path.join(desktop.dir, "bin", "grim"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>s.end('openwindow>>1f,0xc3,foot,3\\n'));"\nprintf 'PNG'\n`,
+  );
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: "", windowTitle: "Notes - Editor" });
+  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
+  desktop.stop();
+});
+
+test("ocr-window refuses to read pixels at all when the compositor's event socket is missing", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT", without: ["compositor"] });
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /window events/);
+  assert.deepEqual(desktop.calls("grim"), [], "no screen read happened");
+});
+
 test("a window with no text gives an empty string, not an error", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "  \n" });
   const result = await helper(["ocr-window"], desktop);

@@ -73,11 +73,14 @@ Limits you can measure on your own machine:
   exposes the text of a QML field only when the app sets `Accessible`. Terminals such as foot are not on the bus,
   so they go through OCR.
 - `grim` crops the composited screen. A window that another window overlaps, or that is not on a visible
-  workspace, is refused: the window is checked before the read and again right after it, so another window's
-  pixels are not read while they can still be seen. A window that covered the target only during the read
-  itself and was gone before the check after it cannot be told apart after the fact. A desktop notification
-  drawn over the window is not a window the helper can see: its text can appear in the OCR text.
+  workspace, is refused: the window is checked before the read and again right after it, and the compositor's
+  window events are watched for the whole read, so a window that appears, moves, closes or changes workspace
+  during the read drops the frame even when it is gone before the check after it. Without the event socket
+  there is no Hyprland session and `ocr-window` reads nothing. The gap left is the moment between the check
+  before the read and the start of the event watch. A desktop notification drawn over the window is not a
+  window the helper can see: its text can appear in the OCR text.
 
 ## Tests
 
-`npm test` runs against fake `pw-record`, `pw-dump`, `hyprctl`, `python3`, `grim` and `tesseract` programs, so it needs no sound hardware and no desktop session. The Python reader and the real tools are checked by hand on a desktop; the pull request that added them lists the run.
+`npm test` runs against fake `pw-record`, `pw-dump`, `hyprctl`, `python3`, `grim` and `tesseract` programs and a
+fake Hyprland event socket, so it needs no sound hardware and no desktop session. The Python reader and the real tools are checked by hand on a desktop; the pull request that added them lists the run.

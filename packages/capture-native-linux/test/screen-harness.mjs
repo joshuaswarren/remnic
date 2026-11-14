@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -47,7 +48,33 @@ export function fakeDesktop({ active = {}, clients = [], monitors, atspi = { fou
       return [];
     }
   };
-  return { dir, env: { PATH: bin, FAKE_DIR: dir }, calls };
+  const { env, stop } = compositor(dir, without.includes("compositor"));
+  return { dir, env: { PATH: bin, FAKE_DIR: dir, ...env }, calls, stop };
+}
+
+/**
+ * A fake Hyprland event socket. Anything written to it by a fake tool (a `grim` that stands for a window mapping
+ * over the target while the pixels are read) reaches the helper's own connection, as Hyprland's `.socket2.sock` would.
+ * `noSocket` leaves the signature env set but no socket listening.
+ */
+function compositor(dir, noSocket) {
+  const signature = "testsig";
+  const hyprDir = path.join(dir, "runtime", "hypr", signature);
+  mkdirSync(hyprDir, { recursive: true });
+  const socketPath = path.join(hyprDir, ".socket2.sock");
+  if (noSocket) return { env: { XDG_RUNTIME_DIR: path.join(dir, "runtime"), HYPRLAND_INSTANCE_SIGNATURE: signature }, stop: () => {} };
+  const server = path.join(dir, "compositor.mjs");
+  writeFileSync(server, `import net from "node:net";
+const clients = new Set();
+net.createServer((c) => { clients.add(c); c.on("close", () => clients.delete(c)); c.on("data", (d) => { for (const cl of clients) cl.write(d); }); })
+  .listen(${JSON.stringify(socketPath)}, () => setTimeout(() => process.exit(0), 60000).unref());
+`);
+  const child = spawn(process.execPath, [server], { stdio: "ignore" });
+  process.on("exit", () => child.kill());
+  return {
+    env: { XDG_RUNTIME_DIR: path.join(dir, "runtime"), HYPRLAND_INSTANCE_SIGNATURE: signature, EVENT_SOCKET: socketPath },
+    stop: () => child.kill(),
+  };
 }
 
 export const WORKSPACE_1 = { id: 1, name: "1" };
