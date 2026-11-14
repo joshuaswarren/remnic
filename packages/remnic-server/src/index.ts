@@ -885,8 +885,8 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   // block the server listener — connections are accepted immediately above.
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
-  startEventLoopLagMonitor({ signal: startupSyncAbort.signal });
   const readinessAbort = new AbortController();
+  startEventLoopLagMonitor({ signal: readinessAbort.signal });
   let startupSyncInFlight: Promise<boolean> | undefined;
   const ensureStartupSync = async (signal: AbortSignal): Promise<boolean> => {
     if (orchestrator.deferredSyncSucceeded) return true;

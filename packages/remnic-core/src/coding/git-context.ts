@@ -420,7 +420,7 @@ export async function resolveGitContext(
   };
   const value = await resolveGitContextUncached(cwd, { ...options, invoker });
   if (inconclusive || options.abortSignal?.aborted) return value;
-  if (value === null || head !== undefined) cache.set(cwd, value, head);
+  if (value === null || head !== undefined) cache.set(cwd, value && { ...value }, head);
   return value;
 }
 
