@@ -12,7 +12,7 @@ import {
   open,
 } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { computeLegacyContentHash, normalizeContent } from "./content-hash.js";
 import { parseDriftProvenance, serializeDriftProvenance } from "./preferences/drift-types.js";
 import { isAbortError, raceAbort } from "./abort-error.js";
@@ -3728,7 +3728,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
-    const id = `${category}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `${category}-${randomUUID()}`;
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
