@@ -61,7 +61,8 @@ test("native Linux screenshot failure cannot leave an event watcher alive", asyn
 
 for (const firstUrl of ["https://allowed.example/", null]) {
 for (const entrypoint of ["snapshot", "scheduler"]) {
-test(`same-title URL navigation cannot read denied content: ${entrypoint}, ${firstUrl}`, async (t) => {
+test(`same-title URL navigation cannot read denied content: ${entrypoint}, ${firstUrl}`,
+  { skip: process.platform !== "linux" }, async (t) => {
   const desktop = await transientDesktop(t, "ax");
   const giStub = fileURLToPath(new URL("../../capture-native-linux/test/fixtures/stub-gi/", import.meta.url));
   const readLog = path.join(desktop.dir, "text-reads.log");
