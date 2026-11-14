@@ -14,7 +14,9 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessInputError } from "./access-errors.js";
+import { normalizeProjectionPreview } from "./memory-projection-format.js";
 import { renderHandle } from "./recall-handles.js";
+import { estimateRecallTokens, summarizeDisclosureTokens } from "./recall-xray.js";
 import { runRecallNavigation, type RecallNavigationDeps } from "./recall-navigation.js";
 import { RECALL_NAVIGATION_CONFIG_DEFAULTS } from "./recall-navigation-config.js";
 import { RecallHandleHistoryStore } from "./recall-state.js";
@@ -247,6 +249,73 @@ test("budget caps expansion output and reports disclosure spend", async () => {
     assert.equal(result.disclosureSpend.raw.count, 1);
     assert.match(result.rendered, /- budget: \d+\/800 chars \(truncated\)/);
     assert.match(result.rendered, /- disclosure spend: chunk=\d+t, section=\d+t, raw=\d+t/);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("shrinks a raw item when final size accounting crosses the budget cap", async () => {
+  const f = await fixture({ recallBudgetChars: 800 });
+  try {
+    const storage = f.storages.default!;
+    const calibrationId = await writeMemory(storage, "x".repeat(500));
+    await f.history.record(SESSION, [calibrationId]);
+    const calibration = await runRecallNavigation(f.depsFor({ recallBudgetChars: 100_000 }), {
+      action: "expand",
+      memoryId: calibrationId,
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(calibration.ok);
+
+    const originalItem = calibration.items[0];
+    assert.ok(originalItem);
+    const { rendered: _calibrationRendered, ...calibrationStructured } = calibration;
+    let content: string | undefined;
+    for (let length = 1; length <= 500; length += 1) {
+      const candidateContent = `${"x".repeat(length)} `;
+      const estimatedTokens = estimateRecallTokens(candidateContent);
+      const candidateItem = {
+        ...originalItem,
+        preview: normalizeProjectionPreview(candidateContent),
+        content: candidateContent,
+        estimatedTokens,
+      };
+      const candidate = {
+        ...calibrationStructured,
+        items: [candidateItem],
+        truncated: false,
+        budget: { chars: 800, used: 0 },
+        disclosureSpend: summarizeDisclosureTokens([{ disclosure: "raw", estimatedTokens }]),
+      };
+      const candidateSize = JSON.stringify(candidate).length;
+      if (candidateSize === 800) {
+        content = candidateContent;
+        break;
+      }
+    }
+    assert.ok(content, "the fixture must produce a candidate at the self-reported-size boundary");
+
+    const id = await writeMemory(storage, content);
+    await f.history.record(SESSION, [id]);
+    const result = await runRecallNavigation(f.depsFor(), {
+      action: "expand",
+      memoryId: id,
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(result.ok);
+    assert.equal(result.budget.chars, 800);
+    const { rendered: _rendered, ...structured } = result;
+    assert.equal(result.budget.used, JSON.stringify(structured).length);
+    assert.ok(result.budget.used <= 800);
+    assert.ok(result.truncated);
+    assert.equal(result.items.length, 1);
+    assert.ok(
+      result.items[0]!.content!.length < content.length,
+      `expected content to shrink from ${content.length}; got ${result.items[0]!.content!.length} at ${result.budget.used}/800 chars`,
+    );
+    assert.equal(result.disclosureSpend.raw.count, 1);
   } finally {
     await f.cleanup();
   }
