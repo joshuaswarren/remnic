@@ -199,23 +199,19 @@ function structuredBody(
   };
 }
 
-function structuredCost(
-  request: RecallNavigationRequest,
-  extras: { memoryId: string; namespace: string; budgetChars: number },
-  items: NavigationItem[],
-  truncated: boolean,
-  used = 0,
-): number {
-  return JSON.stringify(structuredBody(request, extras, items, truncated, used)).length;
-}
-
 function measuredUsed(
   request: RecallNavigationRequest,
   extras: { memoryId: string; namespace: string; budgetChars: number },
   items: NavigationItem[],
   truncated: boolean,
 ): number {
-  return structuredCost(request, extras, items, truncated, structuredCost(request, extras, items, truncated));
+  const base = JSON.stringify(structuredBody(request, extras, items, truncated, 0)).length - 1;
+  let used = base + 1;
+  while (true) {
+    const measured = base + String(used).length;
+    if (measured === used) return used;
+    used = measured;
+  }
 }
 
 function shrinkItemToBudget(
