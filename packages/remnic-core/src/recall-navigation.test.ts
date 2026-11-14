@@ -321,6 +321,64 @@ test("shrinks a raw item when final size accounting crosses the budget cap", asy
   }
 });
 
+test("reports the exact serialized size when used digits cross the cap", async () => {
+  const f = await fixture({ recallBudgetChars: 1_000 });
+  try {
+    const storage = f.storages.default!;
+    const calibrationId = await writeMemory(storage, "x".repeat(500));
+    await f.history.record(SESSION, [calibrationId]);
+    const calibration = await runRecallNavigation(f.depsFor({ recallBudgetChars: 100_000 }), {
+      action: "expand",
+      memoryId: calibrationId,
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(calibration.ok);
+    const originalItem = calibration.items[0];
+    assert.ok(originalItem);
+    const { rendered: _calibrationRendered, ...calibrationStructured } = calibration;
+
+    let content: string | undefined;
+    for (let length = 1; length <= 500; length += 1) {
+      const candidateContent = "x".repeat(length);
+      const estimatedTokens = estimateRecallTokens(candidateContent);
+      const candidate = {
+        ...calibrationStructured,
+        items: [{
+          ...originalItem,
+          preview: normalizeProjectionPreview(candidateContent),
+          content: candidateContent,
+          estimatedTokens,
+        }],
+        truncated: false,
+        budget: { chars: 1_000, used: 0 },
+        disclosureSpend: summarizeDisclosureTokens([{ disclosure: "raw", estimatedTokens }]),
+      };
+      if (JSON.stringify(candidate).length === 998) {
+        content = candidateContent;
+        break;
+      }
+    }
+    assert.ok(content, "the fixture must produce a 998-character candidate with used=0");
+
+    const id = await writeMemory(storage, content);
+    await f.history.record(SESSION, [id]);
+    const result = await runRecallNavigation(f.depsFor(), {
+      action: "expand",
+      memoryId: id,
+      sessionKey: SESSION,
+      disclosure: "raw",
+    });
+    assert.ok(result.ok);
+    const { rendered: _rendered, ...structured } = result;
+    const serializedSize = JSON.stringify(structured).length;
+    assert.equal(result.budget.used, serializedSize);
+    assert.ok(serializedSize <= 1_000, `serialized size ${serializedSize} must respect the cap`);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("entity neighbors share entityRef, exclude the source, and honor the limit", async () => {
   const f = await fixture();
   try {
