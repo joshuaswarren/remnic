@@ -1,6 +1,6 @@
 {
   "name": "@remnic/capture-audio",
-  "version": "10.0.104",
+  "version": "10.0.105",
   "description": "Desktop audio capture daemon for Remnic — local spool, loopback HTTP API, and replay ingestion for the wearable source `desktop` (à-la-carte)",
   "type": "module",
   "main": "dist/index.js",
@@ -18,10 +18,10 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cli-bin.ts --format esm --dts",
+    "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/config.test.ts src/validate.test.ts src/token.test.ts src/spool.test.ts src/replay.test.ts src/daemon.test.ts src/cli.test.ts src/stt.test.ts src/model.test.ts src/janitor.test.ts src/vad.test.ts src/dedup.test.ts src/assembly.test.ts src/diarization.test.ts src/connector.test.ts src/e2e.test.ts src/native.test.ts src/processor.test.ts src/processor-policy.test.ts src/capture.test.ts src/service.test.ts src/enroll.test.ts",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/config.test.ts src/validate.test.ts src/token.test.ts src/spool.test.ts src/replay.test.ts src/daemon.test.ts src/cli.test.ts src/stt.test.ts src/model.test.ts src/janitor.test.ts src/vad.test.ts src/dedup.test.ts src/assembly.test.ts src/diarization.test.ts src/connector.test.ts src/e2e.test.ts src/native.test.ts src/processor.test.ts src/processor-policy.test.ts src/capture.test.ts src/service.test.ts src/enroll.test.ts src/dist.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -39,10 +39,10 @@
     "tsx": "^4.0.0"
   },
   "peerDependencies": {
-    "@remnic/core": "^10.0.104",
+    "@remnic/core": "^10.0.105",
     "sherpa-onnx-node": "*",
-    "@remnic/capture-native-darwin-arm64": "^10.0.104",
-    "@remnic/capture-native-darwin-x64": "^10.0.104",
+    "@remnic/capture-native-darwin-arm64": "^10.0.105",
+    "@remnic/capture-native-darwin-x64": "^10.0.105",
     "@remnic/capture-native-linux": "^10.0.104"
   },
   "peerDependenciesMeta": {
