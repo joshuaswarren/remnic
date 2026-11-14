@@ -23,7 +23,7 @@ export interface LocalLlmChatCompletionOptions {
    * callers can classify it (e.g. HTTP 429 → rate-limited) in memory
    * instead of seeing only null. Never logged.
    */
-  failureDiag?: { lastError?: unknown };
+  failureDiag?: { lastError?: unknown; finishReason?: string };
 }
 
 export interface LocalLlmChatCompletionResult {
