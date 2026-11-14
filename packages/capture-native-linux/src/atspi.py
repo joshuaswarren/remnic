@@ -1,7 +1,8 @@
 """Read one window's accessibility tree over AT-SPI and print it as JSON.
 
 Usage: atspi.py --pid PID --title TITLE --max-nodes N [--url-only]
-Prints {"found": false} when the process is not on the accessibility bus, else
+Prints {"found": false} when the process is not on the accessibility bus or when not exactly one of its frames is
+named TITLE (a frame of another name may be another window, so it is never read), else
 {"found": true, "url": str|null, "root": node} where node is
 {role, name, description, text, showing, children}. With --url-only the reader reads the document address
 and no node name or text, and prints no "root". Exit 3 with one line on stderr when AT-SPI cannot be used.
@@ -63,15 +64,11 @@ def document_url(node, depth=0):
 
 
 def pick_frame(apps, title):
+    """The one frame named exactly `title`, or None. Another frame of the same process may be a window the caller did not
+    ask about, so a title that matches no frame, or more than one, reads nothing."""
     frames = [app.get_child_at_index(i) for app in apps for i in range(app.get_child_count())]
-    frames = [f for f in frames if f is not None]
-    for frame in frames:
-        if frame.get_name() == title:
-            return frame
-    for frame in frames:
-        if frame.get_state_set().contains(Atspi.StateType.ACTIVE):
-            return frame
-    return frames[0] if frames else None
+    named = [f for f in frames if f is not None and f.get_name() == title]
+    return named[0] if len(named) == 1 else None
 
 
 def main():

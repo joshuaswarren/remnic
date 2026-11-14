@@ -35,7 +35,7 @@ test("ax-snapshot returns app, title, window id and the tree of the focused wind
   assert.deepEqual(snapshot.tree.children, [{ role: "text", value: SENTENCE }]);
   const [call] = desktop.calls("python3");
   assert.match(call, /--pid 4242 /);
-  assert.match(call, /--title Notes - Editor/);
+  assert.match(call, /--title=Notes - Editor/);
 });
 
 test("ax-snapshot --pid reads the window of that process, not the focused one", async () => {
@@ -142,11 +142,12 @@ test("a browser document reports its address as browserUrl", async () => {
   assert.equal(result.json().browserUrl, "https://example.test/page");
 });
 
-test("an app that is not on the accessibility bus still gives its window, with an empty tree", async () => {
+test("an app that is not on the accessibility bus gives its window and a tree with no text, so OCR runs", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], atspi: { found: false } });
   const result = await helper(["ax-snapshot"], desktop);
   assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json().tree, { role: "window", title: "Notes - Editor" });
+  assert.deepEqual(result.json().tree, { role: "window" });
+  assert.equal(result.json().windowTitle, "Notes - Editor");
   assert.equal(result.json().windowId, "0xa1");
 });
 
@@ -154,8 +155,15 @@ test("when the AT-SPI reader cannot run, ax-snapshot still answers with the wind
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], atspi: "ModuleNotFoundError: gi", atspiExit: 3 });
   const result = await helper(["ax-snapshot"], desktop);
   assert.equal(result.code, 0);
-  assert.deepEqual(result.json().tree, { role: "window", title: "Notes - Editor" });
+  assert.deepEqual(result.json().tree, { role: "window" });
   assert.match(result.stderr, /AT-SPI is not available/);
+});
+
+test("a window title that starts with a dash is passed to the reader as one value", async () => {
+  const dashed = client({ title: "-x notes" });
+  const desktop = fakeDesktop({ active: dashed, clients: [dashed] });
+  await helper(["ax-snapshot"], desktop);
+  assert.match(desktop.calls("python3")[0], /--title=-x notes --max-nodes/);
 });
 
 test("--max-nodes bounds the tree the helper returns and is passed to the reader", async () => {

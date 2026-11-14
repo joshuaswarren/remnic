@@ -42,7 +42,7 @@ function toAxNode(raw, budget) {
  */
 async function readAtspi(window, maxNodes, urlOnly) {
   try {
-    const args = [READER, "--pid", String(window.pid), "--title", window.title, "--max-nodes", String(maxNodes)];
+    const args = [READER, "--pid", String(window.pid), `--title=${window.title}`, "--max-nodes", String(maxNodes)];
     if (urlOnly) args.push("--url-only");
     const out = await runTool("python3", args, { hint: "install python and its gobject bindings" });
     return JSON.parse(out.toString("utf8"));
@@ -66,7 +66,7 @@ export async function axSnapshot({ pid, windowId, windowOnly = false, maxNodes =
   const facts = await readAtspi(window, maxNodes, windowOnly);
   const snapshot = { app: window.class, windowTitle: window.title, windowId: window.address };
   if (!windowOnly) {
-    snapshot.tree = facts?.found ? toAxNode(facts.root, { left: maxNodes }) : { role: "window", title: window.title };
+    snapshot.tree = facts?.found ? toAxNode(facts.root, { left: maxNodes }) : { role: "window" };
   }
   if (facts?.found && typeof facts.url === "string" && facts.url) snapshot.browserUrl = facts.url;
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);

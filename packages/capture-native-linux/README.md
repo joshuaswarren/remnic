@@ -53,7 +53,9 @@ process, or the window `--window` names (`windowId` is the Hyprland address). `t
 accessibility bus (AT-SPI). A password field keeps only its role, so no text of it or of anything under it
 leaves the helper. `--window-only` prints `{app, windowTitle, windowId, browserUrl?}` and reads no node name or
 text; a caller applies its deny list to that before it asks for the tree. An app that is not on the
-accessibility bus gives its window and a one-node tree, and the reason goes to stderr.
+accessibility bus gives its window and a one-node tree with no text, and the reason goes to stderr. The reader reads only the
+frame whose name equals the window's title. A process whose frames do not match (a retitled window, two windows with one
+title) gives the same empty tree, never another window's content.
 
 `ocr-window` prints `{"text": "..."}`. The helper takes the window's rectangle from the screen with `grim` and
 pipes it to `tesseract`, so no image is written to disk. An unknown window exits 1.
@@ -63,7 +65,7 @@ Limits you can measure on your own machine:
 - The accessibility bus is off by default (`org.a11y.Status IsEnabled` is false) and toolkits expose nothing
   until it is on. This helper does not change that desktop-wide setting. Turn it on with
   `busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true`. Without it the
-  tree is the window title, the capture daemon falls back to OCR, and OCR needs no setting.
+  tree has no text, the capture daemon falls back to OCR, and OCR needs no setting.
 - Chromium needs `--force-renderer-accessibility`; Qt needs `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` and
   exposes the text of a QML field only when the app sets `Accessible`. Terminals such as foot are not on the bus,
   so they go through OCR.
