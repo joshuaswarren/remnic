@@ -21,6 +21,7 @@
  * when the directory is not inside a git worktree, because being outside a
  * repo is a normal runtime state (e.g. agent opened in a scratch dir).
  */
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { abortError } from "../abort-error.js";
@@ -391,19 +392,53 @@ export async function resolveGitContext(
   // A cache hit must not mask cancellation or an exhausted deadline.
   throwIfInterrupted(options);
   const hit = cache.get(cwd);
-  if (hit !== undefined) return hit;
+  if (hit === null) return hit;
+  if (hit !== undefined) {
+    // The branch moves on checkout and picks the write/recall namespace, so a
+    // hit re-reads it (one small file, no spawn); anything unreadable re-resolves.
+    const branch = await readHeadBranch(hit.rootPath);
+    if (branch !== undefined) return { ...hit, branch };
+  }
   // Timeouts and spawn failures are not answers about the repo, so a lookup
   // that hit one (even partially) is never cached.
   let inconclusive = false;
   const inner = options.invoker ?? defaultGitInvoker();
   const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
-    const result = await inner(probeCwd, args, invokeOptions);
+    let result: GitInvokeResult;
+    try {
+      result = await inner(probeCwd, args, invokeOptions);
+    } catch (err) {
+      inconclusive = true;
+      throw err;
+    }
     if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) inconclusive = true;
     return result;
   };
   const value = await resolveGitContextUncached(cwd, { ...options, invoker });
   if (!inconclusive) cache.set(cwd, value);
   return value;
+}
+
+/**
+ * Current branch from `HEAD` without spawning git. `null` = detached,
+ * `undefined` = could not tell (caller falls back to a full resolve).
+ */
+async function readHeadBranch(rootPath: string): Promise<string | null | undefined> {
+  try {
+    let gitDir = path.join(rootPath, ".git");
+    if ((await stat(gitDir)).isFile()) {
+      // Linked worktree: `.git` is a file pointing at the real git dir.
+      const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(gitDir, "utf-8"));
+      if (!pointer?.[1]) return undefined;
+      gitDir = path.resolve(rootPath, pointer[1].trim());
+    }
+    const head = (await readFile(path.join(gitDir, "HEAD"), "utf-8")).trim();
+    const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
+    if (ref?.[1]) return ref[1];
+    return /^[0-9a-f]{40,64}$/.test(head) ? null : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function throwIfInterrupted(options: ResolveGitContextOptions): void {
