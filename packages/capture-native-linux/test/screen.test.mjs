@@ -263,6 +263,17 @@ test("ocr-window --title drops the text of a window that moved while its pixels 
   assert.equal(result.json().text, "");
 });
 
+test("ocr-window drops the frame when another window covers the target while its pixels are taken", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
+  const cover = client({ address: "0xc3", at: [500, 300], size: [800, 600], class: "pinentry", title: "Unlock", pid: 1 });
+  const covered = JSON.stringify([EDITOR, cover]);
+  writeFileSync(path.join(desktop.dir, "bin", "grim"), `#!/bin/sh\nprintf '%s' '${covered}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /covered by another window/);
+  assert.doesNotMatch(result.stdout, /COVERING WINDOW CONTENT/);
+});
+
 test("a window with no text gives an empty string, not an error", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "  \n" });
   const result = await helper(["ocr-window"], desktop);

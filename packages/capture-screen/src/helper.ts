@@ -260,6 +260,9 @@ function decodeAxTree(root: ShallowAxNode): AxNode {
 const HelperEnvelopeSchema = z.looseObject({});
 type HelperEnvelope = z.infer<typeof HelperEnvelopeSchema>;
 
+/** The `ocr-window` answer: the text, and the title the helper read it under when it reports one. */
+const OcrAnswerSchema = z.looseObject({ text: z.string(), windowTitle: z.string().optional().catch(undefined) });
+
 /** One window-fact field the helper reports: absent, `null` or mistyped means "not reported". */
 const HelperTextField = z.string();
 
@@ -368,18 +371,14 @@ export class NativeHelper {
     if (opts.windowId !== undefined) args.push("--window", opts.windowId);
     else args.push("--frontmost");
     const json = await this.#runPinned("ocr-window", args, opts.expectTitle);
-    if ("text" in json) {
-      const text: unknown = json.text;
-      if (typeof text === "string") {
-        if (opts.expectTitle === undefined || !this.#titlePinUnsupported.has("ocr-window")) return text;
-        // A helper that cannot pin OCR must say which title it read; text read under any other title is dropped.
-        const read: unknown = json.windowTitle;
-        if (typeof read !== "string") {
-          throw new CaptureInputError("native helper cannot pin ocr-window to a title and did not report the title it read");
-        }
-        return read === opts.expectTitle ? text : "";
-      }
+    const answer = OcrAnswerSchema.safeParse(json);
+    if (!answer.success) throw new CaptureInputError("native helper ocr-window did not return a text field");
+    const { text, windowTitle } = answer.data;
+    if (opts.expectTitle === undefined || !this.#titlePinUnsupported.has("ocr-window")) return text;
+    // A helper that cannot pin OCR must say which title it read; text read under any other title is dropped.
+    if (windowTitle === undefined) {
+      throw new CaptureInputError("native helper cannot pin ocr-window to a title and did not report the title it read");
     }
-    throw new CaptureInputError("native helper ocr-window did not return a text field");
+    return windowTitle === opts.expectTitle ? text : "";
   }
 }
