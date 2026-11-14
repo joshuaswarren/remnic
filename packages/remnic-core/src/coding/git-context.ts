@@ -21,7 +21,7 @@
  * when the directory is not inside a git worktree, because being outside a
  * repo is a normal runtime state (e.g. agent opened in a scratch dir).
  */
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { abortError } from "../abort-error.js";
@@ -332,7 +332,7 @@ export interface ResolveGitContextOptions {
 
 /** Short-lived, bounded memo of git resolution per cwd (COS-666). */
 export class GitContextCache {
-  private readonly entries = new Map<string, { value: GitContext | null; at: number }>();
+  private readonly entries = new Map<string, { value: GitContext | null; head?: string; at: number }>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
@@ -350,23 +350,23 @@ export class GitContextCache {
     return this.get(key) !== undefined;
   }
 
-  /** `undefined` = miss; `null` = cached "not a repo". */
-  get(key: string): GitContext | null | undefined {
+  /** `undefined` = miss; `value: null` = cached "not a repo". */
+  get(key: string): { value: GitContext | null; head?: string } | undefined {
     const hit = this.entries.get(key);
     if (!hit) return undefined;
     if (this.now() - hit.at >= this.ttlMs) {
       this.entries.delete(key);
       return undefined;
     }
-    return hit.value;
+    return hit;
   }
 
-  set(key: string, value: GitContext | null): void {
+  set(key: string, value: GitContext | null, head?: string): void {
     // Negative-only caches never hold a branch, so a session snapshot taken
     // from them cannot carry a stale one.
     if (value !== null && !this.cacheRepos) return;
     this.entries.delete(key);
-    this.entries.set(key, { value, at: this.now() });
+    this.entries.set(key, { value, head, at: this.now() });
     if (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next();
       if (!oldest.done) this.entries.delete(oldest.value);
@@ -392,12 +392,11 @@ export async function resolveGitContext(
   // A cache hit must not mask cancellation or an exhausted deadline.
   throwIfInterrupted(options);
   const hit = cache.get(cwd);
-  if (hit === null) return hit;
-  if (hit !== undefined) {
-    // The branch moves on checkout and picks the write/recall namespace, so a
-    // hit re-reads it (one small file, no spawn); anything unreadable re-resolves.
-    const branch = await readHeadBranch(hit.rootPath);
-    if (branch !== undefined) return { ...hit, branch };
+  if (hit?.value === null) return null;
+  // The branch picks the write/recall namespace and git alone decides it, so a
+  // hit is served only while HEAD is byte-identical to what git answered for.
+  if (hit?.value && hit.head !== undefined && (await readHeadFile(hit.value.rootPath)) === hit.head) {
+    return { ...hit.value };
   }
   // Timeouts and spawn failures are not answers about the repo, so a lookup
   // that hit one (even partially) is never cached.
@@ -415,15 +414,21 @@ export async function resolveGitContext(
     return result;
   };
   const value = await resolveGitContextUncached(cwd, { ...options, invoker });
-  if (!inconclusive) cache.set(cwd, value);
+  if (inconclusive) return value;
+  // shortcut: HEAD is read after git answered, so a checkout in that few-ms gap
+  // caches the old branch with the new HEAD until the next checkout or TTL expiry.
+  const head = value ? await readHeadFile(value.rootPath) : undefined;
+  if (value === null || head !== undefined) cache.set(cwd, value, head);
   return value;
 }
 
 /**
- * Current branch from `HEAD` without spawning git. `null` = detached,
- * `undefined` = could not tell (caller falls back to a full resolve).
+ * Raw `HEAD` contents without spawning git, or `undefined` when they cannot
+ * vouch for the branch: unreadable, a symlinked HEAD (old
+ * `core.preferSymlinkRefs`), or reftable's constant `refs/heads/.invalid`
+ * placeholder (HEAD never changes on checkout there). Callers then re-resolve.
  */
-async function readHeadBranch(rootPath: string): Promise<string | null | undefined> {
+async function readHeadFile(rootPath: string): Promise<string | undefined> {
   try {
     let gitDir = path.join(rootPath, ".git");
     if ((await stat(gitDir)).isFile()) {
@@ -432,10 +437,10 @@ async function readHeadBranch(rootPath: string): Promise<string | null | undefin
       if (!pointer?.[1]) return undefined;
       gitDir = path.resolve(rootPath, pointer[1].trim());
     }
-    const head = (await readFile(path.join(gitDir, "HEAD"), "utf-8")).trim();
-    const ref = /^ref:\s*refs\/heads\/(.+)$/.exec(head);
-    if (ref?.[1]) return ref[1];
-    return /^[0-9a-f]{40,64}$/.test(head) ? null : undefined;
+    const headPath = path.join(gitDir, "HEAD");
+    if ((await lstat(headPath)).isSymbolicLink()) return undefined;
+    const head = await readFile(headPath, "utf-8");
+    return head.includes("refs/heads/.invalid") ? undefined : head;
   } catch {
     return undefined;
   }
