@@ -2,4 +2,6 @@
 "@remnic/core": patch
 ---
 
-Generate memory IDs with collision-resistant UUIDs so concurrent writes cannot overwrite one another.
+Use timestamped UUIDs for memory and artifact IDs to prevent concurrent writes from overwriting one another.
+
+Stability: stable

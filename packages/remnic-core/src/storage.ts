@@ -3728,7 +3728,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (refIds) options = entityRefs.canonicalizeEntityRefOption(options, refIds);
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
-    const id = `${category}-${randomUUID()}`;
+    const id = `${category}-${Date.now()}-${randomUUID()}`;
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
@@ -4209,7 +4209,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const dir = path.join(this.artifactsDir, day);
     await mkdir(dir, { recursive: true });
 
-    const id = `artifact-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const id = `artifact-${Date.now()}-${randomUUID()}`;
     const fm: MemoryFrontmatter = {
       id,
       category: "fact",
