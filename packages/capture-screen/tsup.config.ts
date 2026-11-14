@@ -7,6 +7,7 @@ export default defineConfig({
   platform: "node",
   outDir: "dist",
   clean: true,
+  removeNodeProtocol: false,
   dts: true,
   noExternal: ["@remnic/core/activity/digest"],
 });
