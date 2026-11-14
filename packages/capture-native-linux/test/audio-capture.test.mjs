@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -203,6 +203,42 @@ test("an existing output directory that others can open is made private", async 
   await tools.waitForRecorderCalls(1);
   assert.equal((await helper.stop()).code, 0);
   assert.equal(statSync(out).mode & 0o777, 0o700);
+});
+
+test("a symlinked or non-directory --out is refused without touching the target", async () => {
+  const tools = fakeTools(DUMP);
+  const base = tempDir();
+  const victim = path.join(base, "victim");
+  mkdirSync(victim, { mode: 0o755 });
+  chmodSync(victim, 0o755);
+  writeFileSync(path.join(victim, "keep.txt"), "keep");
+
+  const link = path.join(base, "out");
+  symlinkSync(victim, link);
+  const symlinked = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", link], tools.env);
+  const killSwitch = setTimeout(() => symlinked.child.kill("SIGKILL"), 5000);
+  const { code } = await symlinked.exited;
+  clearTimeout(killSwitch);
+  for (const pid of tools.recorderPids()) {
+    try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
+  assert.equal(code, 1);
+  assert.match(symlinked.stderr(), /is not a plain directory/);
+  assert.doesNotMatch(symlinked.stderr(), /\n\s+at /, "one plain line, no stack trace");
+  assert.equal(symlinked.stdout(), "");
+
+  const plainFile = path.join(base, "out-file");
+  writeFileSync(plainFile, "x");
+  const fileOut = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", plainFile], tools.env);
+  const { code: fileCode } = await fileOut.exited;
+  assert.equal(fileCode, 1);
+  assert.match(fileOut.stderr(), /is not a plain directory/);
+  assert.equal(fileOut.stdout(), "");
+
+  assert.deepEqual(tools.recorderCalls(), [], "no recorder is ever started");
+  assert.equal(statSync(victim).mode & 0o777, 0o755, "the symlink target's mode is not narrowed");
+  assert.equal(readFileSync(path.join(victim, "keep.txt"), "utf8"), "keep");
+  assert.deepEqual(readdirSync(victim), ["keep.txt"], "no capture data reaches the target");
 });
 
 test("a machine without pw-record gets one line that names the package to install", async () => {
