@@ -1,10 +1,11 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
+import { readNativeChunks, readEntityIndexStateText } from "./entity-recall-reads.js";
 import { renderAuthorityBoundContent } from "./recall-context-composition.js";
 import { createHash } from "node:crypto";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { collectNativeKnowledgeChunks, type NativeKnowledgeChunk } from "./native-knowledge.js";
+import type { NativeKnowledgeChunk } from "./native-knowledge.js";
 import { compareEntityTimestamps, normalizeEntityName, type StorageManager } from "./storage.js";
 import { normalizeEntityText, resolveRequestedEntitySectionKeys } from "./entity-schema.js";
 import type { EntityStructuredSection, MemoryFile, PluginConfig, TranscriptEntry } from "./types.js";
@@ -238,19 +239,6 @@ function buildAliasIndex(entries: EntityMentionIndexEntry[]): Map<string, Entity
   }
   return index;
 }
-async function readNativeChunks(
-  config: PluginConfig,
-  recallNamespaces?: string[],
-): Promise<NativeKnowledgeChunk[]> {
-  if (!config.nativeKnowledge?.enabled) return [];
-  return collectNativeKnowledgeChunks({
-    workspaceDir: config.workspaceDir,
-    memoryDir: config.memoryDir,
-    config: config.nativeKnowledge,
-    recallNamespaces: resolveNamespaceCapabilities(config).namespaces ? recallNamespaces : undefined,
-    defaultNamespace: config.defaultNamespace,
-  }).catch(() => []);
-}
 async function resolveEntityIndexStorages(
   storage: StorageManager,
   config: PluginConfig,
@@ -284,8 +272,11 @@ function entityIndexStatePath(storage: StorageManager): string {
   return path.join(storage.dir, "state", "entity-mention-index.json");
 }
 
-async function readEntityIndexState(storage: StorageManager): Promise<EntityMentionIndex | null> {
-  const raw = await readFile(entityIndexStatePath(storage), "utf-8").catch(() => "");
+async function readEntityIndexState(
+  storage: StorageManager,
+  abortSignal?: AbortSignal,
+): Promise<EntityMentionIndex | null> {
+  const raw = await readEntityIndexStateText(entityIndexStatePath(storage), abortSignal);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<EntityMentionIndex>;
@@ -300,6 +291,7 @@ async function readCurrentPersistedEntityIndex(
   config: PluginConfig,
   recallNamespaces?: string[],
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
+  abortSignal?: AbortSignal,
 ): Promise<EntityMentionIndex | null> {
   if (
     resolveNamespaceCapabilities(config).namespaces &&
@@ -309,7 +301,8 @@ async function readCurrentPersistedEntityIndex(
   ) {
     return null;
   }
-  const index = await readEntityIndexState(storage);
+  const index = await readEntityIndexState(storage, abortSignal);
+  checkEntityRecallAbort(abortSignal);
   if (!entityMentionPersistedIndexReadable(storage.dir) || !index || index.entityStatusVersion !== storage.getMemoryStatusVersion()) {
     return null;
   }
@@ -430,12 +423,12 @@ async function buildEntityMentionIndex(
   const persistGeneration = entityMentionCacheGeneration(storage.dir);
   const entityStatusVersionBefore = shouldPersistIndex ? storage.getMemoryStatusVersion() : undefined;
   const [previousIndex, entityFileSets, memorySets, nativeChunks] = await Promise.all([
-    shouldPersistIndex ? readEntityIndexState(storage) : Promise.resolve(null),
+    shouldPersistIndex ? readEntityIndexState(storage, abortSignal) : Promise.resolve(null),
     Promise.all(storages.map((scopedStorage) => scopedStorage.readAllEntityFiles({ abortSignal }))),
     carrySnippets
       ? Promise.resolve([])
       : Promise.all(storages.map((scopedStorage) => scopedStorage.readAllMemories({ abortSignal }))),
-    nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces),
+    nativeChunksOverride ? Promise.resolve(nativeChunksOverride) : readNativeChunks(config, recallNamespaces, abortSignal),
   ]);
   // The bulk reads now stop at their own scan boundaries (issue #2307); this
   // checkpoint still guards the (larger) indexing pass over their results.
@@ -996,6 +989,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.config,
       options.recallNamespaces,
       options.namespaceStorage,
+      options.abortSignal,
     );
   checkEntityRecallAbort(options.abortSignal);
   let nativeChunks: NativeKnowledgeChunk[] | undefined;
@@ -1004,7 +998,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     persistedIndex &&
     resolveLanguageIndependentExplicitCandidates(persistedIndex, options.query).length === 0
   ) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
     if (!hasFreshNativeExplicitMention(persistedIndex, nativeChunks, options.query)) {
       return entityRecallSectionAbsent(options.abortSignal);
     }
@@ -1014,7 +1008,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     options.namespaceStorage !== undefined &&
     (options.recallNamespaces?.length ?? 0) > 0;
   if (namespaceScoped) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
   }
   const resolvedStorages = namespaceScoped
     ? await resolveEntityIndexStorages(
@@ -1025,7 +1019,7 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
     )
     : undefined;
   if (!nativeChunks) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces);
+    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
   }
   const indexStorages = resolvedStorages ?? [options.storage];
   const index = await resolveEntityMentionIndex({
