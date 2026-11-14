@@ -14,8 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner
-} from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner } from "@remnic/core";
 import type { BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
 import { startEventLoopLagMonitor } from "./event-loop-lag.js";
 import { logShutdownPhase, shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
@@ -880,13 +879,13 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
     throw err;
   }
-  const stopEventLoopLagMonitor = startEventLoopLagMonitor();
 
   // Fire-and-forget: wait for deferred init (QMD probe, collection setup,
   // warmup) then check QMD availability and retry if needed. This does NOT
   // block the server listener — connections are accepted immediately above.
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
+  startEventLoopLagMonitor({ signal: startupSyncAbort.signal });
   const readinessAbort = new AbortController();
   let startupSyncInFlight: Promise<boolean> | undefined;
   const ensureStartupSync = async (signal: AbortSignal): Promise<boolean> => {
@@ -937,7 +936,6 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       const finishCodex = beginCodexSubscriptionShutdown(codexRunner);
-      stopEventLoopLagMonitor();
       startupSyncAbort.abort();
       readinessAbort.abort();
       supportPassportRuntime.close();

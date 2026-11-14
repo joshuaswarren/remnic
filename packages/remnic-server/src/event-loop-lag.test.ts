@@ -49,3 +49,23 @@ test("stop disarms the timer", () => {
   h.stop();
   assert.equal(h.armed(), false);
 });
+
+test("aborting the signal stops the monitor, and an already-aborted signal never arms it", () => {
+  let armed = false;
+  const schedule = () => {
+    armed = true;
+    return () => {
+      armed = false;
+    };
+  };
+  const live = new AbortController();
+  startEventLoopLagMonitor({ sample: () => ({ p99Ms: 0, maxMs: 0 }), schedule, signal: live.signal });
+  assert.equal(armed, true);
+  live.abort();
+  assert.equal(armed, false);
+
+  const done = new AbortController();
+  done.abort();
+  startEventLoopLagMonitor({ sample: () => ({ p99Ms: 0, maxMs: 0 }), schedule, signal: done.signal });
+  assert.equal(armed, false);
+});

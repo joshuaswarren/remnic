@@ -15,6 +15,8 @@ export interface EventLoopLagOptions {
   warn?: (message: string) => void;
   /** Returns a disarm function. Injectable for tests. */
   schedule?: (fn: () => void, intervalMs: number) => () => void;
+  /** Stops the monitor when aborted (the daemon's shutdown signal). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -52,8 +54,11 @@ export function startEventLoopLagMonitor(options: EventLoopLagOptions = {}): () 
       warn(`event loop lag: p99=${Math.round(p99Ms)}ms max=${Math.round(maxMs)}ms over last ${intervalMs / 1000}s`);
     }
   }, intervalMs);
-  return () => {
+  const stop = () => {
     disarm();
     stopHistogram();
   };
+  if (options.signal?.aborted) stop();
+  else options.signal?.addEventListener("abort", stop, { once: true });
+  return stop;
 }
