@@ -2,6 +2,6 @@
 "@remnic/capture-native-linux": patch
 ---
 
-Refuse a symlinked audio output directory before changing its target or starting a recorder.
+Check every audio output path component before recording. Refuse symlinks, including suffixed forms, and parents that let other users replace the private output directory.
 
 Stability: stable

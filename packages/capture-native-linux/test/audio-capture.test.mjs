@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -239,6 +239,89 @@ test("a symlinked or non-directory --out is refused without touching the target"
   assert.equal(statSync(victim).mode & 0o777, 0o755, "the symlink target's mode is not narrowed");
   assert.equal(readFileSync(path.join(victim, "keep.txt"), "utf8"), "keep");
   assert.deepEqual(readdirSync(victim), ["keep.txt"], "no capture data reaches the target");
+});
+
+for (const suffix of ["/", "/.", "/..", "/../new/chunks"]) {
+  test(`a suffixed output symlink ${suffix} cannot change or receive capture data`, async (t) => {
+    const tools = fakeTools(DUMP);
+    const base = tempDir();
+    t.after(() => rmSync(base, { recursive: true, force: true }));
+    t.after(() => rmSync(tools.dir, { recursive: true, force: true }));
+    chmodSync(base, 0o755);
+    const victim = path.join(base, "victim");
+    mkdirSync(victim, { mode: 0o755 });
+    chmodSync(victim, 0o755);
+    writeFileSync(path.join(victim, "keep.txt"), "keep");
+    const link = path.join(base, "out");
+    symlinkSync(victim, link);
+    const target = suffix.includes("..") ? base : victim;
+    const entries = readdirSync(target);
+    const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", `${link}${suffix}`], {
+      ...tools.env, FAKE_PCM_BYTES: String(BYTES_PER_SECOND), FAKE_EXIT_CODE: "0",
+    });
+    t.after(() => helper.child.kill("SIGKILL"));
+    const { code } = await helper.exited;
+    assert.equal(statSync(target).mode & 0o777, 0o755, "the target mode is unchanged");
+    assert.deepEqual(readdirSync(target), entries, "no capture data or directory reaches the target");
+    assert.equal(readFileSync(path.join(victim, "keep.txt"), "utf8"), "keep");
+    assert.equal(code, 1);
+    assert.match(helper.stderr(), /is not a plain directory/);
+    assert.equal(helper.stdout(), "");
+    assert.deepEqual(tools.recorderCalls(), []);
+  });
+}
+
+test("a shared writable parent cannot redirect chunks during startup", async (t) => {
+  const tools = fakeTools(DUMP);
+  const base = tempDir();
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(tools.dir, { recursive: true, force: true }));
+  chmodSync(base, 0o755);
+  const shared = path.join(base, "shared");
+  const out = path.join(shared, "chunks");
+  const moved = path.join(shared, "moved");
+  const victim = path.join(base, "victim");
+  mkdirSync(shared, { mode: 0o777 });
+  chmodSync(shared, 0o777);
+  mkdirSync(out, { mode: 0o700 });
+  mkdirSync(victim, { mode: 0o777 });
+  chmodSync(victim, 0o777);
+  writeFileSync(path.join(tools.dir, "pw-dump"), `#!/usr/bin/env node
+import { readFileSync, renameSync, symlinkSync } from "node:fs";
+renameSync(${JSON.stringify(out)}, ${JSON.stringify(moved)});
+symlinkSync(${JSON.stringify(victim)}, ${JSON.stringify(out)});
+process.stdout.write(readFileSync(${JSON.stringify(DUMP)}));
+`);
+  const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", out], {
+    ...tools.env, FAKE_PCM_BYTES: String(BYTES_PER_SECOND), FAKE_EXIT_CODE: "0",
+  });
+  t.after(() => helper.child.kill("SIGKILL"));
+  const { code } = await helper.exited;
+  assert.deepEqual(readdirSync(victim), [], "startup cannot redirect a chunk into the replacement directory");
+  assert.equal(existsSync(moved), false, "the replaceable parent is refused before the startup subprocess runs");
+  assert.equal(code, 1);
+  assert.match(helper.stderr(), /is not a trusted directory/);
+  assert.equal(helper.stdout(), "");
+  assert.deepEqual(tools.recorderCalls(), []);
+});
+
+test("relative parent components still resolve within trusted private directories", async (t) => {
+  const tools = fakeTools(DUMP);
+  const base = tempDir();
+  t.after(() => rmSync(base, { recursive: true, force: true }));
+  t.after(() => rmSync(tools.dir, { recursive: true, force: true }));
+  const target = path.join(base, "parent", "chunks");
+  const out = `./${path.relative(process.cwd(), target)}/../chunks`;
+  const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", out], {
+    ...tools.env, FAKE_PCM_BYTES: String(BYTES_PER_SECOND), FAKE_EXIT_CODE: "0",
+  });
+  t.after(() => helper.child.kill("SIGKILL"));
+  await helper.exited;
+  const [event] = helper.events();
+  assert.equal(path.dirname(path.resolve(event.path)), target);
+  assert.equal(wavParts(event.path).pcm.length, BYTES_PER_SECOND);
+  assert.equal(statSync(target).mode & 0o777, 0o700);
+  assert.equal(statSync(event.path).mode & 0o777, 0o600);
 });
 
 test("a machine without pw-record gets one line that names the package to install", async () => {
