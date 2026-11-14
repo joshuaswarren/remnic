@@ -160,7 +160,10 @@ function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | nu
     `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 const args = process.argv.slice(2);
 const full = { app: "kitty", windowTitle: "shell", windowId: "0xa1", tree: { role: "AXWindow" } };
-if (args.includes("--title")) {
+if (args[0] === "ocr-window") {
+  ${title === "ok" ? "" : `if (args.includes("--title")) process.exit(${title});`}
+  process.stdout.write(JSON.stringify({ text: "ocr text" }));
+} else if (args.includes("--title")) {
   ${title === "ok" ? `process.stdout.write(JSON.stringify(full));` : `process.exit(${title});`}
 } else if (args.includes("--window-only")) {
   ${windowOnly === "ok" ? `process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: "0xa1", browserUrl: "https://example.org/" }));` : `process.exit(${windowOnly});`}
@@ -235,5 +238,26 @@ test("a helper that refuses --title with status 2 is read without it, and the re
 test("any other failure of a pinned read is an error, never a read without the pin", async () => {
   const { file, calls } = loggingHelper("pin-broken.js", "ok", 1);
   await assert.rejects(new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
+});
+
+test("an OCR read pinned to a title sends --title with the window id", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-ok.js", "ok");
+  assert.equal(await new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "ocr text");
+  assert.deepEqual(calls(), [["ocr-window", "--window", "0xa1", "--title", "shell"]]);
+});
+
+test("a helper that refuses --title on an OCR read is read without it, and the refusal is remembered", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-legacy.js", "ok", 2);
+  const helper = new NativeHelper(file);
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "ocr text");
+  await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(calls().filter((c) => c.includes("--title")).length, 1, "the refusal is remembered");
+  assert.equal(calls().filter((c) => !c.includes("--title")).length, 2);
+});
+
+test("any other failure of a pinned OCR read is an error, never a read without the pin", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-broken.js", "ok", 1);
+  await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
   assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
 });

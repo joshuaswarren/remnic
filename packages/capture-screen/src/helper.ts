@@ -202,6 +202,8 @@ export interface AxSnapshot {
 export interface OcrWindowOptions {
   frontmost?: boolean;
   windowId?: string;
+  /** Read the pixels only while the window still has this title (the one the caller checked); a retitled window gives no text. */
+  expectTitle?: string;
 }
 
 /** The `ax-snapshot` arguments that pick the window: by id, by process, or the one in front. */
@@ -270,7 +272,7 @@ const HelperWindowIdField = z.union([z.string(), z.number().transform(String)]).
 /** Decode one helper JSON answer at the boundary: anything but an object throws the sanitized error. */
 function envelopeOrThrow<T>(json: T): HelperEnvelope {
   const parsed = HelperEnvelopeSchema.safeParse(json);
-  if (!parsed.success) throw new CaptureInputError("native helper ax-snapshot did not return an object");
+  if (!parsed.success) throw new CaptureInputError("native helper did not return an object");
   return parsed.data;
 }
 
@@ -299,7 +301,7 @@ function readWindowFields(json: HelperEnvelope): Omit<WindowContext, "snapshot">
 export class NativeHelper {
   readonly binaryPath: string;
   #windowOnlyUnsupported = false;
-  #titlePinUnsupported = false;
+  readonly #titlePinUnsupported = new Set<string>();
 
   constructor(binaryPath: string) {
     this.binaryPath = binaryPath;
@@ -335,7 +337,7 @@ export class NativeHelper {
   async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
     const args = axTarget(opts);
     if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
-    const json = await this.#runPinned(args, opts.expectTitle);
+    const json = await this.#runPinned("ax-snapshot", args, opts.expectTitle);
     if (!("tree" in json)) {
       throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
     }
@@ -346,26 +348,27 @@ export class NativeHelper {
     return { ...readWindowFields(json), tree: decodeAxTree(tree.data) };
   }
 
-  async #runPinned(args: string[], expectTitle: string | undefined): Promise<HelperEnvelope> {
-    if (expectTitle === undefined || this.#titlePinUnsupported) {
+  /** Run a helper command with `--title`. A helper that exits with status 2 does not know the flag: the command then runs without it, and the refusal is remembered per command. */
+  async #runPinned(command: string, args: string[], expectTitle: string | undefined): Promise<HelperEnvelope> {
+    if (expectTitle === undefined || this.#titlePinUnsupported.has(command)) {
       return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
     }
     try {
-      return await envelopeOrThrow(await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]));
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]));
     } catch (error) {
       if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
-      this.#titlePinUnsupported = true;
+      this.#titlePinUnsupported.add(command);
       return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
     }
   }
 
-  /** `<helper> ocr-window [--frontmost|--window ID]` -> `{ text }` JSON. */
+  /** `<helper> ocr-window [--frontmost|--window ID] [--title T]` -> `{ text }` JSON; a window retitled since T gives empty text. */
   async ocrWindow(opts: OcrWindowOptions = {}): Promise<string> {
     const args = ["ocr-window"];
     if (opts.windowId !== undefined) args.push("--window", opts.windowId);
     else args.push("--frontmost");
-    const json = await runHelperCommand(this.binaryPath, args);
-    if (json !== null && typeof json === "object" && !Array.isArray(json) && "text" in json) {
+    const json = await this.#runPinned("ocr-window", args, opts.expectTitle);
+    if ("text" in json) {
       const text: unknown = json.text;
       if (typeof text === "string") return text;
     }

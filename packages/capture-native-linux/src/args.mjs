@@ -63,13 +63,14 @@ export function parseAxArgs(argv) {
   return parsed;
 }
 
-/** `ocr-window [--frontmost | --window ID]`. */
+/** `ocr-window [--frontmost | --window ID] [--title T]`. `--title T` reads the pixels only while the window still has the title T the caller checked. */
 export function parseOcrArgs(argv) {
   const parsed = {};
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === "--frontmost") continue;
     if (flag === "--window") parsed.windowId = valueOf(argv, (i += 1), flag);
+    else if (flag === "--title") parsed.expectTitle = valueOf(argv, (i += 1), flag);
     else throw new UsageError(`unknown argument ${flag}`);
   }
   return parsed;

@@ -98,9 +98,12 @@ export async function captureFromSnapshot(
       // under. The deny preflight above ran against this same window
       // identity, so the resolved OCR target is the window that was checked.
       // Without an id (legacy helper) frontmost is the only target available
-      // and the preflight against the snap identity remains the guard.
+      // and the preflight against the snap identity remains the guard. The
+      // title pin covers the gap after the preflight: a window retitled
+      // since (to a deny-listed title, say) is not read, and its pixels
+      // never get stored under the old title.
       const ocrText = await helper.ocrWindow(
-        snap.windowId !== undefined ? { windowId: snap.windowId } : { frontmost: true },
+        { ...(snap.windowId !== undefined ? { windowId: snap.windowId } : { frontmost: true }), expectTitle: snap.windowTitle },
       );
       if (ocrText.trim() !== "") {
         candidate.text = ocrText;

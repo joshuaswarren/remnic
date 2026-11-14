@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import { run } from "./harness.mjs";
@@ -212,6 +214,32 @@ test("ocr-window --frontmost reads the focused window", async () => {
   const result = await helper(["ocr-window", "--frontmost"], desktop);
   assert.equal(result.code, 0, result.stderr);
   assert.deepEqual(desktop.calls("grim"), ["-g 100,80 800x600 -t png -"]);
+});
+
+test("ocr-window --title reads the window only while it still has that title", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: SENTENCE });
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: SENTENCE });
+});
+
+test("ocr-window --title on a window retitled since the caller looked reads no pixels and reports the new title", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Quarterly plan - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: "", windowTitle: "Notes - Editor" });
+  assert.deepEqual(desktop.calls("grim"), [], "the retitled window's pixels were never read");
+  assert.deepEqual(desktop.calls("tesseract"), []);
+});
+
+test("ocr-window --title on a window retitled while its pixels were read drops the text", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
+  const vault = JSON.stringify([{ ...EDITOR, title: "PRIVATE VAULT" }]);
+  const grim = path.join(desktop.dir, "bin", "grim");
+  writeFileSync(grim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\nprintf '%s' '${vault}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: "", windowTitle: "PRIVATE VAULT" });
 });
 
 test("a window with no text gives an empty string, not an error", async () => {

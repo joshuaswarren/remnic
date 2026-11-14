@@ -33,7 +33,11 @@ test("focus change between ax-snapshot and OCR: OCR targets the snapshot window 
 
   const decision = await captureFromSnapshot(snap, helper, processor, config, "2026-08-17T00:00:00.000Z");
 
-  assert.deepEqual(calls, [{ windowId: "A" }], "OCR must target the snapshot window, not the frontmost");
+  assert.deepEqual(
+    calls,
+    [{ windowId: "A", expectTitle: "shell" }],
+    "OCR must target the snapshot window and read it only while it has the title the deny list checked",
+  );
   assert.equal(decision.action, "store");
   if (decision.action === "store") {
     assert.equal(decision.snapshot.text, "window A ocr text");
