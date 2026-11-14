@@ -98,7 +98,7 @@ export class CaptureScheduler {
     if (this.#inflight) return;
     this.#inflight = true;
     try {
-      const context = await this.#helper.windowContext({ frontmost: true });
+      const context = await this.#helper.windowContext({ frontmost: true, maxNodes: this.#config.maxNodes });
       const key = `${context.app}\u0000${context.windowTitle}\u0000${context.browserUrl ?? ""}`;
       const now = this.#clock.now();
       // Anchor the idle heartbeat to the first poll so the fallback measures from

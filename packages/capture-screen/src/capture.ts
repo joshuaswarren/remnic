@@ -67,7 +67,7 @@ export interface CaptureCandidate {
 
 export type CaptureDecision =
   | { action: "denied"; rule: string }
-  | { action: "skipped"; reason: "ocr-unavailable" | "dedup" }
+  | { action: "skipped"; reason: "ocr-unavailable" | "dedup" | "identity-changed" }
   | { action: "store"; snapshot: SnapshotInput };
 
 /** OCR seam: returns extracted text for a candidate, or null when unavailable. */

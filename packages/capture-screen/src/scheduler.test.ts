@@ -63,6 +63,30 @@ function axWindow(app: string, windowTitle: string, text: string): AxSnapshot {
   };
 }
 
+test("the scheduler's window facts carry the configured node limit, so a legacy helper's fallback tree stays bounded", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 100, idleFallbackSeconds: 1, maxNodes: 77 };
+  const spool = new Spool(":memory:");
+  const seen: { frontmost?: boolean; maxNodes?: number }[] = [];
+  const helper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(opts: { frontmost?: boolean; maxNodes?: number } = {}): Promise<WindowContext> {
+      seen.push(opts);
+      return contextOf(axWindow("kitty", "shell", "page text"));
+    }
+    override async ocrWindow(): Promise<string> {
+      return "";
+    }
+  })();
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(helper, new CaptureProcessor(config), spool, config, {}, clock);
+  await scheduler.tick();
+  await scheduler.tick();
+  assert.ok(seen.length >= 2);
+  for (const opts of seen) assert.deepEqual(opts, { frontmost: true, maxNodes: 77 });
+});
+
 test("scheduler stores on change+settle, dedups idle re-samples, captures new windows", async () => {
   const config = { ...defaultDaemonConfig(), settleMs: 100, idleFallbackSeconds: 1 };
   const spool = new Spool(":memory:");

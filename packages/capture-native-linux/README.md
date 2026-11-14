@@ -55,7 +55,7 @@ name or description or for anything under it, so none of it reaches the helper's
 `--window-only` prints `{app, windowTitle, windowId, browserUrl?}` and reads no node name or
 text; a caller applies its deny list to that before it asks for the tree. `--title T` reads the tree only while
 the window still has the title T the caller checked; a window retitled since gets its facts with the new title
-and a one-node tree, so the caller checks the new title before anything is read. An app that is not on the
+and a one-node tree with no page URL, so the caller skips the window instead of reading it. An app that is not on the
 accessibility bus gives its window and a one-node tree with no text, and the reason goes to stderr. The reader reads only the
 frame whose name equals the window's title. A process whose frames do not match (a retitled window, two windows with one
 title) gives the same empty tree, never another window's content.
@@ -73,8 +73,10 @@ Limits you can measure on your own machine:
   exposes the text of a QML field only when the app sets `Accessible`. Terminals such as foot are not on the bus,
   so they go through OCR.
 - `grim` crops the composited screen. A window that another window overlaps, or that is not on a visible
-  workspace, is refused, so the helper never reads someone else's pixels. A desktop notification drawn over the
-  window is not a window the helper can see: its text can appear in the OCR text.
+  workspace, is refused: the window is checked before the read and again right after it, so another window's
+  pixels are not read while they can still be seen. A window that covered the target only during the read
+  itself and was gone before the check after it cannot be told apart after the fact. A desktop notification
+  drawn over the window is not a window the helper can see: its text can appear in the OCR text.
 
 ## Tests
 

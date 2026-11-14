@@ -37,7 +37,7 @@ export async function captureViaHelper(
   config: DaemonConfig,
   capturedAtUtc: string,
 ): Promise<CaptureDecision> {
-  const context = await helper.windowContext({ frontmost: true });
+  const context = await helper.windowContext({ frontmost: true, maxNodes: config.maxNodes });
   return captureWindow(context, helper, processor, config, capturedAtUtc);
 }
 
@@ -62,12 +62,19 @@ export async function captureWindow(
   options.expectTitle = context.windowTitle;
   options.maxNodes = config.maxNodes;
   const snap = context.snapshot ?? (await helper.axSnapshot(options));
+  if (snap.windowTitle !== context.windowTitle) {
+    // The window changed identity after the facts the deny list approved. The retitled snapshot
+    // carries no URL, so a URL rule could not run on it; read nothing and store nothing.
+    return { action: "skipped", reason: "identity-changed" };
+  }
   return captureFromSnapshot(snap, helper, processor, config, capturedAtUtc);
 }
 
 /**
  * Run an already-fetched AX snapshot through the pipeline. `captureWindow` calls this after the deny list
- * passed the window facts; a snapshot a helper returned for a retitled window is checked again here.
+ * passed the window facts and the snapshot proved the same title; `captureWindow` itself skips a window that
+ * was retitled in between, because the retitled snapshot carries no URL to check. A direct caller's snapshot
+ * is still checked here against its own identity.
  */
 export async function captureFromSnapshot(
   snap: AxSnapshot,

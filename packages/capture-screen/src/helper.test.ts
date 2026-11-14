@@ -204,6 +204,14 @@ test("a helper that refuses --window-only with status 2 gets the full snapshot o
   assert.equal(flagTries, 1, "the refusal is remembered");
 });
 
+test("a legacy helper's fallback snapshot carries the node limit it was given", async () => {
+  const { file, calls } = loggingHelper("wo-legacy-max.js", 2);
+  await new NativeHelper(file).windowContext({ frontmost: true, maxNodes: 250 });
+  const fallback = calls().find((c) => !c.includes("--window-only"));
+  assert.ok(fallback, "the fallback snapshot ran");
+  assert.deepEqual(fallback?.slice(0, 4), ["ax-snapshot", "--frontmost", "--max-nodes", "250"]);
+});
+
 test("any other failure of --window-only is an error, never a fallback to reading the tree", async () => {
   const { file, calls } = loggingHelper("wo-broken.js", 1);
   await assert.rejects(new NativeHelper(file).windowContext({ frontmost: true }), CaptureInputError);

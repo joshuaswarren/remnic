@@ -313,10 +313,10 @@ export class NativeHelper {
   /**
    * `<helper> ax-snapshot [--frontmost|--pid N] --window-only` -> the window's facts and no tree, so a caller
    * can apply its deny list before any content is read. A helper that exits with status 2 does not know the
-   * flag (the macOS helper today): this method then reads the full snapshot, returns it in `snapshot`, and
-   * remembers not to ask again. Any other failure throws.
+   * flag (the macOS helper today): this method then reads the snapshot under the given `maxNodes` (the facts
+   * call reads no tree), returns it in `snapshot`, and remembers not to ask again. Any other failure throws.
    */
-  async windowContext(opts: { frontmost?: boolean; pid?: number } = {}): Promise<WindowContext> {
+  async windowContext(opts: { frontmost?: boolean; pid?: number; maxNodes?: number } = {}): Promise<WindowContext> {
     if (!this.#windowOnlyUnsupported) {
       try {
         const json = await runHelperCommand(this.binaryPath, [...axTarget(opts), "--window-only"]);
