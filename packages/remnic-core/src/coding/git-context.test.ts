@@ -7,10 +7,14 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
   expandTildePath,
+  GitContextCache,
   normalizeOriginUrl,
   resolveGitContext,
   stableHash,
@@ -551,4 +555,270 @@ test("resolveGitContext: cwd inside repo returns repo root, not cwd", async () =
   const ctx = await resolveGitContext(cwd, { invoker });
   assert.ok(ctx);
   assert.equal(ctx!.rootPath, root);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Memoization (COS-666): per-request git spawns blocked the event loop.
+// ──────────────────────────────────────────────────────────────────────────
+
+async function makeRepoDir(head: string): Promise<string> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "git-context-cache-"));
+  await mkdir(path.join(root, ".git"));
+  await writeFile(path.join(root, ".git", "HEAD"), head);
+  return root;
+}
+
+function rootInvoker(root: string, onCall?: () => void, branch: () => string = () => "main"): GitInvoker {
+  return (_cwd, args) => {
+    onCall?.();
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: `${root}\n`, exitCode: 0 };
+    if (args[0] === "rev-parse") return { stdout: `${branch()}\n`, exitCode: 0 };
+    return { stdout: "", exitCode: 1 };
+  };
+}
+
+test("resolveGitContext with a cache spawns git once per cwd within the TTL", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  let calls = 0;
+  const invoker = rootInvoker(root, () => {
+    calls += 1;
+  });
+  let clock = 1_000;
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => clock });
+  const first = await resolveGitContext("/repo/sub", { invoker, cache });
+  const callsAfterFirst = calls;
+  assert.ok(first);
+  assert.ok(callsAfterFirst > 0);
+
+  clock += 29_000;
+  assert.deepEqual(await resolveGitContext("/repo/sub", { invoker, cache }), first);
+  assert.equal(calls, callsAfterFirst, "cache hit must not spawn git");
+
+  clock += 2_000; // past TTL
+  await resolveGitContext("/repo/sub", { invoker, cache });
+  assert.equal(calls, callsAfterFirst * 2, "expired entry re-resolves");
+});
+
+test("a cache hit is served only while HEAD is unchanged; a checkout re-asks git", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  let calls = 0;
+  let branch = "main";
+  const invoker = rootInvoker(
+    root,
+    () => {
+      calls += 1;
+    },
+    () => branch,
+  );
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
+  const callsAfterFirst = calls;
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
+  assert.equal(calls, callsAfterFirst, "unchanged HEAD: no spawn");
+
+  // Git, not a regex over HEAD, names the branch (e.g. heads/main when a tag shares the name).
+  branch = "heads/feat";
+  await writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat\n");
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "heads/feat");
+  assert.ok(calls > callsAfterFirst, "checkout must re-ask git");
+  const callsAfterCheckout = calls;
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "heads/feat");
+  assert.equal(calls, callsAfterCheckout, "the new HEAD is cached again");
+});
+
+test("a cache hit follows a linked worktree's .git file, and re-resolves when HEAD is unreadable", async () => {
+  const gitDir = await makeRepoDir("ref: refs/heads/wt-branch\n");
+  const worktree = await mkdtemp(path.join(os.tmpdir(), "git-context-wt-"));
+  await writeFile(path.join(worktree, ".git"), `gitdir: ${path.join(gitDir, ".git")}\n`);
+  let calls = 0;
+  const invoker = rootInvoker(worktree, () => {
+    calls += 1;
+  });
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/wt", { invoker, cache });
+  const callsAfterFirst = calls;
+  await resolveGitContext("/wt", { invoker, cache });
+  assert.equal(calls, callsAfterFirst, "worktree HEAD unchanged: served from cache");
+
+  await rm(path.join(gitDir, ".git", "HEAD"));
+  await resolveGitContext("/wt", { invoker, cache });
+  assert.ok(calls > callsAfterFirst, "unreadable HEAD falls back to a full resolve");
+});
+
+test("HEADs that cannot vouch for the branch (reftable placeholder, symlink) are never cached", async () => {
+  const reftable = await makeRepoDir("ref: refs/heads/.invalid\n");
+  const symlinked = await makeRepoDir("ref: refs/heads/main\n");
+  await rm(path.join(symlinked, ".git", "HEAD"));
+  await symlink("refs/heads/main", path.join(symlinked, ".git", "HEAD"));
+  for (const root of [reftable, symlinked]) {
+    let calls = 0;
+    const invoker = rootInvoker(root, () => {
+      calls += 1;
+    });
+    const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+    await resolveGitContext("/repo", { invoker, cache });
+    const afterFirst = calls;
+    await resolveGitContext("/repo", { invoker, cache });
+    assert.equal(calls, afterFirst * 2, `${root} must be re-resolved on every call`);
+  }
+});
+
+test("a cache hit returns a copy, so a caller cannot poison the cached entry", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  const invoker = rootInvoker(root);
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  const first = await resolveGitContext("/repo", { invoker, cache });
+  first!.branch = "poisoned-first";
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
+  const hit = await resolveGitContext("/repo", { invoker, cache });
+  hit!.branch = "poisoned";
+  assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
+});
+
+test("a checkout racing the branch probe is not pinned: the next call re-asks git", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  let calls = 0;
+  let branch = "main";
+  const racing: GitInvoker = async (cwd, args) => {
+    const result = await rootInvoker(root, () => {
+      calls += 1;
+    }, () => branch)(cwd, args);
+    if (args[1] === "--abbrev-ref") {
+      // git has answered "main"; the checkout lands right after.
+      branch = "feat";
+      await writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat\n");
+    }
+    return result;
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal((await resolveGitContext("/repo", { invoker: racing, cache }))?.branch, "main");
+  assert.equal((await resolveGitContext("/repo", { invoker: racing, cache }))?.branch, "feat");
+});
+
+test("a lookup aborted mid-flight is not cached even if the invoker swallows the abort", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const swallowing: GitInvoker = () => {
+    calls += 1;
+    controller.abort(new Error("stop"));
+    return { stdout: "", exitCode: 1 };
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/repo", { invoker: swallowing, cache, abortSignal: controller.signal });
+  assert.equal(cache.has("/repo"), false);
+  assert.equal(calls, 1);
+});
+
+test("a throwing invoker is not cached as 'not a repo'", async () => {
+  let calls = 0;
+  const throwing: GitInvoker = () => {
+    calls += 1;
+    throw new Error("EMFILE");
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal(await resolveGitContext("/repo", { invoker: throwing, cache }), null);
+  assert.equal(await resolveGitContext("/repo", { invoker: throwing, cache }), null);
+  assert.equal(calls, 2);
+});
+
+test("resolveGitContext cache also remembers 'not a repo' and never caches aborts", async () => {
+  let calls = 0;
+  const notRepo: GitInvoker = () => {
+    calls += 1;
+    return { stdout: "", exitCode: 128 };
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal(await resolveGitContext("/tmp/x", { invoker: notRepo, cache }), null);
+  assert.equal(await resolveGitContext("/tmp/x", { invoker: notRepo, cache }), null);
+  assert.equal(calls, 1);
+
+  const controller = new AbortController();
+  controller.abort(new Error("stop"));
+  await assert.rejects(resolveGitContext("/tmp/y", { invoker: notRepo, cache, abortSignal: controller.signal }));
+  assert.equal(await resolveGitContext("/tmp/y", { invoker: notRepo, cache }), null, "abort was not cached");
+});
+
+test("GitContextCache is bounded", async () => {
+  const cache = new GitContextCache({ ttlMs: 30_000, maxEntries: 2, now: () => 0 });
+  cache.set("a", null);
+  cache.set("b", null);
+  cache.set("c", null);
+  assert.equal(cache.has("a"), false);
+  assert.equal(cache.has("c"), true);
+});
+
+test("a warm cache hit still honors an aborted signal and an expired deadline", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/repo", { invoker: rootInvoker(root), cache });
+  assert.equal(cache.has("/repo"), true, "the fixture must reach the cache or this test proves nothing");
+
+  const controller = new AbortController();
+  controller.abort(new Error("stop"));
+  await assert.rejects(
+    resolveGitContext("/repo", { invoker: rootInvoker(root), cache, abortSignal: controller.signal }),
+    /stop/,
+  );
+  await assert.rejects(
+    resolveGitContext("/repo", { invoker: rootInvoker(root), cache, deadlineMs: 100, now: () => 200 }),
+    /deadline/,
+  );
+});
+
+test("a probe timeout (exit 124) or spawn failure (127) is not cached as 'not a repo'", async () => {
+  for (const exitCode of [124, 127]) {
+    let calls = 0;
+    const flaky: GitInvoker = () => {
+      calls += 1;
+      return { stdout: "", exitCode };
+    };
+    const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+    assert.equal(await resolveGitContext("/repo", { invoker: flaky, cache }), null);
+    assert.equal(await resolveGitContext("/repo", { invoker: flaky, cache }), null);
+    assert.equal(calls, 2, `exit ${exitCode} must be retried, not cached`);
+  }
+});
+
+test("a partial context (later probe timed out) is not cached", async () => {
+  let originCalls = 0;
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  const partial: GitInvoker = (cwd, args) => {
+    if (args[0] === "remote") {
+      originCalls += 1;
+      return { stdout: "", exitCode: 124 };
+    }
+    return rootInvoker(root)(cwd, args);
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.ok(await resolveGitContext("/repo", { invoker: partial, cache }));
+  assert.ok(await resolveGitContext("/repo", { invoker: partial, cache }));
+  assert.equal(originCalls, 2);
+});
+
+test("a non-repo-only cache remembers non-repos but always re-reads repos", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  let calls = 0;
+  const count = () => {
+    calls += 1;
+  };
+  const cacheable = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/repo", { invoker: rootInvoker(root, count), cache: cacheable });
+  assert.equal(cacheable.has("/repo"), true, "default policy caches this fixture");
+
+  calls = 0;
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0, cacheRepos: false });
+  await resolveGitContext("/repo", { invoker: rootInvoker(root, count), cache });
+  const afterFirst = calls;
+  await resolveGitContext("/repo", { invoker: rootInvoker(root, count), cache });
+  assert.equal(cache.has("/repo"), false);
+  assert.equal(calls, afterFirst * 2, "repo result must not be served from a non-repo cache");
+
+  let nonRepoCalls = 0;
+  const notRepo: GitInvoker = () => {
+    nonRepoCalls += 1;
+    return { stdout: "", exitCode: 128 };
+  };
+  await resolveGitContext("/tmp/z", { invoker: notRepo, cache });
+  await resolveGitContext("/tmp/z", { invoker: notRepo, cache });
+  assert.equal(nonRepoCalls, 1);
 });

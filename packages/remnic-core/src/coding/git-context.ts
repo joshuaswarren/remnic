@@ -21,6 +21,7 @@
  * when the directory is not inside a git worktree, because being outside a
  * repo is a normal runtime state (e.g. agent opened in a scratch dir).
  */
+import { lstat, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { abortError } from "../abort-error.js";
@@ -96,6 +97,8 @@ export interface SyncGitInvoker {
 // ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_GIT_TIMEOUT_MS = 2_000;
+const GIT_TIMEOUT_EXIT_CODE = 124;
+const GIT_SPAWN_ERROR_EXIT_CODE = 127;
 
 export function defaultGitInvokerSync(): SyncGitInvoker {
   return (cwd: string, args: string[]) => {
@@ -105,7 +108,7 @@ export function defaultGitInvokerSync(): SyncGitInvoker {
       timeout: DEFAULT_GIT_TIMEOUT_MS,
       shell: false,
     });
-    if (result.error) return { stdout: "", exitCode: 127 };
+    if (result.error) return { stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE };
     return {
       stdout: typeof result.stdout === "string" ? result.stdout : "",
       exitCode: typeof result.status === "number" ? result.status : 1,
@@ -161,7 +164,7 @@ export function defaultGitInvoker(): GitInvoker {
     child.stdout?.on("data", (chunk: string | Buffer) => {
       stdout += chunk.toString();
     });
-    child.once("error", () => finish({ stdout: "", exitCode: 127 }));
+    child.once("error", () => finish({ stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE }));
     child.once("close", (exitCode: number | null) => {
       finish({ stdout, exitCode: typeof exitCode === "number" ? exitCode : 1 });
     });
@@ -173,7 +176,7 @@ export function defaultGitInvoker(): GitInvoker {
     );
     timer = setTimeout(() => {
       child.kill("SIGTERM");
-      finish({ stdout: "", exitCode: 124 });
+      finish({ stdout: "", exitCode: GIT_TIMEOUT_EXIT_CODE });
     }, timeoutMs);
     if (options.abortSignal?.aborted) onAbort();
     return promise;
@@ -320,6 +323,55 @@ export interface ResolveGitContextOptions {
   deadlineMs?: number;
   /** Injectable clock for deadline tests. */
   now?: () => number;
+  /**
+   * Share results across calls. Each miss costs up to five `git` spawns on the
+   * event loop, so per-request callers (recall, memory_store) pass one.
+   */
+  cache?: GitContextCache;
+}
+
+/** Short-lived, bounded memo of git resolution per cwd (COS-666). */
+export class GitContextCache {
+  private readonly entries = new Map<string, { value: GitContext | null; head?: string; at: number }>();
+  private readonly ttlMs: number;
+  private readonly maxEntries: number;
+  private readonly now: () => number;
+
+  private readonly cacheRepos: boolean;
+
+  constructor(options: { ttlMs?: number; maxEntries?: number; now?: () => number; cacheRepos?: boolean } = {}) {
+    this.cacheRepos = options.cacheRepos ?? true;
+    this.ttlMs = options.ttlMs ?? 30_000;
+    this.maxEntries = options.maxEntries ?? 256;
+    this.now = options.now ?? Date.now;
+  }
+
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+
+  /** `undefined` = miss; `value: null` = cached "not a repo". */
+  get(key: string): { value: GitContext | null; head?: string } | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (this.now() - hit.at >= this.ttlMs) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return hit;
+  }
+
+  set(key: string, value: GitContext | null, head?: string): void {
+    // Negative-only caches never hold a branch, so a session snapshot taken
+    // from them cannot carry a stale one.
+    if (value !== null && !this.cacheRepos) return;
+    this.entries.delete(key);
+    this.entries.set(key, { value, head, at: this.now() });
+    if (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (!oldest.done) this.entries.delete(oldest.value);
+    }
+  }
 }
 
 /**
@@ -334,6 +386,82 @@ export interface ResolveGitContextOptions {
 export async function resolveGitContext(
   cwd: string,
   options: ResolveGitContextOptions = {},
+): Promise<GitContext | null> {
+  const { cache } = options;
+  if (!cache) return resolveGitContextUncached(cwd, options);
+  // A cache hit must not mask cancellation or an exhausted deadline.
+  throwIfInterrupted(options);
+  const hit = cache.get(cwd);
+  if (hit?.value === null) return null;
+  // The branch picks the write/recall namespace and git alone decides it, so a
+  // hit is served only while HEAD is byte-identical to what git answered for.
+  if (hit?.value && hit.head !== undefined && (await readHeadFile(hit.value.rootPath)) === hit.head) {
+    return { ...hit.value };
+  }
+  // Timeouts and spawn failures are not answers about the repo, so a lookup
+  // that hit one (even partially) is never cached.
+  let inconclusive = false;
+  // HEAD is snapshotted once git names the root and BEFORE the branch probe: a
+  // checkout racing the probe then leaves the entry older than HEAD, so the
+  // next hit mismatches and re-resolves (never a stale branch pinned to a new HEAD).
+  let head: string | undefined;
+  const inner = options.invoker ?? defaultGitInvoker();
+  const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
+    let result: GitInvokeResult;
+    try {
+      result = await inner(probeCwd, args, invokeOptions);
+    } catch (err) {
+      inconclusive = true;
+      throw err;
+    }
+    if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) inconclusive = true;
+    if (args[1] === "--show-toplevel" && result.exitCode === 0) head = await readHeadFile(result.stdout.trim());
+    return result;
+  };
+  const value = await resolveGitContextUncached(cwd, { ...options, invoker });
+  if (inconclusive || options.abortSignal?.aborted) return value;
+  if (value === null || head !== undefined) cache.set(cwd, value && { ...value }, head);
+  return value;
+}
+
+/**
+ * Raw `HEAD` contents without spawning git, or `undefined` when they cannot
+ * vouch for the branch: unreadable, a symlinked HEAD (old
+ * `core.preferSymlinkRefs`), or reftable's constant `refs/heads/.invalid`
+ * placeholder (HEAD never changes on checkout there). Callers then re-resolve.
+ */
+async function readHeadFile(rootPath: string): Promise<string | undefined> {
+  try {
+    let gitDir = path.join(rootPath, ".git");
+    if ((await stat(gitDir)).isFile()) {
+      // Linked worktree: `.git` is a file pointing at the real git dir.
+      const pointer = /^gitdir:\s*(.+)$/m.exec(await readFile(gitDir, "utf-8"));
+      if (!pointer?.[1]) return undefined;
+      gitDir = path.resolve(rootPath, pointer[1].trim());
+    }
+    const headPath = path.join(gitDir, "HEAD");
+    if ((await lstat(headPath)).isSymbolicLink()) return undefined;
+    const head = await readFile(headPath, "utf-8");
+    return head.includes("refs/heads/.invalid") ? undefined : head;
+  } catch {
+    return undefined;
+  }
+}
+
+function throwIfInterrupted(options: ResolveGitContextOptions): void {
+  if (options.abortSignal?.aborted) {
+    throw options.abortSignal.reason instanceof Error
+      ? options.abortSignal.reason
+      : abortError("git context resolution aborted");
+  }
+  if (options.deadlineMs !== undefined && (options.now ?? Date.now)() >= options.deadlineMs) {
+    throw abortError("git context resolution deadline exceeded");
+  }
+}
+
+async function resolveGitContextUncached(
+  cwd: string,
+  options: ResolveGitContextOptions,
 ): Promise<GitContext | null> {
   // Wrap the whole body so the documented "Never throws" contract is
   // enforced. Possible throw sites include:
@@ -436,3 +564,12 @@ export async function resolveGitContext(
     return null;
   }
 }
+
+/** Process-wide cache for per-request callers (recall scope). */
+export const sharedGitContextCache = new GitContextCache();
+
+/**
+ * Session-attach callers snapshot the branch once per session, so they must
+ * read a repo fresh; they only skip repeat probes of non-repo directories.
+ */
+export const sharedNonRepoGitContextCache = new GitContextCache({ cacheRepos: false });
