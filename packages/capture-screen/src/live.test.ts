@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { CaptureProcessor } from "./capture.js";
 import { defaultDaemonConfig } from "./config.js";
-import type { AxSnapshot, NativeHelper, OcrWindowOptions, WindowContext } from "./helper.js";
+import { type AxSnapshot, NativeHelper, type AxSnapshotOptions, type OcrWindowOptions, type WindowContext } from "./helper.js";
 import { captureFromSnapshot, captureViaHelper } from "./live.js";
 
 test("focus change between ax-snapshot and OCR: OCR targets the snapshot window id", async () => {
@@ -13,12 +13,15 @@ test("focus change between ax-snapshot and OCR: OCR targets the snapshot window 
   // Simulate the focus flip: after the snapshot was taken the frontmost
   // window became a different one, so the frontmost path would read
   // WINDOW-B text while the candidate is stored under window A's identity.
-  const helper = {
-    ocrWindow: async (opts: OcrWindowOptions) => {
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("fake");
+    }
+    override async ocrWindow(opts: OcrWindowOptions = {}) {
       calls.push(opts);
       return opts.windowId === "A" ? "window A ocr text" : "WINDOW-B TEXT";
-    },
-  } as unknown as NativeHelper;
+    }
+  })();
   // kitty is terminal-class (DEFAULT_TERMINAL_APPS) and the tree carries no
   // text, so captureFromSnapshot must take the OCR path.
   const snap: AxSnapshot = {
@@ -44,20 +47,23 @@ const AT = "2026-08-17T00:00:00.000Z";
 /** A helper whose every call is logged, so a test can prove which calls a window caused. */
 function loggedHelper(context: WindowContext, snap: AxSnapshot) {
   const calls: string[] = [];
-  const helper = {
-    windowContext: async () => {
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(): Promise<WindowContext> {
       calls.push("windowContext");
       return context;
-    },
-    axSnapshot: async (opts: { windowId?: string; maxNodes?: number; expectTitle?: string }) => {
+    }
+    override async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
       calls.push(`axSnapshot ${JSON.stringify(opts)}`);
       return snap;
-    },
-    ocrWindow: async () => {
+    }
+    override async ocrWindow(): Promise<string> {
       calls.push("ocrWindow");
       return "ocr text";
-    },
-  } as unknown as NativeHelper;
+    }
+  })();
   return { helper, calls };
 }
 

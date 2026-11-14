@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { CaptureProcessor } from "./capture.js";
 import { defaultDaemonConfig } from "./config.js";
-import type { AxSnapshot, NativeHelper, WindowContext } from "./helper.js";
+import { type AxSnapshot, NativeHelper, type WindowContext } from "./helper.js";
 import { CaptureScheduler, type SchedulerClock } from "./scheduler.js";
 import { Spool } from "./spool.js";
 
@@ -31,12 +31,28 @@ function contextOf(snap: AxSnapshot): WindowContext {
   return context;
 }
 
-function fakeHelper(state: { snap: AxSnapshot; ocr: string }): NativeHelper {
-  return {
-    windowContext: async () => contextOf(state.snap),
-    axSnapshot: async () => state.snap,
-    ocrWindow: async () => state.ocr,
-  } as unknown as NativeHelper;
+interface HelperState {
+  snap: AxSnapshot;
+  ocr: string;
+}
+
+class StubHelper extends NativeHelper {
+  constructor(private readonly state: HelperState) {
+    super("stub");
+  }
+  override async windowContext(): Promise<WindowContext> {
+    return contextOf(this.state.snap);
+  }
+  override async axSnapshot(): Promise<AxSnapshot> {
+    return this.state.snap;
+  }
+  override async ocrWindow(): Promise<string> {
+    return this.state.ocr;
+  }
+}
+
+function fakeHelper(state: HelperState): NativeHelper {
+  return new StubHelper(state);
 }
 
 function axWindow(app: string, windowTitle: string, text: string): AxSnapshot {
@@ -106,7 +122,14 @@ test("scheduler surfaces helper errors via onError and keeps running", async () 
   const spool = new Spool(":memory:");
   const processor = new CaptureProcessor(config);
   const errors: unknown[] = [];
-  const helper = { windowContext: async () => { throw new Error("helper down"); } } as unknown as NativeHelper;
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(): Promise<WindowContext> {
+      throw new Error("helper down");
+    }
+  })();
   const clock = makeClock();
   const scheduler = new CaptureScheduler(helper, processor, spool, config, { onError: (e) => errors.push(e) }, clock);
 
@@ -125,14 +148,21 @@ test("stop() drains an in-flight tick before resolving", async () => {
   const gate = new Promise<void>((r) => {
     release = r;
   });
-  const helper = {
-    windowContext: async () => {
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(): Promise<WindowContext> {
       await gate;
       return contextOf(axWindow("Safari", "Docs", "text body here"));
-    },
-    axSnapshot: async () => axWindow("Safari", "Docs", "text body here"),
-    ocrWindow: async () => "",
-  } as unknown as NativeHelper;
+    }
+    override async axSnapshot(): Promise<AxSnapshot> {
+      return axWindow("Safari", "Docs", "text body here");
+    }
+    override async ocrWindow(): Promise<string> {
+      return "";
+    }
+  })();
   const clock = makeClock();
   const scheduler = new CaptureScheduler(helper, processor, spool, config, {}, clock);
   scheduler.start();
@@ -174,14 +204,21 @@ test("a deny-listed window is never OCR'd (deny preflight)", async () => {
   const spool = new Spool(":memory:");
   const processor = new CaptureProcessor(config);
   let ocrCalls = 0;
-  const helper = {
-    windowContext: async () => contextOf({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } }),
-    axSnapshot: async () => ({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } }) as AxSnapshot,
-    ocrWindow: async () => {
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(): Promise<WindowContext> {
+      return contextOf({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } });
+    }
+    override async axSnapshot(): Promise<AxSnapshot> {
+      return { app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } };
+    }
+    override async ocrWindow(): Promise<string> {
       ocrCalls += 1;
       return "secret";
-    },
-  } as unknown as NativeHelper;
+    }
+  })();
   const clock = makeClock();
   const scheduler = new CaptureScheduler(helper, processor, spool, config, {}, clock);
   clock.nowMs = 0;
@@ -193,16 +230,23 @@ test("a deny-listed window is never OCR'd (deny preflight)", async () => {
   spool.close();
 });
 
-function countingHelper(snap: AxSnapshot): { helper: NativeHelper; treeReads: () => number } {
+function countingHelper(snap: AxSnapshot) {
   let reads = 0;
-  const helper = {
-    windowContext: async () => contextOf(snap),
-    axSnapshot: async () => {
+  const helper: NativeHelper = new (class extends NativeHelper {
+    constructor() {
+      super("stub");
+    }
+    override async windowContext(): Promise<WindowContext> {
+      return contextOf(snap);
+    }
+    override async axSnapshot(): Promise<AxSnapshot> {
       reads += 1;
       return snap;
-    },
-    ocrWindow: async () => "",
-  } as unknown as NativeHelper;
+    }
+    override async ocrWindow(): Promise<string> {
+      return "";
+    }
+  })();
   return { helper, treeReads: () => reads };
 }
 

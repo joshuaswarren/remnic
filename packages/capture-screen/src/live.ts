@@ -20,7 +20,7 @@ import { isTerminalApp } from "./capture.js";
 import { matchDenyRule } from "./denylist.js";
 import type { CaptureCandidate, CaptureDecision, CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
-import type { AxSnapshot, NativeHelper, WindowContext } from "./helper.js";
+import type { AxSnapshot, AxSnapshotOptions, NativeHelper, WindowContext } from "./helper.js";
 
 function isDenied(config: DaemonConfig, who: { app: string; windowTitle: string; browserUrl?: string | null }): boolean {
   return (
@@ -54,20 +54,14 @@ export async function captureWindow(
   capturedAtUtc: string,
 ): Promise<CaptureDecision> {
   if (isDenied(config, context)) {
-    return processor.process({
-      capturedAtUtc,
-      app: context.app,
-      windowTitle: context.windowTitle,
-      ...(context.browserUrl != null ? { browserUrl: context.browserUrl } : {}),
-    });
+    const candidate: CaptureCandidate = { capturedAtUtc, app: context.app, windowTitle: context.windowTitle };
+    if (context.browserUrl != null) candidate.browserUrl = context.browserUrl;
+    return processor.process(candidate);
   }
-  const snap =
-    context.snapshot ??
-    (await helper.axSnapshot({
-      ...(context.windowId !== undefined ? { windowId: context.windowId } : { frontmost: true }),
-      expectTitle: context.windowTitle,
-      maxNodes: config.maxNodes,
-    }));
+  const options: AxSnapshotOptions = context.windowId !== undefined ? { windowId: context.windowId } : { frontmost: true };
+  options.expectTitle = context.windowTitle;
+  options.maxNodes = config.maxNodes;
+  const snap = context.snapshot ?? (await helper.axSnapshot(options));
   return captureFromSnapshot(snap, helper, processor, config, capturedAtUtc);
 }
 

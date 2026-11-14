@@ -25,13 +25,14 @@ esac`,
 /** One fake desktop. `without` lists tools that must be missing from PATH. */
 export function fakeDesktop({ active = {}, clients = [], monitors, atspi = { found: false }, atspiExit = 0, ocrText = "", without = [] } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-linux-screen-"));
-  const put = (name, text) => writeFileSync(path.join(dir, name), typeof text === "string" ? text : JSON.stringify(text));
+  const put = (name, text) => writeFileSync(path.join(dir, name), JSON.stringify(text));
+  const putRaw = (name, text) => writeFileSync(path.join(dir, name), text);
   put("active.json", active);
   put("clients.json", clients);
   put("monitors.json", monitors ?? [{ id: 0, activeWorkspace: { id: 1 }, specialWorkspace: { id: 0 } }]);
   put("atspi.json", atspi);
-  put("atspi.exit", String(atspiExit));
-  put("ocr.txt", ocrText);
+  putRaw("atspi.exit", String(atspiExit));
+  putRaw("ocr.txt", ocrText);
   const bin = path.join(dir, "bin");
   mkdirSync(bin);
   for (const [name, script] of Object.entries(TOOLS)) {

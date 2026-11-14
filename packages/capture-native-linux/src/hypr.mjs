@@ -16,7 +16,7 @@ const isWindow = (c) => c.mapped !== false && c.hidden !== true;
 /** The window with keyboard focus. Rejects when none has it. */
 export async function focusedWindow() {
   const active = await hyprJson("activewindow");
-  if (typeof active?.address !== "string") throw new Error("no focused window");
+  if (!active?.address) throw new Error("no focused window");
   return active;
 }
 

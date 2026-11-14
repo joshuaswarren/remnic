@@ -134,7 +134,7 @@ test("helperPackageName is one package for Linux, whatever the arch", () => {
 });
 
 /** A helper that logs its argv. `windowOnly` is its answer to --window-only and `title` its answer to --title: "ok" or an exit status. */
-function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok"): { file: string; calls(): string[][] } {
+function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok") {
   const log = path.join(dir, `${name}.log`);
   const file = fakeHelper(
     name,
@@ -149,7 +149,14 @@ if (args.includes("--title")) {
   );
   const calls = (): string[][] => {
     try {
-      return readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as string[]);
+      return readFileSync(log, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const argv: unknown = JSON.parse(line);
+          if (!Array.isArray(argv)) throw new Error(`helper log line is not an argv array: ${line}`);
+          return argv.map((entry) => String(entry));
+        });
     } catch {
       return [];
     }

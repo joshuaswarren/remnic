@@ -19,6 +19,8 @@
 
 import { spawn } from "node:child_process";
 
+import { z } from "zod";
+
 import type { AxNode } from "./axtree.js";
 import { CaptureInputError } from "./errors.js";
 import { expandTilde } from "./paths.js";
@@ -209,45 +211,62 @@ function axTarget(opts: AxSnapshotOptions): string[] {
   return ["ax-snapshot", "--frontmost"];
 }
 
-function asObject(json: unknown): object {
-  if (json === null || typeof json !== "object" || Array.isArray(json)) {
-    throw new CaptureInputError("native helper ax-snapshot did not return an object");
-  }
-  return json;
-}
+/**
+ * The AX tree inside an `ax-snapshot` answer. Every field is optional and
+ * children recurse; unknown fields are kept, because the helper may report
+ * roles this build does not model.
+ */
+const AxNodeSchema: z.ZodType<AxNode> = z.lazy(() =>
+  z.looseObject({
+    role: z.string().optional(),
+    value: z.string().optional(),
+    title: z.string().optional(),
+    description: z.string().optional(),
+    label: z.string().optional(),
+    offScreen: z.boolean().optional(),
+    children: z.array(AxNodeSchema).optional(),
+  }),
+);
+
+/** The helper's JSON answer: an object, with the fields it reports kept as printed. */
+const HelperEnvelopeSchema = z.looseObject({});
+type HelperEnvelope = z.infer<typeof HelperEnvelopeSchema>;
+
+/** One window-fact field the helper reports: absent, `null` or mistyped means "not reported". */
+const HelperTextField = z.string();
 
 /**
  * CGWindowID may arrive as a JSON number or string; null/absent means the helper could not resolve an id
- * (OCR falls back to frontmost).
+ * (OCR falls back to frontmost). A number is normalized to its string form, the id's domain type.
  */
-function readWindowId(raw: unknown): string | undefined {
-  if (typeof raw === "string") return raw;
-  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
-  if (raw !== undefined && raw !== null) {
-    throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
-  }
-  return undefined;
+const HelperWindowIdField = z.union([z.string(), z.number().transform(String)]).nullish();
+
+/** Decode one helper JSON answer at the boundary: anything but an object throws the sanitized error. */
+function envelopeOrThrow<T>(json: T): HelperEnvelope {
+  const parsed = HelperEnvelopeSchema.safeParse(json);
+  if (!parsed.success) throw new CaptureInputError("native helper ax-snapshot did not return an object");
+  return parsed.data;
 }
 
 /** The window fields every `ax-snapshot` answer carries, validated; none of them is window content. */
-function readWindowFields(json: object): Omit<WindowContext, "snapshot"> {
+function readWindowFields(json: HelperEnvelope): Omit<WindowContext, "snapshot"> {
   if (!("app" in json) || !("windowTitle" in json)) {
     throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle");
   }
-  const app: unknown = json.app;
-  const windowTitle: unknown = json.windowTitle;
-  const browserUrl: unknown = "browserUrl" in json ? json.browserUrl : undefined;
-  const windowIdRaw: unknown = "windowId" in json ? json.windowId : undefined;
-  if (typeof app !== "string" || typeof windowTitle !== "string") {
+  const app = HelperTextField.safeParse(json.app);
+  const windowTitle = HelperTextField.safeParse(json.windowTitle);
+  if (!app.success || !windowTitle.success) {
     throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
   }
-  const windowId = readWindowId(windowIdRaw);
-  return {
-    app,
-    windowTitle,
-    ...(windowId !== undefined ? { windowId } : {}),
-    ...(typeof browserUrl === "string" ? { browserUrl } : {}),
-  };
+  const windowId = HelperWindowIdField.safeParse("windowId" in json ? json.windowId : undefined);
+  if (!windowId.success) {
+    throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
+  }
+  const browserUrl = HelperTextField.safeParse("browserUrl" in json ? json.browserUrl : undefined);
+  const fields: Omit<WindowContext, "snapshot"> = { app: app.data, windowTitle: windowTitle.data };
+  if (windowId.data != null) fields.windowId = windowId.data;
+  if (browserUrl.success) fields.browserUrl = browserUrl.data;
+  return fields;
 }
 
 /** Thin wrapper over a resolved helper binary. */
@@ -270,7 +289,7 @@ export class NativeHelper {
     if (!this.#windowOnlyUnsupported) {
       try {
         const json = await runHelperCommand(this.binaryPath, [...axTarget(opts), "--window-only"]);
-        return readWindowFields(asObject(json));
+        return readWindowFields(envelopeOrThrow(json));
       } catch (error) {
         if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
         this.#windowOnlyUnsupported = true;
@@ -290,28 +309,27 @@ export class NativeHelper {
   async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
     const args = axTarget(opts);
     if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
-    const json = asObject(await this.#runPinned(args, opts.expectTitle));
+    const json = await this.#runPinned(args, opts.expectTitle);
     if (!("tree" in json)) {
       throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
     }
-    const tree: unknown = json.tree;
-    if (tree === null || typeof tree !== "object" || Array.isArray(tree)) {
+    const tree = AxNodeSchema.safeParse(json.tree);
+    if (!tree.success) {
       throw new CaptureInputError("native helper ax-snapshot tree must be an object");
     }
-    // Named cast (sanctioned): the tree is structurally an AxNode (all fields
-    // optional) and extractAxText tolerates unknown shapes; a schema parse of an
-    // arbitrary AX dump would be meaningless.
-    return { ...readWindowFields(json), tree: tree as AxNode };
+    return { ...readWindowFields(json), tree: tree.data };
   }
 
-  async #runPinned(args: string[], expectTitle: string | undefined): Promise<unknown> {
-    if (expectTitle === undefined || this.#titlePinUnsupported) return runHelperCommand(this.binaryPath, args);
+  async #runPinned(args: string[], expectTitle: string | undefined): Promise<HelperEnvelope> {
+    if (expectTitle === undefined || this.#titlePinUnsupported) {
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
+    }
     try {
-      return await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]);
+      return await envelopeOrThrow(await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]));
     } catch (error) {
       if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
       this.#titlePinUnsupported = true;
-      return runHelperCommand(this.binaryPath, args);
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
     }
   }
 

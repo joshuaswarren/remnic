@@ -13,12 +13,12 @@ const AT_SPI_PASSWORD_ROLES = new Set(["password text"]);
 /** The text-bearing fields of one AT-SPI node, each present only when it holds something. */
 function nodeFields(raw) {
   const value = (raw.text ?? "").replace(OBJECT_MARK, "").trim();
-  return {
-    ...(raw.name ? { title: raw.name } : {}),
-    ...(value ? { value } : {}),
-    ...(raw.description ? { description: raw.description } : {}),
-    ...(raw.showing === false ? { offScreen: true } : {}),
-  };
+  const fields = {};
+  if (raw.name) fields.title = raw.name;
+  if (value) fields.value = value;
+  if (raw.description) fields.description = raw.description;
+  if (raw.showing === false) fields.offScreen = true;
+  return fields;
 }
 
 /**
@@ -33,7 +33,9 @@ function toAxNode(raw, budget) {
     if (budget.left <= 0) break;
     children.push(toAxNode(child, budget));
   }
-  return { role: raw.role, ...nodeFields(raw), ...(children.length > 0 ? { children } : {}) };
+  const node = { role: raw.role, ...nodeFields(raw) };
+  if (children.length > 0) node.children = children;
+  return node;
 }
 
 /**
@@ -71,7 +73,7 @@ export async function axSnapshot({ pid, windowId, expectTitle, windowOnly = fals
   if (!windowOnly) {
     snapshot.tree = facts?.found ? toAxNode(facts.root, { left: maxNodes }) : { role: "window" };
   }
-  if (facts?.found && typeof facts.url === "string" && facts.url) snapshot.browserUrl = facts.url;
+  if (facts?.found && facts.url) snapshot.browserUrl = String(facts.url);
   process.stdout.write(`${JSON.stringify(snapshot)}\n`);
   return 0;
 }
