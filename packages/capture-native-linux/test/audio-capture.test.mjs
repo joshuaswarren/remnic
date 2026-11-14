@@ -4,24 +4,48 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { pcmToLittleEndian } from "../src/audio.mjs";
 import { BYTES_PER_SECOND, fakeTools, run, tempDir, wavParts } from "./harness.mjs";
 
 const DUMP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pw-dump.json");
+const BIG_ENDIAN_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "force-big-endian.mjs");
 
 function pattern(from, length) {
   return Buffer.from(Array.from({ length }, (_, i) => (from + i) % 251));
 }
 
-test("PCM byte order is WAV little-endian for all samples in a partial chunk", () => {
-  const pcm = Buffer.from([0x01, 0x02, 0x03, 0x04, 0xa0, 0xb0]);
+test("the helper writes little-endian WAV samples from big- and little-endian PCM", async () => {
+  for (const [nativeEndian, preload] of [["BE", `--import=${BIG_ENDIAN_PRELOAD}`], ["LE", undefined]]) {
+    const tools = fakeTools(DUMP);
+    const out = tempDir();
+    const total = Math.round(1.5 * BYTES_PER_SECOND);
+    const helper = run(
+      ["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", out],
+      {
+        ...tools.env,
+        FAKE_PCM_BYTES: String(total),
+        FAKE_PCM_ENDIANNESS: nativeEndian,
+        ...(preload ? { NODE_OPTIONS: preload } : {}),
+      },
+    );
+    await helper.waitForEvents(1);
+    assert.equal((await helper.stop()).code, 0);
 
-  assert.strictEqual(pcmToLittleEndian(pcm, "BE"), pcm);
-  assert.deepEqual(pcm, Buffer.from([0x02, 0x01, 0x04, 0x03, 0xb0, 0xa0]));
-
-  const littleEndian = Buffer.from([0x01, 0x02, 0x03, 0x04]);
-  assert.strictEqual(pcmToLittleEndian(littleEndian, "LE"), littleEndian);
-  assert.deepEqual(littleEndian, Buffer.from([0x01, 0x02, 0x03, 0x04]));
+    const events = helper.events();
+    assert.deepEqual(events.map((event) => wavParts(event.path).pcm.length), [32_000, 16_000]);
+    let offset = 0;
+    for (const event of events) {
+      const pcm = wavParts(event.path).pcm;
+      const expected = pattern(offset, pcm.length);
+      if (!pcm.equals(expected)) {
+        const mismatch = pcm.findIndex((byte, index) => byte !== expected[index]);
+        assert.fail(
+          `${nativeEndian} WAV byte ${offset + mismatch}: got 0x${pcm[mismatch].toString(16)}, expected 0x${expected[mismatch].toString(16)}`,
+        );
+      }
+      offset += pcm.length;
+    }
+    assert.equal(offset, total);
+  }
 });
 
 test("a mic recording is cut into exact chunks and the last partial chunk is flushed on SIGTERM", async () => {

@@ -12,12 +12,6 @@ const MIN_FLUSH_BYTES = BYTES_PER_SECOND / 10;
 const SAMPLE_BYTES = 2;
 const NATIVE_ENDIANNESS = endianness();
 
-export function pcmToLittleEndian(pcm, nativeEndian = NATIVE_ENDIANNESS) {
-  if (nativeEndian === "LE") return pcm;
-  if (nativeEndian !== "BE") throw new TypeError(`unsupported PCM byte order: ${nativeEndian}`);
-  return pcm.swap16();
-}
-
 /**
  * Cut a raw PCM stream into chunks of exactly `bytesPerChunk` bytes. `emit(pcm, offsetBytes)` gets each
  * chunk with the stream offset of its first byte, so timestamps come from sample counts and chunks never gap.
@@ -78,7 +72,7 @@ function startRecorder({ channel, target, container, outDir, chunkSeconds, annou
     if (failure) return;
     try {
       const file = path.join(outDir, `${channel}-${randomUUID()}.wav`);
-      writeFileSync(file, wavFile(pcmToLittleEndian(pcm)), { mode: 0o600 });
+      writeFileSync(file, wavFile(NATIVE_ENDIANNESS === "BE" ? pcm.swap16() : pcm), { mode: 0o600 });
       const startedMs = streamStartMs + (offset / BYTES_PER_SECOND) * 1000;
       const endedMs = startedMs + (pcm.length / BYTES_PER_SECOND) * 1000;
       announce({ path: file, channel, startedAtUtc: iso(startedMs), endedAtUtc: iso(endedMs), device: target ?? null });

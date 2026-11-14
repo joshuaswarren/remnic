@@ -9,9 +9,9 @@ export const HELPER = path.join(here, "..", "bin", "remnic-capture-helper");
 export const BYTES_PER_SECOND = 32_000; // 16 kHz mono, 16-bit
 
 const FAKE_PW_RECORD = `#!/usr/bin/env node
-// Stands in for pw-record: logs its argv, writes FAKE_PCM_BYTES of a counting pattern to stdout in
-// odd-sized pieces, then either exits with FAKE_EXIT_CODE or waits for a signal like a live recording.
-// A signal that arrives during the writes is acted on once they are done, so a stop never loses samples.
+// Stands in for pw-record: logs argv, writes FAKE_PCM_BYTES of PCM in odd-sized pieces, then exits or waits for a signal.
+// Signals during writes are acted on after all samples are sent, so a stop never loses samples.
+// FAKE_PCM_ENDIANNESS=BE reverses every sample to model native-endian PCM on a big-endian host.
 // FAKE_NO_CONTAINER makes it behave like PipeWire before 1.6, which has no --container option.
 import { appendFileSync } from "node:fs";
 const argv = process.argv.slice(2);
@@ -37,7 +37,14 @@ const total = Number(process.env.FAKE_PCM_BYTES ?? 0);
 let sent = 0;
 while (sent < total) {
   const piece = Buffer.alloc(Math.min(7001, total - sent));
-  for (let i = 0; i < piece.length; i += 1) piece[i] = (sent + i) % 251;
+  for (let i = 0; i < piece.length; i += 1) {
+    const absolute = sent + i;
+    const pairStart = absolute - (absolute % 2);
+    piece[i] =
+      process.env.FAKE_PCM_ENDIANNESS === "BE"
+        ? (absolute % 2 === 0 ? pairStart + 1 : pairStart) % 251
+        : absolute % 251;
+  }
   await new Promise((resolve) => process.stdout.write(piece, resolve));
   sent += piece.length;
 }
