@@ -17,10 +17,10 @@
 
 import { extractAxText } from "./axtree.js";
 import { isTerminalApp } from "./capture.js";
-import { matchDenyRule } from "./denylist.js";
+import { hasUrlDenyRules, matchDenyRule } from "./denylist.js";
 import type { CaptureCandidate, CaptureDecision, CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
-import type { AxSnapshot, AxSnapshotOptions, NativeHelper, WindowContext } from "./helper.js";
+import { helperPackageName, type AxSnapshot, type AxSnapshotOptions, type NativeHelper, type WindowContext } from "./helper.js";
 
 function isDenied(config: DaemonConfig, who: { app: string; windowTitle: string; browserUrl?: string | null }): boolean {
   return (
@@ -31,12 +31,18 @@ function isDenied(config: DaemonConfig, who: { app: string; windowTitle: string;
   );
 }
 
+/** AT-SPI cannot bind a checked URI to every subsequent content read. */
+export function linuxUrlPolicyUnavailable(config: DaemonConfig): boolean {
+  return helperPackageName() === "@remnic/capture-native-linux" && hasUrlDenyRules(config.denyUrls);
+}
+
 export async function captureViaHelper(
   helper: NativeHelper,
   processor: CaptureProcessor,
   config: DaemonConfig,
   capturedAtUtc: string,
 ): Promise<CaptureDecision> {
+  if (linuxUrlPolicyUnavailable(config)) return { action: "skipped", reason: "url-policy-unavailable" };
   const context = await helper.windowContext({ frontmost: true, maxNodes: config.maxNodes });
   return captureWindow(context, helper, processor, config, capturedAtUtc);
 }
@@ -58,6 +64,7 @@ export async function captureWindow(
     if (context.browserUrl != null) candidate.browserUrl = context.browserUrl;
     return processor.process(candidate);
   }
+  if (linuxUrlPolicyUnavailable(config)) return { action: "skipped", reason: "url-policy-unavailable" };
   const options: AxSnapshotOptions = context.windowId !== undefined ? { windowId: context.windowId } : { frontmost: true };
   options.expectTitle = context.windowTitle;
   options.maxNodes = config.maxNodes;

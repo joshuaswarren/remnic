@@ -65,6 +65,14 @@ accessibility bus gives its window and a one-node tree with no text, and the rea
 frame whose name equals the window's title. A process whose frames do not match (a retitled window, two windows with one
 title) gives the same empty tree, never another window's content.
 
+AT-SPI reads require a workspace shown on a screen. Hidden or unknown workspaces return no tree.
+The URL search stops after 1,000 node visits and child fetches. It skips hidden frames and password fields.
+The Python reader sets `url_incomplete: true` when the search hits this limit.
+
+Linux live capture stops when any URL deny rule is set. It reports `url-policy-unavailable`.
+AT-SPI cannot bind a checked URL to later text reads. A new URL check cannot make that path safe.
+This limit applies even when the first URL is absent. Without URL rules, the helper still reads AT-SPI text on its own.
+
 `ocr-window` keeps the window visibility and title checks, then exits 1 with an unsupported-path error.
 It never invokes `grim` or `tesseract`. A composited crop has no frame-bound window identity:
 another window or a notification can appear inside the crop, even when both surrounding queries show the target.

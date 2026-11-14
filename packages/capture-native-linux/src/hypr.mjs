@@ -46,6 +46,10 @@ const overlaps = (a, b) =>
 const visibleWorkspaces = (monitors) =>
   new Set(monitors.flatMap((m) => [m.activeWorkspace?.id, m.specialWorkspace?.id]).filter((id) => id));
 
+export async function workspaceVisible(window) {
+  return visibleWorkspaces(await hyprJson("monitors")).has(window.workspace?.id);
+}
+
 /** The window at `address`, plus the data to decide if its pixels can be read right now. */
 export async function readableWindow(address) {
   const [all, monitors] = await Promise.all([windows(), hyprJson("monitors")]);

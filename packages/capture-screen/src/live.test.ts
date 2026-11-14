@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { CaptureProcessor } from "./capture.js";
 import { defaultDaemonConfig } from "./config.js";
 import { type AxSnapshot, NativeHelper, type AxSnapshotOptions, type OcrWindowOptions, type WindowContext } from "./helper.js";
-import { captureFromSnapshot, captureViaHelper } from "./live.js";
+import { captureFromSnapshot, captureViaHelper, captureWindow } from "./live.js";
 
 test("focus change between ax-snapshot and OCR: OCR targets the snapshot window id", async () => {
   const config = defaultDaemonConfig();
@@ -110,9 +110,9 @@ test("a deny-listed address is never read either", async () => {
   const snap: AxSnapshot = { app: "chromium", windowTitle: "Accounts", windowId: "W", tree: { role: "window" } };
   const context = { app: "chromium", windowTitle: "Accounts", windowId: "W", browserUrl: "https://bank.example/accounts" };
   const { helper, calls } = loggedHelper(context, snap);
-  const decision = await captureViaHelper(helper, new CaptureProcessor(config), config, AT);
-  assert.deepEqual(calls, ["windowContext"]);
-  assert.notEqual(decision.action, "store");
+  const decision = await captureWindow(context, helper, new CaptureProcessor(config), config, AT);
+  assert.deepEqual(calls, []);
+  assert.deepEqual(decision, { action: "denied", rule: "url:https://bank.example/*" });
 });
 
 test("an allowed window is read once, pinned to the id and the title the window facts gave", async () => {
@@ -132,8 +132,8 @@ test("an allowed window is read once, pinned to the id and the title the window 
   assert.equal(decision.action, "store");
 });
 
-test("a window that changed identity after the facts the deny list approved is never read: with no URL to check, the page is skipped, not stored", async () => {
-  const config = { ...defaultDaemonConfig(), denyUrls: ["https://denied.example/*"] };
+test("a window retitled after the approved facts is skipped, not stored", async () => {
+  const config = defaultDaemonConfig();
   const snap: AxSnapshot = { app: "chromium", windowTitle: "Accounts - Denied Site", windowId: "W", tree: { role: "window" } };
   const { helper, calls } = loggedHelper(
     { app: "chromium", windowTitle: "Accounts", windowId: "W", browserUrl: "https://allowed.example/" },

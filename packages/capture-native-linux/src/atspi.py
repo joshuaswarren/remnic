@@ -14,6 +14,7 @@ import sys
 
 TEXT_LIMIT = 20000
 PASSWORD_ROLE = "password text"
+URL_NODE_BUDGET = 1000
 
 try:
     import gi
@@ -57,22 +58,32 @@ def read(node, budget):
     return out
 
 
-def document_url(node, depth=0):
-    """The address of the first web document that is showing under `node`. A hidden document (another tab) is not
-    entered, so an address never comes from a page the window does not display."""
-    if depth > 0 and not node.get_state_set().contains(Atspi.StateType.SHOWING):
-        return None
-    if node.get_role_name() == "document web":
+def document_url(node, budget, depth=0):
+    """Find a showing document address without entering hidden or password subtrees."""
+    if budget[0] <= 0:
+        return None, True
+    budget[0] -= 1
+    if not node.get_state_set().contains(Atspi.StateType.SHOWING):
+        return None, False
+    role = node.get_role_name()
+    if role == PASSWORD_ROLE:
+        return None, False
+    if role == "document web":
         attributes = Atspi.Document.get_document_attributes(node) or {}
-        return attributes.get("URI") or attributes.get("DocURL")
+        return attributes.get("URI") or attributes.get("DocURL"), False
     if depth > 20:
-        return None
+        return None, True
+    incomplete = False
     for index in range(node.get_child_count()):
+        if budget[0] <= 0:
+            return None, True
+        budget[0] -= 1
         child = node.get_child_at_index(index)
-        found = document_url(child, depth + 1) if child is not None else None
+        found, ran_out = document_url(child, budget, depth + 1) if child is not None else (None, False)
         if found:
-            return found
-    return None
+            return found, False
+        incomplete = incomplete or ran_out
+    return None, incomplete
 
 
 def pick_frame(apps, title):
@@ -98,7 +109,10 @@ def main():
     if frame is None:
         print(json.dumps({"found": False}))
         return
-    result = {"found": True, "url": document_url(frame)}
+    url, incomplete = document_url(frame, [URL_NODE_BUDGET])
+    result = {"found": True, "url": url}
+    if incomplete:
+        result["url_incomplete"] = True
     if not args.url_only:
         result["root"] = read(frame, [args.max_nodes])
     print(json.dumps(result))

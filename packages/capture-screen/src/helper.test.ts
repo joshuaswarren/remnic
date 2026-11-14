@@ -170,18 +170,14 @@ if (args[0] === "ocr-window") {
 } else process.stdout.write(JSON.stringify(full));`,
   );
   const calls = (): string[][] => {
-    try {
-      return readFileSync(log, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const argv: unknown = JSON.parse(line);
-          if (!Array.isArray(argv)) throw new Error(`helper log line is not an argv array: ${line}`);
-          return argv.map((entry) => String(entry));
-        });
-    } catch {
-      return [];
-    }
+    return readFileSync(log, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const argv: unknown = JSON.parse(line);
+        if (!Array.isArray(argv)) throw new Error(`helper log line is not an argv array: ${line}`);
+        return argv.map((entry) => String(entry));
+      });
   };
   return { file, calls };
 }
@@ -215,6 +211,7 @@ test("a legacy helper's fallback snapshot carries the node limit it was given", 
 test("any other failure of --window-only is an error, never a fallback to reading the tree", async () => {
   const { file, calls } = loggingHelper("wo-broken.js", 1);
   await assert.rejects(new NativeHelper(file).windowContext({ frontmost: true }), CaptureInputError);
+  assert.deepEqual(calls(), [["ax-snapshot", "--frontmost", "--window-only"]]);
   assert.deepEqual(
     calls().filter((c) => !c.includes("--window-only")),
     [],
@@ -246,6 +243,7 @@ test("a helper that refuses --title with status 2 is read without it, and the re
 test("any other failure of a pinned read is an error, never a read without the pin", async () => {
   const { file, calls } = loggingHelper("pin-broken.js", "ok", 1);
   await assert.rejects(new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xa1", "--title", "shell"]]);
   assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
 });
 
@@ -267,6 +265,7 @@ test("a helper that refuses --title on an OCR read is read without it, and the r
 test("any other failure of a pinned OCR read is an error, never a read without the pin", async () => {
   const { file, calls } = loggingHelper("ocr-pin-broken.js", "ok", 1);
   await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls(), [["ocr-window", "--window", "0xa1", "--title", "shell"]]);
   assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
 });
 

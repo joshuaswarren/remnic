@@ -14,7 +14,7 @@
 import type { CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
 import type { NativeHelper } from "./helper.js";
-import { captureWindow } from "./live.js";
+import { captureWindow, linuxUrlPolicyUnavailable } from "./live.js";
 import type { Spool } from "./spool.js";
 
 /** Injectable clock/timer so the loop is deterministically testable. */
@@ -95,6 +95,7 @@ export class CaptureScheduler {
    * ticks are skipped so a slow helper never runs two captures at once.
    */
   async tick(): Promise<void> {
+    if (linuxUrlPolicyUnavailable(this.#config)) return;
     if (this.#inflight) return;
     this.#inflight = true;
     try {

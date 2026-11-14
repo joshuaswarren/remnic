@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +26,23 @@ function readWindow(apps, title, ...more) {
 
 const VAULT = frame("Vault notes - Chromium", "vault secret: 4471");
 const PLAN = frame("Quarterly plan - Chromium", "plan text");
+
+function discovery(apps, title, maxNodes, urlOnly, calls) {
+  const env = { PATH: process.env.PATH, PYTHONPATH: STUB, STUB_ATSPI_TREE: JSON.stringify(apps) };
+  if (calls) env.STUB_ATSPI_CALLS = calls;
+  const args = [READER, "--pid", "4242", `--title=${title}`, "--max-nodes", String(maxNodes)];
+  if (urlOnly) args.push("--url-only");
+  const done = spawnSync("python3", args, { encoding: "utf8", env });
+  assert.equal(done.status, 0, done.stderr);
+  return JSON.parse(done.stdout);
+}
+
+function callLog(t) {
+  const dir = mkdtempSync(path.join(tmpdir(), "atspi-calls-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "calls.log");
+  return { file, lines: () => readFileSync(file, "utf8").split("\n").filter(Boolean) };
+}
 
 test("the frame named exactly like the window is the one read", () => {
   const { json } = readWindow(chromium(VAULT, PLAN), "Quarterly plan - Chromium");
@@ -118,4 +135,63 @@ test("a password field is never read: no name, description or text of it or of i
   const reads = existsSync(log) ? readFileSync(log, "utf8").split("\n") : [];
   assert.equal(reads.includes("password text"), false, "the reader asked for the text of a password field");
   assert.equal(reads.includes("label"), true, "other text is still read");
+});
+
+test("URL discovery bounds wide trees independently of the content node limit", (t) => {
+  const log = callLog(t);
+  const wide = {
+    name: "Wide", role: "frame",
+    children: Array.from({ length: 3000 }, () => ({ role: "label" })),
+  };
+  for (const urlOnly of [false, true]) {
+    const json = discovery(chromium(wide), wide.name, 1, urlOnly, log.file);
+    assert.equal(json.url, null);
+    assert.equal(json.url_incomplete, true);
+    assert.ok(log.lines().filter((line) => line.startsWith("role ")).length <= 2000);
+  }
+});
+
+test("URL discovery bounds child fetches through sparse trees", (t) => {
+  const log = callLog(t);
+  const sparse = {
+    name: "Sparse", role: "frame",
+    children: [...Array(5000).fill(null), { role: "document web", attributes: { URI: "https://deep.example/" } }],
+  };
+  const json = discovery(chromium(sparse), sparse.name, 1, true, log.file);
+  assert.equal(json.url, null);
+  assert.equal(json.url_incomplete, true);
+  assert.ok(log.lines().filter((line) => line.startsWith("child ")).length <= 1003);
+});
+
+test("URL discovery does not enter a hidden frame", () => {
+  const hidden = {
+    name: "Hidden", role: "frame", states: [],
+    children: [{ role: "document web", attributes: { URI: "https://hidden.example/" } }],
+  };
+  for (const more of [[], ["--url-only"]]) {
+    const { out, json } = readWindow(chromium(hidden), hidden.name, ...more);
+    assert.equal(json.url, null);
+    assert.equal(out.includes("hidden.example"), false);
+  }
+});
+
+test("URL discovery never reads attributes or children under a password field", (t) => {
+  const log = callLog(t);
+  const login = {
+    name: "Sign in", role: "frame",
+    children: [{ role: "password text", children: [{
+      role: "document web", attributes: { URI: "https://secret.example/" },
+    }] }],
+  };
+  const json = discovery(chromium(login), login.name, 1, true, log.file);
+  assert.equal(json.url, null);
+  assert.equal(log.lines().some((line) => line.startsWith("attrs ")), false);
+  assert.equal(log.lines().includes("child password text"), false);
+});
+
+test("URL discovery finds a visible document even with a one-node content limit", () => {
+  const page = frame("Docs", "public text", { attributes: { URI: "https://docs.example/" } });
+  const json = discovery(chromium(page), page.name, 1, true);
+  assert.equal(json.url, "https://docs.example/");
+  assert.equal(json.url_incomplete, undefined);
 });

@@ -260,3 +260,43 @@ test("unknown screen flags are a usage error", async () => {
   assert.equal((await helper(["ocr-window", "--window"], desktop)).code, 2);
   assert.equal((await helper(["ax-snapshot", "--max-nodes", "0"], desktop)).code, 2);
 });
+
+test("AT-SPI refuses a pinned target on an inactive workspace", async (t) => {
+  const pinned = client({ address: "0x99", pinned: true, workspace: { id: 2, name: "2" } });
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, pinned], atspi: atspiTree([{ role: "text", text: SENTENCE }]) });
+  t.after(desktop.stop);
+  const result = await helper(["ax-snapshot", "--window", pinned.address], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json().tree, { role: "window" });
+  assert.match(result.stderr, /not on a visible workspace/);
+  assert.deepEqual(desktop.calls("python3"), []);
+});
+
+test("AT-SPI reads active and shown special workspaces", async (t) => {
+  for (const workspace of [1, -99]) {
+    const target = client({ workspace: { id: workspace } });
+    const desktop = fakeDesktop({
+      active: target, clients: [target], atspi: atspiTree([{ role: "text", text: SENTENCE }]),
+      monitors: [{ activeWorkspace: { id: 1 }, specialWorkspace: { id: -99 } }],
+    });
+    t.after(desktop.stop);
+    const result = await helper(["ax-snapshot", "--window", target.address], desktop);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.json().tree.children[0].value, SENTENCE);
+    assert.equal(desktop.calls("python3").length, 1);
+  }
+});
+
+test("AT-SPI refuses unknown window and monitor workspaces", async (t) => {
+  for (const missing of ["window", "monitor"]) {
+    const target = client(missing === "window" ? { workspace: undefined } : {});
+    const options = { active: target, clients: [target], atspi: atspiTree([{ role: "text", text: SENTENCE }]) };
+    if (missing === "monitor") options.monitors = [{ id: 0 }];
+    const desktop = fakeDesktop(options);
+    t.after(desktop.stop);
+    const result = await helper(["ax-snapshot", "--frontmost"], desktop);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.json().tree, { role: "window" });
+    assert.deepEqual(desktop.calls("python3"), []);
+  }
+});

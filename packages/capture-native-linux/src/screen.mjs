@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { runTool } from "./exec.mjs";
-import { focusedWindow, readableWindow, windowById, windowOfPid } from "./hypr.mjs";
+import { focusedWindow, readableWindow, windowById, windowOfPid, workspaceVisible } from "./hypr.mjs";
 
 const READER = path.join(path.dirname(fileURLToPath(import.meta.url)), "atspi.py");
 const DEFAULT_MAX_NODES = 5000;
@@ -69,7 +69,11 @@ async function targetWindow({ pid, windowId }) {
 export async function axSnapshot({ pid, windowId, expectTitle, windowOnly = false, maxNodes = DEFAULT_MAX_NODES }) {
   const window = await targetWindow({ pid, windowId });
   const retitled = expectTitle !== undefined && window.title !== expectTitle;
-  const facts = retitled ? null : await readAtspi(window, maxNodes, windowOnly);
+  let facts = null;
+  if (!retitled) {
+    if (await workspaceVisible(window)) facts = await readAtspi(window, maxNodes, windowOnly);
+    else process.stderr.write(`remnic-capture-helper: window ${window.address} is not on a visible workspace; not reading it\n`);
+  }
   const snapshot = { app: window.class, windowTitle: window.title, windowId: window.address };
   if (!windowOnly) {
     snapshot.tree = facts?.found ? toAxNode(facts.root, { left: maxNodes }) : { role: "window" };

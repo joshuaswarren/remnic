@@ -4,6 +4,13 @@ import json
 import os
 
 
+def _note(line):
+    path = os.environ.get("STUB_ATSPI_CALLS")
+    if path:
+        with open(path, "a") as out:
+            out.write(line + "\n")
+
+
 class _States:
     def __init__(self, names):
         self.names = names
@@ -15,7 +22,7 @@ class _States:
 class _Node:
     def __init__(self, spec):
         self.spec = spec
-        self.kids = [_Node(child) for child in spec.get("children", [])]
+        self.kids = [_Node(child) if child is not None else None for child in spec.get("children", [])]
 
     def assert_content_allowed(self):
         if self.spec.get("forbid_content"):
@@ -29,7 +36,9 @@ class _Node:
         return self.spec.get("name", "")
 
     def get_role_name(self):
-        return self.spec.get("role", "frame")
+        role = self.spec.get("role", "frame")
+        _note(f"role {role}")
+        return role
 
     def get_description(self):
         self.assert_content_allowed()
@@ -48,6 +57,7 @@ class _Node:
 
     def get_child_at_index(self, index):
         self.assert_content_allowed()
+        _note(f"child {self.spec.get('role', 'frame')}")
         return self.kids[index]
 
 
@@ -77,6 +87,8 @@ class Atspi:
     class Document:
         @staticmethod
         def get_document_attributes(node):
+            node.assert_content_allowed()
+            _note(f"attrs {node.spec.get('role', 'frame')}")
             return node.spec.get("attributes")
 
     @staticmethod

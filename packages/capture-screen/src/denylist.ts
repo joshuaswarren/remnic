@@ -21,6 +21,10 @@ export const DEFAULT_DENY_TITLES: readonly string[] = [
 /** No default URL denials — URL patterns are user-supplied (site-specific). */
 export const DEFAULT_DENY_URLS: readonly string[] = [];
 
+export function hasUrlDenyRules(urls: readonly string[]): boolean {
+  return DEFAULT_DENY_URLS.length > 0 || urls.length > 0;
+}
+
 export interface DenyLists {
   apps: readonly string[];
   titles: readonly string[];
