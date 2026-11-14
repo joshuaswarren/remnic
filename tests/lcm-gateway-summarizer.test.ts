@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
+import { z } from "zod";
+
 import { setCodexCliFallbackRunnerForProcess } from "@remnic/core";
+import { estimateTokens } from "@remnic/core/lcm";
 
 import { Orchestrator } from "@remnic/core/orchestrator";
 import { parseConfig } from "@remnic/core/config";
@@ -151,4 +155,117 @@ test("LCM summarization preserves fastGatewayAgentId over taskModelChain", async
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.modelId, "fast-model");
+});
+
+/** The chat-completion request fields the gateway budget test asserts on. */
+const ChatRequestSchema = z.object({
+  max_tokens: z.number().int(),
+  messages: z.array(z.object({ role: z.string(), content: z.string() })),
+});
+
+const BoundPortSchema = z.object({ port: z.number().int() });
+
+/** Loopback OpenAI-compatible endpoint that records raw chat-completion bodies. */
+async function startLoopbackChatCompletions(): Promise<{
+  baseUrl: string;
+  bodies: string[];
+  close: () => Promise<void>;
+}> {
+  const bodies: string[] = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      if (req.url?.endsWith("/chat/completions")) bodies.push(body);
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "Gateway summary." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+        }),
+      );
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const { port } = BoundPortSchema.parse(server.address());
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    bodies,
+    close: () => {
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      return closed.promise;
+    },
+  };
+}
+
+function makeLoopbackGatewayConfig(baseUrl: string) {
+  return {
+    agents: {
+      defaults: { model: { primary: "loopback-provider/loopback-model" } },
+      list: [
+        {
+          id: "loopback-agent",
+          name: "Loopback provider",
+          model: { primary: "loopback-provider/loopback-model" },
+        },
+      ],
+    },
+    models: {
+      providers: {
+        "loopback-provider": {
+          baseUrl,
+          api: "openai-completions",
+          models: [{ id: "loopback-model", name: "loopback-model" }],
+        },
+      },
+    },
+  };
+}
+
+test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole batch (#3407)", async () => {
+  const stub = await startLoopbackChatCompletions();
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-gateway-budget-"));
+  try {
+    const engine = new Orchestrator(
+      parseConfig({
+        memoryDir,
+        lcmEnabled: true,
+        localLlmEnabled: false,
+        modelSource: "gateway",
+        gatewayAgentId: "loopback-agent",
+        gatewayConfig: makeLoopbackGatewayConfig(stub.baseUrl),
+      }),
+    ).lcmEngine;
+    assert.ok(engine, "LCM engine should be enabled");
+    const summarizeFn = engine["summarizeFn"];
+
+    // LcmSummarizer targets 25% of the whole batch; the call sends only a
+    // prefix. Batch sizing would ask this gateway route for well over 16,384.
+    const batch = "[user] the deploy failed at step three; retry it with the cached artifact.\n\n".repeat(3_000);
+    const batchTarget = Math.max(64, Math.ceil(estimateTokens(batch) * 0.25));
+    assert.ok(batchTarget * 2 > 16_384, "fixture must exceed a common provider output cap under batch sizing");
+
+    const result = await summarizeFn(batch, batchTarget, false);
+
+    assert.equal(result, "Gateway summary.");
+    assert.equal(stub.bodies.length, 1, "the gateway route serves the LCM summarize call");
+    const request = ChatRequestSchema.parse(JSON.parse(stub.bodies[0]));
+    const [system, user] = request.messages;
+    const sentTokens = estimateTokens(user.content);
+    assert.equal(user.content.length, 12_000, "only the 12,000-character prefix is sent");
+    assert.ok(
+      request.max_tokens <= 2 * (Math.ceil(sentTokens * 0.25) + 1),
+      `max_tokens ${request.max_tokens} must track the ${sentTokens} tokens sent`,
+    );
+    assert.ok(system.content.includes(`maximum ${request.max_tokens / 2} tokens`));
+  } finally {
+    await stub.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
