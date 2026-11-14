@@ -53,6 +53,25 @@ test("a missing helper package degrades honestly with an install hint (never MOD
   assert.doesNotMatch(res.hint ?? "", /MODULE_NOT_FOUND/);
 });
 
+const DEEP = fakeHelper(
+  "deep.js",
+  `let tree = { role: "AXStaticText", value: "leaf" };
+for (let depth = 1; depth < 1001; depth++) tree = { role: "AXGroup", children: [tree] };
+process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", tree }));`,
+);
+
+test("a valid 1001-node tree, inside the default node allowance, is decoded without overflowing the stack", async () => {
+  const snap = await new NativeHelper(DEEP).axSnapshot({ frontmost: true, maxNodes: 4000 });
+  let depth = 1;
+  let node = snap.tree;
+  while (node.children?.length === 1) {
+    node = node.children[0];
+    depth += 1;
+  }
+  assert.equal(depth, 1001);
+  assert.equal(node.value, "leaf");
+});
+
 test("ax-snapshot parses window context + tree from the fake helper", async () => {
   const helper = new NativeHelper(OK);
   const snap = await helper.axSnapshot({ frontmost: true, maxNodes: 100 });

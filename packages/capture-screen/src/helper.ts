@@ -212,21 +212,47 @@ function axTarget(opts: AxSnapshotOptions): string[] {
 }
 
 /**
- * The AX tree inside an `ax-snapshot` answer. Every field is optional and
- * children recurse; unknown fields are kept, because the helper may report
- * roles this build does not model.
+ * One AX node as the helper prints it, checked on its own: every field is optional, unknown fields are kept
+ * (the helper may report roles this build does not model), and the children are only known to be objects.
+ * Each child is checked when its turn comes in `decodeAxTree`, so a deep tree does not need a deep call stack.
  */
-const AxNodeSchema: z.ZodType<AxNode> = z.lazy(() =>
-  z.looseObject({
-    role: z.string().optional(),
-    value: z.string().optional(),
-    title: z.string().optional(),
-    description: z.string().optional(),
-    label: z.string().optional(),
-    offScreen: z.boolean().optional(),
-    children: z.array(AxNodeSchema).optional(),
-  }),
-);
+const AxNodeSchema = z.looseObject({
+  role: z.string().optional(),
+  value: z.string().optional(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  label: z.string().optional(),
+  offScreen: z.boolean().optional(),
+  children: z.array(z.looseObject({})).optional(),
+});
+type ShallowAxNode = z.infer<typeof AxNodeSchema>;
+
+/** A decoded node and the children of it that still wait to be checked. */
+interface PendingNode {
+  node: AxNode;
+  pending: ShallowAxNode["children"];
+}
+
+function pendingNode(shallow: ShallowAxNode): PendingNode {
+  const { children, ...fields } = shallow;
+  return { node: children === undefined ? fields : { ...fields, children: [] }, pending: children };
+}
+
+/** Check every node of an `ax-snapshot` tree, parents before children, with an explicit stack. */
+function decodeAxTree(root: ShallowAxNode): AxNode {
+  const top = pendingNode(root);
+  const stack = [top];
+  for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
+    for (const child of current.pending ?? []) {
+      const parsed = AxNodeSchema.safeParse(child);
+      if (!parsed.success) throw new CaptureInputError("native helper ax-snapshot tree must be an object");
+      const built = pendingNode(parsed.data);
+      current.node.children?.push(built.node);
+      stack.push(built);
+    }
+  }
+  return top.node;
+}
 
 /** The helper's JSON answer: an object, with the fields it reports kept as printed. */
 const HelperEnvelopeSchema = z.looseObject({});
@@ -317,7 +343,7 @@ export class NativeHelper {
     if (!tree.success) {
       throw new CaptureInputError("native helper ax-snapshot tree must be an object");
     }
-    return { ...readWindowFields(json), tree: tree.data };
+    return { ...readWindowFields(json), tree: decodeAxTree(tree.data) };
   }
 
   async #runPinned(args: string[], expectTitle: string | undefined): Promise<HelperEnvelope> {
