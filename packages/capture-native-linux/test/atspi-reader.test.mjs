@@ -58,6 +58,16 @@ test("--url-only on a title that matches no frame reports no address", () => {
   assert.deepEqual(json, { found: false });
 });
 
+test("the address is the one of the document that is showing, not of a hidden document before it", () => {
+  const hidden = { role: "document web", text: "allowed page", states: [], attributes: { URI: "https://allowed.example.test/" } };
+  const shown = { role: "document web", text: "vault page", attributes: { URI: "https://vault.example.test/" } };
+  const tabs = { name: "Two tabs - Chromium", role: "frame", children: [hidden, shown] };
+  for (const more of [[], ["--url-only"]]) {
+    const { json } = readWindow(chromium(tabs), "Two tabs - Chromium", ...more);
+    assert.equal(json.url, "https://vault.example.test/");
+  }
+});
+
 test("a password field is never read: no name, description or text of it or of its children leaves the reader", () => {
   const log = path.join(mkdtempSync(path.join(tmpdir(), "atspi-log-")), "reads.log");
   const login = {

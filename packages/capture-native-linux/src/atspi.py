@@ -55,6 +55,10 @@ def read(node, budget):
 
 
 def document_url(node, depth=0):
+    """The address of the first web document that is showing under `node`. A hidden document (another tab) is not
+    entered, so an address never comes from a page the window does not display."""
+    if depth > 0 and not node.get_state_set().contains(Atspi.StateType.SHOWING):
+        return None
     if node.get_role_name() == "document web":
         attributes = Atspi.Document.get_document_attributes(node) or {}
         return attributes.get("URI") or attributes.get("DocURL")
