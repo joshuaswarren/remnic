@@ -7,10 +7,46 @@ import { fileURLToPath } from "node:url";
 import { BYTES_PER_SECOND, fakeTools, run, tempDir, wavParts } from "./harness.mjs";
 
 const DUMP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pw-dump.json");
+const ENDIAN_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "force-endianness.mjs");
 
 function pattern(from, length) {
   return Buffer.from(Array.from({ length }, (_, i) => (from + i) % 251));
 }
+
+test("the helper writes little-endian WAV samples from big- and little-endian PCM", async () => {
+  for (const nativeEndian of ["BE", "LE"]) {
+    const tools = fakeTools(DUMP);
+    const out = tempDir();
+    const total = Math.round(1.5 * BYTES_PER_SECOND);
+    const helper = run(
+      ["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", out],
+      {
+        ...tools.env,
+        FAKE_PCM_BYTES: String(total),
+        FAKE_PCM_ENDIANNESS: nativeEndian,
+        NODE_OPTIONS: `--import=${ENDIAN_PRELOAD}`,
+      },
+    );
+    await helper.waitForEvents(1);
+    assert.equal((await helper.stop()).code, 0);
+
+    const events = helper.events();
+    assert.deepEqual(events.map((event) => wavParts(event.path).pcm.length), [32_000, 16_000]);
+    let offset = 0;
+    for (const event of events) {
+      const pcm = wavParts(event.path).pcm;
+      const expected = pattern(offset, pcm.length);
+      if (!pcm.equals(expected)) {
+        const mismatch = pcm.findIndex((byte, index) => byte !== expected[index]);
+        assert.fail(
+          `${nativeEndian} WAV byte ${offset + mismatch}: got 0x${pcm[mismatch].toString(16)}, expected 0x${expected[mismatch].toString(16)}`,
+        );
+      }
+      offset += pcm.length;
+    }
+    assert.equal(offset, total);
+  }
+});
 
 test("a mic recording is cut into exact chunks and the last partial chunk is flushed on SIGTERM", async () => {
   const tools = fakeTools(DUMP);
@@ -164,7 +200,7 @@ test("an existing output directory that others can open is made private", async 
   mkdirSync(out, { mode: 0o755 });
   chmodSync(out, 0o755);
   const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", out], tools.env);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tools.waitForRecorderCalls(1);
   assert.equal((await helper.stop()).code, 0);
   assert.equal(statSync(out).mode & 0o777, 0o700);
 });
@@ -180,10 +216,26 @@ test("a machine without pw-record gets one line that names the package to instal
   assert.equal(helper.stdout(), "");
 });
 
-test("SIGTERM with nothing recorded exits cleanly and emits nothing", async () => {
+test("SIGTERM during startup exits cleanly without starting a recorder", async () => {
+  const tools = fakeTools(DUMP);
+  const helper = run(
+    ["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", tools.dir],
+    { ...tools.env, FAKE_BLOCK_DUMP: "1" },
+  );
+  await tools.waitForDumpStart();
+  const stopped = helper.stop();
+  tools.releaseDump();
+  const result = await stopped;
+  assert.equal(result.code, 0);
+  assert.equal(result.signal, null);
+  assert.equal(helper.stdout(), "");
+  assert.equal(tools.recorderCalls().length, 0);
+});
+
+test("SIGTERM with nothing recorded exits cleanly and emits no chunks", async () => {
   const tools = fakeTools(DUMP);
   const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", tempDir()], tools.env);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tools.waitForRecorderCalls(1);
   assert.equal((await helper.stop()).code, 0);
   assert.equal(helper.stdout(), "");
 });
