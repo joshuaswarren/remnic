@@ -129,6 +129,8 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   return entry;
 }
 
+/** Never equal to a real ino:size:mtime signature, so an unreadable file is retried on the next refresh. */
+const UNREADABLE_SIGNATURE = "unreadable";
 const LOCK_STALE_MS = 30_000;
 const LOCK_MAX_WAIT_MS = 5_000;
 
@@ -156,16 +158,39 @@ export class ObserveOutbox {
     return info ? `${info.ino}:${info.size}:${info.mtimeMs}` : null;
   }
 
+  /** Read-only callers keep the last known entries when the file cannot be read. */
+  private async refreshOrKeepLastKnown(notify?: OutboxNotify): Promise<void> {
+    try {
+      await this.refresh(notify);
+    } catch {
+      // Unreadable file: stay on the last known view; mutations still fail closed.
+    }
+  }
+
   /** Re-read the shared file when another process (or this one) changed it. */
   private async refresh(notify?: OutboxNotify, force = false): Promise<void> {
     const signature = await this.signature();
     if (!force && signature === this.diskSignature) return;
+    if (signature === null) {
+      // No file: an empty queue.
+      this.diskSignature = null;
+      this.entries = [];
+      return;
+    }
     // Recorded before the read: a write that lands mid-read changes the signature,
     // so the next refresh sees it and re-reads.
     this.diskSignature = signature;
+    let raw: string;
+    try {
+      raw = await readFile(this.filePath, "utf8");
+    } catch (err) {
+      // An existing but unreadable file is NOT an empty queue: the next write would replace it
+      // and drop every queued capture. Keep the last known entries, force a re-read next time,
+      // and let the caller decide (writes fail closed, read-only views keep what they knew).
+      this.diskSignature = UNREADABLE_SIGNATURE;
+      throw err;
+    }
     this.entries = [];
-    const raw = signature === null ? null : await readFile(this.filePath, "utf8").catch(() => null);
-    if (raw === null) return;
     let skipped = 0;
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
@@ -214,13 +239,13 @@ export class ObserveOutbox {
   }
 
   async size(): Promise<number> {
-    await this.refresh();
+    await this.refreshOrKeepLastKnown();
     return this.entries.length;
   }
 
   /** Dedupe keys of everything currently queued (used to avoid double-delivery channels). */
   async pendingHashes(): Promise<Set<string>> {
-    await this.refresh();
+    await this.refreshOrKeepLastKnown();
     return new Set(
       this.entries.flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
     );
@@ -228,7 +253,7 @@ export class ObserveOutbox {
 
   /** Counters since process start plus the oldest queued entry age. */
   async status(now: () => number = Date.now): Promise<OutboxStatus> {
-    await this.refresh();
+    await this.refreshOrKeepLastKnown();
     const oldest = this.entries[0] ? Date.parse(this.entries[0].queuedAt) : Number.NaN;
     return {
       pending: this.entries.length,
@@ -274,7 +299,7 @@ export class ObserveOutbox {
    */
   async drain(send: (entry: ObserveOutboxEntry) => Promise<void>, options: DrainOptions = {}): Promise<DrainResult> {
     const notify = options.notify;
-    await this.refresh(notify);
+    await this.refreshOrKeepLastKnown(notify);
     if (this.drainInProgress) {
       return { delivered: 0, dropped: 0, pending: this.entries.length, skipped: true };
     }
@@ -300,7 +325,7 @@ export class ObserveOutbox {
     let failures = 0;
     try {
       while (failures < maxAttempts) {
-        await this.refresh(notify);
+        await this.refreshOrKeepLastKnown(notify);
         const entry = this.entries[0];
         if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
@@ -320,8 +345,9 @@ export class ObserveOutbox {
             this.counters.dropped += 1;
             await this.remove(entry.id);
             const reason = err instanceof Error ? err.message : String(err);
+            const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
             notify?.(
-              `Remnic observe outbox: dropped 1 capture the daemon permanently rejected (${reason}); it will not be retried`,
+              `Remnic observe outbox: dropped 1 capture the daemon permanently rejected (${status}${reason}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); it will not be retried`,
               "warning"
             );
             continue;
