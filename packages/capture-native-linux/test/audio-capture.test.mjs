@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { statSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -21,6 +21,7 @@ test("a mic recording is cut into exact chunks and the last partial chunk is flu
     { ...tools.env, FAKE_PCM_BYTES: String(total) },
   );
   await helper.waitForEvents(3);
+  await new Promise((resolve) => setTimeout(resolve, 200)); // the fake has sent its last half second before SIGTERM arrives
   assert.deepEqual((await helper.stop()).code, 0);
 
   const events = helper.events();
@@ -111,6 +112,37 @@ test("the output directory is created private and a dead recorder ends the helpe
   assert.match(helper.stderr(), /pw-record exited with status 3/);
   assert.equal(statSync(out).mode & 0o777, 0o700);
   assert.equal(helper.events().length, 1, "the half second recorded before the failure is not lost");
+});
+
+const aliveAfter = async (pids, timeoutMs) => {
+  const alive = () => pids.filter((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } });
+  for (const deadline = Date.now() + timeoutMs; alive().length > 0 && Date.now() < deadline; ) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return alive();
+};
+
+test("when a chunk cannot be written the helper stops every recorder it started and ends with a plain error", {
+  skip: process.getuid?.() === 0 && "root can write to a read-only directory",
+}, async () => {
+  const tools = fakeTools(DUMP);
+  const out = path.join(tempDir(), "chunks");
+  mkdirSync(out, { mode: 0o700 });
+  chmodSync(out, 0o500);
+  const helper = run(
+    ["audio-capture", "--channel", "both", "--chunk-seconds", "1", "--out", out],
+    { ...tools.env, FAKE_PCM_BYTES: String(2 * BYTES_PER_SECOND) },
+  );
+  const timer = setTimeout(() => helper.child.kill("SIGKILL"), 5000);
+  const { code } = await helper.exited;
+  clearTimeout(timer);
+  chmodSync(out, 0o700);
+  assert.equal(code, 1);
+  assert.match(helper.stderr(), /^remnic-capture-helper: .*EACCES/m);
+  assert.doesNotMatch(helper.stderr(), /\n\s+at /, "one plain line, no stack trace");
+  assert.equal(helper.stdout(), "");
+  assert.ok(tools.recorderPids().length >= 1, "a recorder that never got to run has no pid to check");
+  assert.deepEqual(await aliveAfter(tools.recorderPids(), 2000), [], "no pw-record is left running");
 });
 
 test("a machine without pw-record gets one line that names the package to install", async () => {

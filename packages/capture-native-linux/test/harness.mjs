@@ -13,6 +13,7 @@ const FAKE_PW_RECORD = `#!/usr/bin/env node
 // odd-sized pieces, then either exits with FAKE_EXIT_CODE or waits for a signal like a live recording.
 import { appendFileSync } from "node:fs";
 appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+appendFileSync(process.env.FAKE_PID_LOG, process.pid + "\\n");
 const total = Number(process.env.FAKE_PCM_BYTES ?? 0);
 let sent = 0;
 while (sent < total) {
@@ -30,14 +31,17 @@ setInterval(() => {}, 1000);
 export function fakeTools(dumpFile) {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-linux-helper-"));
   const argvLog = path.join(dir, "pw-record-argv.log");
+  const pidLog = path.join(dir, "pw-record-pid.log");
   writeFileSync(argvLog, "");
+  writeFileSync(pidLog, "");
   writeFileSync(path.join(dir, "pw-record"), FAKE_PW_RECORD);
   writeFileSync(path.join(dir, "pw-dump"), `#!/bin/sh\ncat '${dumpFile}'\n`);
   chmodSync(path.join(dir, "pw-record"), 0o755);
   chmodSync(path.join(dir, "pw-dump"), 0o755);
   return {
     dir,
-    env: { PATH: `${dir}:${process.env.PATH}`, FAKE_ARGV_LOG: argvLog },
+    env: { PATH: `${dir}:${process.env.PATH}`, FAKE_ARGV_LOG: argvLog, FAKE_PID_LOG: pidLog },
+    recorderPids: () => readFileSync(pidLog, "utf8").split("\n").filter(Boolean).map(Number),
     recorderCalls: () =>
       readFileSync(argvLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
   };

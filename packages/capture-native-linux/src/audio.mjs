@@ -45,17 +45,27 @@ function iso(ms) {
   return new Date(ms).toISOString();
 }
 
-/** Start one pw-record for `channel`; resolves `{ stopped, status }` once it has exited and its last chunk is written. */
+/**
+ * Start one pw-record for `channel`; resolves `{ stopped, status }` once it has exited and its last chunk is written.
+ * A chunk that cannot be written stops this recorder, and `finished` rejects with that error once it has exited.
+ */
 function startRecorder({ channel, target, outDir, chunkSeconds, announce }) {
   const child = spawn("pw-record", recorderArgs(channel === "system", target), { stdio: ["ignore", "pipe", "pipe"] });
   let streamStartMs = null;
   let stopped = false;
+  let failure = null;
   const chunker = createChunker(chunkSeconds * BYTES_PER_SECOND, (pcm, offset) => {
-    const file = path.join(outDir, `${channel}-${randomUUID()}.wav`);
-    writeFileSync(file, wavFile(pcm), { mode: 0o600 });
-    const startedMs = streamStartMs + (offset / BYTES_PER_SECOND) * 1000;
-    const endedMs = startedMs + (pcm.length / BYTES_PER_SECOND) * 1000;
-    announce({ path: file, channel, startedAtUtc: iso(startedMs), endedAtUtc: iso(endedMs), device: target ?? null });
+    if (failure) return;
+    try {
+      const file = path.join(outDir, `${channel}-${randomUUID()}.wav`);
+      writeFileSync(file, wavFile(pcm), { mode: 0o600 });
+      const startedMs = streamStartMs + (offset / BYTES_PER_SECOND) * 1000;
+      const endedMs = startedMs + (pcm.length / BYTES_PER_SECOND) * 1000;
+      announce({ path: file, channel, startedAtUtc: iso(startedMs), endedAtUtc: iso(endedMs), device: target ?? null });
+    } catch (error) {
+      failure = error;
+      child.kill("SIGTERM");
+    }
   });
   child.stdout.on("data", (data) => {
     streamStartMs ??= Date.now() - (data.length / BYTES_PER_SECOND) * 1000;
@@ -68,7 +78,8 @@ function startRecorder({ channel, target, outDir, chunkSeconds, announce }) {
     );
     child.once("close", (status) => {
       chunker.flush();
-      resolve({ stopped, status });
+      if (failure) reject(failure);
+      else resolve({ stopped, status });
     });
   });
   return {
@@ -101,13 +112,16 @@ export async function audioCapture({ channel, chunkSeconds, out, device }) {
   for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, stopAll);
   process.stdout.once("error", stopAll);
 
-  const first = Promise.race(recorders.map((recorder) => recorder.finished));
-  const ended = await first.catch((error) => {
-    stopAll();
-    throw error;
-  });
+  let ended;
+  let failure = null;
+  try {
+    ended = await Promise.race(recorders.map((recorder) => recorder.finished));
+  } catch (error) {
+    failure = error;
+  }
   stopAll();
   await Promise.all(recorders.map((recorder) => recorder.finished.catch(() => undefined)));
+  if (failure) throw failure;
   if (ended.stopped) return 0;
   throw new Error(`pw-record exited with status ${ended.status}`);
 }
