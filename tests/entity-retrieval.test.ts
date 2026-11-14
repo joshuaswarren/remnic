@@ -9,6 +9,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "@remnic/core/config";
 import { buildEntityRecallSection, entityIndexVersion, readRecentEntityTranscriptEntries } from "@remnic/core/entity-retrieval";
 import { containsPhrase } from "../packages/remnic-core/src/entity-retrieval-boundaries.js";
+import { isAbortError } from "../packages/remnic-core/src/abort-error.js";
 import {
   applyCarriedMemorySnippets,
   type CarriedMemorySnippet,
@@ -2517,7 +2518,7 @@ test("entity recall reports mid-build cancellation as an abort, not an empty sec
       transcriptEntries: [],
       abortSignal: aborted.signal,
     }),
-    (err: unknown) => err instanceof Error && err.name === "AbortError",
+    isAbortError,
   );
 });
 
@@ -2545,4 +2546,192 @@ test("carried entity snippets round-trip by canonical id without sharing arrays"
   const added = { canonicalId: "person:new", memorySnippets: ["keep existing"] };
   assert.equal(applyCarriedMemorySnippets([...rebuilt, added], previous), true);
   assert.deepEqual(added.memorySnippets, ["keep existing"]);
+});
+
+// --- entity recall cancellation: persisted index-state read and build path ---
+
+import { openSync, writeSync, closeSync, constants as fsConstants } from "node:fs";
+import { execFileSync } from "node:child_process";
+
+async function makeHungIndexStateFifo(memoryDir: string): Promise<string> {
+  const stateDir = path.join(memoryDir, "state");
+  await mkdir(stateDir, { recursive: true });
+  const fifo = path.join(stateDir, "entity-mention-index.json");
+  try {
+    execFileSync("mkfifo", [fifo]);
+  } catch (err) {
+    // POSIX-only; rely on the caller's skip option on unsupported platforms
+    // rather than throwing from the fixture helper.
+    throw new Error(`mkfifo unavailable on this platform: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return fifo;
+}
+
+function fifoSupported(): boolean {
+  return process.platform !== "win32";
+}
+
+function hungFifoTestOptions(): { skip: string } | undefined {
+  return fifoSupported() ? undefined : { skip: "POSIX FIFO required (mkfifo unavailable)" };
+}
+
+async function rejectsWithin(pending: Promise<unknown>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`not rejected within ${ms}ms`)), ms);
+  });
+  try {
+    await assert.rejects(
+      () => Promise.race([pending, timeout]),
+      isAbortError,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForHungIndexStateRead(fifo: string, ms = 3000): Promise<number> {
+  // A non-blocking open of the write end only succeeds once a reader is
+  // attached (with no reader it fails fast with ENXIO), so polling it proves
+  // the section's read actually opened the FIFO before we abort -- no fixed
+  // sleep. The returned fd is held open so the read stays parked (a FIFO read
+  // with an attached writer and no data keeps blocking); the caller must
+  // settle it via settleHungIndexStateFifo.
+  const deadline = Date.now() + ms;
+  for (;;) {
+    try {
+      return openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
+    } catch (err) {
+      // SAFETY: node:fs rejects opens with an ErrnoException whose `code` is
+      // the errno name; ENXIO means no reader is attached yet, anything else
+      // is a real failure to surface.
+      const errnoCode = (err as NodeJS.ErrnoException).code;
+      if (errnoCode !== "ENXIO") throw err;
+      if (Date.now() >= deadline) {
+        throw new Error("persisted index-state read did not attach to the FIFO within the deadline");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+}
+
+function settleHungIndexStateFifo(fd: number | undefined, fifo: string): void {
+  // Write then close the handshake writer so the parked read settles; without
+  // this the test process would leave an orphaned reader/writer. If the
+  // handshake never obtained a writer (read never attached), fall back to a
+  // best-effort non-blocking write that fails fast with no reader.
+  if (fd !== undefined) {
+    try { writeSync(fd, '{"version":3,"entities":[]}\n'); } catch { /* read may have settled */ }
+    try { closeSync(fd); } catch { /* best-effort */ }
+    return;
+  }
+  let cleanup: number | undefined;
+  try {
+    cleanup = openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK);
+    writeSync(cleanup, '{"version":3,"entities":[]}\n');
+  } catch {
+    // No reader attached (section never parked on the FIFO): nothing to do.
+  } finally {
+    if (cleanup !== undefined) {
+      try { closeSync(cleanup); } catch { /* best-effort */ }
+    }
+  }
+}
+
+test("entity recall abort releases a hung persisted index-state read (fast path)", { timeout: 8000, ...hungFifoTestOptions() }, async () => {
+  const { memoryDir, config, storage } = await buildHarness("engram-entity-index-hung-fastpath");
+  const fifo = await makeHungIndexStateFifo(memoryDir);
+
+  // The fast path awaits readCurrentPersistedEntityIndex first, which parks on
+  // the FIFO before buildEntityMentionIndex's sibling corpus reads are reached,
+  // so the index-state read is already the only pending await here.
+  const aborted = new AbortController();
+  const pending = buildEntityRecallSection({
+    config,
+    storage,
+    query: "Who is Aborted Person?",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+    abortSignal: aborted.signal,
+  });
+
+  let writer: number | undefined;
+  try {
+    // Prove the persisted-index read actually opened the FIFO before aborting.
+    writer = await waitForHungIndexStateRead(fifo);
+    aborted.abort();
+    await rejectsWithin(pending, 2000);
+  } finally {
+    settleHungIndexStateFifo(writer, fifo);
+  }
+});
+
+test("entity recall abort releases a hung index-state read on the build path", { timeout: 8000, ...hungFifoTestOptions() }, async () => {
+  const { memoryDir, config, storage } = await buildHarness("engram-entity-index-hung-build");
+  const fifo = await makeHungIndexStateFifo(memoryDir);
+
+  const aborted = new AbortController();
+  // "what about him" is a follow-up: earlyMode skips the persisted fast-path read,
+  // so the index-state read under test is the one inside buildEntityMentionIndex.
+  // Stub the two sibling full-corpus reads so the abort is observed at the
+  // index-state read, not a sibling Promise.all rejection.
+  storage.readAllEntityFiles = () => Promise.resolve([]);
+  storage.readAllMemories = () => Promise.resolve([]);
+  const pending = buildEntityRecallSection({
+    config,
+    storage,
+    query: "what about him",
+    recentTurns: 6,
+    maxHints: 2,
+    maxSupportingFacts: 6,
+    maxRelatedEntities: 3,
+    maxChars: 2400,
+    transcriptEntries: [],
+    abortSignal: aborted.signal,
+  });
+
+  let writer: number | undefined;
+  try {
+    // Prove the build-path index-state read actually opened the FIFO before aborting.
+    writer = await waitForHungIndexStateRead(fifo);
+    aborted.abort();
+    await rejectsWithin(pending, 2000);
+  } finally {
+    settleHungIndexStateFifo(writer, fifo);
+  }
+});
+
+test("entity recall build path stops at its first checkpoint when already aborted", async () => {
+  const { config, storage } = await buildHarness("engram-entity-build-preaborted");
+  await writeEntity(
+    storage,
+    "Preaborted Build Person",
+    "person",
+    ["Preaborted Build Person owns the build pre-abort test."],
+    "Preaborted Build Person exists only to verify build-path pre-abort.",
+  );
+
+  const aborted = new AbortController();
+  aborted.abort();
+
+  // follow-up mode forces the build path (no persisted fast-path read).
+  await assert.rejects(
+    buildEntityRecallSection({
+      config,
+      storage,
+      query: "what about him",
+      recentTurns: 6,
+      maxHints: 2,
+      maxSupportingFacts: 6,
+      maxRelatedEntities: 3,
+      maxChars: 2400,
+      transcriptEntries: [],
+      abortSignal: aborted.signal,
+    }),
+    isAbortError,
+  );
 });
