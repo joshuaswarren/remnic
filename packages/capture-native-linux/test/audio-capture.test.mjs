@@ -220,10 +220,12 @@ test("SIGTERM during startup exits cleanly without starting a recorder", async (
   const tools = fakeTools(DUMP);
   const helper = run(
     ["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", tools.dir],
-    { ...tools.env, FAKE_DUMP_DELAY_MS: "500" },
+    { ...tools.env, FAKE_BLOCK_DUMP: "1" },
   );
   await tools.waitForDumpStart();
-  const result = await helper.stop();
+  const stopped = helper.stop();
+  tools.releaseDump();
+  const result = await stopped;
   assert.equal(result.code, 0);
   assert.equal(result.signal, null);
   assert.equal(helper.stdout(), "");
