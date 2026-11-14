@@ -34,16 +34,19 @@ export interface HelperResolution {
   hint: string | null;
 }
 
-/** The npm package that would provide the helper for this platform/arch. */
+/**
+ * The npm package that would provide the helper for this platform/arch. Linux has one package for every
+ * arch: its helper is a script that runs on any CPU.
+ */
 export function helperPackageName(platform: string = process.platform, arch: string = process.arch): string {
-  return `@remnic/capture-native-${platform}-${arch}`;
+  return platform === "linux" ? "@remnic/capture-native-linux" : `@remnic/capture-native-${platform}-${arch}`;
 }
 
-function installHint(pkg: string): string {
+function installHint(pkg: string, platform: string): string {
+  const source = platform === "darwin" ? "build the Swift helper from source (packages/capture-native-darwin-helper) and " : "";
   return (
     `native capture helper (${pkg}) is not available on this install. ` +
-    `Run \`npm install ${pkg}\` or build the Swift helper from source ` +
-    `(packages/capture-native-darwin-helper) and set REMNIC_CAPTURE_HELPER_BIN to the binary`
+    `Run \`npm install ${pkg}\` or ${source}set REMNIC_CAPTURE_HELPER_BIN to the binary`
   );
 }
 
@@ -73,7 +76,7 @@ export async function resolveHelperBinaryPath(env: NodeJS.ProcessEnv = process.e
     // Package present but did not export a usable path — still degrade honestly.
     return { binaryPath: null, hint: `${pkg} is installed but exports no helperBinaryPath` };
   } catch (err) {
-    if (isModuleNotFound(err)) return { binaryPath: null, hint: installHint(pkg) };
+    if (isModuleNotFound(err)) return { binaryPath: null, hint: installHint(pkg, process.platform) };
     // Any other load failure (broken binding, bad build) — degrade, never crash.
     return { binaryPath: null, hint: `${pkg} failed to load; reinstall it to enable live capture` };
   }
@@ -133,7 +136,7 @@ export async function runHelperCommand(
 ): Promise<unknown> {
   const outcome = await spawnHelper(binaryPath, args, timeoutMs);
   if (outcome.code !== 0) {
-    throw new CaptureInputError(`native helper exited with status ${outcome.code ?? "unknown"}`);
+    throw new HelperExitError(outcome.code);
   }
   if (outcome.stdout.trim() === "") {
     throw new CaptureInputError("native helper produced no output");
@@ -148,7 +151,32 @@ export async function runHelperCommand(
 export interface AxSnapshotOptions {
   frontmost?: boolean;
   pid?: number;
+  /** Read this window (the id an earlier call returned) and not whichever is in front now. */
+  windowId?: string;
   maxNodes?: number;
+}
+
+/** A helper that exited nonzero. `status` is its exit code, null when a signal ended it. */
+export class HelperExitError extends CaptureInputError {
+  constructor(readonly status: number | null) {
+    super(`native helper exited with status ${status ?? "unknown"}`);
+  }
+}
+
+/** The helper's usage-error exit code: it does not know a flag. */
+const USAGE_STATUS = 2;
+
+/**
+ * What the helper says about a window without reading its content: who owns it, its title, its id and the
+ * address a browser shows. `snapshot` is set only when the helper is too old to answer without reading the
+ * tree; it then holds the tree that was read to get these facts.
+ */
+export interface WindowContext {
+  app: string;
+  windowTitle: string;
+  windowId?: string;
+  browserUrl?: string | null;
+  snapshot?: AxSnapshot;
 }
 
 /**
@@ -172,57 +200,100 @@ export interface OcrWindowOptions {
   windowId?: string;
 }
 
+/** The `ax-snapshot` arguments that pick the window: by id, by process, or the one in front. */
+function axTarget(opts: AxSnapshotOptions): string[] {
+  if (opts.windowId !== undefined) return ["ax-snapshot", "--window", opts.windowId];
+  if (opts.pid !== undefined) return ["ax-snapshot", "--pid", String(opts.pid)];
+  return ["ax-snapshot", "--frontmost"];
+}
+
+function asObject(json: unknown): object {
+  if (json === null || typeof json !== "object" || Array.isArray(json)) {
+    throw new CaptureInputError("native helper ax-snapshot did not return an object");
+  }
+  return json;
+}
+
+/**
+ * CGWindowID may arrive as a JSON number or string; null/absent means the helper could not resolve an id
+ * (OCR falls back to frontmost).
+ */
+function readWindowId(raw: unknown): string | undefined {
+  if (typeof raw === "string") return raw;
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  if (raw !== undefined && raw !== null) {
+    throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
+  }
+  return undefined;
+}
+
+/** The window fields every `ax-snapshot` answer carries, validated; none of them is window content. */
+function readWindowFields(json: object): Omit<WindowContext, "snapshot"> {
+  if (!("app" in json) || !("windowTitle" in json)) {
+    throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle");
+  }
+  const app: unknown = json.app;
+  const windowTitle: unknown = json.windowTitle;
+  const browserUrl: unknown = "browserUrl" in json ? json.browserUrl : undefined;
+  const windowIdRaw: unknown = "windowId" in json ? json.windowId : undefined;
+  if (typeof app !== "string" || typeof windowTitle !== "string") {
+    throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
+  }
+  const windowId = readWindowId(windowIdRaw);
+  return {
+    app,
+    windowTitle,
+    ...(windowId !== undefined ? { windowId } : {}),
+    ...(typeof browserUrl === "string" ? { browserUrl } : {}),
+  };
+}
+
 /** Thin wrapper over a resolved helper binary. */
 export class NativeHelper {
   readonly binaryPath: string;
+  #windowOnlyUnsupported = false;
 
   constructor(binaryPath: string) {
     this.binaryPath = binaryPath;
   }
 
-  /** `<helper> ax-snapshot [--frontmost|--pid N] [--max-nodes N]` -> window + AX tree JSON. */
-  async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
-    const args = ["ax-snapshot"];
-    if (opts.pid !== undefined) args.push("--pid", String(opts.pid));
-    else args.push("--frontmost");
-    if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
-    const json = await runHelperCommand(this.binaryPath, args);
-    if (json === null || typeof json !== "object" || Array.isArray(json)) {
-      throw new CaptureInputError("native helper ax-snapshot did not return an object");
+  /**
+   * `<helper> ax-snapshot [--frontmost|--pid N] --window-only` -> the window's facts and no tree, so a caller
+   * can apply its deny list before any content is read. A helper that exits with status 2 does not know the
+   * flag (the macOS helper today): this method then reads the full snapshot, returns it in `snapshot`, and
+   * remembers not to ask again. Any other failure throws.
+   */
+  async windowContext(opts: { frontmost?: boolean; pid?: number } = {}): Promise<WindowContext> {
+    if (!this.#windowOnlyUnsupported) {
+      try {
+        const json = await runHelperCommand(this.binaryPath, [...axTarget(opts), "--window-only"]);
+        return readWindowFields(asObject(json));
+      } catch (error) {
+        if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
+        this.#windowOnlyUnsupported = true;
+      }
     }
-    if (!("app" in json) || !("windowTitle" in json) || !("tree" in json)) {
+    const snapshot = await this.axSnapshot(opts);
+    const { tree: _tree, ...fields } = snapshot;
+    return { ...fields, snapshot };
+  }
+
+  /** `<helper> ax-snapshot [--frontmost|--pid N|--window ID] [--max-nodes N]` -> window + AX tree JSON. */
+  async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
+    const args = axTarget(opts);
+    if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
+    const json = asObject(await runHelperCommand(this.binaryPath, args));
+    if (!("tree" in json)) {
       throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
     }
-    const app: unknown = json.app;
-    const windowTitle: unknown = json.windowTitle;
-    const browserUrl: unknown = "browserUrl" in json ? json.browserUrl : undefined;
-    const windowIdRaw: unknown = "windowId" in json ? json.windowId : undefined;
     const tree: unknown = json.tree;
-    if (typeof app !== "string" || typeof windowTitle !== "string") {
-      throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
-    }
     if (tree === null || typeof tree !== "object" || Array.isArray(tree)) {
       throw new CaptureInputError("native helper ax-snapshot tree must be an object");
-    }
-    // CGWindowID may arrive as a JSON number or string; null/absent means the
-    // helper could not resolve an id (OCR falls back to frontmost).
-    let windowId: string | undefined;
-    if (typeof windowIdRaw === "string") windowId = windowIdRaw;
-    else if (typeof windowIdRaw === "number" && Number.isFinite(windowIdRaw)) windowId = String(windowIdRaw);
-    else if (windowIdRaw !== undefined && windowIdRaw !== null) {
-      throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
     }
     // Named cast (sanctioned): the tree is structurally an AxNode (all fields
     // optional) and extractAxText tolerates unknown shapes; a schema parse of an
     // arbitrary AX dump would be meaningless.
-    const axTree = tree as AxNode;
-    return {
-      app,
-      windowTitle,
-      ...(windowId !== undefined ? { windowId } : {}),
-      ...(typeof browserUrl === "string" ? { browserUrl } : {}),
-      tree: axTree,
-    };
+    return { ...readWindowFields(json), tree: tree as AxNode };
   }
 
   /** `<helper> ocr-window [--frontmost|--window ID]` -> `{ text }` JSON. */

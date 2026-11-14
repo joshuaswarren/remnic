@@ -14,7 +14,7 @@
 import type { CaptureProcessor } from "./capture.js";
 import type { DaemonConfig } from "./config.js";
 import type { NativeHelper } from "./helper.js";
-import { captureFromSnapshot } from "./live.js";
+import { captureWindow } from "./live.js";
 import type { Spool } from "./spool.js";
 
 /** Injectable clock/timer so the loop is deterministically testable. */
@@ -98,8 +98,8 @@ export class CaptureScheduler {
     if (this.#inflight) return;
     this.#inflight = true;
     try {
-      const snap = await this.#helper.axSnapshot({ frontmost: true, maxNodes: this.#config.maxNodes });
-      const key = `${snap.app}\u0000${snap.windowTitle}\u0000${snap.browserUrl ?? ""}`;
+      const context = await this.#helper.windowContext({ frontmost: true });
+      const key = `${context.app}\u0000${context.windowTitle}\u0000${context.browserUrl ?? ""}`;
       const now = this.#clock.now();
       // Anchor the idle heartbeat to the first poll so the fallback measures from
       // startup, not since epoch — otherwise it would preempt the settle window.
@@ -121,8 +121,8 @@ export class CaptureScheduler {
       const idle = !this.#pending && now - this.#lastCaptureAt >= this.#config.idleFallbackSeconds * 1000;
       if (!settled && !idle) return;
 
-      const decision = await captureFromSnapshot(
-        snap,
+      const decision = await captureWindow(
+        context,
         this.#helper,
         this.#processor,
         this.#config,
@@ -132,7 +132,7 @@ export class CaptureScheduler {
       this.#lastCaptureAt = now;
       if (decision.action === "store") {
         this.#spool.insertSnapshot(decision.snapshot, this.#config.sessionGapSeconds);
-        this.#hooks.onStore?.(snap.app, snap.windowTitle);
+        this.#hooks.onStore?.(context.app, context.windowTitle);
       }
     } catch (err) {
       this.#hooks.onError?.(err);

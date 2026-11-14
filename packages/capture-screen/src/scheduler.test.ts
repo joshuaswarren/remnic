@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { CaptureProcessor } from "./capture.js";
 import { defaultDaemonConfig } from "./config.js";
-import type { AxSnapshot, NativeHelper } from "./helper.js";
+import type { AxSnapshot, NativeHelper, WindowContext } from "./helper.js";
 import { CaptureScheduler, type SchedulerClock } from "./scheduler.js";
 import { Spool } from "./spool.js";
 
@@ -26,8 +26,14 @@ function makeClock(): SchedulerClock & { nowMs: number; fire(): void } {
   return clock;
 }
 
+function contextOf(snap: AxSnapshot): WindowContext {
+  const { tree: _tree, ...context } = snap;
+  return context;
+}
+
 function fakeHelper(state: { snap: AxSnapshot; ocr: string }): NativeHelper {
   return {
+    windowContext: async () => contextOf(state.snap),
     axSnapshot: async () => state.snap,
     ocrWindow: async () => state.ocr,
   } as unknown as NativeHelper;
@@ -100,7 +106,7 @@ test("scheduler surfaces helper errors via onError and keeps running", async () 
   const spool = new Spool(":memory:");
   const processor = new CaptureProcessor(config);
   const errors: unknown[] = [];
-  const helper = { axSnapshot: async () => { throw new Error("helper down"); } } as unknown as NativeHelper;
+  const helper = { windowContext: async () => { throw new Error("helper down"); } } as unknown as NativeHelper;
   const clock = makeClock();
   const scheduler = new CaptureScheduler(helper, processor, spool, config, { onError: (e) => errors.push(e) }, clock);
 
@@ -120,10 +126,11 @@ test("stop() drains an in-flight tick before resolving", async () => {
     release = r;
   });
   const helper = {
-    axSnapshot: async () => {
+    windowContext: async () => {
       await gate;
-      return axWindow("Safari", "Docs", "text body here");
+      return contextOf(axWindow("Safari", "Docs", "text body here"));
     },
+    axSnapshot: async () => axWindow("Safari", "Docs", "text body here"),
     ocrWindow: async () => "",
   } as unknown as NativeHelper;
   const clock = makeClock();
@@ -168,6 +175,7 @@ test("a deny-listed window is never OCR'd (deny preflight)", async () => {
   const processor = new CaptureProcessor(config);
   let ocrCalls = 0;
   const helper = {
+    windowContext: async () => contextOf({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } }),
     axSnapshot: async () => ({ app: "1Password 8", windowTitle: "Vault", tree: { role: "AXWindow" } }) as AxSnapshot,
     ocrWindow: async () => {
       ocrCalls += 1;
@@ -181,6 +189,52 @@ test("a deny-listed window is never OCR'd (deny preflight)", async () => {
   clock.nowMs = 10;
   await scheduler.tick(); // settle(0) → denied, no OCR
   assert.equal(ocrCalls, 0, "must not OCR a deny-listed window");
+  assert.equal(spool.countSnapshots(), 0);
+  spool.close();
+});
+
+function countingHelper(snap: AxSnapshot): { helper: NativeHelper; treeReads: () => number } {
+  let reads = 0;
+  const helper = {
+    windowContext: async () => contextOf(snap),
+    axSnapshot: async () => {
+      reads += 1;
+      return snap;
+    },
+    ocrWindow: async () => "",
+  } as unknown as NativeHelper;
+  return { helper, treeReads: () => reads };
+}
+
+test("the tree is read once, when the window has settled, not on every poll", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 100, idleFallbackSeconds: 1000 };
+  const spool = new Spool(":memory:");
+  const { helper, treeReads } = countingHelper(axWindow("Safari", "Docs", "hello visible page text here"));
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(helper, new CaptureProcessor(config), spool, config, {}, clock);
+  for (const at of [0, 20, 60]) {
+    clock.nowMs = at;
+    await scheduler.tick();
+  }
+  assert.equal(treeReads(), 0, "change detection must not read window content");
+  clock.nowMs = 200;
+  await scheduler.tick();
+  assert.equal(treeReads(), 1);
+  assert.equal(spool.countSnapshots(), 1);
+  spool.close();
+});
+
+test("the tree of a deny-listed window is never read, on any poll", async () => {
+  const config = { ...defaultDaemonConfig(), settleMs: 0, idleFallbackSeconds: 1 };
+  const spool = new Spool(":memory:");
+  const { helper, treeReads } = countingHelper(axWindow("1Password 8", "Vault", "secret vault contents"));
+  const clock = makeClock();
+  const scheduler = new CaptureScheduler(helper, new CaptureProcessor(config), spool, config, {}, clock);
+  for (const at of [0, 10, 2000, 4000]) {
+    clock.nowMs = at;
+    await scheduler.tick();
+  }
+  assert.equal(treeReads(), 0);
   assert.equal(spool.countSnapshots(), 0);
   spool.close();
 });
