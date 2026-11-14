@@ -320,6 +320,49 @@ export interface ResolveGitContextOptions {
   deadlineMs?: number;
   /** Injectable clock for deadline tests. */
   now?: () => number;
+  /**
+   * Share results across calls. Each miss costs up to five `git` spawns on the
+   * event loop, so per-request callers (recall, memory_store) pass one.
+   */
+  cache?: GitContextCache;
+}
+
+/** Short-lived, bounded memo of git resolution per cwd (COS-666). */
+export class GitContextCache {
+  private readonly entries = new Map<string, { value: GitContext | null; at: number }>();
+  private readonly ttlMs: number;
+  private readonly maxEntries: number;
+  private readonly now: () => number;
+
+  constructor(options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {}) {
+    this.ttlMs = options.ttlMs ?? 30_000;
+    this.maxEntries = options.maxEntries ?? 256;
+    this.now = options.now ?? Date.now;
+  }
+
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+
+  /** `undefined` = miss; `null` = cached "not a repo". */
+  get(key: string): GitContext | null | undefined {
+    const hit = this.entries.get(key);
+    if (!hit) return undefined;
+    if (this.now() - hit.at >= this.ttlMs) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return hit.value;
+  }
+
+  set(key: string, value: GitContext | null): void {
+    this.entries.delete(key);
+    this.entries.set(key, { value, at: this.now() });
+    if (this.entries.size > this.maxEntries) {
+      const oldest = this.entries.keys().next();
+      if (!oldest.done) this.entries.delete(oldest.value);
+    }
+  }
 }
 
 /**
@@ -334,6 +377,21 @@ export interface ResolveGitContextOptions {
 export async function resolveGitContext(
   cwd: string,
   options: ResolveGitContextOptions = {},
+): Promise<GitContext | null> {
+  const { cache } = options;
+  if (!cache || typeof cwd !== "string" || cwd.length === 0) return resolveGitContextUncached(cwd, options);
+  const hit = cache.get(cwd);
+  if (hit !== undefined) return hit;
+  // Aborts and deadline expiry reject, so only real answers (including
+  // "not a repo") reach `set`.
+  const value = await resolveGitContextUncached(cwd, options);
+  cache.set(cwd, value);
+  return value;
+}
+
+async function resolveGitContextUncached(
+  cwd: string,
+  options: ResolveGitContextOptions,
 ): Promise<GitContext | null> {
   // Wrap the whole body so the documented "Never throws" contract is
   // enforced. Possible throw sites include:
@@ -436,3 +494,6 @@ export async function resolveGitContext(
     return null;
   }
 }
+
+/** Process-wide cache for per-request callers (recall, memory_store). */
+export const sharedGitContextCache = new GitContextCache();

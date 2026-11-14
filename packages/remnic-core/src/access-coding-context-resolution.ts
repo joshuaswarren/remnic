@@ -1,5 +1,5 @@
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import { resolveGitContext } from "./coding/git-context.js";
+import { resolveGitContext, sharedGitContextCache } from "./coding/git-context.js";
 import type { CodingContext } from "./types.js";
 
 export interface InterruptibleCodingScopeInput {
@@ -22,6 +22,7 @@ export async function resolveCodingContextFromOptions(
     const gitContext = await resolveGitContext(options.cwd, {
       abortSignal: options.abortSignal,
       deadlineMs: options.deadlineMs,
+      cache: sharedGitContextCache,
     });
     if (!gitContext) return null;
     return {

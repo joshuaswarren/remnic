@@ -11,6 +11,7 @@ import test from "node:test";
 
 import {
   expandTildePath,
+  GitContextCache,
   normalizeOriginUrl,
   resolveGitContext,
   stableHash,
@@ -551,4 +552,58 @@ test("resolveGitContext: cwd inside repo returns repo root, not cwd", async () =
   const ctx = await resolveGitContext(cwd, { invoker });
   assert.ok(ctx);
   assert.equal(ctx!.rootPath, root);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Memoization (COS-666): per-request git spawns blocked the event loop.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("resolveGitContext with a cache spawns git once per cwd within the TTL", async () => {
+  let calls = 0;
+  const invoker: GitInvoker = (_cwd, args) => {
+    calls += 1;
+    if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return { stdout: "/repo\n", exitCode: 0 };
+    if (args[0] === "rev-parse") return { stdout: "main\n", exitCode: 0 };
+    return { stdout: "", exitCode: 1 };
+  };
+  let clock = 1_000;
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => clock });
+  const first = await resolveGitContext("/repo/sub", { invoker, cache });
+  const callsAfterFirst = calls;
+  assert.ok(first);
+  assert.ok(callsAfterFirst > 0);
+
+  clock += 29_000;
+  assert.deepEqual(await resolveGitContext("/repo/sub", { invoker, cache }), first);
+  assert.equal(calls, callsAfterFirst, "cache hit must not spawn git");
+
+  clock += 2_000; // past TTL
+  await resolveGitContext("/repo/sub", { invoker, cache });
+  assert.equal(calls, callsAfterFirst * 2, "expired entry re-resolves");
+});
+
+test("resolveGitContext cache also remembers 'not a repo' and never caches aborts", async () => {
+  let calls = 0;
+  const notRepo: GitInvoker = () => {
+    calls += 1;
+    return { stdout: "", exitCode: 128 };
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal(await resolveGitContext("/tmp/x", { invoker: notRepo, cache }), null);
+  assert.equal(await resolveGitContext("/tmp/x", { invoker: notRepo, cache }), null);
+  assert.equal(calls, 1);
+
+  const controller = new AbortController();
+  controller.abort(new Error("stop"));
+  await assert.rejects(resolveGitContext("/tmp/y", { invoker: notRepo, cache, abortSignal: controller.signal }));
+  assert.equal(await resolveGitContext("/tmp/y", { invoker: notRepo, cache }), null, "abort was not cached");
+});
+
+test("GitContextCache is bounded", async () => {
+  const cache = new GitContextCache({ ttlMs: 30_000, maxEntries: 2, now: () => 0 });
+  cache.set("a", null);
+  cache.set("b", null);
+  cache.set("c", null);
+  assert.equal(cache.has("a"), false);
+  assert.equal(cache.has("c"), true);
 });
