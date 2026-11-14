@@ -19,6 +19,8 @@
 
 import { spawn } from "node:child_process";
 
+import { z } from "zod";
+
 import type { AxNode } from "./axtree.js";
 import { CaptureInputError } from "./errors.js";
 import { expandTilde } from "./paths.js";
@@ -34,16 +36,19 @@ export interface HelperResolution {
   hint: string | null;
 }
 
-/** The npm package that would provide the helper for this platform/arch. */
+/**
+ * The npm package that would provide the helper for this platform/arch. Linux has one package for every
+ * arch: its helper is a script that runs on any CPU.
+ */
 export function helperPackageName(platform: string = process.platform, arch: string = process.arch): string {
-  return `@remnic/capture-native-${platform}-${arch}`;
+  return platform === "linux" ? "@remnic/capture-native-linux" : `@remnic/capture-native-${platform}-${arch}`;
 }
 
-function installHint(pkg: string): string {
+function installHint(pkg: string, platform: string): string {
+  const source = platform === "darwin" ? "build the Swift helper from source (packages/capture-native-darwin-helper) and " : "";
   return (
     `native capture helper (${pkg}) is not available on this install. ` +
-    `Run \`npm install ${pkg}\` or build the Swift helper from source ` +
-    `(packages/capture-native-darwin-helper) and set REMNIC_CAPTURE_HELPER_BIN to the binary`
+    `Run \`npm install ${pkg}\` or ${source}set REMNIC_CAPTURE_HELPER_BIN to the binary`
   );
 }
 
@@ -73,7 +78,7 @@ export async function resolveHelperBinaryPath(env: NodeJS.ProcessEnv = process.e
     // Package present but did not export a usable path — still degrade honestly.
     return { binaryPath: null, hint: `${pkg} is installed but exports no helperBinaryPath` };
   } catch (err) {
-    if (isModuleNotFound(err)) return { binaryPath: null, hint: installHint(pkg) };
+    if (isModuleNotFound(err)) return { binaryPath: null, hint: installHint(pkg, process.platform) };
     // Any other load failure (broken binding, bad build) — degrade, never crash.
     return { binaryPath: null, hint: `${pkg} failed to load; reinstall it to enable live capture` };
   }
@@ -133,7 +138,7 @@ export async function runHelperCommand(
 ): Promise<unknown> {
   const outcome = await spawnHelper(binaryPath, args, timeoutMs);
   if (outcome.code !== 0) {
-    throw new CaptureInputError(`native helper exited with status ${outcome.code ?? "unknown"}`);
+    throw new HelperExitError(outcome.code);
   }
   if (outcome.stdout.trim() === "") {
     throw new CaptureInputError("native helper produced no output");
@@ -148,7 +153,34 @@ export async function runHelperCommand(
 export interface AxSnapshotOptions {
   frontmost?: boolean;
   pid?: number;
+  /** Read this window (the id an earlier call returned) and not whichever is in front now. */
+  windowId?: string;
+  /** Read the tree only while the window still has this title (the one the caller checked); a retitled window gets no tree. */
+  expectTitle?: string;
   maxNodes?: number;
+}
+
+/** A helper that exited nonzero. `status` is its exit code, null when a signal ended it. */
+export class HelperExitError extends CaptureInputError {
+  constructor(readonly status: number | null) {
+    super(`native helper exited with status ${status ?? "unknown"}`);
+  }
+}
+
+/** The helper's usage-error exit code: it does not know a flag. */
+const USAGE_STATUS = 2;
+
+/**
+ * What the helper says about a window without reading its content: who owns it, its title, its id and the
+ * address a browser shows. `snapshot` is set only when the helper is too old to answer without reading the
+ * tree; it then holds the tree that was read to get these facts.
+ */
+export interface WindowContext {
+  app: string;
+  windowTitle: string;
+  windowId?: string;
+  browserUrl?: string | null;
+  snapshot?: AxSnapshot;
 }
 
 /**
@@ -170,71 +202,183 @@ export interface AxSnapshot {
 export interface OcrWindowOptions {
   frontmost?: boolean;
   windowId?: string;
+  /** Read the pixels only while the window still has this title (the one the caller checked); a retitled window gives no text. */
+  expectTitle?: string;
+}
+
+/** The `ax-snapshot` arguments that pick the window: by id, by process, or the one in front. */
+function axTarget(opts: AxSnapshotOptions): string[] {
+  if (opts.windowId !== undefined) return ["ax-snapshot", "--window", opts.windowId];
+  if (opts.pid !== undefined) return ["ax-snapshot", "--pid", String(opts.pid)];
+  return ["ax-snapshot", "--frontmost"];
+}
+
+/**
+ * One AX node as the helper prints it, checked on its own: every field is optional, unknown fields are kept
+ * (the helper may report roles this build does not model), and the children are only known to be objects.
+ * Each child is checked when its turn comes in `decodeAxTree`, so a deep tree does not need a deep call stack.
+ */
+const AxNodeSchema = z.looseObject({
+  role: z.string().optional(),
+  value: z.string().optional(),
+  title: z.string().optional(),
+  description: z.string().optional(),
+  label: z.string().optional(),
+  offScreen: z.boolean().optional(),
+  children: z.array(z.looseObject({})).optional(),
+});
+type ShallowAxNode = z.infer<typeof AxNodeSchema>;
+
+/** A decoded node and the children of it that still wait to be checked. */
+interface PendingNode {
+  node: AxNode;
+  pending: ShallowAxNode["children"];
+}
+
+function pendingNode(shallow: ShallowAxNode): PendingNode {
+  const { children, ...fields } = shallow;
+  return { node: children === undefined ? fields : { ...fields, children: [] }, pending: children };
+}
+
+/** Check every node of an `ax-snapshot` tree, parents before children, with an explicit stack. */
+function decodeAxTree(root: ShallowAxNode): AxNode {
+  const top = pendingNode(root);
+  const stack = [top];
+  for (let current = stack.pop(); current !== undefined; current = stack.pop()) {
+    for (const child of current.pending ?? []) {
+      const parsed = AxNodeSchema.safeParse(child);
+      if (!parsed.success) throw new CaptureInputError("native helper ax-snapshot tree must be an object");
+      const built = pendingNode(parsed.data);
+      current.node.children?.push(built.node);
+      stack.push(built);
+    }
+  }
+  return top.node;
+}
+
+/** The helper's JSON answer: an object, with the fields it reports kept as printed. */
+const HelperEnvelopeSchema = z.looseObject({});
+type HelperEnvelope = z.infer<typeof HelperEnvelopeSchema>;
+
+/** The `ocr-window` answer: the text, and the title the helper read it under when it reports one. */
+const OcrAnswerSchema = z.looseObject({ text: z.string(), windowTitle: z.string().optional().catch(undefined) });
+
+/** One window-fact field the helper reports: absent, `null` or mistyped means "not reported". */
+const HelperTextField = z.string();
+
+/**
+ * CGWindowID may arrive as a JSON number or string; null/absent means the helper could not resolve an id
+ * (OCR falls back to frontmost). A number is normalized to its string form, the id's domain type.
+ */
+const HelperWindowIdField = z.union([z.string(), z.number().transform(String)]).nullish();
+
+/** Decode one helper JSON answer at the boundary: anything but an object throws the sanitized error. */
+function envelopeOrThrow<T>(json: T): HelperEnvelope {
+  const parsed = HelperEnvelopeSchema.safeParse(json);
+  if (!parsed.success) throw new CaptureInputError("native helper did not return an object");
+  return parsed.data;
+}
+
+/** The window fields every `ax-snapshot` answer carries, validated; none of them is window content. */
+function readWindowFields(json: HelperEnvelope): Omit<WindowContext, "snapshot"> {
+  if (!("app" in json) || !("windowTitle" in json)) {
+    throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle");
+  }
+  const app = HelperTextField.safeParse(json.app);
+  const windowTitle = HelperTextField.safeParse(json.windowTitle);
+  if (!app.success || !windowTitle.success) {
+    throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
+  }
+  const windowId = HelperWindowIdField.safeParse("windowId" in json ? json.windowId : undefined);
+  if (!windowId.success) {
+    throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
+  }
+  const browserUrl = HelperTextField.safeParse("browserUrl" in json ? json.browserUrl : undefined);
+  const fields: Omit<WindowContext, "snapshot"> = { app: app.data, windowTitle: windowTitle.data };
+  if (windowId.data != null) fields.windowId = windowId.data;
+  if (browserUrl.success) fields.browserUrl = browserUrl.data;
+  return fields;
 }
 
 /** Thin wrapper over a resolved helper binary. */
 export class NativeHelper {
   readonly binaryPath: string;
+  #windowOnlyUnsupported = false;
+  readonly #titlePinUnsupported = new Set<string>();
 
   constructor(binaryPath: string) {
     this.binaryPath = binaryPath;
   }
 
-  /** `<helper> ax-snapshot [--frontmost|--pid N] [--max-nodes N]` -> window + AX tree JSON. */
-  async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
-    const args = ["ax-snapshot"];
-    if (opts.pid !== undefined) args.push("--pid", String(opts.pid));
-    else args.push("--frontmost");
-    if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
-    const json = await runHelperCommand(this.binaryPath, args);
-    if (json === null || typeof json !== "object" || Array.isArray(json)) {
-      throw new CaptureInputError("native helper ax-snapshot did not return an object");
+  /**
+   * `<helper> ax-snapshot [--frontmost|--pid N] --window-only` -> the window's facts and no tree, so a caller
+   * can apply its deny list before any content is read. A helper that exits with status 2 does not know the
+   * flag (the macOS helper today): this method then reads the snapshot under the given `maxNodes` (the facts
+   * call reads no tree), returns it in `snapshot`, and remembers not to ask again. Any other failure throws.
+   */
+  async windowContext(opts: { frontmost?: boolean; pid?: number; maxNodes?: number } = {}): Promise<WindowContext> {
+    if (!this.#windowOnlyUnsupported) {
+      try {
+        const json = await runHelperCommand(this.binaryPath, [...axTarget(opts), "--window-only"]);
+        return readWindowFields(envelopeOrThrow(json));
+      } catch (error) {
+        if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
+        this.#windowOnlyUnsupported = true;
+      }
     }
-    if (!("app" in json) || !("windowTitle" in json) || !("tree" in json)) {
-      throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
-    }
-    const app: unknown = json.app;
-    const windowTitle: unknown = json.windowTitle;
-    const browserUrl: unknown = "browserUrl" in json ? json.browserUrl : undefined;
-    const windowIdRaw: unknown = "windowId" in json ? json.windowId : undefined;
-    const tree: unknown = json.tree;
-    if (typeof app !== "string" || typeof windowTitle !== "string") {
-      throw new CaptureInputError("native helper ax-snapshot app/windowTitle must be strings");
-    }
-    if (tree === null || typeof tree !== "object" || Array.isArray(tree)) {
-      throw new CaptureInputError("native helper ax-snapshot tree must be an object");
-    }
-    // CGWindowID may arrive as a JSON number or string; null/absent means the
-    // helper could not resolve an id (OCR falls back to frontmost).
-    let windowId: string | undefined;
-    if (typeof windowIdRaw === "string") windowId = windowIdRaw;
-    else if (typeof windowIdRaw === "number" && Number.isFinite(windowIdRaw)) windowId = String(windowIdRaw);
-    else if (windowIdRaw !== undefined && windowIdRaw !== null) {
-      throw new CaptureInputError("native helper ax-snapshot windowId must be a string or number");
-    }
-    // Named cast (sanctioned): the tree is structurally an AxNode (all fields
-    // optional) and extractAxText tolerates unknown shapes; a schema parse of an
-    // arbitrary AX dump would be meaningless.
-    const axTree = tree as AxNode;
-    return {
-      app,
-      windowTitle,
-      ...(windowId !== undefined ? { windowId } : {}),
-      ...(typeof browserUrl === "string" ? { browserUrl } : {}),
-      tree: axTree,
-    };
+    const snapshot = await this.axSnapshot(opts);
+    const { tree: _tree, ...fields } = snapshot;
+    return { ...fields, snapshot };
   }
 
-  /** `<helper> ocr-window [--frontmost|--window ID]` -> `{ text }` JSON. */
+  /**
+   * `<helper> ax-snapshot [--frontmost|--pid N|--window ID] [--max-nodes N] [--title T]` -> window + AX tree JSON.
+   * `--title T` makes a helper that knows it read the tree only while the window still has the title T. A helper
+   * that exits with status 2 does not know the flag (the macOS helper today): the read then goes without it, and
+   * the refusal is remembered. Any other failure throws.
+   */
+  async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
+    const args = axTarget(opts);
+    if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
+    const json = await this.#runPinned("ax-snapshot", args, opts.expectTitle);
+    if (!("tree" in json)) {
+      throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
+    }
+    const tree = AxNodeSchema.safeParse(json.tree);
+    if (!tree.success) {
+      throw new CaptureInputError("native helper ax-snapshot tree must be an object");
+    }
+    return { ...readWindowFields(json), tree: decodeAxTree(tree.data) };
+  }
+
+  /** Run a helper command with `--title`. A helper that exits with status 2 does not know the flag: the command then runs without it, and the refusal is remembered per command. */
+  async #runPinned(command: string, args: string[], expectTitle: string | undefined): Promise<HelperEnvelope> {
+    if (expectTitle === undefined || this.#titlePinUnsupported.has(command)) {
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
+    }
+    try {
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]));
+    } catch (error) {
+      if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
+      this.#titlePinUnsupported.add(command);
+      return envelopeOrThrow(await runHelperCommand(this.binaryPath, args));
+    }
+  }
+
+  /** `<helper> ocr-window [--frontmost|--window ID] [--title T]` -> `{ text }` JSON; a window retitled since T gives empty text. */
   async ocrWindow(opts: OcrWindowOptions = {}): Promise<string> {
     const args = ["ocr-window"];
     if (opts.windowId !== undefined) args.push("--window", opts.windowId);
     else args.push("--frontmost");
-    const json = await runHelperCommand(this.binaryPath, args);
-    if (json !== null && typeof json === "object" && !Array.isArray(json) && "text" in json) {
-      const text: unknown = json.text;
-      if (typeof text === "string") return text;
+    const json = await this.#runPinned("ocr-window", args, opts.expectTitle);
+    const answer = OcrAnswerSchema.safeParse(json);
+    if (!answer.success) throw new CaptureInputError("native helper ocr-window did not return a text field");
+    const { text, windowTitle } = answer.data;
+    if (opts.expectTitle === undefined || !this.#titlePinUnsupported.has("ocr-window")) return text;
+    // A helper that cannot pin OCR must say which title it read; text read under any other title is dropped.
+    if (windowTitle === undefined) {
+      throw new CaptureInputError("native helper cannot pin ocr-window to a title and did not report the title it read");
     }
-    throw new CaptureInputError("native helper ocr-window did not return a text field");
+    return windowTitle === opts.expectTitle ? text : "";
   }
 }

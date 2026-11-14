@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -51,6 +51,25 @@ test("a missing helper package degrades honestly with an install hint (never MOD
   assert.match(res.hint ?? "", /npm install @remnic\/capture-native-/);
   assert.match(res.hint ?? "", /REMNIC_CAPTURE_HELPER_BIN/);
   assert.doesNotMatch(res.hint ?? "", /MODULE_NOT_FOUND/);
+});
+
+const DEEP = fakeHelper(
+  "deep.js",
+  `let tree = { role: "AXStaticText", value: "leaf" };
+for (let depth = 1; depth < 1001; depth++) tree = { role: "AXGroup", children: [tree] };
+process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", tree }));`,
+);
+
+test("a valid 1001-node tree, inside the default node allowance, is decoded without overflowing the stack", async () => {
+  const snap = await new NativeHelper(DEEP).axSnapshot({ frontmost: true, maxNodes: 4000 });
+  let depth = 1;
+  let node = snap.tree;
+  while (node.children?.length === 1) {
+    node = node.children[0];
+    depth += 1;
+  }
+  assert.equal(depth, 1001);
+  assert.equal(node.value, "leaf");
 });
 
 test("ax-snapshot parses window context + tree from the fake helper", async () => {
@@ -126,4 +145,143 @@ test("an env override expands a leading ~ to the home directory", async () => {
   const res = await resolveHelperBinaryPath({ REMNIC_CAPTURE_HELPER_BIN: "~/remnic/helper" });
   assert.equal(res.binaryPath, path.join(homedir(), "remnic", "helper"));
   assert.equal(res.hint, null);
+});
+
+test("helperPackageName is one package for Linux, whatever the arch", () => {
+  assert.equal(helperPackageName("linux", "x64"), "@remnic/capture-native-linux");
+  assert.equal(helperPackageName("linux", "arm64"), "@remnic/capture-native-linux");
+});
+
+/** A helper that logs its argv. `windowOnly` is its answer to --window-only and `title` its answer to --title: "ok" or an exit status. */
+function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok", ocrTitle: string | null = "shell") {
+  const log = path.join(dir, `${name}.log`);
+  const file = fakeHelper(
+    name,
+    `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+const args = process.argv.slice(2);
+const full = { app: "kitty", windowTitle: "shell", windowId: "0xa1", tree: { role: "AXWindow" } };
+if (args[0] === "ocr-window") {
+  ${title === "ok" ? "" : `if (args.includes("--title")) process.exit(${title});`}
+  process.stdout.write(JSON.stringify({ text: "ocr text"${ocrTitle === null ? "" : `, windowTitle: ${JSON.stringify(ocrTitle)}`} }));
+} else if (args.includes("--title")) {
+  ${title === "ok" ? `process.stdout.write(JSON.stringify(full));` : `process.exit(${title});`}
+} else if (args.includes("--window-only")) {
+  ${windowOnly === "ok" ? `process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: "0xa1", browserUrl: "https://example.org/" }));` : `process.exit(${windowOnly});`}
+} else process.stdout.write(JSON.stringify(full));`,
+  );
+  const calls = (): string[][] => {
+    return readFileSync(log, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => {
+        const argv: unknown = JSON.parse(line);
+        if (!Array.isArray(argv)) throw new Error(`helper log line is not an argv array: ${line}`);
+        return argv.map((entry) => String(entry));
+      });
+  };
+  return { file, calls };
+}
+
+test("windowContext asks for the window facts only and carries no tree", async () => {
+  const { file, calls } = loggingHelper("wo-ok.js", "ok");
+  const ctx = await new NativeHelper(file).windowContext({ frontmost: true });
+  assert.deepEqual(calls(), [["ax-snapshot", "--frontmost", "--window-only"]]);
+  assert.deepEqual(ctx, { app: "kitty", windowTitle: "shell", windowId: "0xa1", browserUrl: "https://example.org/" });
+});
+
+test("a helper that refuses --window-only with status 2 gets the full snapshot once, then no more flag tries", async () => {
+  const { file, calls } = loggingHelper("wo-legacy.js", 2);
+  const helper = new NativeHelper(file);
+  const first = await helper.windowContext({ frontmost: true });
+  assert.equal(first.snapshot?.tree.role, "AXWindow");
+  assert.equal(first.app, "kitty");
+  await helper.windowContext({ frontmost: true });
+  const flagTries = calls().filter((c) => c.includes("--window-only")).length;
+  assert.equal(flagTries, 1, "the refusal is remembered");
+});
+
+test("a legacy helper's fallback snapshot carries the node limit it was given", async () => {
+  const { file, calls } = loggingHelper("wo-legacy-max.js", 2);
+  await new NativeHelper(file).windowContext({ frontmost: true, maxNodes: 250 });
+  const fallback = calls().find((c) => !c.includes("--window-only"));
+  assert.ok(fallback, "the fallback snapshot ran");
+  assert.deepEqual(fallback?.slice(0, 4), ["ax-snapshot", "--frontmost", "--max-nodes", "250"]);
+});
+
+test("any other failure of --window-only is an error, never a fallback to reading the tree", async () => {
+  const { file, calls } = loggingHelper("wo-broken.js", 1);
+  await assert.rejects(new NativeHelper(file).windowContext({ frontmost: true }), CaptureInputError);
+  assert.deepEqual(calls(), [["ax-snapshot", "--frontmost", "--window-only"]]);
+  assert.deepEqual(
+    calls().filter((c) => !c.includes("--window-only")),
+    [],
+  );
+});
+
+test("axSnapshot pinned to a window id passes --window and not --frontmost", async () => {
+  const { file, calls } = loggingHelper("pin.js", "ok");
+  await new NativeHelper(file).axSnapshot({ windowId: "0xb2", maxNodes: 50 });
+  assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xb2", "--max-nodes", "50"]]);
+});
+
+test("a read pinned to a title sends --title with the window id", async () => {
+  const { file, calls } = loggingHelper("pin-ok.js", "ok");
+  await new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell", maxNodes: 10 });
+  assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xa1", "--max-nodes", "10", "--title", "shell"]]);
+});
+
+test("a helper that refuses --title with status 2 is read without it, and the refusal is remembered", async () => {
+  const { file, calls } = loggingHelper("pin-legacy.js", "ok", 2);
+  const helper = new NativeHelper(file);
+  const snapshot = await helper.axSnapshot({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(snapshot.windowTitle, "shell");
+  await helper.axSnapshot({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(calls().filter((c) => c.includes("--title")).length, 1, "the refusal is remembered");
+  assert.equal(calls().filter((c) => !c.includes("--title")).length, 2);
+});
+
+test("any other failure of a pinned read is an error, never a read without the pin", async () => {
+  const { file, calls } = loggingHelper("pin-broken.js", "ok", 1);
+  await assert.rejects(new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xa1", "--title", "shell"]]);
+  assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
+});
+
+test("an OCR read pinned to a title sends --title with the window id", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-ok.js", "ok");
+  assert.equal(await new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "ocr text");
+  assert.deepEqual(calls(), [["ocr-window", "--window", "0xa1", "--title", "shell"]]);
+});
+
+test("a helper that refuses --title on an OCR read is read without it, and the refusal is remembered", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-legacy.js", "ok", 2);
+  const helper = new NativeHelper(file);
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "ocr text");
+  await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(calls().filter((c) => c.includes("--title")).length, 1, "the refusal is remembered");
+  assert.equal(calls().filter((c) => !c.includes("--title")).length, 2);
+});
+
+test("any other failure of a pinned OCR read is an error, never a read without the pin", async () => {
+  const { file, calls } = loggingHelper("ocr-pin-broken.js", "ok", 1);
+  await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls(), [["ocr-window", "--window", "0xa1", "--title", "shell"]]);
+  assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
+});
+
+test("a helper that cannot pin OCR but reports a different title than the pin gives no text", async () => {
+  const { file } = loggingHelper("ocr-legacy-vault.js", "ok", 2, "PRIVATE VAULT");
+  assert.equal(await new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
+});
+
+test("a helper that cannot pin OCR and does not report the title it read is refused", async () => {
+  const { file } = loggingHelper("ocr-legacy-silent.js", "ok", 2, null);
+  await assert.rejects(new NativeHelper(file).ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+});
+
+test("the title check stays on after the helper's refusal is remembered", async () => {
+  const { file } = loggingHelper("ocr-legacy-twice.js", "ok", 2, "PRIVATE VAULT");
+  const helper = new NativeHelper(file);
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
+  assert.equal(await helper.ocrWindow({ windowId: "0xa1", expectTitle: "shell" }), "");
 });

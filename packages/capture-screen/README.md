@@ -23,6 +23,8 @@ The bearer token is read from the `REMNIC_CAPTURE_TOKEN` environment variable (l
 
 Each `*.json` file in the `--replay` directory holds a snapshot object (or an array of them) with `capturedAtUtc` (ISO-8601 UTC), `app`, `windowTitle`, one of `text` or `ax`, and `textSource` (`"ax"` or `"ocr"`). Each served snapshot also carries the stored `contentHash`, so the core activity client can ingest it. Exact replays deduplicate by the complete snapshot payload.
 
-The daemon does not acquire native screenshots. Native platform helpers send redacted text snapshots to this daemon over its loopback API.
+Linux live capture reads text through the native helper and AT-SPI. It does not read screen pixels through OCR.
+When URL deny rules are set, Linux live capture stops with `url-policy-unavailable`.
+AT-SPI cannot bind a checked URL to later text reads. Without URL rules, the helper still reads AT-SPI text on its own.
 
 The `--spool` file must live in an owner-only directory. The daemon creates the directory `0700` when absent; if it already exists, the daemon refuses to open the spool under a symlinked or group/other-accessible directory and never changes an existing directory's permissions. The SQLite file itself is created `0600`. Point `--spool` at a dedicated directory such as `~/.local/state/remnic/capture/`.

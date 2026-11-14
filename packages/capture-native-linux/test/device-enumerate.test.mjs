@@ -47,7 +47,7 @@ test("device-enumerate with a failing or unreadable pw-dump exits 1 with a plain
 });
 
 test("an unknown subcommand is refused and names the subcommands this helper has", async () => {
-  const helper = run(["ax-snapshot", "--frontmost"], fakeTools(DUMP).env);
+  const helper = run(["frobnicate"], fakeTools(DUMP).env);
   assert.equal((await helper.exited).code, 2);
-  assert.match(helper.stderr(), /unknown subcommand ax-snapshot.*audio-capture.*device-enumerate/s);
+  assert.match(helper.stderr(), /unknown subcommand frobnicate.*audio-capture.*device-enumerate.*ax-snapshot.*ocr-window/s);
 });

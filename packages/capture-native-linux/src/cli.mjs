@@ -1,8 +1,9 @@
-import { UsageError, parseAudioArgs } from "./args.mjs";
+import { UsageError, parseAudioArgs, parseAxArgs, parseOcrArgs } from "./args.mjs";
 import { audioCapture } from "./audio.mjs";
 import { listDevices, pwDump } from "./pipewire.mjs";
+import { axSnapshot, ocrWindow } from "./screen.mjs";
 
-const SUBCOMMANDS = ["audio-capture", "device-enumerate"];
+const SUBCOMMANDS = ["audio-capture", "device-enumerate", "ax-snapshot", "ocr-window"];
 
 async function deviceEnumerate() {
   process.stdout.write(`${JSON.stringify(listDevices(await pwDump()))}\n`);
@@ -15,7 +16,9 @@ export async function main(argv) {
   try {
     if (command === "audio-capture") return await audioCapture(parseAudioArgs(rest));
     if (command === "device-enumerate") return await deviceEnumerate();
-    throw new UsageError(`unknown subcommand ${command ?? "(none)"}; this helper has ${SUBCOMMANDS.join(" and ")}`);
+    if (command === "ax-snapshot") return await axSnapshot(parseAxArgs(rest));
+    if (command === "ocr-window") return await ocrWindow(parseOcrArgs(rest));
+    throw new UsageError(`unknown subcommand ${command ?? "(none)"}; this helper has ${SUBCOMMANDS.join(", ")}`);
   } catch (error) {
     process.stderr.write(`remnic-capture-helper: ${error.message}\n`);
     return error instanceof UsageError ? 2 : 1;

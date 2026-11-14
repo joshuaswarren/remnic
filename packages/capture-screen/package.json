@@ -22,7 +22,7 @@
     "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-core-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/simhash.test.ts src/dedup.test.ts src/daywindow.test.ts src/denylist.test.ts src/axtree.test.ts src/redact.test.ts src/config.test.ts src/validate.test.ts src/util.test.ts src/token.test.ts src/spool.test.ts src/capture.test.ts src/helper.test.ts src/live.test.ts src/replay.test.ts src/scheduler.test.ts src/daemon.test.ts src/cli.test.ts src/package.test.ts src/dist.test.ts",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test src/simhash.test.ts src/dedup.test.ts src/daywindow.test.ts src/denylist.test.ts src/axtree.test.ts src/redact.test.ts src/config.test.ts src/validate.test.ts src/util.test.ts src/token.test.ts src/spool.test.ts src/capture.test.ts src/helper.test.ts src/live.test.ts src/native-linux.test.ts src/replay.test.ts src/scheduler.test.ts src/daemon.test.ts src/cli.test.ts src/package.test.ts src/dist.test.ts",
     "prepublishOnly": "npm run build"
   },
   "publishConfig": {
@@ -34,13 +34,17 @@
   },
   "peerDependencies": {
     "@remnic/capture-native-darwin-arm64": "^10.0.108",
-    "@remnic/capture-native-darwin-x64": "^10.0.108"
+    "@remnic/capture-native-darwin-x64": "^10.0.108",
+    "@remnic/capture-native-linux": "^10.0.108"
   },
   "peerDependenciesMeta": {
     "@remnic/capture-native-darwin-arm64": {
       "optional": true
     },
     "@remnic/capture-native-darwin-x64": {
+      "optional": true
+    },
+    "@remnic/capture-native-linux": {
       "optional": true
     }
   },
@@ -49,7 +53,8 @@
     "@types/node": "^22.10.0",
     "tsup": "^8.0.0",
     "typescript": "^5.7.0",
-    "tsx": "^4.0.0"
+    "tsx": "^4.0.0",
+    "zod": "^4.6.6"
   },
   "license": "MIT",
   "repository": {
