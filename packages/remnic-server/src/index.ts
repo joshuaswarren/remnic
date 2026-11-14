@@ -17,6 +17,7 @@ import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, SupportPassportModelBridge, composeSupportPassportExternalRequestHandlers, initLogger, log, getAllValidTokens, getAllValidTokenEntriesCached, loadTokenStore, expandTildePath, discoverConfigPath, readCompatEnv, getCodexSubscriptionRunnerForOwner, beginCodexSubscriptionShutdown, terminateActiveCodexSubscriptionChildren, type DiscoveredConfigPath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch, type SupportPassportExternalRequestHandler, type CodexCliFallbackRunner
 } from "@remnic/core";
 import type { BacklogScheduler } from "@remnic/core/orchestration/backlog-scheduler.js";
+import { startEventLoopLagMonitor } from "./event-loop-lag.js";
 import { logShutdownPhase, shutdownBacklogDrain, startBacklogScheduler } from "./backlog-drain-lifecycle.js";
 import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { probeAuthenticatedLiveness } from "./liveness-probe.js";
@@ -871,7 +872,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let port: number;
   let backlogScheduler: BacklogScheduler | undefined;
   try {
-    ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port);
+    ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port); startEventLoopLagMonitor();
     // The daemon owns extraction-backlog draining: the bounded scheduler
     // starts AFTER the listener and stops before the orchestrator.
     backlogScheduler = startBacklogScheduler(orchestrator);
