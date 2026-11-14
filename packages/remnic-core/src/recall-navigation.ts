@@ -145,7 +145,7 @@ function applyBudget(
   let truncated = extras.truncated;
   for (const item of extras.items) {
     const candidate = [...kept, item];
-    const cost = structuredCost(request, extras, candidate, truncated);
+    const cost = measuredUsed(request, extras, candidate, truncated);
     if (!takeNavigateBudget(extras.budgetChars, cost).ok) {
       if (kept.length === 0) {
         const shrunk = shrinkItemToBudget(request, extras, item);
@@ -230,7 +230,7 @@ function shrinkItemToBudget(
     const candidate: NavigationItem = hasContent
       ? { ...item, preview, content }
       : { ...item, preview };
-    if (takeNavigateBudget(extras.budgetChars, structuredCost(request, extras, [candidate], true)).ok) {
+    if (takeNavigateBudget(extras.budgetChars, measuredUsed(request, extras, [candidate], true)).ok) {
       return candidate;
     }
     if (content.length > 0) content = content.slice(0, Math.max(0, content.length - 16));
