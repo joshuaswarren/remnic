@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Failed extractions retain their source turns and report retained-buffer metadata even when extraction retry scheduling is disabled.
+
 ## [v10.0.94] — 2026-11-12
 
 ### Performance
