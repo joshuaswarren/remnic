@@ -401,6 +401,10 @@ export async function resolveGitContext(
   // Timeouts and spawn failures are not answers about the repo, so a lookup
   // that hit one (even partially) is never cached.
   let inconclusive = false;
+  // HEAD is snapshotted once git names the root and BEFORE the branch probe: a
+  // checkout racing the probe then leaves the entry older than HEAD, so the
+  // next hit mismatches and re-resolves (never a stale branch pinned to a new HEAD).
+  let head: string | undefined;
   const inner = options.invoker ?? defaultGitInvoker();
   const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
     let result: GitInvokeResult;
@@ -411,13 +415,11 @@ export async function resolveGitContext(
       throw err;
     }
     if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) inconclusive = true;
+    if (args[1] === "--show-toplevel" && result.exitCode === 0) head = await readHeadFile(result.stdout.trim());
     return result;
   };
   const value = await resolveGitContextUncached(cwd, { ...options, invoker });
-  if (inconclusive) return value;
-  // shortcut: HEAD is read after git answered, so a checkout in that few-ms gap
-  // caches the old branch with the new HEAD until the next checkout or TTL expiry.
-  const head = value ? await readHeadFile(value.rootPath) : undefined;
+  if (inconclusive || options.abortSignal?.aborted) return value;
   if (value === null || head !== undefined) cache.set(cwd, value, head);
   return value;
 }

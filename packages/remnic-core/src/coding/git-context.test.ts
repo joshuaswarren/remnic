@@ -673,6 +673,40 @@ test("a cache hit returns a copy, so a caller cannot poison the cached entry", a
   assert.equal((await resolveGitContext("/repo", { invoker, cache }))?.branch, "main");
 });
 
+test("a checkout racing the branch probe is not pinned: the next call re-asks git", async () => {
+  const root = await makeRepoDir("ref: refs/heads/main\n");
+  let calls = 0;
+  let branch = "main";
+  const racing: GitInvoker = async (cwd, args) => {
+    const result = await rootInvoker(root, () => {
+      calls += 1;
+    }, () => branch)(cwd, args);
+    if (args[1] === "--abbrev-ref") {
+      // git has answered "main"; the checkout lands right after.
+      branch = "feat";
+      await writeFile(path.join(root, ".git", "HEAD"), "ref: refs/heads/feat\n");
+    }
+    return result;
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  assert.equal((await resolveGitContext("/repo", { invoker: racing, cache }))?.branch, "main");
+  assert.equal((await resolveGitContext("/repo", { invoker: racing, cache }))?.branch, "feat");
+});
+
+test("a lookup aborted mid-flight is not cached even if the invoker swallows the abort", async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const swallowing: GitInvoker = () => {
+    calls += 1;
+    controller.abort(new Error("stop"));
+    return { stdout: "", exitCode: 1 };
+  };
+  const cache = new GitContextCache({ ttlMs: 30_000, now: () => 0 });
+  await resolveGitContext("/repo", { invoker: swallowing, cache, abortSignal: controller.signal });
+  assert.equal(cache.has("/repo"), false);
+  assert.equal(calls, 1);
+});
+
 test("a throwing invoker is not cached as 'not a repo'", async () => {
   let calls = 0;
   const throwing: GitInvoker = () => {
