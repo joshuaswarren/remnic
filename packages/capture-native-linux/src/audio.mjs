@@ -1,6 +1,6 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { pwDump, defaultDevices } from "./pipewire.mjs";
@@ -34,8 +34,19 @@ export function createChunker(bytesPerChunk, emit) {
   };
 }
 
-function recorderArgs(system, target) {
-  const args = ["--rate", String(RATE), "--channels", "1", "--format", "s16", "--container", "raw"];
+/**
+ * pw-record writes raw samples to `-` on every release, but names the format with `--container raw` only from
+ * PipeWire 1.6; older releases reject that option. Ask the installed binary which it is.
+ */
+function recorderHasContainer() {
+  return new Promise((resolve) => {
+    execFile("pw-record", ["--help"], (error, stdout, stderr) => resolve(!error && /--container\b/.test(`${stdout}${stderr}`)));
+  });
+}
+
+function recorderArgs(system, target, container) {
+  const args = ["--rate", String(RATE), "--channels", "1", "--format", "s16"];
+  if (container) args.push("--container", "raw");
   if (target) args.push("--target", target);
   if (system) args.push("-P", "{ stream.capture.sink=true }");
   return [...args, "-"];
@@ -49,8 +60,9 @@ function iso(ms) {
  * Start one pw-record for `channel`; resolves `{ stopped, status }` once it has exited and its last chunk is written.
  * A chunk that cannot be written stops this recorder, and `finished` rejects with that error once it has exited.
  */
-function startRecorder({ channel, target, outDir, chunkSeconds, announce }) {
-  const child = spawn("pw-record", recorderArgs(channel === "system", target), { stdio: ["ignore", "pipe", "pipe"] });
+function startRecorder({ channel, target, container, outDir, chunkSeconds, announce }) {
+  const args = recorderArgs(channel === "system", target, container);
+  const child = spawn("pw-record", args, { stdio: ["ignore", "pipe", "pipe"] });
   let streamStartMs = null;
   let stopped = false;
   let failure = null;
@@ -104,9 +116,13 @@ async function targets(channel, device) {
  */
 export async function audioCapture({ channel, chunkSeconds, out, device }) {
   mkdirSync(out, { recursive: true, mode: 0o700 });
+  const { uid, mode } = statSync(out);
+  if (uid !== process.getuid()) throw new Error(`${out} is not owned by the current user`);
+  if (mode & 0o077) chmodSync(out, mode & 0o700);
   const announce = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
+  const container = await recorderHasContainer();
   const recorders = (await targets(channel, device)).map((plan) =>
-    startRecorder({ ...plan, outDir: out, chunkSeconds, announce }),
+    startRecorder({ ...plan, container, outDir: out, chunkSeconds, announce }),
   );
   const stopAll = () => recorders.forEach((recorder) => recorder.stop());
   for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, stopAll);
@@ -120,7 +136,8 @@ export async function audioCapture({ channel, chunkSeconds, out, device }) {
     failure = error;
   }
   stopAll();
-  await Promise.all(recorders.map((recorder) => recorder.finished.catch(() => undefined)));
+  const settled = await Promise.allSettled(recorders.map((recorder) => recorder.finished));
+  failure ??= settled.find((result) => result.status === "rejected")?.reason ?? null;
   if (failure) throw failure;
   if (ended.stopped) return 0;
   throw new Error(`pw-record exited with status ${ended.status}`);

@@ -11,9 +11,28 @@ export const BYTES_PER_SECOND = 32_000; // 16 kHz mono, 16-bit
 const FAKE_PW_RECORD = `#!/usr/bin/env node
 // Stands in for pw-record: logs its argv, writes FAKE_PCM_BYTES of a counting pattern to stdout in
 // odd-sized pieces, then either exits with FAKE_EXIT_CODE or waits for a signal like a live recording.
+// A signal that arrives during the writes is acted on once they are done, so a stop never loses samples.
+// FAKE_NO_CONTAINER makes it behave like PipeWire before 1.6, which has no --container option.
 import { appendFileSync } from "node:fs";
-appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+const argv = process.argv.slice(2);
+if (argv.includes("--help")) {
+  console.log("pw-record [options] [<file>|-]\\n  --rate  Sample rate" + (process.env.FAKE_NO_CONTAINER ? "" : "\\n  --container  Container format"));
+  process.exit(0);
+}
+appendFileSync(process.env.FAKE_ARGV_LOG, JSON.stringify(argv) + "\\n");
 appendFileSync(process.env.FAKE_PID_LOG, process.pid + "\\n");
+if (process.env.FAKE_NO_CONTAINER && argv.includes("--container")) {
+  console.error("unknown option: --container");
+  process.exit(64);
+}
+let writing = true;
+let signalled = false;
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, () => {
+    signalled = true;
+    if (!writing) process.exit(0);
+  });
+}
 const total = Number(process.env.FAKE_PCM_BYTES ?? 0);
 let sent = 0;
 while (sent < total) {
@@ -22,8 +41,9 @@ while (sent < total) {
   await new Promise((resolve) => process.stdout.write(piece, resolve));
   sent += piece.length;
 }
+writing = false;
 if (process.env.FAKE_EXIT_CODE !== undefined) process.exit(Number(process.env.FAKE_EXIT_CODE));
-for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => process.exit(0));
+if (signalled) process.exit(0);
 setInterval(() => {}, 1000);
 `;
 
@@ -73,7 +93,11 @@ export function run(args, env = {}) {
     async waitForEvents(count, timeoutMs = 10_000) {
       const deadline = Date.now() + timeoutMs;
       while (lines().length < count) {
-        if (Date.now() > deadline) throw new Error(`only ${lines().length} of ${count} events; stderr: ${err}`);
+        if (Date.now() > deadline) {
+          const message = `only ${lines().length} of ${count} events; stderr: ${err}`;
+          child.kill("SIGTERM");
+          throw new Error(message);
+        }
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
     },

@@ -13,10 +13,10 @@ export function parseAudioArgs(argv) {
   const given = {};
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
-    const key = FLAGS[flag];
+    const key = Object.hasOwn(FLAGS, flag) ? FLAGS[flag] : null;
     if (!key) throw new UsageError(`unknown argument ${flag}`);
     i += 1;
-    if (i >= argv.length) throw new UsageError(`missing value for ${flag}`);
+    if (i >= argv.length || Object.hasOwn(FLAGS, argv[i])) throw new UsageError(`missing value for ${flag}`);
     given[key] = argv[i];
   }
   if (given.channel === undefined) throw new UsageError("--channel is required");

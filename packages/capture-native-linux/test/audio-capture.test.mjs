@@ -21,7 +21,6 @@ test("a mic recording is cut into exact chunks and the last partial chunk is flu
     { ...tools.env, FAKE_PCM_BYTES: String(total) },
   );
   await helper.waitForEvents(3);
-  await new Promise((resolve) => setTimeout(resolve, 200)); // the fake has sent its last half second before SIGTERM arrives
   assert.deepEqual((await helper.stop()).code, 0);
 
   const events = helper.events();
@@ -145,6 +144,31 @@ test("when a chunk cannot be written the helper stops every recorder it started 
   assert.deepEqual(await aliveAfter(tools.recorderPids(), 2000), [], "no pw-record is left running");
 });
 
+test("a pw-record before 1.6 has no --container and is started without it", async () => {
+  const tools = fakeTools(DUMP);
+  const out = tempDir();
+  const helper = run(
+    ["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", out],
+    { ...tools.env, FAKE_NO_CONTAINER: "1", FAKE_PCM_BYTES: String(BYTES_PER_SECOND) },
+  );
+  await helper.waitForEvents(1);
+  assert.equal((await helper.stop()).code, 0);
+  const [argv] = tools.recorderCalls();
+  assert.ok(!argv.includes("--container"));
+  assert.equal(argv.at(-1), "-");
+});
+
+test("an existing output directory that others can open is made private", async () => {
+  const tools = fakeTools(DUMP);
+  const out = path.join(tempDir(), "chunks");
+  mkdirSync(out, { mode: 0o755 });
+  chmodSync(out, 0o755);
+  const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", out], tools.env);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal((await helper.stop()).code, 0);
+  assert.equal(statSync(out).mode & 0o777, 0o700);
+});
+
 test("a machine without pw-record gets one line that names the package to install", async () => {
   const helper = run(
     ["audio-capture", "--channel", "mic", "--chunk-seconds", "1", "--out", tempDir()],
@@ -171,6 +195,7 @@ for (const [name, args, message] of [
   ["a zero --chunk-seconds", ["audio-capture", "--channel", "mic", "--out", "/tmp/x", "--chunk-seconds", "0"], /--chunk-seconds/],
   ["an unknown flag", ["audio-capture", "--channel", "mic", "--out", "/tmp/x", "--loud"], /unknown argument --loud/],
   ["a flag without its value", ["audio-capture", "--channel"], /missing value for --channel/],
+  ["a flag where a value belongs", ["audio-capture", "--channel", "mic", "--out", "--device", "x"], /missing value for --out/],
 ]) {
   test(`${name} is refused with one plain line and nothing recorded`, async () => {
     const tools = fakeTools(DUMP);

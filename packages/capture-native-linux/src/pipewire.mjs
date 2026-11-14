@@ -25,15 +25,16 @@ export function pwDump() {
 function defaultName(objects, key) {
   const metadata = objects.find((o) => o.type === "PipeWire:Interface:Metadata" && o.props?.["metadata.name"] === "default");
   const entry = metadata?.metadata?.find((m) => m.key === key);
-  const value = typeof entry?.value === "string" ? safeParse(entry.value) : entry?.value;
-  return typeof value?.name === "string" ? value.name : null;
+  const value = decode(entry?.value);
+  return value?.name ? String(value.name) : null;
 }
 
-function safeParse(text) {
+/** A metadata value is a JSON document in a string, or already an object; anything else decodes to itself. */
+function decode(raw) {
   try {
-    return JSON.parse(text);
+    return JSON.parse(raw);
   } catch {
-    return null;
+    return raw;
   }
 }
 
@@ -50,8 +51,8 @@ export function listDevices(objects) {
     const props = node.type === "PipeWire:Interface:Node" ? node.info?.props : undefined;
     const mediaClass = props?.["media.class"];
     const kind = SOURCE_CLASSES.has(mediaClass) ? "input" : SINK_CLASSES.has(mediaClass) ? "output" : null;
-    if (!kind || typeof props["node.name"] !== "string") continue;
-    const id = props["node.name"];
+    const id = props?.["node.name"];
+    if (!kind || !id) continue;
     const name = props["node.description"] ?? props["node.nick"] ?? id;
     const wanted = kind === "input" ? defaults.source : defaults.sink;
     devices.push({ id, name, kind, isDefault: id === wanted });
