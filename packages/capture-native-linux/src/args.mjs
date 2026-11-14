@@ -28,3 +28,47 @@ export function parseAudioArgs(argv) {
   }
   return { channel: given.channel, chunkSeconds, out: given.out, device: given.device ?? null };
 }
+
+function wholeNumber(text, flag) {
+  const value = Number(text);
+  if (!Number.isInteger(value) || value <= 0) throw new UsageError(`${flag} must be a positive whole number`);
+  return value;
+}
+
+function valueOf(argv, i, flag) {
+  if (i >= argv.length) throw new UsageError(`missing value for ${flag}`);
+  return argv[i];
+}
+
+/**
+ * `ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--max-nodes N]`. `--window-only` asks for
+ * the window's app, title, id and address and no tree, so the caller can apply its deny list before any read.
+ */
+export function parseAxArgs(argv) {
+  const parsed = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === "--frontmost") continue;
+    if (flag === "--window-only") parsed.windowOnly = true;
+    else if (flag === "--pid") parsed.pid = wholeNumber(valueOf(argv, (i += 1), flag), flag);
+    else if (flag === "--window") parsed.windowId = valueOf(argv, (i += 1), flag);
+    else if (flag === "--max-nodes") parsed.maxNodes = wholeNumber(valueOf(argv, (i += 1), flag), flag);
+    else throw new UsageError(`unknown argument ${flag}`);
+  }
+  if (parsed.pid !== undefined && parsed.windowId !== undefined) {
+    throw new UsageError("--pid and --window are mutually exclusive");
+  }
+  return parsed;
+}
+
+/** `ocr-window [--frontmost | --window ID]`. */
+export function parseOcrArgs(argv) {
+  const parsed = {};
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === "--frontmost") continue;
+    if (flag === "--window") parsed.windowId = valueOf(argv, (i += 1), flag);
+    else throw new UsageError(`unknown argument ${flag}`);
+  }
+  return parsed;
+}

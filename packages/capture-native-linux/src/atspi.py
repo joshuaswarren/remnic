@@ -1,0 +1,98 @@
+"""Read one window's accessibility tree over AT-SPI and print it as JSON.
+
+Usage: atspi.py --pid PID --title TITLE --max-nodes N [--url-only]
+Prints {"found": false} when the process is not on the accessibility bus, else
+{"found": true, "url": str|null, "root": node} where node is
+{role, name, description, text, showing, children}. With --url-only the reader reads the document address
+and no node name or text, and prints no "root". Exit 3 with one line on stderr when AT-SPI cannot be used.
+"""
+import argparse
+import json
+import sys
+
+TEXT_LIMIT = 20000
+
+try:
+    import gi
+
+    gi.require_version("Atspi", "2.0")
+    from gi.repository import Atspi
+except (ImportError, ValueError) as error:
+    sys.stderr.write(f"{error}\n")
+    sys.exit(3)
+
+
+def text_of(node):
+    if node.get_text_iface() is None:
+        return ""
+    count = Atspi.Text.get_character_count(node)
+    return Atspi.Text.get_text(node, 0, min(count, TEXT_LIMIT)) if count else ""
+
+
+def read(node, budget):
+    budget[0] -= 1
+    out = {
+        "role": node.get_role_name(),
+        "name": node.get_name() or "",
+        "description": node.get_description() or "",
+        "text": text_of(node),
+        "showing": node.get_state_set().contains(Atspi.StateType.SHOWING),
+        "children": [],
+    }
+    for index in range(node.get_child_count()):
+        if budget[0] <= 0:
+            break
+        child = node.get_child_at_index(index)
+        if child is not None:
+            out["children"].append(read(child, budget))
+    return out
+
+
+def document_url(node, depth=0):
+    if node.get_role_name() == "document web":
+        attributes = Atspi.Document.get_document_attributes(node) or {}
+        return attributes.get("URI") or attributes.get("DocURL")
+    if depth > 20:
+        return None
+    for index in range(node.get_child_count()):
+        child = node.get_child_at_index(index)
+        found = document_url(child, depth + 1) if child is not None else None
+        if found:
+            return found
+    return None
+
+
+def pick_frame(apps, title):
+    frames = [app.get_child_at_index(i) for app in apps for i in range(app.get_child_count())]
+    frames = [f for f in frames if f is not None]
+    for frame in frames:
+        if frame.get_name() == title:
+            return frame
+    for frame in frames:
+        if frame.get_state_set().contains(Atspi.StateType.ACTIVE):
+            return frame
+    return frames[0] if frames else None
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pid", type=int, required=True)
+    parser.add_argument("--title", default="")
+    parser.add_argument("--max-nodes", type=int, required=True)
+    parser.add_argument("--url-only", action="store_true")
+    args = parser.parse_args()
+    Atspi.init()
+    desktop = Atspi.get_desktop(0)
+    apps = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+    process_apps = [a for a in apps if a is not None and a.get_process_id() == args.pid]
+    frame = pick_frame(process_apps, args.title)
+    if frame is None:
+        print(json.dumps({"found": False}))
+        return
+    result = {"found": True, "url": document_url(frame)}
+    if not args.url_only:
+        result["root"] = read(frame, [args.max_nodes])
+    print(json.dumps(result))
+
+
+main()
