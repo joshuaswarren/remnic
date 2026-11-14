@@ -16,6 +16,7 @@ import type {
 } from "./access-health-types.js";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import { type RecallCoordinatorHost, type RecallExecResult, coordinateRecall } from "./access-recall-concurrency.js";
+import { recordRecallAttempt } from "./recall-attempt-timing.js";
 import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   resolveCompressionCapabilities,
@@ -2659,7 +2660,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   }
 
   private async executeRecall(request: EngramAccessRecallRequest): Promise<RecallExecResult> {
-    return this.accessRecallSurface.executeRecall(request);
+    return recordRecallAttempt(this.orchestrator.config, request.abortSignal, () =>
+      this.accessRecallSurface.executeRecall(request));
   }
 
   async recallExplain(request: EngramAccessRecallExplainRequest = {}): Promise<EngramAccessRecallExplainResponse> {
