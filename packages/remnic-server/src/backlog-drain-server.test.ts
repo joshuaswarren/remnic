@@ -140,7 +140,9 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
     assert.equal(promptSeen, true, "the ACTUAL chat prompt contains the seeded marker");
     const factSeen = await waitFor(() => hasFactFile(memoryDir, FACT), 45_000);
     assert.ok(factSeen, "a grounded fact file was durably written");
-    // Tombstone check straight from the native claim files on disk.
+    const scheduler = result.backlogScheduler;
+    const counted = await waitFor(() => scheduler.snapshot().counters.processed >= 1);
+    assert.ok(counted, "the scheduler counted real progress");
     const drainDir = path.join(memoryDir, "state", "buffer", "drain");
     const names = (await readdir(drainDir)).filter((n) => n.endsWith(".json") && !n.endsWith(".lease.json"));
     assert.ok(names.length >= 1, "a claim file exists");
@@ -150,12 +152,6 @@ test("a booted daemon drains persisted backlog through the real pipeline (actual
       const body = JSON.parse(await readFile(path.join(drainDir, name), "utf8")) as { entry?: { turns?: string[] } };
       assert.equal(body.entry?.turns?.length ?? 0, 0, `claim ${name} ended as an empty tombstone`);
     }
-    // The counter increments after drainKey fully resolves; the fact file
-    // becomes visible mid-drain, so sample the terminal signal, not the
-    // side effect.
-    const scheduler = result.backlogScheduler;
-    const counted = await waitFor(() => scheduler.snapshot().counters.processed >= 1);
-    assert.ok(counted, "the scheduler counted real progress");
   } finally {
     await result?.stop().catch(() => {});
     await model.close();
