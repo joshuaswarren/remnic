@@ -1,5 +1,5 @@
 """The `Atspi` calls atspi.py makes, answered from the JSON tree in STUB_ATSPI_TREE: a list of applications, each
-{pid, children: [frame...]} and each node {name, role, text, states, attributes, children}."""
+{pid, children: [frame...]} and each node {name, role, description, text, states, attributes, children}; STUB_ATSPI_LOG names the file that gets the role of every node whose text is read."""
 import json
 import os
 
@@ -27,7 +27,7 @@ class _Node:
         return self.spec.get("role", "frame")
 
     def get_description(self):
-        return ""
+        return self.spec.get("description", "")
 
     def get_text_iface(self):
         return self.spec if "text" in self.spec else None
@@ -59,6 +59,10 @@ class Atspi:
 
         @staticmethod
         def get_text(node, start, end):
+            log = os.environ.get("STUB_ATSPI_LOG")
+            if log:
+                with open(log, "a") as out:
+                    out.write(node.spec.get("role", "") + "\n")
             return node.spec["text"][start:end]
 
     class Document:

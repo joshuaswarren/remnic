@@ -153,6 +153,8 @@ export interface AxSnapshotOptions {
   pid?: number;
   /** Read this window (the id an earlier call returned) and not whichever is in front now. */
   windowId?: string;
+  /** Read the tree only while the window still has this title (the one the caller checked); a retitled window gets no tree. */
+  expectTitle?: string;
   maxNodes?: number;
 }
 
@@ -252,6 +254,7 @@ function readWindowFields(json: object): Omit<WindowContext, "snapshot"> {
 export class NativeHelper {
   readonly binaryPath: string;
   #windowOnlyUnsupported = false;
+  #titlePinUnsupported = false;
 
   constructor(binaryPath: string) {
     this.binaryPath = binaryPath;
@@ -278,11 +281,16 @@ export class NativeHelper {
     return { ...fields, snapshot };
   }
 
-  /** `<helper> ax-snapshot [--frontmost|--pid N|--window ID] [--max-nodes N]` -> window + AX tree JSON. */
+  /**
+   * `<helper> ax-snapshot [--frontmost|--pid N|--window ID] [--max-nodes N] [--title T]` -> window + AX tree JSON.
+   * `--title T` makes a helper that knows it read the tree only while the window still has the title T. A helper
+   * that exits with status 2 does not know the flag (the macOS helper today): the read then goes without it, and
+   * the refusal is remembered. Any other failure throws.
+   */
   async axSnapshot(opts: AxSnapshotOptions = {}): Promise<AxSnapshot> {
     const args = axTarget(opts);
     if (opts.maxNodes !== undefined) args.push("--max-nodes", String(opts.maxNodes));
-    const json = asObject(await runHelperCommand(this.binaryPath, args));
+    const json = asObject(await this.#runPinned(args, opts.expectTitle));
     if (!("tree" in json)) {
       throw new CaptureInputError("native helper ax-snapshot missing app/windowTitle/tree");
     }
@@ -294,6 +302,17 @@ export class NativeHelper {
     // optional) and extractAxText tolerates unknown shapes; a schema parse of an
     // arbitrary AX dump would be meaningless.
     return { ...readWindowFields(json), tree: tree as AxNode };
+  }
+
+  async #runPinned(args: string[], expectTitle: string | undefined): Promise<unknown> {
+    if (expectTitle === undefined || this.#titlePinUnsupported) return runHelperCommand(this.binaryPath, args);
+    try {
+      return await runHelperCommand(this.binaryPath, [...args, "--title", expectTitle]);
+    } catch (error) {
+      if (!(error instanceof HelperExitError) || error.status !== USAGE_STATUS) throw error;
+      this.#titlePinUnsupported = true;
+      return runHelperCommand(this.binaryPath, args);
+    }
   }
 
   /** `<helper> ocr-window [--frontmost|--window ID]` -> `{ text }` JSON. */

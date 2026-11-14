@@ -60,10 +60,13 @@ async function targetWindow({ pid, windowId }) {
 /**
  * `ax-snapshot`: the focused window, the window of `--pid` or the window `--window` names, with its
  * accessibility tree. With `--window-only` the answer has the window's app, title, id and address and no tree.
+ * With `--title T`, a window that no longer has the title T is answered like an app without an accessibility
+ * tree: its facts with the new title and no read, so the caller checks the new title before anything is read.
  */
-export async function axSnapshot({ pid, windowId, windowOnly = false, maxNodes = DEFAULT_MAX_NODES }) {
+export async function axSnapshot({ pid, windowId, expectTitle, windowOnly = false, maxNodes = DEFAULT_MAX_NODES }) {
   const window = await targetWindow({ pid, windowId });
-  const facts = await readAtspi(window, maxNodes, windowOnly);
+  const retitled = expectTitle !== undefined && window.title !== expectTitle;
+  const facts = retitled ? null : await readAtspi(window, maxNodes, windowOnly);
   const snapshot = { app: window.class, windowTitle: window.title, windowId: window.address };
   if (!windowOnly) {
     snapshot.tree = facts?.found ? toAxNode(facts.root, { left: maxNodes }) : { role: "window" };

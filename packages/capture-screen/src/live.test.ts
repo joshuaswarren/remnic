@@ -49,7 +49,7 @@ function loggedHelper(context: WindowContext, snap: AxSnapshot) {
       calls.push("windowContext");
       return context;
     },
-    axSnapshot: async (opts: { windowId?: string; maxNodes?: number }) => {
+    axSnapshot: async (opts: { windowId?: string; maxNodes?: number; expectTitle?: string }) => {
       calls.push(`axSnapshot ${JSON.stringify(opts)}`);
       return snap;
     },
@@ -80,7 +80,7 @@ test("a deny-listed address is never read either", async () => {
   assert.notEqual(decision.action, "store");
 });
 
-test("an allowed window is read once, pinned to the id the window facts gave", async () => {
+test("an allowed window is read once, pinned to the id and the title the window facts gave", async () => {
   const config = defaultDaemonConfig();
   const snap: AxSnapshot = {
     app: "Notes",
@@ -90,7 +90,10 @@ test("an allowed window is read once, pinned to the id the window facts gave", a
   };
   const { helper, calls } = loggedHelper({ app: "Notes", windowTitle: "Meeting", windowId: "W" }, snap);
   const decision = await captureViaHelper(helper, new CaptureProcessor(config), config, AT);
-  assert.deepEqual(calls, ["windowContext", `axSnapshot ${JSON.stringify({ windowId: "W", maxNodes: config.maxNodes })}`]);
+  assert.deepEqual(calls, [
+    "windowContext",
+    `axSnapshot ${JSON.stringify({ windowId: "W", expectTitle: "Meeting", maxNodes: config.maxNodes })}`,
+  ]);
   assert.equal(decision.action, "store");
 });
 

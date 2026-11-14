@@ -82,6 +82,22 @@ test("ax-snapshot --window ID reads that window's tree, not the focused one", as
   assert.doesNotMatch(desktop.calls("python3")[0], /--url-only/);
 });
 
+test("ax-snapshot --title reads the tree only while the window still has that title", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, BROWSER], atspi: atspiTree([]) });
+  const same = await helper(["ax-snapshot", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(same.code, 0, same.stderr);
+  assert.equal(same.json().tree.role, "frame");
+  assert.equal(desktop.calls("python3").length, 1);
+});
+
+test("ax-snapshot --title on a window retitled since the caller looked reads no tree and reports the new title", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, BROWSER], atspi: atspiTree([{ role: "text", text: SENTENCE }]) });
+  const result = await helper(["ax-snapshot", "--window", "0xa1", "--title", "Quarterly plan - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { app: "org.example.editor", windowTitle: "Notes - Editor", windowId: "0xa1", tree: { role: "window" } });
+  assert.deepEqual(desktop.calls("python3"), [], "the retitled window's tree was never asked for");
+});
+
 test("ax-snapshot --window with an unknown id exits 1 and reads nothing", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], atspi: atspiTree([]) });
   const result = await helper(["ax-snapshot", "--window", "0xdead"], desktop);

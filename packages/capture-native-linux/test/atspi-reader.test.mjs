@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -54,4 +56,35 @@ test("--url-only on a title that matches no frame reports no address", () => {
   const apps = chromium(frame("Vault notes - Chromium", "x", { attributes: { URI: "https://vault.example.test/" } }));
   const { json } = readWindow(apps, "Quarterly plan - Chromium", "--url-only");
   assert.deepEqual(json, { found: false });
+});
+
+test("a password field is never read: no name, description or text of it or of its children leaves the reader", () => {
+  const log = path.join(mkdtempSync(path.join(tmpdir(), "atspi-log-")), "reads.log");
+  const login = {
+    name: "Sign in",
+    role: "frame",
+    children: [
+      { role: "label", text: "Account", name: "Account" },
+      {
+        role: "password text",
+        name: "PIN 4471",
+        description: "your pin",
+        text: "hunter2",
+        children: [{ role: "label", name: "inner-secret", text: "inner-secret" }],
+      },
+    ],
+  };
+  const done = spawnSync("python3", [READER, "--pid", "4242", "--title=Sign in", "--max-nodes", "50"], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, PYTHONPATH: STUB, STUB_ATSPI_TREE: JSON.stringify(chromium(login)), STUB_ATSPI_LOG: log },
+  });
+  assert.equal(done.status, 0, done.stderr);
+  for (const secret of ["hunter2", "PIN 4471", "your pin", "inner-secret"]) {
+    assert.equal(done.stdout.includes(secret), false, `${secret} left the reader`);
+  }
+  const password = JSON.parse(done.stdout).root.children.find((node) => node.role === "password text");
+  assert.deepEqual(password, { role: "password text" });
+  const reads = existsSync(log) ? readFileSync(log, "utf8").split("\n") : [];
+  assert.equal(reads.includes("password text"), false, "the reader asked for the text of a password field");
+  assert.equal(reads.includes("label"), true, "other text is still read");
 });

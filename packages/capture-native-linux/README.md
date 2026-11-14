@@ -44,15 +44,18 @@ sources and `output` for sinks; `id` is the PipeWire node name, which `--device`
 ### Screen
 
 ```
-remnic-capture-helper ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--max-nodes N]
+remnic-capture-helper ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--title T] [--max-nodes N]
 remnic-capture-helper ocr-window [--frontmost | --window ID]
 ```
 
 `ax-snapshot` prints `{app, windowTitle, windowId, browserUrl?, tree}` for the focused window, the window of a
 process, or the window `--window` names (`windowId` is the Hyprland address). `tree` comes from the
-accessibility bus (AT-SPI). A password field keeps only its role, so no text of it or of anything under it
-leaves the helper. `--window-only` prints `{app, windowTitle, windowId, browserUrl?}` and reads no node name or
-text; a caller applies its deny list to that before it asks for the tree. An app that is not on the
+accessibility bus (AT-SPI). A password field keeps only its role: the AT-SPI reader never asks for its text,
+name or description or for anything under it, so none of it reaches the helper's own process either.
+`--window-only` prints `{app, windowTitle, windowId, browserUrl?}` and reads no node name or
+text; a caller applies its deny list to that before it asks for the tree. `--title T` reads the tree only while
+the window still has the title T the caller checked; a window retitled since gets its facts with the new title
+and a one-node tree, so the caller checks the new title before anything is read. An app that is not on the
 accessibility bus gives its window and a one-node tree with no text, and the reason goes to stderr. The reader reads only the
 frame whose name equals the window's title. A process whose frames do not match (a retitled window, two windows with one
 title) gives the same empty tree, never another window's content.

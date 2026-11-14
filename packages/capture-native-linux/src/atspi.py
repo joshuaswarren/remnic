@@ -4,7 +4,8 @@ Usage: atspi.py --pid PID --title TITLE --max-nodes N [--url-only]
 Prints {"found": false} when the process is not on the accessibility bus or when not exactly one of its frames is
 named TITLE (a frame of another name may be another window, so it is never read), else
 {"found": true, "url": str|null, "root": node} where node is
-{role, name, description, text, showing, children}. With --url-only the reader reads the document address
+{role, name, description, text, showing, children}; a password field is {role} alone, and neither its text nor its
+name nor anything under it is read. With --url-only the reader reads the document address
 and no node name or text, and prints no "root". Exit 3 with one line on stderr when AT-SPI cannot be used.
 """
 import argparse
@@ -12,6 +13,7 @@ import json
 import sys
 
 TEXT_LIMIT = 20000
+PASSWORD_ROLE = "password text"
 
 try:
     import gi
@@ -32,8 +34,11 @@ def text_of(node):
 
 def read(node, budget):
     budget[0] -= 1
+    role = node.get_role_name()
+    if role == PASSWORD_ROLE:
+        return {"role": role}
     out = {
-        "role": node.get_role_name(),
+        "role": role,
         "name": node.get_name() or "",
         "description": node.get_description() or "",
         "text": text_of(node),

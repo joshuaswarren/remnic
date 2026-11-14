@@ -41,8 +41,9 @@ function valueOf(argv, i, flag) {
 }
 
 /**
- * `ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--max-nodes N]`. `--window-only` asks for
- * the window's app, title, id and address and no tree, so the caller can apply its deny list before any read.
+ * `ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--title T] [--max-nodes N]`. `--window-only`
+ * asks for the window's app, title, id and address and no tree, so the caller can apply its deny list before any
+ * read. `--title T` reads the tree only while the window still has the title T the caller checked.
  */
 export function parseAxArgs(argv) {
   const parsed = {};
@@ -52,6 +53,7 @@ export function parseAxArgs(argv) {
     if (flag === "--window-only") parsed.windowOnly = true;
     else if (flag === "--pid") parsed.pid = wholeNumber(valueOf(argv, (i += 1), flag), flag);
     else if (flag === "--window") parsed.windowId = valueOf(argv, (i += 1), flag);
+    else if (flag === "--title") parsed.expectTitle = valueOf(argv, (i += 1), flag);
     else if (flag === "--max-nodes") parsed.maxNodes = wholeNumber(valueOf(argv, (i += 1), flag), flag);
     else throw new UsageError(`unknown argument ${flag}`);
   }

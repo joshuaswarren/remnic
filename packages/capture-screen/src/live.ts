@@ -65,6 +65,7 @@ export async function captureWindow(
     context.snapshot ??
     (await helper.axSnapshot({
       ...(context.windowId !== undefined ? { windowId: context.windowId } : { frontmost: true }),
+      expectTitle: context.windowTitle,
       maxNodes: config.maxNodes,
     }));
   return captureFromSnapshot(snap, helper, processor, config, capturedAtUtc);

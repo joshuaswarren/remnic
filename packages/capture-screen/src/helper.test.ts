@@ -133,15 +133,17 @@ test("helperPackageName is one package for Linux, whatever the arch", () => {
   assert.equal(helperPackageName("linux", "arm64"), "@remnic/capture-native-linux");
 });
 
-/** A helper that logs its argv. `windowOnly` is its answer to --window-only: "ok" or an exit status. */
-function loggingHelper(name: string, windowOnly: "ok" | number): { file: string; calls(): string[][] } {
+/** A helper that logs its argv. `windowOnly` is its answer to --window-only and `title` its answer to --title: "ok" or an exit status. */
+function loggingHelper(name: string, windowOnly: "ok" | number, title: "ok" | number = "ok"): { file: string; calls(): string[][] } {
   const log = path.join(dir, `${name}.log`);
   const file = fakeHelper(
     name,
     `require("node:fs").appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 const args = process.argv.slice(2);
 const full = { app: "kitty", windowTitle: "shell", windowId: "0xa1", tree: { role: "AXWindow" } };
-if (args.includes("--window-only")) {
+if (args.includes("--title")) {
+  ${title === "ok" ? `process.stdout.write(JSON.stringify(full));` : `process.exit(${title});`}
+} else if (args.includes("--window-only")) {
   ${windowOnly === "ok" ? `process.stdout.write(JSON.stringify({ app: "kitty", windowTitle: "shell", windowId: "0xa1", browserUrl: "https://example.org/" }));` : `process.exit(${windowOnly});`}
 } else process.stdout.write(JSON.stringify(full));`,
   );
@@ -186,4 +188,26 @@ test("axSnapshot pinned to a window id passes --window and not --frontmost", asy
   const { file, calls } = loggingHelper("pin.js", "ok");
   await new NativeHelper(file).axSnapshot({ windowId: "0xb2", maxNodes: 50 });
   assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xb2", "--max-nodes", "50"]]);
+});
+
+test("a read pinned to a title sends --title with the window id", async () => {
+  const { file, calls } = loggingHelper("pin-ok.js", "ok");
+  await new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell", maxNodes: 10 });
+  assert.deepEqual(calls(), [["ax-snapshot", "--window", "0xa1", "--max-nodes", "10", "--title", "shell"]]);
+});
+
+test("a helper that refuses --title with status 2 is read without it, and the refusal is remembered", async () => {
+  const { file, calls } = loggingHelper("pin-legacy.js", "ok", 2);
+  const helper = new NativeHelper(file);
+  const snapshot = await helper.axSnapshot({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(snapshot.windowTitle, "shell");
+  await helper.axSnapshot({ windowId: "0xa1", expectTitle: "shell" });
+  assert.equal(calls().filter((c) => c.includes("--title")).length, 1, "the refusal is remembered");
+  assert.equal(calls().filter((c) => !c.includes("--title")).length, 2);
+});
+
+test("any other failure of a pinned read is an error, never a read without the pin", async () => {
+  const { file, calls } = loggingHelper("pin-broken.js", "ok", 1);
+  await assert.rejects(new NativeHelper(file).axSnapshot({ windowId: "0xa1", expectTitle: "shell" }), CaptureInputError);
+  assert.deepEqual(calls().filter((c) => !c.includes("--title")), []);
 });
