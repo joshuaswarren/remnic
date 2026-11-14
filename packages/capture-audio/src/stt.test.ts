@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 import path from "node:path";
 
@@ -150,6 +152,28 @@ test("runWhisperCli returns stdout and stderr from an argv-only subprocess", asy
   ]);
 
   assert.deepEqual(result, { code: 0, stdout: "out", stderr: "err" });
+});
+
+// whisper-cli opens /dev/stdout for `--output-file -`; that fails when stdout is the socket Node gives a child, and it
+// prints nothing. The fake below behaves the same: it writes only to `<--output-file>.json`.
+test("runWhisperCli returns the JSON whisper-cli writes to a file, because it cannot write it to a socket", async () => {
+  const script = path.join(mkdtempSync(path.join(tmpdir(), "fake-whisper-")), "whisper-cli");
+  writeFileSync(
+    script,
+    `#!${process.execPath}
+const args = process.argv.slice(2);
+const base = args[args.indexOf("--output-file") + 1];
+if (base === "-") process.exit(0);
+require("node:fs").writeFileSync(base + ".json", JSON.stringify({ transcription: [{ text: "Hello", offsets: { from: 0, to: 900 } }] }));
+`,
+  );
+  chmodSync(script, 0o755);
+  const result = await runWhisperCli(script, buildWhisperArgs("/audio/chunk.wav", "/models/model.bin"));
+
+  assert.equal(result.code, 0);
+  assert.deepEqual(parseWhisperJson(result.stdout, "2026-07-22T12:00:00.000Z"), [
+    { text: "Hello", startUtc: "2026-07-22T12:00:00.000Z", endUtc: "2026-07-22T12:00:00.900Z" },
+  ]);
 });
 
 test("runWhisperCli translates a missing executable into an actionable config error", async () => {

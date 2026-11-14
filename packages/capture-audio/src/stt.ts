@@ -1,4 +1,7 @@
 import { statSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { expandTilde } from "./paths.js";
@@ -138,7 +141,7 @@ export async function transcribeWithWhisper(input: WhisperTranscriptionInput): P
   return parseWhisperJson(result.stdout, input.chunkStartedAtUtc);
 }
 
-export function runWhisperCli(command: string, args: string[]): Promise<WhisperRunResult> {
+function collect(command: string, args: string[]): Promise<WhisperRunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { shell: false, stdio: ["ignore", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
@@ -165,4 +168,22 @@ export function runWhisperCli(command: string, args: string[]): Promise<WhisperR
       });
     });
   });
+}
+
+/**
+ * Run whisper-cli and return its JSON as `stdout`. whisper-cli opens /dev/stdout for `--output-file -`, which fails
+ * on the socket Node gives a child process and leaves the output empty, so the JSON goes through a private
+ * temporary file instead.
+ */
+export async function runWhisperCli(command: string, args: string[]): Promise<WhisperRunResult> {
+  const at = args.indexOf("--output-file");
+  if (at < 0 || args[at + 1] !== "-") return collect(command, args);
+  const dir = await mkdtemp(path.join(tmpdir(), "remnic-whisper-"));
+  try {
+    const base = path.join(dir, "out");
+    const result = await collect(command, args.map((arg, index) => (index === at + 1 ? base : arg)));
+    return result.code === 0 ? { ...result, stdout: await readFile(`${base}.json`, "utf8").catch(() => "") } : result;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
