@@ -17,28 +17,37 @@ class _Node:
         self.spec = spec
         self.kids = [_Node(child) for child in spec.get("children", [])]
 
+    def assert_content_allowed(self):
+        if self.spec.get("forbid_content"):
+            raise AssertionError("hidden node content or children were accessed")
+
     def get_process_id(self):
         return self.spec.get("pid", -1)
 
     def get_name(self):
+        self.assert_content_allowed()
         return self.spec.get("name", "")
 
     def get_role_name(self):
         return self.spec.get("role", "frame")
 
     def get_description(self):
+        self.assert_content_allowed()
         return self.spec.get("description", "")
 
     def get_text_iface(self):
+        self.assert_content_allowed()
         return self.spec if "text" in self.spec else None
 
     def get_state_set(self):
         return _States(self.spec.get("states", ["showing"]))
 
     def get_child_count(self):
+        self.assert_content_allowed()
         return len(self.kids)
 
     def get_child_at_index(self, index):
+        self.assert_content_allowed()
         return self.kids[index]
 
 

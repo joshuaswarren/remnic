@@ -68,6 +68,27 @@ test("the address is the one of the document that is showing, not of a hidden do
   }
 });
 
+test("hidden document subtrees leave the node budget for visible text and are never read", () => {
+  const hidden = {
+    role: "document web",
+    name: "hidden secret",
+    text: "hidden secret",
+    states: [],
+    attributes: { URI: "https://hidden.example.test/" },
+    children: Array.from({ length: 60 }, () => ({ role: "label", text: "hidden child secret" })),
+  };
+  const shown = { role: "document web", text: "visible document content", attributes: { URI: "https://visible.example.test/" } };
+  const tabs = { name: "Visible tab - Chromium", role: "frame", children: [hidden, shown] };
+  for (const forbidContent of [false, true]) {
+    hidden.forbid_content = forbidContent;
+    const { out, json } = readWindow(chromium(tabs), tabs.name);
+    assert.equal(json.url, "https://visible.example.test/");
+    assert.ok(out.includes("visible document content"), "hidden descendants exhausted the visible document's node budget");
+    assert.equal(out.includes("hidden secret"), false);
+    assert.equal(out.includes("hidden child secret"), false);
+  }
+});
+
 test("a password field is never read: no name, description or text of it or of its children leaves the reader", () => {
   const log = path.join(mkdtempSync(path.join(tmpdir(), "atspi-log-")), "reads.log");
   const login = {

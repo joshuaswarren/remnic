@@ -37,12 +37,15 @@ def read(node, budget):
     role = node.get_role_name()
     if role == PASSWORD_ROLE:
         return {"role": role}
+    showing = node.get_state_set().contains(Atspi.StateType.SHOWING)
+    if not showing:
+        return {"role": role, "showing": False}
     out = {
         "role": role,
         "name": node.get_name() or "",
         "description": node.get_description() or "",
         "text": text_of(node),
-        "showing": node.get_state_set().contains(Atspi.StateType.SHOWING),
+        "showing": showing,
         "children": [],
     }
     for index in range(node.get_child_count()):
