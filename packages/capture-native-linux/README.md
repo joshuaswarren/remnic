@@ -31,6 +31,11 @@ remnic-capture-helper device-enumerate
 {"path":"/…/mic-….wav","channel":"mic","startedAtUtc":"…Z","endedAtUtc":"…Z","device":"alsa_input…"}
 ```
 
+The output directory must belong to the current user. Each parent must belong to that user or root.
+Parents must not allow group or other writes unless the sticky bit protects their entries.
+The helper refuses symlinks in every path component, including forms such as `link/..`.
+It creates missing directories with mode 0700.
+
 - `mic` records the default microphone, or the node named by `--device`.
 - `system` records what the default sink plays (the sink's monitor). `--device` does not apply to it.
 - `both` records the two as separate chunk streams. Each event is `mic` or `system`, never `both`.

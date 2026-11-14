@@ -112,22 +112,36 @@ async function targets(channel, device) {
   return { mic: [mic], system: [system], both: [mic, system] }[channel];
 }
 
+// Inspect components before normalization: link/.. must not hide a symlink.
+function prepareOutputDirectory(out) {
+  const uid = process.getuid();
+  const absolute = path.isAbsolute(out) ? out : `${process.cwd()}/${out}`;
+  let prefix = "/";
+  let root = lstatSync(prefix);
+  for (const component of absolute.split("/")) {
+    if (!component) continue;
+    if ((root.uid !== 0 && root.uid !== uid) || ((root.mode & 0o022) !== 0 && (root.mode & 0o1000) === 0)) {
+      throw new Error(`${prefix} is not a trusted directory`);
+    }
+    prefix = `${prefix}${prefix.endsWith("/") ? "" : "/"}${component}`;
+    try {
+      mkdirSync(prefix, { mode: 0o700 });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+    root = lstatSync(prefix);
+    if (!root.isDirectory()) throw new Error(`${out} is not a plain directory`);
+  }
+  if (root.uid !== uid) throw new Error(`${out} is not owned by the current user`);
+  if (root.mode & 0o077) chmodSync(prefix, root.mode & 0o700);
+}
+
 /**
  * Record until SIGTERM or SIGINT, printing one JSONL ChunkEvent per finished chunk on stdout.
  * Returns the exit status: 0 after a requested stop, 1 when a recorder dies by itself.
  */
 export async function audioCapture({ channel, chunkSeconds, out, device }) {
-  let root = null;
-  try {
-    root = lstatSync(out);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-  }
-  if (root && (root.isSymbolicLink() || !root.isDirectory())) throw new Error(`${out} is not a plain directory`);
-  mkdirSync(out, { recursive: true, mode: 0o700 });
-  const { uid, mode } = lstatSync(out);
-  if (uid !== process.getuid()) throw new Error(`${out} is not owned by the current user`);
-  if (mode & 0o077) chmodSync(out, mode & 0o700);
+  prepareOutputDirectory(out);
   const announce = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
   const recorders = [];
   let stopRequested = false;
