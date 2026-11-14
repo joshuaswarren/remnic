@@ -931,11 +931,10 @@ export class ExtractionRunCoordinator {
     } else {
       recordExtractionLlmSuccess();
     }
-    let recordedRetryFailure = false;
     // Record failure into backoff/breaker state, or heal on success. Runs for
     // every result path (empty and durable), before the fail-closed throw, so a
     // forced flush still records its failure (rule 18). Gated by
-    // extractionRetryEnabled so a disabled feature restores prior behavior.
+    // extractionRetryEnabled; retaining failed source turns is independent of scheduling.
     if (extractionFingerprint && extractionRetryEnabled) {
       if (extractionFailure) {
         const failureClass = result.extractionFailureClass ?? "provider_retryable";
@@ -948,14 +947,12 @@ export class ExtractionRunCoordinator {
             "during_retry_bookkeeping_save",
             false,
           );
-          recordedRetryFailure = true;
         } catch (err) {
           if (err instanceof ExtractionDeadlineError) throw err;
           // Fail-open, but retain the turns (a cleared buffer with no retry state drops them). Only a
           // LOCK skip reaches here without the mutator having run — a later save must not double-count.
           if (err instanceof Error && err.message.includes("meta.json.lock not acquired"))
             this.applyExtractionFailureToMemory(selfNamespace, extractionFingerprint, failureClass, Date.now(), extractionProbeToken);
-          recordedRetryFailure = true;
           log.warn("runExtraction: retry state kept in memory; meta persist will catch up", err);
         }
       } else if (result.extractionSkippedReason === undefined) {
@@ -1017,7 +1014,7 @@ export class ExtractionRunCoordinator {
         bufferKey,
         isLiveSession: clearBufferAfterExtraction,
       });
-      if (recordedRetryFailure) {
+      if (extractionFailure) {
         log.debug("runExtraction: retaining buffer for backoff retry after failure");
       } else {
         await clearBuffer();
@@ -1025,7 +1022,7 @@ export class ExtractionRunCoordinator {
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
+      return emptyExtractionResult(Boolean(extractionFailure), result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;

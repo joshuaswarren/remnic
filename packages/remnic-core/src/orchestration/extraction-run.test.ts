@@ -1593,3 +1593,28 @@ test("#3227: a failed reflection-only persist stays retryable instead of an empt
     await h.cleanup();
   }
 });
+
+for (const failureClass of ["provider_retryable", "parse_empty"] as const) {
+  test(`failed extraction retains source with retry scheduling disabled: ${failureClass}`, async () => {
+    const h = await makeHarness({ extractionRetryEnabled: false });
+    try {
+      const turns = makeTurns(`retry-disabled-${failureClass}`);
+      for (const turn of turns) await h.buffer.addTurn("synthetic-live-session", turn);
+      const sourceBefore = h.buffer.getTurns("synthetic-live-session");
+      assert.equal(sourceBefore.length, turns.length);
+      h.setRespond(() => failureResult(failureClass));
+      const result = await h.newCoordinator().runExtraction(turns, {
+        bufferKey: "synthetic-live-session", clearBufferAfterExtraction: true,
+        skipCharThreshold: true, skipUserTurnThreshold: true,
+      });
+      assert.deepEqual(h.buffer.getTurns("synthetic-live-session"), sourceBefore,
+        "a failed extraction must retain its live source turns");
+      assert.equal(result.retainedBuffer, true);
+      assert.equal(result.failureClass, failureClass);
+      assert.equal(h.recordedProcessedCount(), 0, "failed input remains unprocessed");
+      assert.equal(h.persistCalls(), 0);
+    } finally {
+      await h.cleanup();
+    }
+  });
+}
