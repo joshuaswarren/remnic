@@ -11,9 +11,10 @@ export const BYTES_PER_SECOND = 32_000; // 16 kHz mono, 16-bit
 const FAKE_PW_RECORD = `#!/usr/bin/env node
 // Stands in for pw-record: logs argv, writes FAKE_PCM_BYTES of PCM in odd-sized pieces, then exits or waits for a signal.
 // Signals during writes are acted on after all samples are sent, so a stop never loses samples.
-// FAKE_PCM_ENDIANNESS=BE reverses every sample to model native-endian PCM on a big-endian host.
+// FAKE_PCM_ENDIANNESS overrides the native-endian sample order for tests.
 // FAKE_NO_CONTAINER makes it behave like PipeWire before 1.6, which has no --container option.
 import { appendFileSync } from "node:fs";
+import { endianness } from "node:os";
 const argv = process.argv.slice(2);
 if (argv.includes("--help")) {
   console.log("pw-record [options] [<file>|-]\\n  --rate  Sample rate" + (process.env.FAKE_NO_CONTAINER ? "" : "\\n  --container  Container format"));
@@ -34,6 +35,7 @@ for (const signal of ["SIGTERM", "SIGINT"]) {
   });
 }
 const total = Number(process.env.FAKE_PCM_BYTES ?? 0);
+const pcmEndianness = process.env.FAKE_PCM_ENDIANNESS ?? endianness();
 let sent = 0;
 while (sent < total) {
   const piece = Buffer.alloc(Math.min(7001, total - sent));
@@ -41,7 +43,7 @@ while (sent < total) {
     const absolute = sent + i;
     const pairStart = absolute - (absolute % 2);
     piece[i] =
-      process.env.FAKE_PCM_ENDIANNESS === "BE"
+      pcmEndianness === "BE"
         ? (absolute % 2 === 0 ? pairStart + 1 : pairStart) % 251
         : absolute % 251;
   }

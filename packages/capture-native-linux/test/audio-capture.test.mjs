@@ -7,14 +7,14 @@ import { fileURLToPath } from "node:url";
 import { BYTES_PER_SECOND, fakeTools, run, tempDir, wavParts } from "./harness.mjs";
 
 const DUMP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pw-dump.json");
-const BIG_ENDIAN_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "force-big-endian.mjs");
+const ENDIAN_PRELOAD = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "force-endianness.mjs");
 
 function pattern(from, length) {
   return Buffer.from(Array.from({ length }, (_, i) => (from + i) % 251));
 }
 
 test("the helper writes little-endian WAV samples from big- and little-endian PCM", async () => {
-  for (const [nativeEndian, preload] of [["BE", `--import=${BIG_ENDIAN_PRELOAD}`], ["LE", undefined]]) {
+  for (const nativeEndian of ["BE", "LE"]) {
     const tools = fakeTools(DUMP);
     const out = tempDir();
     const total = Math.round(1.5 * BYTES_PER_SECOND);
@@ -24,7 +24,7 @@ test("the helper writes little-endian WAV samples from big- and little-endian PC
         ...tools.env,
         FAKE_PCM_BYTES: String(total),
         FAKE_PCM_ENDIANNESS: nativeEndian,
-        ...(preload ? { NODE_OPTIONS: preload } : {}),
+        NODE_OPTIONS: `--import=${ENDIAN_PRELOAD}`,
       },
     );
     await helper.waitForEvents(1);
