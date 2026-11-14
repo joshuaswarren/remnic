@@ -295,6 +295,32 @@ test("ocr-window refuses to read pixels at all when the compositor's event socke
   assert.deepEqual(desktop.calls("grim"), [], "no screen read happened");
 });
 
+test("ocr-window gives no text when an event arrives split across two socket writes", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
+  writeFileSync(
+    path.join(desktop.dir, "bin", "grim"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>{s.write('openwin');setTimeout(()=>s.end('dow>>1f,0xc3,foot,3\\\\n'),20);});"\nprintf 'PNG'\n`,
+  );
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(result.json(), { text: "", windowTitle: "Notes - Editor" });
+  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
+  desktop.stop();
+});
+
+test("ocr-window gives no text when the compositor drops the event stream during the read", async () => {
+  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
+  writeFileSync(
+    path.join(desktop.dir, "bin", "grim"),
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>s.end('__DISCONNECT__\\n'));"\nprintf 'PNG'\n`,
+  );
+  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /event stream/);
+  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
+  desktop.stop();
+});
+
 test("a window with no text gives an empty string, not an error", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "  \n" });
   const result = await helper(["ocr-window"], desktop);

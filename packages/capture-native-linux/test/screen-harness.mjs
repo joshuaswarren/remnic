@@ -66,7 +66,7 @@ function compositor(dir, noSocket) {
   const server = path.join(dir, "compositor.mjs");
   writeFileSync(server, `import net from "node:net";
 const clients = new Set();
-net.createServer((c) => { clients.add(c); c.on("close", () => clients.delete(c)); c.on("data", (d) => { for (const cl of clients) cl.write(d); }); })
+net.createServer((c) => { clients.add(c); c.on("close", () => clients.delete(c)); c.on("data", (d) => { if (d.includes("__DISCONNECT__")) { for (const cl of clients) cl.destroy(); return; } for (const cl of clients) cl.write(d); }); })
   .listen(${JSON.stringify(socketPath)}, () => setTimeout(() => process.exit(0), 60000).unref());
 `);
   const child = spawn(process.execPath, [server], { stdio: "ignore" });

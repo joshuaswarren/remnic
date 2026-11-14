@@ -29,14 +29,26 @@ function watchCompositorEvents() {
   const socketPath = path.join(runtime, "hypr", signature, ".socket2.sock");
   const events = [];
   let failed = null;
+  let closing = false;
+  let pending = "";
+  // One event can arrive split across socket writes, so lines are completed across chunks, never guessed from one.
+  const takeEvents = (chunk) => {
+    pending += chunk.toString("utf8");
+    const lines = pending.split("\n");
+    pending = lines.pop() ?? "";
+    for (const line of lines) if (line !== "") events.push(line);
+  };
+  const streamEnded = (how) => {
+    if (!closing) failed ??= new Error(`the compositor ${how} the event stream during the read`);
+  };
   const connect = () => {
     const socket = createConnection(socketPath);
-    socket.on("data", (chunk) => {
-      for (const line of chunk.toString("utf8").split("\n")) if (line !== "") events.push(line);
-    });
+    socket.on("data", takeEvents);
     socket.on("error", (error) => {
       failed ??= new Error(`cannot watch the compositor's window events (${error.message})`);
     });
+    socket.on("end", () => streamEnded("ended"));
+    socket.on("close", () => streamEnded("closed"));
     return new Promise((resolve, reject) => {
       socket.once("connect", () => resolve(socket));
       socket.once("error", reject);
@@ -63,6 +75,7 @@ function watchCompositorEvents() {
       return failed;
     },
     end() {
+      closing = true;
       return new Promise((resolve) => (active ? active.end(() => resolve()) : resolve()));
     },
   };
