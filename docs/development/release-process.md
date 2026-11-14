@@ -126,6 +126,10 @@ package) on real macOS runners, then staged into the per-arch
 skips the packages because it runs on Linux. `capture-native-helper.yml` builds them on macOS
 and publishes on `ubuntu-latest`; the publish job uses Node 22.14.0 and pins npm 11.16.0 for OIDC trusted publishing.
 
+`@remnic/capture-native-linux` is different: it is a Node script over PipeWire (`pw-record`, `pw-dump`)
+with no compiled part. Its `os` field is `linux`, which matches the Linux runner, so `release-and-publish.yml`
+publishes it with the other packages and no helper workflow is needed.
+
 ### Why a `workflow_dispatch` and not the `release: published` event
 
 `release-and-publish.yml` creates the GitHub release with the default

@@ -1,0 +1,91 @@
+[
+  {
+    "id": 0,
+    "type": "PipeWire:Interface:Core",
+    "info": { "props": { "core.name": "pipewire-0" } }
+  },
+  {
+    "id": 31,
+    "type": "PipeWire:Interface:Node",
+    "info": { "props": { "node.name": "Dummy-Driver" } }
+  },
+  {
+    "id": 40,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Sink",
+        "node.name": "alsa_output.test.speakers",
+        "node.description": "Test Speakers",
+        "object.serial": 41
+      }
+    }
+  },
+  {
+    "id": 42,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Sink",
+        "node.name": "alsa_output.test.headphones",
+        "node.description": "Test Headphones",
+        "object.serial": 43
+      }
+    }
+  },
+  {
+    "id": 44,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Source",
+        "node.name": "alsa_input.test.internal-mic",
+        "node.description": "Test Internal Microphone",
+        "object.serial": 45
+      }
+    }
+  },
+  {
+    "id": 46,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Source/Virtual",
+        "node.name": "effect_output.test-mic",
+        "node.nick": "Test Mic Filter",
+        "object.serial": 47
+      }
+    }
+  },
+  {
+    "id": 48,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "node.name": "some-player",
+        "node.description": "A music player stream"
+      }
+    }
+  },
+  {
+    "id": 49,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Video/Source",
+        "node.name": "v4l2_input.test-camera",
+        "node.description": "Test Camera"
+      }
+    }
+  },
+  {
+    "id": 50,
+    "type": "PipeWire:Interface:Metadata",
+    "props": { "metadata.name": "default" },
+    "metadata": [
+      { "subject": 0, "key": "default.audio.sink", "type": "Spa:String:JSON", "value": { "name": "alsa_output.test.headphones" } },
+      { "subject": 0, "key": "default.audio.source", "type": "Spa:String:JSON", "value": { "name": "effect_output.test-mic" } }
+    ]
+  }
+]

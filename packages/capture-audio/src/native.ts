@@ -131,20 +131,32 @@ const HELPER_BIN_NAME = "remnic-capture-helper";
 
 /**
  * Compute the optional native-helper package specifier for a platform/arch.
- * The helper is macOS-only and hardware-gated; every other platform (and any
- * unsupported macOS architecture) throws loudly rather than resolving to a
- * package that cannot exist.
+ * macOS has one package per architecture (a compiled Swift binary). Linux has one package for every
+ * architecture (a Node script over PipeWire). Every other platform (and any unsupported macOS
+ * architecture) throws loudly rather than resolving to a package that cannot exist.
  */
 export function helperPackageSpecifier(platform: NodeJS.Platform | string, arch: string): string {
+  if (platform === "linux") return "@remnic/capture-native-linux";
   if (platform !== "darwin") {
     throw new CaptureConfigError(
-      `Desktop audio capture native helper is only available on macOS; platform "${platform}" is unsupported`,
+      `Desktop audio capture native helper is only available on macOS and Linux; platform "${platform}" is unsupported`,
     );
   }
   if (arch === "arm64") return "@remnic/capture-native-darwin-arm64";
   if (arch === "x64") return "@remnic/capture-native-darwin-x64";
   throw new CaptureConfigError(
     `Desktop audio capture native helper is unavailable for macOS architecture "${arch}"`,
+  );
+}
+
+function missingHelperHint(platform: NodeJS.Platform | string, specifier: string): string {
+  const how =
+    platform === "linux"
+      ? `Run \`npm install ${specifier}\` (it needs PipeWire's pw-record and pw-dump)`
+      : "Build the Swift helper from source (packages/capture-native-darwin-helper)";
+  return (
+    `Desktop audio capture requires the optional native helper ${specifier}, which is not available. ` +
+    `${how}, or set ${HELPER_BIN_ENV} to a built remnic-capture-helper binary.`
   );
 }
 
@@ -182,11 +194,7 @@ export function resolveHelperBinary(deps: ResolveHelperDeps = {}): HelperResolut
     // lives at the same path the package's `helperBinaryPath` export resolves to.
     entry = resolve(specifier);
   } catch {
-    throw new CaptureConfigError(
-      `Desktop audio capture requires the optional native helper ${specifier}, which is not available. ` +
-        `Build the Swift helper from source (packages/capture-native-darwin-helper) and set ` +
-        `${HELPER_BIN_ENV} to the built remnic-capture-helper binary.`,
-    );
+    throw new CaptureConfigError(missingHelperHint(platform, specifier));
   }
   const pkgJsonPath = path.join(path.dirname(entry), "package.json");
   return { specifier, binaryPath: helperBinaryFromPackage(pkgJsonPath, readFile, specifier) };
@@ -407,8 +415,8 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
   if (typeof options.outDir !== "string" || options.outDir.trim() === "") {
     throw new CaptureConfigError("native runner outDir must be a non-empty string");
   }
-  if (!Number.isFinite(options.chunkSeconds) || options.chunkSeconds <= 0) {
-    throw new CaptureConfigError("native runner chunkSeconds must be a positive number");
+  if (!Number.isInteger(options.chunkSeconds) || options.chunkSeconds <= 0) {
+    throw new CaptureConfigError("native runner chunkSeconds must be a positive whole number");
   }
 
   const spawn: HelperSpawn = options.spawn ?? defaultSpawn;

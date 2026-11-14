@@ -1,0 +1,50 @@
+{
+  "name": "@remnic/capture-native-linux",
+  "version": "10.0.104",
+  "description": "Linux native capture helper for Remnic: PipeWire audio capture and device enumeration",
+  "type": "module",
+  "os": [
+    "linux"
+  ],
+  "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.js"
+    }
+  },
+  "bin": {
+    "remnic-capture-helper": "bin/remnic-capture-helper"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "bin/remnic-capture-helper",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/capture-native-linux"
+  },
+  "keywords": [
+    "remnic",
+    "audio",
+    "capture",
+    "linux",
+    "pipewire"
+  ]
+}
