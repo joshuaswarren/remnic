@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, writeFileSync } from "node:fs";
 import { endianness } from "node:os";
 import path from "node:path";
 
@@ -117,8 +117,15 @@ async function targets(channel, device) {
  * Returns the exit status: 0 after a requested stop, 1 when a recorder dies by itself.
  */
 export async function audioCapture({ channel, chunkSeconds, out, device }) {
+  let root = null;
+  try {
+    root = lstatSync(out);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (root && (root.isSymbolicLink() || !root.isDirectory())) throw new Error(`${out} is not a plain directory`);
   mkdirSync(out, { recursive: true, mode: 0o700 });
-  const { uid, mode } = statSync(out);
+  const { uid, mode } = lstatSync(out);
   if (uid !== process.getuid()) throw new Error(`${out} is not owned by the current user`);
   if (mode & 0o077) chmodSync(out, mode & 0o700);
   const announce = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
