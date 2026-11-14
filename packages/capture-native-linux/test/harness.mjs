@@ -52,18 +52,41 @@ export function fakeTools(dumpFile) {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-linux-helper-"));
   const argvLog = path.join(dir, "pw-record-argv.log");
   const pidLog = path.join(dir, "pw-record-pid.log");
+  const dumpStarted = path.join(dir, "pw-dump-started");
   writeFileSync(argvLog, "");
   writeFileSync(pidLog, "");
   writeFileSync(path.join(dir, "pw-record"), FAKE_PW_RECORD);
-  writeFileSync(path.join(dir, "pw-dump"), `#!/bin/sh\ncat '${dumpFile}'\n`);
+  writeFileSync(
+    path.join(dir, "pw-dump"),
+    `#!/bin/sh\n: > "$FAKE_PW_DUMP_STARTED"\nif [ -n "$FAKE_DUMP_DELAY_MS" ]; then\n  node -e 'setTimeout(() => {}, Number(process.env.FAKE_DUMP_DELAY_MS))'\nfi\ncat '${dumpFile}'\n`,
+  );
   chmodSync(path.join(dir, "pw-record"), 0o755);
   chmodSync(path.join(dir, "pw-dump"), 0o755);
   return {
     dir,
-    env: { PATH: `${dir}:${process.env.PATH}`, FAKE_ARGV_LOG: argvLog, FAKE_PID_LOG: pidLog },
+    env: {
+      PATH: `${dir}:${process.env.PATH}`,
+      FAKE_ARGV_LOG: argvLog,
+      FAKE_PID_LOG: pidLog,
+      FAKE_PW_DUMP_STARTED: dumpStarted,
+    },
     recorderPids: () => readFileSync(pidLog, "utf8").split("\n").filter(Boolean).map(Number),
     recorderCalls: () =>
       readFileSync(argvLog, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)),
+    async waitForDumpStart(timeoutMs = 10_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (!existsSync(dumpStarted) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (!existsSync(dumpStarted)) throw new Error(`pw-dump did not start within ${timeoutMs}ms`);
+    },
+    async waitForRecorderCalls(count, timeoutMs = 10_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (this.recorderCalls().length < count && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      if (this.recorderCalls().length < count) throw new Error(`only ${this.recorderCalls().length} of ${count} recorders started`);
+    },
   };
 }
 

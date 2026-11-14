@@ -415,8 +415,8 @@ export function createNativeCaptureRunner(options: NativeRunnerOptions): NativeC
   if (typeof options.outDir !== "string" || options.outDir.trim() === "") {
     throw new CaptureConfigError("native runner outDir must be a non-empty string");
   }
-  if (!Number.isFinite(options.chunkSeconds) || options.chunkSeconds <= 0) {
-    throw new CaptureConfigError("native runner chunkSeconds must be a positive number");
+  if (!Number.isInteger(options.chunkSeconds) || options.chunkSeconds <= 0) {
+    throw new CaptureConfigError("native runner chunkSeconds must be a positive whole number");
   }
 
   const spawn: HelperSpawn = options.spawn ?? defaultSpawn;

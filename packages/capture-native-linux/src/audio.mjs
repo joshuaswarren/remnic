@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { endianness } from "node:os";
 import path from "node:path";
 
 import { pwDump, defaultDevices } from "./pipewire.mjs";
@@ -9,6 +10,13 @@ import { BYTES_PER_SECOND, RATE, wavFile } from "./wav.mjs";
 /** A trailing piece shorter than this is dropped on stop; it holds no speech. */
 const MIN_FLUSH_BYTES = BYTES_PER_SECOND / 10;
 const SAMPLE_BYTES = 2;
+const NATIVE_ENDIANNESS = endianness();
+
+export function pcmToLittleEndian(pcm, nativeEndian = NATIVE_ENDIANNESS) {
+  if (nativeEndian === "LE") return pcm;
+  if (nativeEndian !== "BE") throw new TypeError(`unsupported PCM byte order: ${nativeEndian}`);
+  return pcm.swap16();
+}
 
 /**
  * Cut a raw PCM stream into chunks of exactly `bytesPerChunk` bytes. `emit(pcm, offsetBytes)` gets each
@@ -70,7 +78,7 @@ function startRecorder({ channel, target, container, outDir, chunkSeconds, annou
     if (failure) return;
     try {
       const file = path.join(outDir, `${channel}-${randomUUID()}.wav`);
-      writeFileSync(file, wavFile(pcm), { mode: 0o600 });
+      writeFileSync(file, wavFile(pcmToLittleEndian(pcm)), { mode: 0o600 });
       const startedMs = streamStartMs + (offset / BYTES_PER_SECOND) * 1000;
       const endedMs = startedMs + (pcm.length / BYTES_PER_SECOND) * 1000;
       announce({ path: file, channel, startedAtUtc: iso(startedMs), endedAtUtc: iso(endedMs), device: target ?? null });
@@ -120,13 +128,22 @@ export async function audioCapture({ channel, chunkSeconds, out, device }) {
   if (uid !== process.getuid()) throw new Error(`${out} is not owned by the current user`);
   if (mode & 0o077) chmodSync(out, mode & 0o700);
   const announce = (event) => process.stdout.write(`${JSON.stringify(event)}\n`);
-  const container = await recorderHasContainer();
-  const recorders = (await targets(channel, device)).map((plan) =>
-    startRecorder({ ...plan, container, outDir: out, chunkSeconds, announce }),
-  );
-  const stopAll = () => recorders.forEach((recorder) => recorder.stop());
+  const recorders = [];
+  let stopRequested = false;
+  const stopAll = () => {
+    stopRequested = true;
+    recorders.forEach((recorder) => recorder.stop());
+  };
   for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, stopAll);
   process.stdout.once("error", stopAll);
+
+  const container = await recorderHasContainer();
+  if (stopRequested) return 0;
+  const plans = await targets(channel, device);
+  if (stopRequested) return 0;
+  recorders.push(
+    ...plans.map((plan) => startRecorder({ ...plan, container, outDir: out, chunkSeconds, announce })),
+  );
 
   let ended;
   let failure = null;

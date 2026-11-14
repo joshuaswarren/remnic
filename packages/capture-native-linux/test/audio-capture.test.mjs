@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { pcmToLittleEndian } from "../src/audio.mjs";
 import { BYTES_PER_SECOND, fakeTools, run, tempDir, wavParts } from "./harness.mjs";
 
 const DUMP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "pw-dump.json");
@@ -11,6 +12,17 @@ const DUMP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures",
 function pattern(from, length) {
   return Buffer.from(Array.from({ length }, (_, i) => (from + i) % 251));
 }
+
+test("PCM byte order is WAV little-endian for all samples in a partial chunk", () => {
+  const pcm = Buffer.from([0x01, 0x02, 0x03, 0x04, 0xa0, 0xb0]);
+
+  assert.strictEqual(pcmToLittleEndian(pcm, "BE"), pcm);
+  assert.deepEqual(pcm, Buffer.from([0x02, 0x01, 0x04, 0x03, 0xb0, 0xa0]));
+
+  const littleEndian = Buffer.from([0x01, 0x02, 0x03, 0x04]);
+  assert.strictEqual(pcmToLittleEndian(littleEndian, "LE"), littleEndian);
+  assert.deepEqual(littleEndian, Buffer.from([0x01, 0x02, 0x03, 0x04]));
+});
 
 test("a mic recording is cut into exact chunks and the last partial chunk is flushed on SIGTERM", async () => {
   const tools = fakeTools(DUMP);
@@ -164,7 +176,7 @@ test("an existing output directory that others can open is made private", async 
   mkdirSync(out, { mode: 0o755 });
   chmodSync(out, 0o755);
   const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", out], tools.env);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tools.waitForRecorderCalls(1);
   assert.equal((await helper.stop()).code, 0);
   assert.equal(statSync(out).mode & 0o777, 0o700);
 });
@@ -180,10 +192,24 @@ test("a machine without pw-record gets one line that names the package to instal
   assert.equal(helper.stdout(), "");
 });
 
-test("SIGTERM with nothing recorded exits cleanly and emits nothing", async () => {
+test("SIGTERM during startup exits cleanly without starting a recorder", async () => {
+  const tools = fakeTools(DUMP);
+  const helper = run(
+    ["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", tools.dir],
+    { ...tools.env, FAKE_DUMP_DELAY_MS: "500" },
+  );
+  await tools.waitForDumpStart();
+  const result = await helper.stop();
+  assert.equal(result.code, 0);
+  assert.equal(result.signal, null);
+  assert.equal(helper.stdout(), "");
+  assert.equal(tools.recorderCalls().length, 0);
+});
+
+test("SIGTERM with nothing recorded exits cleanly and emits no chunks", async () => {
   const tools = fakeTools(DUMP);
   const helper = run(["audio-capture", "--channel", "mic", "--chunk-seconds", "5", "--out", tempDir()], tools.env);
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await tools.waitForRecorderCalls(1);
   assert.equal((await helper.stop()).code, 0);
   assert.equal(helper.stdout(), "");
 });

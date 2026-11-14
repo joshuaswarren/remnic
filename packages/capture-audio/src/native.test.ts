@@ -187,6 +187,19 @@ test("resolveHelperBinary resolves the bin relative to the package entry (export
   assert.equal(res.binaryPath, "/pkgs/native/bin/remnic-capture-helper");
 });
 
+test("runner rejects fractional chunk seconds before spawning the helper", () => {
+  assert.throws(
+    () =>
+      createNativeCaptureRunner({
+        outDir: "/o",
+        chunkSeconds: 0.5,
+        resolution: { specifier: "test", binaryPath: "/helper" },
+        onChunk: () => undefined,
+      }),
+    /chunkSeconds must be a positive whole number/,
+  );
+});
+
 test("runner surfaces validated chunks and ignores blank lines", () => {
   const chunks: ChunkEvent[] = [];
   const child = new FakeChild();
