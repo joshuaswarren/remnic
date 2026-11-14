@@ -99,16 +99,8 @@ export async function captureFromSnapshot(
     // Leave text-less; processor.process denies it below (no OCR ran).
   } else if (isTerminalApp(snap.app, config.terminalApps) || axText.trim() === "") {
     try {
-      // Pin OCR to the snapshot's window when the helper reported its id: a
-      // focus change between the ax-snapshot and this call must not redirect
-      // OCR at a different window than the one this candidate is stored
-      // under. The deny preflight above ran against this same window
-      // identity, so the resolved OCR target is the window that was checked.
-      // Without an id (legacy helper) frontmost is the only target available
-      // and the preflight against the snap identity remains the guard. The
-      // title pin covers the gap after the preflight: a window retitled
-      // since (to a deny-listed title, say) is not read, and its pixels
-      // never get stored under the old title.
+      // The helper must establish ownership of the pixels, beyond these pre-read identity checks.
+      // Linux refuses composited crops; its AT-SPI capture remains available.
       const ocrText = await helper.ocrWindow(
         { ...(snap.windowId !== undefined ? { windowId: snap.windowId } : { frontmost: true }), expectTitle: snap.windowTitle },
       );

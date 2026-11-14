@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
 import { run } from "./harness.mjs";
@@ -160,7 +158,7 @@ test("a browser document reports its address as browserUrl", async () => {
   assert.equal(result.json().browserUrl, "https://example.test/page");
 });
 
-test("an app that is not on the accessibility bus gives its window and a tree with no text, so OCR runs", async () => {
+test("an app outside the accessibility bus gives its identity and a text-less tree", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], atspi: { found: false } });
   const result = await helper(["ax-snapshot"], desktop);
   assert.equal(result.code, 0, result.stderr);
@@ -201,27 +199,18 @@ test("ax-snapshot with no focused window exits 1 with one plain line", async () 
   assert.match(result.stderr, /no focused window/);
 });
 
-test("ocr-window --window reads that window and not the focused one", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, BROWSER], ocrText: `${SENTENCE}\n\n` });
-  const result = await helper(["ocr-window", "--window", "0xb2"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: SENTENCE });
-  assert.deepEqual(desktop.calls("grim"), ["-g 900,80 800x600 -t png -"]);
-});
-
-test("ocr-window --frontmost reads the focused window", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, BROWSER], ocrText: SENTENCE });
-  const result = await helper(["ocr-window", "--frontmost"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(desktop.calls("grim"), ["-g 100,80 800x600 -t png -"]);
-});
-
-test("ocr-window --title reads the window only while it still has that title", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: SENTENCE });
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: SENTENCE });
-});
+for (const args of [[], ["--frontmost"], ["--window", "0xb2"], ["--window", "0xa1", "--title", "Notes - Editor"]]) {
+  test(`ocr-window ${args.join(" ")} refuses unfenced composited capture before sampling`, async () => {
+    const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR, BROWSER], ocrText: SENTENCE });
+    const result = await helper(["ocr-window", ...args], desktop);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /OCR is unavailable.*frame-bound/);
+    assert.equal(result.stdout, "");
+    assert.deepEqual(desktop.calls("grim"), []);
+    assert.deepEqual(desktop.calls("tesseract"), []);
+    desktop.stop();
+  });
+}
 
 test("ocr-window --title on a window retitled since the caller looked reads no pixels and reports the new title", async () => {
   const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
@@ -232,101 +221,6 @@ test("ocr-window --title on a window retitled since the caller looked reads no p
   assert.deepEqual(desktop.calls("tesseract"), []);
 });
 
-test("ocr-window --title on a window retitled while its pixels were read drops the text", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
-  const vault = JSON.stringify([{ ...EDITOR, title: "PRIVATE VAULT" }]);
-  const grim = path.join(desktop.dir, "bin", "grim");
-  writeFileSync(grim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\nprintf '%s' '${vault}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: "", windowTitle: "PRIVATE VAULT" });
-});
-
-test("ocr-window --title checks the title when the pixels are taken, so a rename and a rename back during the OCR does not pass", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT" });
-  const vault = JSON.stringify([{ ...EDITOR, title: "PRIVATE VAULT" }]);
-  const allowed = JSON.stringify([EDITOR]);
-  const bin = path.join(desktop.dir, "bin");
-  writeFileSync(path.join(bin, "grim"), `#!/bin/sh\nprintf '%s' '${vault}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
-  writeFileSync(path.join(bin, "tesseract"), `#!/bin/sh\n/bin/cat > /dev/null\nprintf '%s' '${allowed}' > "$FAKE_DIR/clients.json"\n/bin/cat "$FAKE_DIR/ocr.txt"\n`);
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: "", windowTitle: "PRIVATE VAULT" });
-});
-
-test("ocr-window --title drops the text of a window that moved while its pixels were read", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "SOMEONE ELSE'S PIXELS" });
-  const moved = JSON.stringify([{ ...EDITOR, at: [900, 400] }]);
-  writeFileSync(path.join(desktop.dir, "bin", "grim"), `#!/bin/sh\nprintf '%s' '${moved}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.equal(result.json().text, "");
-});
-
-test("ocr-window drops the frame when another window covers the target while its pixels are taken", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
-  const cover = client({ address: "0xc3", at: [500, 300], size: [800, 600], class: "pinentry", title: "Unlock", pid: 1 });
-  const covered = JSON.stringify([EDITOR, cover]);
-  writeFileSync(path.join(desktop.dir, "bin", "grim"), `#!/bin/sh\nprintf '%s' '${covered}' > "$FAKE_DIR/clients.json"\nprintf 'PNG'\n`);
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 1);
-  assert.match(result.stderr, /covered by another window/);
-  assert.doesNotMatch(result.stdout, /COVERING WINDOW CONTENT/);
-});
-
-test("ocr-window gives no text when another window appears over the screen while its pixels are taken", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
-  writeFileSync(
-    path.join(desktop.dir, "bin", "grim"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>s.end('openwindow>>1f,0xc3,foot,3\\n'));"\nprintf 'PNG'\n`,
-  );
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: "", windowTitle: "Notes - Editor" });
-  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
-  desktop.stop();
-});
-
-test("ocr-window refuses to read pixels at all when the compositor's event socket is missing", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "VAULT CONTENT", without: ["compositor"] });
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 1);
-  assert.match(result.stderr, /window events/);
-  assert.deepEqual(desktop.calls("grim"), [], "no screen read happened");
-});
-
-test("ocr-window gives no text when an event arrives split across two socket writes", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
-  writeFileSync(
-    path.join(desktop.dir, "bin", "grim"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>{s.write('openwin');setTimeout(()=>s.end('dow>>1f,0xc3,foot,3\\\\n'),20);});"\nprintf 'PNG'\n`,
-  );
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: "", windowTitle: "Notes - Editor" });
-  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
-  desktop.stop();
-});
-
-test("ocr-window gives no text when the compositor drops the event stream during the read", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "COVERING WINDOW CONTENT" });
-  writeFileSync(
-    path.join(desktop.dir, "bin", "grim"),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_DIR/grim.log"\n${process.execPath} -e "const n=require('node:net');const s=n.createConnection(process.env.EVENT_SOCKET);s.on('connect',()=>s.end('__DISCONNECT__\\n'));"\nprintf 'PNG'\n`,
-  );
-  const result = await helper(["ocr-window", "--window", "0xa1", "--title", "Notes - Editor"], desktop);
-  assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /event stream/);
-  assert.deepEqual(desktop.calls("tesseract"), [], "the frame was dropped before any OCR");
-  desktop.stop();
-});
-
-test("a window with no text gives an empty string, not an error", async () => {
-  const desktop = fakeDesktop({ active: EDITOR, clients: [EDITOR], ocrText: "  \n" });
-  const result = await helper(["ocr-window"], desktop);
-  assert.equal(result.code, 0, result.stderr);
-  assert.deepEqual(result.json(), { text: "" });
-});
 
 test("a window that another window covers is not read", async () => {
   const cover = client({ address: "0xc3", at: [500, 300], size: [800, 600], class: "pinentry", title: "Unlock", pid: 1 });
@@ -355,12 +249,6 @@ test("an unknown window id exits 1 and reads nothing", async () => {
 });
 
 test("missing programs are named with the package that provides them", async () => {
-  const noGrim = await helper(["ocr-window"], fakeDesktop({ active: EDITOR, clients: [EDITOR], without: ["grim"] }));
-  assert.equal(noGrim.code, 1);
-  assert.match(noGrim.stderr, /grim was not found; install the grim package/);
-  const noOcr = await helper(["ocr-window"], fakeDesktop({ active: EDITOR, clients: [EDITOR], without: ["tesseract"] }));
-  assert.equal(noOcr.code, 1);
-  assert.match(noOcr.stderr, /tesseract was not found; install the tesseract package/);
   const noHypr = await helper(["ax-snapshot"], fakeDesktop({ without: ["hyprctl"] }));
   assert.equal(noHypr.code, 1);
   assert.match(noHypr.stderr, /hyprctl was not found; the Linux screen helper needs Hyprland/);

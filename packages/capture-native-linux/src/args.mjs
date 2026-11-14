@@ -63,7 +63,7 @@ export function parseAxArgs(argv) {
   return parsed;
 }
 
-/** `ocr-window [--frontmost | --window ID] [--title T]`. `--title T` reads the pixels only while the window still has the title T the caller checked. */
+/** Parse `ocr-window [--frontmost | --window ID] [--title T]`; Linux refuses unfenced pixel acquisition. */
 export function parseOcrArgs(argv) {
   const parsed = {};
   for (let i = 0; i < argv.length; i += 1) {

@@ -12,8 +12,8 @@ Install with `npm install @remnic/capture-native-linux`. `@remnic/capture-audio`
 
 - Node 22.12 or newer.
 - Audio: PipeWire with `pw-record` and `pw-dump` on the `PATH` (package `pipewire`, or `pipewire-bin` on Debian).
-- Screen: a Hyprland session (`hyprctl`), `grim` and `tesseract` with the `eng` language data, and for the
-  accessibility tree `python3` with the `gi` bindings and `at-spi2-core` (`python-gobject` on Arch).
+- Screen: a Hyprland session (`hyprctl`), `python3` with the `gi` bindings, and `at-spi2-core`
+  (`python-gobject` on Arch). Linux screen capture uses AT-SPI; composited-screen OCR is unsupported.
 
 The helper is plain JavaScript plus one Python file for the accessibility bus, with no npm dependencies, so one package serves every CPU architecture.
 
@@ -45,7 +45,7 @@ sources and `output` for sinks; `id` is the PipeWire node name, which `--device`
 
 ```
 remnic-capture-helper ax-snapshot [--frontmost | --pid N | --window ID] [--window-only] [--title T] [--max-nodes N]
-remnic-capture-helper ocr-window [--frontmost | --window ID]
+remnic-capture-helper ocr-window [--frontmost | --window ID] [--title T]
 ```
 
 `ax-snapshot` prints `{app, windowTitle, windowId, browserUrl?, tree}` for the focused window, the window of a
@@ -60,25 +60,21 @@ accessibility bus gives its window and a one-node tree with no text, and the rea
 frame whose name equals the window's title. A process whose frames do not match (a retitled window, two windows with one
 title) gives the same empty tree, never another window's content.
 
-`ocr-window` prints `{"text": "..."}`. The helper takes the window's rectangle from the screen with `grim` and
-pipes it to `tesseract`, so no image is written to disk. An unknown window exits 1.
+`ocr-window` keeps the window visibility and title checks, then exits 1 with an unsupported-path error.
+It never invokes `grim` or `tesseract`. A composited crop has no frame-bound window identity:
+another window or a notification can appear inside the crop, even when both surrounding queries show the target.
+Asynchronous window events cannot establish which surface owned those pixels. A pre-read title mismatch
+returns empty text and the new title without acquisition, as before.
 
 Limits you can measure on your own machine:
 
 - The accessibility bus is off by default (`org.a11y.Status IsEnabled` is false) and toolkits expose nothing
   until it is on. This helper does not change that desktop-wide setting. Turn it on with
-  `busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true`. Without it the
-  tree has no text, the capture daemon falls back to OCR, and OCR needs no setting.
+  `busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true`.
+  Without accessibility text, automatic capture skips the window with `ocr-unavailable`.
 - Chromium needs `--force-renderer-accessibility`; Qt needs `QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1` and
-  exposes the text of a QML field only when the app sets `Accessible`. Terminals such as foot are not on the bus,
-  so they go through OCR.
-- `grim` crops the composited screen. A window that another window overlaps, or that is not on a visible
-  workspace, is refused: the window is checked before the read and again right after it, and the compositor's
-  window events are watched for the whole read, so a window that appears, moves, closes or changes workspace
-  during the read drops the frame even when it is gone before the check after it. Without the event socket
-  there is no Hyprland session and `ocr-window` reads nothing. The gap left is the moment between the check
-  before the read and the start of the event watch. A desktop notification drawn over the window is not a
-  window the helper can see: its text can appear in the OCR text.
+  exposes the text of a QML field only when the app sets `Accessible`.
+  Windows without accessible text, including terminals such as foot, are not captured on Linux.
 
 ## Tests
 

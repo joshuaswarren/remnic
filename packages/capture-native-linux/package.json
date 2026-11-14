@@ -1,7 +1,7 @@
 {
   "name": "@remnic/capture-native-linux",
   "version": "10.0.104",
-  "description": "Linux native capture helper for Remnic: PipeWire audio capture, and Hyprland window text through AT-SPI and OCR",
+  "description": "Linux native capture helper for Remnic: PipeWire audio capture and Hyprland window text through AT-SPI",
   "type": "module",
   "os": [
     "linux"
