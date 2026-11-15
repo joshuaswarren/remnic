@@ -738,7 +738,9 @@ export function chunkObservePayload(
   if (chunks.length === 0) {
     return [withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, []), nonce)];
   }
-  return chunks.map((msgs) => withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs), nonce));
+  return chunks.map((msgs, index) =>
+    withIdempotencyKey(buildObserveEnvelope(config, sessionKey, cwd, msgs), nonce, index),
+  );
 }
 
 const decoder = new TextDecoder();
@@ -848,11 +850,19 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
  * reused only by retries of that same observe, so two genuinely separate identical
  * turns ("yes" twice) never collide, while the body hash keeps a re-split chunk from
  * reusing a key with a different payload (which the daemon answers as a conflict).
+ * The chunk position is hashed too (#3381): one observe can split into identical
+ * chunks (the same tool output twice), and those must not share a key. Position 0
+ * hashes the body alone, so a single-chunk observe keeps the key it had before.
  */
-export function observeIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): string {
-  return `obs-${nonce}-${createHash("sha256").update(JSON.stringify(body)).digest("hex").slice(0, 16)}`;
+export function observeIdempotencyKey(
+  body: Omit<ObserveBody, "idempotencyKey">,
+  nonce: string,
+  chunkIndex = 0,
+): string {
+  const identity = chunkIndex === 0 ? JSON.stringify(body) : `${chunkIndex}:${JSON.stringify(body)}`;
+  return `obs-${nonce}-${createHash("sha256").update(identity).digest("hex").slice(0, 16)}`;
 }
 
-function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string): ObserveBody {
-  return { ...body, idempotencyKey: observeIdempotencyKey(body, nonce) };
+function withIdempotencyKey(body: Omit<ObserveBody, "idempotencyKey">, nonce: string, chunkIndex = 0): ObserveBody {
+  return { ...body, idempotencyKey: observeIdempotencyKey(body, nonce, chunkIndex) };
 }

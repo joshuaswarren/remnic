@@ -764,6 +764,21 @@ test("chunked observe assigns distinct keys per chunk, stable under the same rep
   }
 });
 
+test("#3381: identical chunks of one observe get distinct keys of unchanged length", () => {
+  // Only one of these messages fits per 2048-byte chunk, so the observe splits
+  // into two byte-identical chunks under one nonce.
+  const message: ObserveMessage = { role: "assistant", content: `same tool output ${"y".repeat(1200)}` };
+  const nonce = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const chunks = chunkObservePayload(baseConfig(), "sess-a", "/tmp/work", [message, message], 2048, nonce);
+  assert.equal(chunks.length, 2, "the observe must split into two chunks");
+  assert.deepEqual(chunks[0].messages, chunks[1].messages, "the chunks carry the same messages");
+  const [first, second] = chunks.map((chunk) => String(chunk.idempotencyKey));
+  assert.notEqual(first, second, "the daemon would drop the second identical chunk as a replay of the first");
+  for (const key of [first, second]) {
+    assert.match(key, /^obs-[0-9a-f-]{36}-[0-9a-f]{16}$/, "the key keeps its fixed obs-<nonce>-<16 hex> shape");
+  }
+});
+
 test("RemnicHttpError carries the server's retry-after hint", async (t) => {
   const originalFetch = globalThis.fetch;
   let call = 0;
