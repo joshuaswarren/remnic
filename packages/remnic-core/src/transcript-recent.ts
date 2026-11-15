@@ -11,14 +11,18 @@ import type { TranscriptEntry } from "./types.js";
 const RECENT_TAIL_CHUNK_BYTES = 1 << 18;
 export const RECENT_SKEW_MS = 3_600_000;
 
+const ISO_STAMP = /^\d{4}-\d\d-\d\dT/;
+
 /** True when the first complete line in `chunk` (which starts mid-line) is stamped before `cutoffMs`. */
 function firstLineBefore(chunk: Buffer, cutoffMs: number): boolean {
   const from = chunk.indexOf(0x0a) + 1;
   const to = chunk.indexOf(0x0a, from);
   if (from === 0 || to < 0) return false;
   try {
-    // SAFETY: only `.timestamp` is read; any other shape gives NaN, and NaN < cutoffMs is false (keep reading).
-    return new Date((JSON.parse(chunk.toString("utf-8", from, to)) as TranscriptEntry).timestamp).getTime() < cutoffMs;
+    // SAFETY: only `.timestamp` is read, and it is used only if it is an ISO string (the test coerces null, numbers
+    // and other shapes to text that fails); new Date(null) is the epoch and would stop the scan early.
+    const stamp = (JSON.parse(chunk.toString("utf-8", from, to)) as TranscriptEntry).timestamp;
+    return ISO_STAMP.test(stamp) && new Date(stamp).getTime() < cutoffMs;
   } catch {
     return false;
   }

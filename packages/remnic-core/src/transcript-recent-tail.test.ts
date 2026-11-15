@@ -330,3 +330,26 @@ test("blank lines at the end of a file do not shrink the newest-N result", async
     assert.deepEqual(ids(got), ids(await manager.readRecent(12)).slice(-50));
   });
 });
+
+test("a row with a null timestamp at a chunk boundary does not stop the tail scan early", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    // 100 lines of exactly 5300 bytes: line 51 is the first complete line of the last 256 KiB chunk. new Date(null)
+    // is the epoch, so treating it as a cutoff sentinel would stop before the earlier valid entries.
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `f${String(i).padStart(4, "0")}`;
+      const stamped = (content: string) => {
+        const e = entry(id, now - 8 * HOUR + i * 2 * MIN, content);
+        return i === 51 ? { ...e, timestamp: null } : e;
+      };
+      const pad = 5300 - 1 - JSON.stringify(stamped("")).length;
+      lines.push(JSON.stringify(stamped("p".repeat(pad))));
+    }
+    const file = path.join(root, "session/nulls", `${today(now)}.jsonl`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${lines.join("\n")}\n`, "utf-8");
+    const got = await manager.readRecent(12, undefined, 50);
+    assert.equal(got.length, 50);
+    assert.deepEqual(ids(got), ids(await manager.readRecent(12)).slice(-50));
+  });
+});
