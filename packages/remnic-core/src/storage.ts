@@ -4360,10 +4360,17 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private snapshotFromLoadedDocument(memory: MemoryFile): string | undefined {
     const raw = readRawMemoryDocument(memory);
     const parsed = raw === undefined ? null : parseFrontmatter(raw);
-    if (!parsed) return undefined;
+    if (raw === undefined || !parsed) return undefined;
+    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? "";
+    // parseFrontmatter stamps a missing created/updated with "now". Take the load-time stamp instead, as the
+    // old eager snapshot did, so such a file never matches a later read of itself (refused every time, not by clock tick).
+    const stamps = {
+      created: /^created:/m.test(front) ? parsed.frontmatter.created : memory.frontmatter.created,
+      updated: /^updated:/m.test(front) ? parsed.frontmatter.updated : memory.frontmatter.updated,
+    };
     return createMemorySnapshot({
       path: memory.path,
-      frontmatter: normalizeFrontmatterForPath(parsed.frontmatter, toMemoryPathRel(this.baseDir, memory.path), parsed.content),
+      frontmatter: normalizeFrontmatterForPath({ ...parsed.frontmatter, ...stamps }, toMemoryPathRel(this.baseDir, memory.path), parsed.content),
       content: parsed.content,
     });
   }

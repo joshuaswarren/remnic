@@ -9,7 +9,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -108,5 +108,73 @@ test("a memory with no retained file text falls back to an eager snapshot", asyn
     // compares `frontmatter.updated` only, so the same state moves and a changed one is refused.
     const copy: MemoryFile = { path: loaded.path, frontmatter: { ...loaded.frontmatter }, content: loaded.content };
     assert.equal(await storage.moveMemoryToPath(copy, storage.buildTierMemoryPath(copy, "cold")), true);
+  });
+});
+
+test("a loaded archive-path memory whose file has no status still moves (loaded status is archived)", async () => {
+  await withStorage(async (storage, dir) => {
+    const { id } = await storage.writeMemory("fact", "archived without status");
+    const source = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(source);
+    const archivedPath = path.join(dir, "archive", "2026-01-01", `${id}.md`);
+    await mkdir(path.dirname(archivedPath), { recursive: true });
+    await rename(source.path, archivedPath);
+    resetStaticCaches();
+    const memory = (await storage.readArchivedMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(memory);
+    assert.equal(memory.frontmatter.status, "archived");
+    assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
+  });
+});
+
+test("a tier move ignores caller edits to a loaded memory's frontmatter, not just its content", async () => {
+  await withStorage(async (storage) => {
+    const { id } = await storage.writeMemory("fact", "frontmatter edited by caller", { tags: ["kept"] });
+    const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(memory);
+    memory.frontmatter.tags = [...memory.frontmatter.tags, "caller-only"];
+    memory.frontmatter.confidence = 0.01;
+    memory.frontmatter.created = "2000-01-01T00:00:00.000Z";
+    memory.frontmatter.updated = "2000-01-02T00:00:00.000Z";
+    assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
+  });
+});
+
+test("a file with no created or updated is refused on every move, not only when the clock ticks", async () => {
+  await withStorage(async (storage) => {
+    const memories: MemoryFile[] = [];
+    for (let i = 0; i < 12; i++) {
+      const { id } = await storage.writeMemory("fact", `no timestamps ${i}`);
+      const file = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+      assert.ok(file);
+      const disk = await readFile(file.path, "utf8");
+      await writeFile(file.path, disk.replace(/^(created|updated): .*\n/gm, ""));
+    }
+    resetStaticCaches();
+    for (const m of await storage.readAllMemories()) if (m.content.startsWith("no timestamps")) memories.push(m);
+    assert.equal(memories.length, 12);
+    await new Promise((resolve) => setTimeout(resolve, 5)); // a fresh parse now stamps a later millisecond
+    for (const memory of memories) {
+      await assert.rejects(
+        () => storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")),
+        /changed before its tier move/,
+      );
+    }
+  });
+});
+
+test("a loaded memory under an entities path moves: the snapshot normalizes with the file's content", async () => {
+  await withStorage(async (storage, dir) => {
+    const { id } = await storage.writeMemory("fact", "**Type:** vendor\n\nan entity-like note");
+    const source = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(source);
+    const entityPath = path.join(dir, "facts", "entities", `${id}.md`);
+    await mkdir(path.dirname(entityPath), { recursive: true });
+    await rename(source.path, entityPath);
+    resetStaticCaches();
+    const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(memory);
+    assert.ok(memory.frontmatter.tags.includes("vendor"), "loaded tags carry the type read from the content");
+    assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
   });
 });
