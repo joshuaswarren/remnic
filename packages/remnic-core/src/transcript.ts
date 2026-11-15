@@ -8,6 +8,7 @@ import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { JsonlOwnershipDigestCache } from "./transcript-ownership-digest.js";
+import { WriteDirMemo } from "./transcript-write-dir-memo.js";
 import { RECENT_SKEW_MS, mapLimited, readLinesSince, readNewestFromFiles } from "./transcript-recent.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
@@ -85,6 +86,8 @@ export class TranscriptManager {
     }
   >();
   private ownershipDigests = new JsonlOwnershipDigestCache();
+  /** Per-session verified write dir: only a session's first append pays the directory ownership read. */
+  private writeDirs = new WriteDirMemo();
 
   /** Default checkpoint TTL in hours */
   private static readonly DEFAULT_CHECKPOINT_TTL_HOURS = 24;
@@ -521,6 +524,11 @@ export class TranscriptManager {
     return /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(filename);
   }
 
+  /** Drop the remembered write dirs so every session's next append re-verifies directory ownership. */
+  resetWriteDirs(): void {
+    this.writeDirs.clear();
+  }
+
   /**
    * Append a turn to the appropriate transcript file.
    * Files are stored hierarchically: transcripts/{channelType}/{channelId}.jsonl
@@ -536,23 +544,22 @@ export class TranscriptManager {
         return;
       }
 
-      const { dir: writeDir, channelDir } = await this.selectStorageDirForWrite(
-        this.transcriptsDir,
-        dir,
-        legacyDir,
-        entry.sessionKey,
-        alternateDir,
-      );
-      const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
+      await this.writeDirs.run(this.transcriptsDir, entry.sessionKey, dir, async () => {
+        const { dir: writeDir, channelDir } = await this.writeDirs.resolve(this.transcriptsDir, entry.sessionKey, () =>
+          this.selectStorageDirForWrite(this.transcriptsDir, dir, legacyDir, entry.sessionKey, alternateDir),
+        );
+        const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
 
-      // Ensure channel directory exists
-      await mkdir(channelDir, { recursive: true });
+        // Ensure channel directory exists
+        await mkdir(channelDir, { recursive: true });
 
-      const line = JSON.stringify(entry) + "\n";
-      await appendFile(filePath, line, "utf-8");
-      log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
+        const line = JSON.stringify(entry) + "\n";
+        await appendFile(filePath, line, "utf-8");
+        log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
+      });
     } catch (err) {
       log.error("failed to append transcript entry:", err);
+      this.writeDirs.forget(this.transcriptsDir, entry.sessionKey);
       throw err;
     }
   }
@@ -815,7 +822,7 @@ export class TranscriptManager {
 
                       if (!isNaN(fileDate.getTime()) && fileDate < cutoff) {
                         try {
-                          await unlink(filePath);
+                          await this.writeDirs.removing(() => unlink(filePath));
                           processed++;
                           log.debug(`deleted old daily transcript file: ${entry.name}/${channelTypeEntry.name}/${file}`);
                         } catch (err) {
@@ -854,7 +861,7 @@ export class TranscriptManager {
             if (!isNaN(fileDate.getTime()) && fileDate < cutoff) {
               const filePath = path.join(this.transcriptsDir, entry.name);
               try {
-                await unlink(filePath);
+                await this.writeDirs.removing(() => unlink(filePath));
                 processed++;
                 log.debug(`deleted old legacy transcript file: ${entry.name}`);
               } catch (err) {
@@ -908,7 +915,7 @@ export class TranscriptManager {
       if (validLines.length === 0) {
         // No valid entries left, delete the file
         try {
-          await unlink(filePath);
+          await this.writeDirs.removing(() => unlink(filePath));
           log.debug(`deleted empty transcript file: ${filePath}`);
           return true;
         } catch (err) {

@@ -441,6 +441,7 @@ test("transcript append invalidates ownership cache when a directory changes", a
       "utf-8",
     );
 
+    transcript.resetWriteDirs();
     await transcript.append({
       timestamp,
       role: "assistant",
