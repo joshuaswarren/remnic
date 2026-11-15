@@ -173,6 +173,118 @@ test("plugin-codex unified runner uses node, not python3", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Devin CLI plugin structure
+// ---------------------------------------------------------------------------
+
+test("plugin-devin has required plugin manifest", () => {
+  const manifest = path.join(PACKAGES, "plugin-devin", ".devin-plugin", "plugin.json");
+  assert.ok(fs.existsSync(manifest), ".devin-plugin/plugin.json must exist");
+  const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8"));
+  const packageJson = JSON.parse(fs.readFileSync(path.join(PACKAGES, "plugin-devin", "package.json"), "utf-8"));
+  assert.equal(pkg.name, "remnic");
+  assert.equal(pkg.version, packageJson.version, "Devin manifest version must match the package");
+  assert.equal(pkg.license, "MIT");
+});
+
+test("plugin-devin hooks.json covers the Devin lifecycle", () => {
+  const hooksFile = path.join(PACKAGES, "plugin-devin", "hooks", "hooks.json");
+  assert.ok(fs.existsSync(hooksFile));
+  // Devin's hooks.json is the bare event map (same shape as hooks.v1.json),
+  // not the {"hooks": {...}} wrapper Claude/Codex plugins use.
+  // SAFETY: hooks.json is a bare event map of matcher groups; the assertion
+  // only narrows JSON.parse's `any` to the shape this test iterates.
+  const hooks = JSON.parse(fs.readFileSync(hooksFile, "utf-8")) as Record<
+    string,
+    Array<{ hooks?: Array<{ command: string }> }>
+  >;
+  for (const event of [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+    "PostCompaction",
+    "SessionEnd",
+  ]) {
+    assert.ok(Array.isArray(hooks[event]) && hooks[event].length > 0, `${event} hook required`);
+  }
+  for (const [event, groups] of Object.entries(hooks)) {
+    for (const group of groups) {
+      for (const hook of group.hooks ?? []) {
+        assert.ok(hook.command, `${event}.command must be set`);
+        assert.ok(
+          hook.command.includes("${PLUGIN_ROOT}"),
+          `${event}.command must resolve via \${PLUGIN_ROOT} for plugin installs`,
+        );
+        assert.ok(
+          /remnic-devin-hook\.sh/.test(hook.command),
+          `${event}.command must call the unified runner shim`,
+        );
+      }
+    }
+  }
+});
+
+test("plugin-devin hooks ship the unified cross-platform runner", () => {
+  const binDir = path.join(PACKAGES, "plugin-devin", "hooks", "bin");
+  for (const required of [
+    "remnic-devin-hook.cjs",
+    "remnic-devin-hook.sh",
+    "remnic-devin-hook.ps1",
+    "remnic-hook-core.cjs",
+  ]) {
+    const scriptPath = path.join(binDir, required);
+    assert.ok(fs.existsSync(scriptPath), `${required} must ship in hooks/bin`);
+  }
+  const wrapper = fs.readFileSync(path.join(binDir, "remnic-devin-hook.cjs"), "utf-8");
+  assert.ok(wrapper.includes('transcriptFormat: "atif"'), "Devin runner must select the ATIF transcript parser");
+  assert.ok(
+    wrapper.includes("resolveTranscriptPath"),
+    "Devin runner must resolve transcript_path from session_id",
+  );
+  assert.ok(wrapper.includes("enablePreCompact: true"), "Devin runner must enable the compaction drain+flush");
+});
+
+test("plugin-devin has skills in folder layout", () => {
+  const skillsDir = path.join(PACKAGES, "plugin-devin", "skills");
+  const required = [
+    "remnic-memory-workflow",
+    "remnic-recall",
+    "remnic-remember",
+    "remnic-search",
+    "remnic-entities",
+    "remnic-status",
+  ];
+  for (const slug of required) {
+    assert.ok(fs.existsSync(path.join(skillsDir, slug, "SKILL.md")), `skill ${slug}/SKILL.md must exist`);
+  }
+});
+
+test("plugin-devin has .mcp.json pointing at the bundled stdio proxy", () => {
+  const mcpFile = path.join(PACKAGES, "plugin-devin", ".mcp.json");
+  assert.ok(fs.existsSync(mcpFile));
+  const mcp = JSON.parse(fs.readFileSync(mcpFile, "utf-8"));
+  const server = mcp.mcpServers?.remnic;
+  assert.ok(server, "Must define remnic MCP server");
+  assert.ok(Array.isArray(server.args), "stdio server must use args");
+  // SAFETY: .mcp.json `args` are JSON strings by the MCP config contract;
+  // the assertion narrows JSON.parse's `any` to that element type.
+  assert.ok(
+    (server.args as string[]).some((a) => a.endsWith("mcp-server-stdio/server.js")),
+    ".mcp.json args must include mcp-server-stdio/server.js",
+  );
+  const proxy = path.join(PACKAGES, "plugin-devin", "mcp-server-stdio", "server.js");
+  assert.ok(fs.existsSync(proxy), "mcp-server-stdio/server.js must ship with the plugin package");
+});
+
+test("plugin-devin ships the memory-review subagent", () => {
+  const agent = path.join(PACKAGES, "plugin-devin", "agents", "memory-review.md");
+  assert.ok(fs.existsSync(agent), "agents/memory-review.md must exist");
+  const content = fs.readFileSync(agent, "utf-8");
+  assert.match(content, /^name:\s*memory-review$/m);
+  assert.match(content, /^description:\s*\S/m);
+});
+
+// ---------------------------------------------------------------------------
 // Hermes plugin structure (Python)
 // ---------------------------------------------------------------------------
 

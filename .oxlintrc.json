@@ -16,6 +16,7 @@
     ".roo/**",
     ".windsurf/**",
     "tools/oxlint/anti-slop/**",
+    "packages/*/hooks/bin/remnic-hook-core.cjs",
     "packages/remnic-core/src/corpus-scan-worker.entry.mjs"
   ],
   "jsPlugins": [

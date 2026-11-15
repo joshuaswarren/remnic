@@ -490,7 +490,9 @@ function run(config) {
   }
 
   // ── transcript parsing ─────────────────────────────────────────────────────
-  function parseTranscript(transcriptPath) {
+  // JSONL hosts (Claude Code, Codex): one JSON object per line with
+  // {type:"user"|"assistant", message:{role, content}}.
+  function parseJsonlTranscript(transcriptPath) {
     const lines = fs.readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean);
     const messages = [];
     for (const line of lines) {
@@ -516,6 +518,107 @@ function run(config) {
       }
     }
     return messages;
+  }
+
+  // ATIF hosts (Devin CLI): a single JSON document
+  // {schema_version, session_id, steps:[{source, message, tool_calls,
+  // observation, ...}]}. Agent steps carry tool_calls and observation
+  // results alongside the assistant text; we fold a bounded rendering of
+  // both into the observed content so tool activity reaches memory, not
+  // just prose. System steps are skipped (they are prompt scaffolding).
+  const ATIF_MESSAGE_CAP = 8000;
+  const ATIF_TOOL_CALL_ARG_CAP = 500;
+  const ATIF_TOOL_RESULT_CAP = 2000;
+  // JSON.parse only yields plain objects, arrays, and primitives, so
+  // `instanceof Object && !Array.isArray` is an exact plain-object test.
+  function isJsonObject(v) {
+    return v instanceof Object && !Array.isArray(v);
+  }
+  function isString(v) {
+    return Object.prototype.toString.call(v) === "[object String]";
+  }
+  function parseAtifTranscript(transcriptPath) {
+    const doc = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
+    const steps = doc && Array.isArray(doc.steps) ? doc.steps : [];
+    const messages = [];
+    for (const step of steps) {
+      if (!isJsonObject(step)) continue;
+      const source = step.source;
+      if (source !== "user" && source !== "agent") continue;
+      const parts = [];
+      if (isString(step.message) && step.message.trim()) {
+        parts.push(step.message.trim());
+      }
+      if (source === "agent") {
+        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+        for (const tc of toolCalls) {
+          if (!isJsonObject(tc)) continue;
+          const name = tc.function_name || tc.name || "tool";
+          let argStr = "";
+          try {
+            argStr = isString(tc.arguments)
+              ? tc.arguments
+              : JSON.stringify(tc.arguments);
+          } catch {
+            argStr = "";
+          }
+          if (argStr && argStr !== "{}") {
+            parts.push(`[tool call] ${name}(${argStr.slice(0, ATIF_TOOL_CALL_ARG_CAP)})`);
+          } else {
+            parts.push(`[tool call] ${name}`);
+          }
+        }
+        const results =
+          step.observation && Array.isArray(step.observation.results)
+            ? step.observation.results
+            : [];
+        for (const r of results) {
+          const content = isJsonObject(r) && isString(r.content) ? r.content : "";
+          if (content.trim()) {
+            parts.push(`[tool result] ${content.trim().slice(0, ATIF_TOOL_RESULT_CAP)}`);
+          }
+        }
+      }
+      const content = parts.join("\n").trim();
+      if (!content) continue;
+      messages.push({
+        role: source === "user" ? "user" : "assistant",
+        content: content.slice(0, ATIF_MESSAGE_CAP),
+      });
+    }
+    return messages;
+  }
+
+  function parseTranscript(transcriptPath) {
+    if (config.transcriptFormat === "atif") return parseAtifTranscript(transcriptPath);
+    return parseJsonlTranscript(transcriptPath);
+  }
+
+  // Hosts that do not put transcript_path in the hook payload (Devin CLI)
+  // can supply config.resolveTranscriptPath(input) to derive it — e.g. from
+  // the session id and a well-known transcript directory.
+  function transcriptPathFor(input) {
+    const transcriptPath = input.transcript_path || "";
+    if (isString(transcriptPath) && transcriptPath) {
+      return transcriptPath;
+    }
+    if (config.resolveTranscriptPath instanceof Function) {
+      try {
+        const resolved = config.resolveTranscriptPath(input);
+        return isString(resolved) ? resolved : "";
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  }
+
+  // Hosts that omit cwd from the hook payload still export a project-dir
+  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR).
+  function cwdFor(input) {
+    const cwd = input.cwd || "";
+    if (isString(cwd) && cwd) return cwd;
+    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
   }
 
   // ── cursor / lock state hardening (post-tool + session-end) ────────────────
@@ -703,7 +806,7 @@ function run(config) {
 
   async function handleSessionStart(input, token, log) {
     const sessionId = input.session_id || "";
-    const cwd = input.cwd || "";
+    const cwd = cwdFor(input);
     const projectName = (cwd && path.basename(cwd)) || "unknown";
     const codingContext = resolveCodingContext(cwd);
     log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
@@ -860,8 +963,8 @@ function run(config) {
   // PostToolUse timeout.
   async function observeWorker(input, token, log) {
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
-    const projectName = (input.cwd && path.basename(input.cwd)) || "unknown";
+    const transcriptPath = transcriptPathFor(input);
+    const projectName = (cwdFor(input) && path.basename(cwdFor(input))) || "unknown";
     const toolName = input.tool_name || "";
 
     if (!sessionId || /[^A-Za-z0-9._-]/.test(sessionId)) {
@@ -946,7 +1049,7 @@ function run(config) {
     emit({ continue: true });
 
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
+    const transcriptPath = transcriptPathFor(input);
     const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
 
     let state = null;
@@ -1105,7 +1208,7 @@ function run(config) {
   // compact entirely), so this handler is fail-open end to end.
   async function handlePreCompact(input, token, log) {
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
+    const transcriptPath = transcriptPathFor(input);
     const trigger = input.trigger || "auto";
     // Acknowledge first so the host never waits on the network for compaction
     // to proceed — the drain + flush are best-effort coordination, not a gate.
@@ -1240,7 +1343,12 @@ function run(config) {
       "post-tool-observe": handlePostToolObserve,
       "session-end": handleSessionEnd,
     };
-    if (config.enablePreCompact) handlers["pre-compact"] = handlePreCompact;
+    if (config.enablePreCompact) {
+      handlers["pre-compact"] = handlePreCompact;
+      // Devin CLI emits PostCompaction (after the fact) rather than a
+      // pre-compact event; the drain+flush is equally correct there.
+      handlers["post-compaction"] = handlePreCompact;
+    }
 
     try {
       ensureMigrated();
