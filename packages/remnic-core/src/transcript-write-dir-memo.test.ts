@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { mock } from "node:test";
 import { parseConfig } from "./config.js";
 import { JsonlOwnershipDigestCache } from "./transcript-ownership-digest.js";
+import { WriteDirMemo } from "./transcript-write-dir-memo.js";
 import { TranscriptManager } from "./transcript.js";
 import type { TranscriptEntry } from "./types.js";
 
@@ -74,7 +75,11 @@ test("a directory holding another session's rows is still refused on the first a
   });
 });
 
-test("an append error drops the remembered directory so the next append verifies it again", async () => {
+test("an append error drops the remembered directory so the next append verifies it again", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root bypasses file permissions");
+    return;
+  }
   await withManager(async ({ manager, root }) => {
     const owner = "pi-geek:memo-error";
     const { dir, file } = manager.getTranscriptPath(owner);
@@ -130,4 +135,56 @@ test("a file edited behind the process is noticed only after the remembered dire
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"e3"'), false);
     assert.ok((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"e3"'));
   });
+});
+
+test("a cleanup that deletes files drops the remembered directories", async () => {
+  await withManager(async ({ manager, root }) => {
+    const owner = "pi-geek:memo-cleanup";
+    const channelDir = path.join(root, manager.getTranscriptPath(owner).dir);
+    await writeOldDays(channelDir, owner, 2); // 2026-01-01 and 2026-01-02, past any retention window
+    await manager.append(entry(owner, "f1"));
+    assert.equal(await manager.cleanup(30), 2);
+    const verify = mock.method(JsonlOwnershipDigestCache.prototype, "verify");
+    try {
+      await manager.append(entry(owner, "f2"));
+      assert.ok(verify.mock.callCount() >= 1, "the directory was not verified again after the cleanup");
+    } finally {
+      verify.mock.restore();
+    }
+  });
+});
+
+test("a choice that was pending when the memo was cleared or forgotten is not remembered", async () => {
+  for (const invalidate of ["clear", "forget"] as const) {
+    const memo = new WriteDirMemo();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const choose = async () => {
+      calls++;
+      if (calls === 1) await gate;
+      return { dir: `d${calls}`, channelDir: `c${calls}` };
+    };
+    const pending = memo.resolve("root", "session", choose);
+    if (invalidate === "clear") memo.clear();
+    else memo.forget("root", "session");
+    release();
+    assert.deepEqual(await pending, { dir: "d1", channelDir: "c1" });
+    assert.deepEqual(await memo.resolve("root", "session", choose), { dir: "d2", channelDir: "c2" }, `${invalidate}: stale choice was remembered`);
+    assert.equal(calls, 2);
+  }
+});
+
+test("the memo is a bounded LRU", async () => {
+  const memo = new WriteDirMemo(2);
+  const chooser = (name: string) => async () => ({ dir: name, channelDir: name });
+  await memo.resolve("r", "a", chooser("a1"));
+  await memo.resolve("r", "b", chooser("b1"));
+  await memo.resolve("r", "a", chooser("unused")); // touch a so b is the oldest
+  await memo.resolve("r", "c", chooser("c1")); // evicts b
+  assert.equal((await memo.resolve("r", "a", chooser("a2"))).dir, "a1");
+  assert.equal((await memo.resolve("r", "b", chooser("b2"))).dir, "b2");
+  assert.throws(() => new WriteDirMemo(0), RangeError);
 });

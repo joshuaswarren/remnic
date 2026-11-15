@@ -176,6 +176,7 @@ test("steady-state appends parse only new lines, not the accumulated history", a
       assert.ok(parseSpy.mock.callCount() >= 20 * linesPerDay, "first append must verify the full history");
       for (const id of ["a2", "a3", "a4"]) {
         parseSpy.mock.resetCalls();
+        manager.resetWriteDirs(); // keep the directory check, and so the incremental digest path, in play
         await manager.append(entry(owner, id));
         const parses = parseSpy.mock.callCount();
         assert.ok(parses <= 2, `append ${id} re-parsed ${parses} lines`);

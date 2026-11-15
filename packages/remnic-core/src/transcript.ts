@@ -872,6 +872,7 @@ export class TranscriptManager {
 
       if (processed > 0) {
         log.info(`cleaned up ${processed} transcript file(s) older than ${retentionDays} days`);
+        this.writeDirs.clear(); // a directory emptied here can be claimed by another session
       }
 
       return processed;

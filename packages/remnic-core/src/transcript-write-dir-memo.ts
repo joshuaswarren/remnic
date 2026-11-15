@@ -20,6 +20,8 @@ export interface WriteDirChoice {
  */
 export class WriteDirMemo {
   private readonly entries = new Map<string, WriteDirChoice>();
+  /** Bumped by every invalidation; a choice that was pending across one is not remembered. */
+  private generation = 0;
 
   constructor(private readonly maxEntries: number = DEFAULT_WRITE_DIR_MEMO_ENTRIES) {
     if (!Number.isInteger(maxEntries) || maxEntries < 1) {
@@ -36,7 +38,9 @@ export class WriteDirMemo {
       this.entries.set(key, hit);
       return hit;
     }
+    const generation = this.generation;
     const chosen = await choose();
+    if (generation !== this.generation) return chosen;
     this.entries.set(key, chosen);
     if (this.entries.size > this.maxEntries) {
       const oldest = this.entries.keys().next();
@@ -46,10 +50,12 @@ export class WriteDirMemo {
   }
 
   clear(): void {
+    this.generation++;
     this.entries.clear();
   }
 
   forget(root: string, sessionKey: string): void {
+    this.generation++;
     this.entries.delete(this.keyFor(root, sessionKey));
   }
 
