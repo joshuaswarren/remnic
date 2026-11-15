@@ -305,6 +305,7 @@ export class TurnIngestionCoordinator {
       list.push({
         role: turn.role,
         content: turn.content,
+        extractionReceiptMembers: turn.extractionReceiptMembers,
         timestamp: turn.timestamp,
         sourceValidAt: turn.sourceValidAt,
         sessionKey: key,

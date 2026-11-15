@@ -23,10 +23,8 @@
  * Flag-retirement audit (#1780, 2026-07-08): all projected fields verified for
  * live consumers; dead projections removed.
  */
-
 import type { PluginConfig } from "./types.js";
 import type { InjectionScreenProfile } from "./security/injection-screen.js";
-
 /**
  * Frozen projection of recall-operation feature gates.
  *
@@ -68,7 +66,6 @@ export interface CapabilitySet {
   /** `parallelRetrievalEnabled` — three-agent parallel retrieval (DirectFact + Contextual + Temporal). */
   readonly parallelRetrieval: boolean;
 }
-
 /**
  * Resolve the recall-operation {@link CapabilitySet} from parsed config.
  *
@@ -247,6 +244,7 @@ export interface MemoryLifecycleCapabilitySet {
   readonly extractionJudge: boolean;
   /** `extractionDedupeEnabled` — dedupe against recent extractions. */
   readonly extractionDedupe: boolean;
+  readonly extractionReceipts: boolean;
   /** `extractionTelemetryPrefilterEnabled` — skip mechanical-telemetry transcripts. */
   readonly extractionTelemetryPrefilter: boolean;
   /** `extractionJudgeTelemetryEnabled` — collect judge verdict telemetry. */
@@ -270,6 +268,7 @@ export type MemoryLifecycleConfigProjection = Pick<
   | "lifecycleMetricsEnabled"
   | "extractionScopeClassificationEnabled"
   | "extractionJudgeEnabled"
+  | "extractionReceiptsEnabled"
   | "extractionDedupeEnabled"
   | "extractionTelemetryPrefilterEnabled"
   | "extractionJudgeTelemetryEnabled"
@@ -297,6 +296,7 @@ export function resolveMemoryLifecycleCapabilities(
     extractionScopeClassification: config.extractionScopeClassificationEnabled,
     extractionJudge: config.extractionJudgeEnabled,
     extractionDedupe: config.extractionDedupeEnabled,
+    extractionReceipts: config.extractionReceiptsEnabled === true,
     extractionTelemetryPrefilter: config.extractionTelemetryPrefilterEnabled,
     extractionJudgeTelemetry: config.extractionJudgeTelemetryEnabled,
     embeddingFallback: config.embeddingFallbackEnabled,

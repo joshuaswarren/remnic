@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
+import type { PluginConfig } from "./types.js";
 import {
   resolveCapabilities,
   resolveAccessSetupCapabilities,
@@ -357,7 +358,7 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
 // identical boolean values for every gate — on AND off.
 // ---------------------------------------------------------------------------
 
-const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
+const LIFECYCLE_FIELD_TO_FLAG = {
   temporalSupersession: "temporalSupersessionEnabled",
   temporalMemoryTree: "temporalMemoryTreeEnabled",
   lifecyclePolicy: "lifecyclePolicyEnabled",
@@ -367,11 +368,12 @@ const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string
   extractionJudge: "extractionJudgeEnabled",
   extractionDedupe: "extractionDedupeEnabled",
   extractionRetry: "extractionRetryEnabled",
+  extractionReceipts: "extractionReceiptsEnabled",
   extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
   extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
   embeddingFallback: "embeddingFallbackEnabled",
   projectionRebuild: "projectionRebuildEnabled",
-};
+} satisfies Record<keyof MemoryLifecycleCapabilitySet, keyof PluginConfig>;
 
 const LIFECYCLE_FIELDS = Object.keys(LIFECYCLE_FIELD_TO_FLAG) as Array<
   keyof MemoryLifecycleCapabilitySet

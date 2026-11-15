@@ -230,6 +230,7 @@ const messageSchema = z.object({
 });
 
 export const observeRequestSchema = z.object({
+  extractionReceipt: z.object({ sourceDigest: z.string().regex(/^[a-f0-9]{64}$/), chunkStart: z.number().int().nonnegative(), chunkEnd: z.number().int().nonnegative(), chunkVersion: z.string().trim().min(1).max(128) }).refine(v => v.chunkEnd >= v.chunkStart, "Invalid chunk bounds").optional(),
   sessionKey: z.string().trim().min(1, "sessionKey is required").max(512),
   messages: z.array(messageSchema).min(1, "messages must be a non-empty array"),
   namespace: namespaceSchema,

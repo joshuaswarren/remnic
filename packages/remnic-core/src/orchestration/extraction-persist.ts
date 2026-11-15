@@ -1,3 +1,5 @@
+import { limitedExtractionOutputs } from "./extraction-persist-output-limits.js";
+import { receiptStorage, receiptStorageRouter, blockReceiptCoverage } from "../extraction-receipt-runtime.js";
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
@@ -169,6 +171,7 @@ export class ExtractionPersistCoordinator {
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<ExtractionPersistResult> {
+    storage = receiptStorage(storage, baseNamespace ?? this.deps.storageDirNamespace(storage.dir));
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
@@ -392,11 +395,11 @@ export class ExtractionPersistCoordinator {
       const sanitizedBase = sanitizeMemoryContent(rawContent);
       const writtenCopyIds: string[] = [];
       for (const target of targets) {
-        if (!target.namespace) continue;
+        if (!target.namespace) { blockReceiptCoverage(); continue; }
         try {
-          const targetStorage = await this.deps.getStorageRouter().storageFor(target.namespace);
-          if (targetStorage.dir === options.sourceStorage.dir) continue;
-          if (!subjectGuardAllows(options.subject, target.target, `profile promotion to ${target.target}`)) continue;
+          const targetStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(target.namespace);
+          if (targetStorage.dir === options.sourceStorage.dir) { blockReceiptCoverage(); continue; }
+          if (!subjectGuardAllows(options.subject, target.target, `profile promotion to ${target.target}`)) { blockReceiptCoverage(); continue; }
           // Compose BEFORE the dedup gate (#2014 round 2): salvage mode may
           // drop or clamp attributes, and the dedup hash, contentHashSource,
           // and supersession keys below must all describe the SURVIVING
@@ -469,7 +472,7 @@ export class ExtractionPersistCoordinator {
                 sourceContext?.sourceConnector,
               );
             }
-            continue;
+            blockReceiptCoverage(); continue;
             }
           }
           // Windowed destination write (PRRT_kwDORJXyws6zzdG4): the gate above
@@ -490,7 +493,7 @@ export class ExtractionPersistCoordinator {
             supersession: { supersessionEnabled: lifecycleCaps.temporalSupersession, dependencyPropagationDelivery: this.dependencyPropagationDelivery, namespaceScope: this.deps.storageDirNamespace(targetStorage.dir) },
             backfillTemporalBoundsOnDedupHit: this.deps.backfillTemporalBoundsOnDedupHit,
           });
-          if (promotionWrite.suppressed) continue;
+          if (promotionWrite.suppressed) { blockReceiptCoverage(); continue; }
           const targetPromotion = promotionWrite.result;
           const promotedId = targetPromotion.id;
           // #1645: if the TARGET namespace's own tombstone blocked this promotion,
@@ -608,7 +611,7 @@ export class ExtractionPersistCoordinator {
       if (!subjectGuardAllows(options.subject, "serverShared", "shared promotion"))
         return promotedCopyId;
       try {
-        const sharedStorage = await this.deps.getStorageRouter().storageFor(
+        const sharedStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(
           this.deps.config.sharedNamespace,
         );
         // Dedup gate: strip any pre-existing citation, sanitize, and build
@@ -1042,12 +1045,12 @@ export class ExtractionPersistCoordinator {
             target.namespace,
         );
         for (const target of profileTargets) {
-          if (!target.namespace) continue;
+          if (!target.namespace) { blockReceiptCoverage(); continue; }
           try {
-            const targetStorage = await this.deps.getStorageRouter().storageFor(
+            const targetStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(
               target.namespace,
             );
-            if (targetStorage.dir === args.sourceStorage.dir) continue;
+            if (targetStorage.dir === args.sourceStorage.dir) { blockReceiptCoverage(); continue; }
             await this.deps.backfillTemporalBoundsOnDedupHit(
               targetStorage,
               dedupContent,
@@ -1072,7 +1075,7 @@ export class ExtractionPersistCoordinator {
       // checks under a scope profile.
       if (profileAllowsSharedWrites) {
         try {
-          const sharedStorage = await this.deps.getStorageRouter().storageFor(
+          const sharedStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(
             this.deps.config.sharedNamespace,
           );
           if (sharedStorage.dir !== args.sourceStorage.dir) {
@@ -1108,29 +1111,7 @@ export class ExtractionPersistCoordinator {
       overlapSentences: this.deps.config.chunkingOverlapSentences,
     };
 
-    const rawEntities = Array.isArray((result as any).entities)
-      ? (result as any).entities
-      : [];
-    const rawQuestions = Array.isArray((result as any).questions)
-      ? (result as any).questions
-      : [];
-    const rawProfileUpdates = Array.isArray((result as any).profileUpdates)
-      ? (result as any).profileUpdates
-      : [];
-
-    const facts = result.facts.slice(0, this.deps.config.extractionMaxFactsPerRun);
-    const entities = rawEntities.slice(
-      0,
-      this.deps.config.extractionMaxEntitiesPerRun,
-    );
-    const questions = rawQuestions.slice(
-      0,
-      this.deps.config.extractionMaxQuestionsPerRun,
-    );
-    const profileUpdates = rawProfileUpdates.slice(
-      0,
-      this.deps.config.extractionMaxProfileUpdatesPerRun,
-    );
+    const { facts, entities, questions, profileUpdates } = limitedExtractionOutputs(result, this.config);
     const finalizeCommittedWrites = finalization.bind(async (scheduleQmd: boolean): Promise<void> => {
       await finalizeExtractionCommittedWrites({
         saveContentHashIndexes: () => this.deps.saveContentHashIndexes(),
@@ -1241,7 +1222,7 @@ export class ExtractionPersistCoordinator {
           typeof f.category !== "string" ||
           !f.category.trim()
         ) {
-          continue;
+          blockReceiptCoverage(); continue;
         }
         try {
           const tags = Array.isArray(f.tags) ? f.tags : [];
@@ -1295,7 +1276,7 @@ export class ExtractionPersistCoordinator {
             typeof f.category !== "string" ||
             !f.category.trim()
           ) {
-            continue;
+            blockReceiptCoverage(); continue;
           }
           // Use the routed category when available so the judge sees the
           // final persisted category, not the raw extraction-time value.
@@ -1304,7 +1285,7 @@ export class ExtractionPersistCoordinator {
           // original ExtractedFact.category which is already typed.
           const judgeCategory = (preRoutedCategories[fi] ?? f.category) as import("../types.js").MemoryCategory;
           if (judgeCategory === "procedure") {
-            continue;
+            blockReceiptCoverage(); continue;
           }
           const tags = Array.isArray(f.tags) ? f.tags : [];
           const imp = scoreImportance(
@@ -1321,7 +1302,7 @@ export class ExtractionPersistCoordinator {
               this.deps.config.extractionMinImportanceLevel,
             )
           ) {
-            continue;
+            blockReceiptCoverage(); continue;
           }
           // #1713 P2 (cursor): per-fact rules — load this fact's routed target
           // namespace rules FIRST, then check. This catches target-only rules
@@ -1347,7 +1328,7 @@ export class ExtractionPersistCoordinator {
           }
           if (factNs) {
             try {
-              const factDir = (await this.deps.getStorageRouter().storageFor(factNs)).dir;
+              const factDir = (await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(factNs)).dir;
               if (factDir !== storage.dir) {
                 const targetRules = await redactionRulesFor(factDir);
                 if (targetRules.length) factRedactionRules = [...preJudgeRedactionRules, ...targetRules];
@@ -1357,7 +1338,7 @@ export class ExtractionPersistCoordinator {
           if (factRedactionRules.length > 0) {
             const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
               + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
-            if (contentMatchesRedactionRules(rc, factRedactionRules)) continue;
+            if (contentMatchesRedactionRules(rc, factRedactionRules)) { blockReceiptCoverage(); continue; }
           }
           judgeCandidates.push({
             text: f.content,
@@ -1496,13 +1477,13 @@ export class ExtractionPersistCoordinator {
         typeof (fact as any).content !== "string" ||
         !(fact as any).content.trim()
       ) {
-        continue;
+        blockReceiptCoverage(); continue;
       }
       if (
         typeof (fact as any).category !== "string" ||
         !(fact as any).category.trim()
       ) {
-        continue;
+        blockReceiptCoverage(); continue;
       }
       // Trim first (round 5): legacy writeMemory accepted " fact ".
       (fact as any).category = (fact as any).category.trim();
@@ -1514,7 +1495,7 @@ export class ExtractionPersistCoordinator {
         log.warn(
           `persistExtraction: skipping fact with unrecognized category ${JSON.stringify((fact as any).category)}`,
         );
-        continue;
+        blockReceiptCoverage(); continue;
       }
       (fact as any).tags = Array.isArray((fact as any).tags)
         ? (fact as any).tags.filter((t: any) => typeof t === "string")
@@ -1576,7 +1557,7 @@ export class ExtractionPersistCoordinator {
             }
             if (selected.target.namespace) {
               routedNamespaceExplicit = true;
-              targetStorage = await this.deps.getStorageRouter().storageFor(
+              targetStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(
                 selected.target.namespace,
               );
               targetNamespaceName = selected.target.namespace;
@@ -1606,7 +1587,7 @@ export class ExtractionPersistCoordinator {
           if (shouldPromoteGlobalFactToShared({ scope: fact.scope, content: fact.content,
             sourceConnector, procedureSteps: fact.procedureSteps }) && subjectGuardAllows(fact.subject, "serverShared", "scope-routing")) {
             try {
-              targetStorage = await this.deps.getStorageRouter().storageFor(
+              targetStorage = await receiptStorageRouter(this.deps.getStorageRouter()).storageFor(
                 this.deps.config.sharedNamespace,
               );
               targetNamespaceName = this.deps.config.sharedNamespace;
@@ -1649,7 +1630,7 @@ export class ExtractionPersistCoordinator {
         if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
           redactionGatedCount++;
           log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
-          continue;
+          blockReceiptCoverage(); continue;
         }
       } catch (redactionErr) {
         log.warn(`extraction: redaction-rule gate failed open: ${redactionErr}`);
@@ -1789,11 +1770,11 @@ export class ExtractionPersistCoordinator {
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
         dedupedCount++;
-        continue;
+        blockReceiptCoverage(); continue;
       }
       if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true && injectionScreenStatus !== "pending_review") {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
-        continue;
+        blockReceiptCoverage(); continue;
       }
 
       // Importance write-gate (issue #372). Drop facts whose locally-scored
@@ -1820,7 +1801,7 @@ export class ExtractionPersistCoordinator {
         log.debug(
           `metric:importance_gated level=${importance.level} threshold=${this.deps.config.extractionMinImportanceLevel} category=${writeCategory} count=${importanceGatedCount}`,
         );
-        continue;
+        blockReceiptCoverage(); continue;
       }
 
       // Extraction judge gate (issue #376 + #562 PR 2). After the local
@@ -1846,13 +1827,13 @@ export class ExtractionPersistCoordinator {
             log.debug(
               `extraction-judge: deferred "${fact.content.slice(0, 60)}…" reason="${verdict.reason}"`,
             );
-            continue;
+            blockReceiptCoverage(); continue;
           } else {
             judgeGatedCount++;
             log.debug(
               `extraction-judge: rejected "${fact.content.slice(0, 60)}…" reason="${verdict.reason}"`,
             );
-            continue;
+            blockReceiptCoverage(); continue;
           }
         }
       }
@@ -1869,7 +1850,7 @@ export class ExtractionPersistCoordinator {
           log.debug(
             `extraction-procedure-gate: rejected "${fact.content.slice(0, 60)}…" reason="${procGate.reason}"`,
           );
-          continue;
+          blockReceiptCoverage(); continue;
         }
       }
 
@@ -2098,7 +2079,7 @@ export class ExtractionPersistCoordinator {
         // persisted for this fact, so registering a synthetic hash would
         // permanently suppress exact-copy writes once the neighbor memory is
         // archived or deleted (the hash would linger with no backing record).
-        continue;
+        blockReceiptCoverage(); continue;
       }
 
       // Check if chunking is enabled and content should be chunked.
@@ -2209,7 +2190,7 @@ export class ExtractionPersistCoordinator {
             await backfillDuplicateTemporalBounds();
             log.info(`dedup: raced duplicate suppressed in fact-dedup window (chunked parent) for storage ${targetStorage.dir}`);
             dedupedCount++;
-            continue;
+            blockReceiptCoverage(); continue;
           }
           const parentWrite = parentWriteOutcome.result;
           const parentId = parentWrite.id;
@@ -2509,7 +2490,7 @@ export class ExtractionPersistCoordinator {
           } finally {
             // #1522: the catalog write touch lives in the storage chokepoint.
           }
-          continue; // Skip the normal write below
+          blockReceiptCoverage(); continue; // Skip the normal write below
         }
       }
 
@@ -2550,7 +2531,7 @@ export class ExtractionPersistCoordinator {
         // D + final round (A/B) + N+7 (A/B) + N+18 (B): with no promoted copies the create path's promotion must still run — fail-open, the merge stands — and its payload derives SOLELY from the re-read committed record (no field reads the incoming extraction; the null cases — replaced mid-flight, retired, degraded merge, or the isolated fail-open reread failure — are documented on buildMergedTargetPromotionPayload). After the current copy lands, any concurrently promoted PRE-merge copy is superseded. Promotion eligibility gates on the committed record's tier — the downgraded min(incoming, target) confidence where a lower incoming fact merged in.
         const mergedPromotion = await buildMergedTargetPromotionPayload(targetStorage, semanticMerge);
         // Round N+10 (A) + #2807 (finding 1): promotion AND reconciliation — including the no-promotion path, where a below-threshold downgrade or a degraded merge writes no replacement copy but a concurrently published PRE-merge copy must still retire. An UNREADABLE payload (readFailed) skips the destructive pass. See promoteAndReconcileMergedTarget.
-        await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: this.deps.getStorageRouter, scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion: mergedPromotion.payload, mergedPromotionReadFailed: mergedPromotion.readFailed, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });
+        await promoteAndReconcileMergedTarget({ promote: (payload) => promoteMemoryToShared({ sourceStorage: targetStorage, ...payload }), config: this.deps.config, getStorageRouter: () => receiptStorageRouter(this.deps.getStorageRouter()), scopeProfileWritePlan, sourceStorage: targetStorage, sourceMemoryId: semanticMerge.targetId, mergedPromotion: mergedPromotion.payload, mergedPromotionReadFailed: mergedPromotion.readFailed, normalize: normalizeStoredHashSource, onReconciled: () => promotedCopyProbe.invalidate() });
         // Round N+7 (D): the merged body joins the INTERNAL temporal/tag index refresh (id-keyed, incremental); the PUBLIC persistedIds return stays new-fragment only. Round N+11 (B): the target is also persisted into the thread's DURABLE episode set via the same appendEpisodeIds path the create path uses — the batch-local adjacency list is not durable, so without this the target leaves the thread at the next extraction.
         trackPersistedId(targetStorage, semanticMerge.targetId, { includeReturnedIds: false });
         await persistMergedTargetThreadEpisode(this.deps.getThreading(), threadIdForExtraction, semanticMerge.targetId);
@@ -2568,7 +2549,7 @@ export class ExtractionPersistCoordinator {
         }));
         // Round N+17 (B): artifact write LAST; the helper isolates its own failure.
         await writeMergedVerbatimArtifact(this.deps, targetStorage, semanticMerge.targetId, { category: writeCategory, citedContent: citedFactContent, confidence: fact.confidence, tags: fact.tags, intent: inferredIntent ?? undefined, sourceConnector: extractionSourceConnector, origin, toolScoped: factToolScoped });
-        continue;
+        blockReceiptCoverage(); continue;
       }
       const factWriteEnvelope = composeSalvagedExtractionEnvelope(
         {
@@ -2633,7 +2614,7 @@ export class ExtractionPersistCoordinator {
         await backfillDuplicateTemporalBounds();
         log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
         dedupedCount++;
-        continue;
+        blockReceiptCoverage(); continue;
       }
       const factWrite = factWriteOutcome.result;
       const memoryId = factWrite.id;
@@ -2855,9 +2836,10 @@ export class ExtractionPersistCoordinator {
     for (const entity of entities) {
       try {
         const screened = screenEntityForIndex(entity, entityScreenOn, entityScreenProfile);
-        if (!screened) continue;
+        if (!screened) { blockReceiptCoverage(); continue; }
+        if (screened.withheldRules.length > 0) blockReceiptCoverage();
         if (screened.withheldRules.length > 0) log.warn(`persistExtraction: injection screen withheld ${screened.withheldRules.length} entity field(s) for "${screened.name}" [${screened.withheldRules.join(", ")}]`);
-        if (screened.withheld) continue;
+        if (screened.withheld) { blockReceiptCoverage(); continue; }
         const id = await storage.writeEntity(screened.name, screened.type, screened.facts, {
           source: screened.source,
           timestamp: sourceContext?.validAt,
@@ -2883,12 +2865,12 @@ export class ExtractionPersistCoordinator {
       Array.isArray(result.relationships)
     ) {
       for (const rel of result.relationships.slice(0, 5)) {
-        if (!rel.source || !rel.target || !rel.label) continue;
+        if (!rel.source || !rel.target || !rel.label) { blockReceiptCoverage(); continue; }
         const relScreen = screenPersistStrings([`${rel.source}\n${rel.label}\n${rel.target}`,
           `${rel.target}\n${rel.label} (reverse)\n${rel.source}`], entityScreenOn, entityScreenProfile);
         if (relScreen.warning) {
           log.warn(`persistExtraction(relationship): ${relScreen.warning}`);
-          continue;
+          blockReceiptCoverage(); continue;
         }
         try {
           await storage.addEntityRelationship(rel.source, { target: rel.target, label: rel.label });
@@ -2923,6 +2905,7 @@ export class ExtractionPersistCoordinator {
     // #1955 review: profile + questions render verbatim into model context —
     // screened; questions screen question+context JOINED (routing: #2397).
     const profileScreen = screenPersistStrings(profileUpdates, entityScreenOn, entityScreenProfile);
+    if (profileScreen.kept.length !== profileUpdates.length) blockReceiptCoverage();
     if (profileScreen.warning) log.warn(`persistExtraction(profile): ${profileScreen.warning}`);
     if (profileScreen.kept.length > 0) {
       await storage.appendToProfile(profileScreen.kept);
@@ -2933,7 +2916,7 @@ export class ExtractionPersistCoordinator {
       const qScreen = screenPersistStrings([`${q.question}\n${q.context ?? ""}`], entityScreenOn, entityScreenProfile);
       if (qScreen.warning) {
         log.warn(`persistExtraction(question): ${qScreen.warning}`);
-        continue;
+        blockReceiptCoverage(); continue;
       }
       const id = await storage.writeQuestion(q.question, q.context, q.priority);
       if (id) {
@@ -2946,6 +2929,7 @@ export class ExtractionPersistCoordinator {
     // state; identity-ONLY extraction still counts as durable non-fact (NIIly).
     if (resolveRecallEnhancementCapabilities(this.deps.config).identity && result.identityReflection) {
       const idScreen = screenPersistStrings([result.identityReflection], entityScreenOn, entityScreenProfile);
+      if (idScreen.warning) blockReceiptCoverage();
       if (idScreen.warning) log.warn(`persistExtraction(identity): ${idScreen.warning}`);
       else {
         try {

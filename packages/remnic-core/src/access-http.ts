@@ -849,6 +849,12 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       return;
     }
 
+    if (req.method === "GET" && pathname === "/engram/v1/extraction/receipt") {
+      this.enforceTokenOp("memory_get");
+      const result = await this.service.extractionReceiptGet({ receiptId: parsed.searchParams.get("id") ?? "", namespace: this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined), authenticatedPrincipal: this.resolveRequestPrincipal(req) });
+      this.respondJson(res, result.found ? 200 : 404, result); return;
+    }
+
     if (req.method === "GET" && pathname === "/engram/v1/adapters") {
       this.enforceTokenOp("adapters_status"); // boundary dispatch (issue #1850)
       const identity = this.resolveAdapterIdentity(req);

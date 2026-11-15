@@ -297,6 +297,12 @@
       "graduationCriterion": "Diagnostic or shadow-mode only: never graduates to default-on. The entry is deleted when the diagnostic itself is retired and the flag is removed from parseConfig."
     },
     {
+      "flag": "extractionReceiptsEnabled",
+      "addedIn": "10.0.112",
+      "issue": 3415,
+      "graduationCriterion": "All extraction artifact writers provide exact durable evidence; verified deduplication and crash provenance reconciliation pass restart, cancellation, partial-write and namespace-isolation scenarios before enabling receipts by default."
+    },
+    {
       "flag": "factArchivalEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,

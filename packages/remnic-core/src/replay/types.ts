@@ -5,6 +5,7 @@ export type ReplaySource = "openclaw" | "claude" | "chatgpt";
 export type ReplayRole = "user" | "assistant";
 
 export interface ReplayTurn extends SourceConnectorProvenance {
+  extractionReceiptMembers?: import("../extraction-receipts.js").ReceiptMember[];
   source: ReplaySource;
   sessionKey: string;
   role: ReplayRole;

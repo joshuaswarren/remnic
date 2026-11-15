@@ -79,7 +79,7 @@ function browseResultSchema(): Record<string, unknown> {
  * The `chatgpt_memory_inspector` tool ships its own precise schema and is
  * intentionally absent — the apply pass skips tools that already have one.
  */
-const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
+const TOOL_OUTPUT_SCHEMAS = {
   recall: objectSchema({
     query: T_STRING,
     namespace: T_STRING,
@@ -257,6 +257,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   entity_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, entity: T_NULLABLE_OBJECT }),
   review_queue_list: objectSchema({ found: T_BOOLEAN, runId: T_STRING, reviewQueue: T_ARRAY }),
   observe: objectSchema({
+    extractionReceiptId: T_STRING,
     accepted: T_NUMBER,
     sessionKey: T_STRING,
     namespace: T_STRING,
@@ -644,7 +645,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   codegraph_search_code: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
   codegraph_manage_adr: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
   codegraph_ingest_traces: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
-};
+} satisfies Readonly<Record<string, ReturnType<typeof objectSchema>>>;
 
 /**
  * Apply outputSchema from the registry to every tool that lacks one.
@@ -665,6 +666,6 @@ export function applyToolOutputSchemas<T extends { name: string; outputSchema?: 
       : name.startsWith(legacyPrefix)
         ? name.slice(legacyPrefix.length)
         : name;
-    return { ...tool, outputSchema: TOOL_OUTPUT_SCHEMAS[suffix] ?? { type: "object", additionalProperties: true } };
+    return { ...tool, outputSchema: Object.entries(TOOL_OUTPUT_SCHEMAS).find(([name]) => name === suffix)?.[1] ?? { type: "object", additionalProperties: true } };
   });
 }

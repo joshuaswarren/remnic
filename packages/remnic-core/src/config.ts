@@ -108,7 +108,6 @@ const DEFAULT_WORKSPACE_DIR = path.join(
   ".openclaw",
   "workspace",
 );
-
 const DEFAULT_INIT_GATE_TIMEOUT_MS = 30_000;
 
 const CLIENT_SECRET_FIELD = ["client", "Secret"].join("") as "clientSecret";
@@ -2696,6 +2695,7 @@ export function parseConfig(
       typeof cfg.extractionMinUserTurns === "number" ? cfg.extractionMinUserTurns : 1,
     extractionTelemetryPrefilterEnabled:
       coerceBool(cfg.extractionTelemetryPrefilterEnabled) !== false,
+    extractionReceiptsEnabled: coerceBool(cfg.extractionReceiptsEnabled) === true,
     extractionMaxTurnChars:
       typeof cfg.extractionMaxTurnChars === "number" ? cfg.extractionMaxTurnChars : 4000,
     extractionMaxFactsPerRun:

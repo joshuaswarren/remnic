@@ -8,6 +8,7 @@ import type { SourceConnectorProvenance } from "./types.js";
 import type { AmbientCaptureProvenance, BufferTurnOwner } from "./buffer-turn-helpers.js";
 
 export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, AmbientCaptureProvenance {
+  extractionReceiptMembers?: import("./extraction-receipts.js").ReceiptMember[];
   role: "user" | "assistant";
   content: string;
   timestamp: string;

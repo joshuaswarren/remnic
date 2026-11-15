@@ -1,0 +1,105 @@
+# Durable extraction receipts
+
+## Contract before implementation
+
+A receipt identifies exact observed input using a content digest, chunk bounds/version,
+message digest, authenticated principal, resolved namespace, session and resolved scope.
+All extraction pieces are registered before any piece is queued. Receipt members travel
+with durable buffer turns; merged extraction batches retain every member. Context-only
+turns do not establish coverage. Extraction never silently truncates a receipt piece.
+
+Admission, transcript persistence, queue settlement, caller cancellation and force flush
+are not extraction coverage. A receipt is complete only when every registered member has
+a writer-confirmed durable outcome or an explicitly validated successful empty extraction.
+Proposed candidates, filtered candidates, pending review and failed/invalid provider
+responses do not establish coverage. Every artifact kind participates, including memory,
+entity, relationship, question, profile, identity and auxiliary artifacts.
+
+Attempts fence each member independently. A stale attempt cannot finish newer work.
+Storage writes are journaled before application and confirmed only after awaited writer
+success. An interrupted journal is ambiguous and cannot automatically complete coverage.
+Reconciliation requires matching actual persistent provenance; otherwise retry remains
+at-least-once and can produce duplicates. The API does not promise exactly-once effects.
+Receipt reads authorize both namespace and authenticated owner before returning metadata;
+receipt identifiers never grant authority. Receipts contain no source text.
+
+## Scenario matrix
+
+| Scenario | Required outcome |
+| --- | --- |
+| Single exact input, all writes confirmed | Every member durable; complete |
+| Input exceeds extractor turn limit | Preregister all pieces; one piece cannot cover parent |
+| Several receipts merged into one run | Preserve all processed memberships and confirmed evidence |
+| Disjoint members run concurrently | Independent generation fences |
+| Retry races old run | Old generation cannot confirm or finish |
+| Restart after admission | Membership and exact identity retained |
+| Restart after prepare / before confirm | Ambiguous journal; incomplete |
+| Failure after some writes | Preserve confirmed IDs; incomplete |
+| Provider failure returning empty arrays | Failed/retry; incomplete |
+| Valid provider response with no candidates | Explicit empty_success only |
+| Candidates all filtered or awaiting review | Deferred; incomplete |
+| Deduplicated candidates | Existing actual artifacts verified; never candidate counts |
+| Flush / compaction / reset / session end | Normal writer rules; no implicit coverage |
+| Caller cancellation during persistence | Writer settles independently; no caller-derived terminal status |
+| Foreign owner / namespace reads | Denied without revealing receipt contents |
+| Repeated admission / replay | Stable identity and membership; no implicit success |
+
+## Integration readiness
+
+Backfill consumers must require coverageComplete, not status alone, and retain original
+input until every member is covered. An unresolved write journal requires reconciliation
+or explicit retry; automatic coverage from a prewrite record is prohibited.
+
+## Implemented checkpoint and remaining integration
+
+The default-off `extractionReceiptsEnabled` config flag gates receipt admission.
+The opt-in observe descriptor registers exact text pieces before durable ingestion.
+Membership survives copied/reloaded buffer turns and merged extraction batches.
+Authenticated receipt reads use the existing memory-read capability and require both
+namespace authorization and exact receipt ownership. Provider payload validation runs
+before normalization; failure, malformed output, candidate filtering, output caps,
+and pending review cannot establish complete coverage.
+
+New memory, entity, question and auxiliary artifact writes can supply confirmed IDs.
+The writer syncs their actual files and ancestor directories before confirming receipt
+evidence. This ordering covers power-loss durability as well as process restart.
+Void writers for profile, identity, relationships and entity activity, and chunk writes,
+remain supported extraction operations but produce deferred receipts: awaited resolution
+alone cannot prove they wrote anything. Cross-namespace routed effects also defer.
+
+This checkpoint is not ready to authorize automated backfill completion. Deduplication
+currently defers even if the older artifact may be correct; verified existing-ID evidence
+and exact persistent provenance reconciliation are still required. Unconfirmed journals
+remain ambiguous across retries and cannot complete automatically. Reconciliation must
+verify exact principal, namespace, input membership, artifact identity and actual effect;
+a prewrite journal alone is insufficient. No new daemon or backfill runner is included.
+
+The implemented tests cover piece membership, restart serialization, partial writes,
+valid empty versus malformed/failed results, capped outputs, void writers, owner and
+namespace authorization, and real observe/buffer/flush persistence. The receipt lifecycle matrix also covers real observe admission, restart, compaction,
+before_reset, session_end and completed-input replay. Provider-inferred identity rows
+are explicitly skipped because receipt admission requires authenticated identity; the
+existing extraction lifecycle matrix owns those identity-inference scenarios. Exact
+crash provenance reconciliation coverage remains required.
+
+## Checkpoint validation
+
+The reviewed source/config fingerprint is
+`f892be7f99ce95eb7dd6c4bbccd68150130abfd1f9685f6802882b07f32a5108`.
+It hashes the 36 changed TypeScript/JSON paths in lexical order, using each
+path, NUL, its SHA-256 file digest and a newline. Documentation is excluded
+so recording this result does not change the source fingerprint.
+
+Validation passed: full `preflight:quick`, direct core TypeScript compilation,
+352 entity-hardening tests, 44 focused tests with three documented provider
+identity rows skipped, and 65 capability tests. Structural ratchets pass with
+no ceiling increases. The explicit changed-file lifecycle gate covers seven
+paths, retains two existing grandfathered paths and reports zero violations.
+Release discipline passes for the default-off alpha flag and changeset.
+
+Preflight uses the actual upstream base for each supported gate override.
+CLI tests also require an isolated temporary OpenClaw state directory and
+removal of inherited daemon-routing/auth environment variables; otherwise
+ambient operator configuration contaminates the existing contract tests.
+No live configuration or test expectations were changed to obtain a pass.
+These checks validate the conservative checkpoint, not backfill readiness.

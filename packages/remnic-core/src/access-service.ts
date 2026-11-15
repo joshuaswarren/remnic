@@ -1,3 +1,4 @@
+import { ExtractionReceiptStore } from "./extraction-receipts.js";
 import { createHash } from "node:crypto";
 import { readdirSync, unlinkSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -1062,6 +1063,7 @@ export interface EngramAccessScopeDebug {
 }
 
 export interface EngramAccessObserveResponse {
+  extractionReceiptId?: string;
   accepted: number;
   sessionKey: string;
   /**
@@ -4135,6 +4137,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         messages: request.messages,
         namespace: request.namespace,
         skipExtraction: request.skipExtraction,
+        extractionReceipt: request.extractionReceipt,
         authenticatedPrincipal: request.authenticatedPrincipal,
         cwd: request.cwd,
         projectTag: request.projectTag,
@@ -4152,6 +4155,14 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
 
   private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
     return this.accessObserveWriteSurface.runObserve(request);
+  }
+
+  async extractionReceiptGet(request: { receiptId: string; namespace?: string; authenticatedPrincipal?: string }) {
+    if (!request.authenticatedPrincipal) throw new EngramAccessInputError("Authentication required for extraction receipts");
+    const namespace = this.resolveReadableNamespace(request.namespace, request.authenticatedPrincipal);
+    const receipt = await new ExtractionReceiptStore(this.orchestrator.config.memoryDir).get(request.receiptId);
+    if (!receipt || receipt.identity.namespace !== namespace || receipt.identity.principal !== request.authenticatedPrincipal) return { found: false as const };
+    return { found: true as const, receipt };
   }
 
   async lcmSearch(request: EngramAccessLcmSearchRequest): Promise<EngramAccessLcmSearchResponse> {

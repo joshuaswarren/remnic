@@ -102,7 +102,6 @@ export type ActiveRecallPromptStyle =
 export type ActiveRecallThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 export type ActiveRecallChatType = "direct" | "group" | "channel";
 export type ActiveRecallModelFallbackPolicy = "default-remote" | "resolved-only";
-
 /**
  * Retrieval tier ladder (issue #518).  Identifies which tier served a recall
  * result.  Ordered top-to-bottom by cost, but routing is not strictly
@@ -1606,6 +1605,7 @@ export interface PluginConfig
    * durable-memory cue. Raw transcript storage/recall still runs. Default true.
    */
   lcmTelemetryPrefilterEnabled: boolean;
+  extractionReceiptsEnabled: boolean;
   extractionMaxTurnChars: number;
   extractionMaxFactsPerRun: number;
   extractionMaxEntitiesPerRun: number;

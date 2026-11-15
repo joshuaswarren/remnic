@@ -305,6 +305,7 @@ defineOperation({
           ...(message.sourceFormat ? { sourceFormat: message.sourceFormat } : {}),
         })),
         skipExtraction: input.skipExtraction === true,
+        extractionReceipt: input.extractionReceipt,
         idempotencyKey: input.idempotencyKey,
         namespace: input.namespace,
         authenticatedPrincipal: ctx.authenticatedPrincipal,

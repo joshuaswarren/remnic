@@ -2542,6 +2542,11 @@
         "default": 3,
         "description": "Maximum questions persisted from a single extraction run."
       },
+      "extractionReceiptsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable experimental writer-confirmed extraction receipts for explicitly requested observe chunks."
+      },
       "extractionMaxTurnChars": {
         "type": "number",
         "default": 4000,

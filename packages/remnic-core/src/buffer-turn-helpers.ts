@@ -45,6 +45,7 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
     content: turn.content,
     timestamp: turn.timestamp,
   };
+  if (turn.extractionReceiptMembers) copy.extractionReceiptMembers = turn.extractionReceiptMembers.map(m => ({ ...m }));
   if (typeof turn.sessionKey === "string") copy.sessionKey = turn.sessionKey;
   if (typeof turn.logicalSessionKey === "string") {
     copy.logicalSessionKey = turn.logicalSessionKey;
@@ -148,6 +149,7 @@ export function bufferEntryCounts(state: BufferState): Map<string, BufferEntryCo
 export function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): boolean {
   if (!left) return false;
   return (
+    JSON.stringify(left.extractionReceiptMembers) === JSON.stringify(right.extractionReceiptMembers) &&
     left.role === right.role &&
     left.content === right.content &&
     left.timestamp === right.timestamp &&
@@ -191,6 +193,7 @@ export function bufferTurnIdentityKey(turn: BufferTurn): string {
     value === undefined ? "\u0001undefined" : String(value);
   const ctx = turn.codingContext;
   return JSON.stringify([
+    opt(turn.extractionReceiptMembers ? JSON.stringify(turn.extractionReceiptMembers) : undefined),
     turn.role,
     turn.content,
     turn.timestamp,

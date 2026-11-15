@@ -290,6 +290,7 @@ Access-layer safety notes:
 | `extractionDedupeWindowMs` | `300000` | Dedup window in milliseconds (default 5 minutes) |
 | `extractionMinChars` | `40` | Minimum buffer character count to trigger extraction |
 | `extractionMinUserTurns` | `1` | Minimum user turns in buffer before extraction |
+| `extractionReceiptsEnabled` | `false` | Experimental exact-input receipt admission. Requires explicit observe extractionReceipt; incomplete outcomes retain input pending verified reconciliation. |
 | `extractionMaxTurnChars` | `4000` | Truncate each turn to this many chars before sending to LLM |
 | `extractionMaxFactsPerRun` | `12` | Cap on facts extracted per LLM call |
 | `extractionMaxEntitiesPerRun` | `6` | Cap on entities extracted per LLM call |

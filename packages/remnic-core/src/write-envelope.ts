@@ -903,6 +903,7 @@ export function buildAccessWriteRequestFingerprint(
 
 /** The raw request fields the observe surface fingerprints (legacy shape). */
 export interface ObserveFingerprintParts {
+  extractionReceipt?: import("./extraction-receipt-admission.js").ReceiptChunk;
   sessionKey: string;
   messages: unknown;
   namespace?: string;
@@ -922,8 +923,8 @@ export interface ObserveFingerprintParts {
  */
 export function buildObserveRequestFingerprint(
   parts: ObserveFingerprintParts,
-): Record<string, unknown> {
-  return {
+) {
+  const payload: ObserveFingerprintParts = {
     sessionKey: parts.sessionKey,
     messages: parts.messages,
     namespace: parts.namespace,
@@ -934,4 +935,6 @@ export function buildObserveRequestFingerprint(
     effectiveCodingContext: parts.effectiveCodingContext,
     sourceConnector: parts.sourceConnector,
   };
+  if (parts.extractionReceipt) payload.extractionReceipt = parts.extractionReceipt;
+  return payload;
 }

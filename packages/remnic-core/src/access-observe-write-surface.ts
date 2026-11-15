@@ -1,3 +1,5 @@
+import { observeScopeDebug } from "./access-observe-response.js";
+import { admitExtractionReceipt } from "./extraction-receipt-admission.js";
 /**
  * Access observe/write surface (extracted from access-service.ts;
  * god-file decomposition, #1526 playbook: verbatim move + live selfDeps
@@ -9,7 +11,6 @@
  *   - work-layer task/project/board surfaces
  *   - briefing and QMD health (global + per-namespace)
  */
-
 import { createHash } from "node:crypto";
 import {
   type CodingScopedWriteInput,
@@ -40,6 +41,7 @@ import { recordObserveObjectiveState } from "./access-observe-objective-state.js
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
   resolveCompressionCapabilities,
+  resolveMemoryLifecycleCapabilities,
   resolveNamespaceCapabilities,
   resolveObjectiveStateCapabilities,
   resolvePresentationCapabilities,
@@ -679,6 +681,7 @@ export class AccessObserveWriteSurface {
   }
 
   async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
+    if (request.extractionReceipt && !resolveMemoryLifecycleCapabilities(this.deps.orchestrator.config).extractionReceipts) throw new EngramAccessInputError("Extraction receipts are disabled");
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }
@@ -816,9 +819,11 @@ export class AccessObserveWriteSurface {
 
       // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
       //    sessionKey for IDENTITY (provenance + threading).
+      let extractionReceiptId: string | undefined;
+      if (request.extractionReceipt && request.skipExtraction) throw new EngramAccessInputError("Extraction receipt cannot skip extraction");
       let extractionQueued = false;
       if (request.skipExtraction !== true) {
-        const turns = request.messages.map((m) => ({
+        let turns: import("./replay/types.js").ReplayTurn[] = request.messages.map((m) => ({
           source: "openclaw" as const,
           // Identity-vs-routing separation (#1505 thread 1, cursor): extraction
           // derives the provenance principal via `resolvePrincipal(turn.sessionKey)`
@@ -838,6 +843,10 @@ export class AccessObserveWriteSurface {
           timestamp: new Date().toISOString(),
           ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
         }));
+        if (request.extractionReceipt) {
+          const admitted = await admitExtractionReceipt({ memoryDir: this.deps.orchestrator.config.memoryDir, chunk: request.extractionReceipt, principal: request.authenticatedPrincipal, namespace: writeNamespace, sessionKey: request.sessionKey, scope, messages: request.messages, turns, maxChars: this.deps.orchestrator.config.extractionMaxTurnChars });
+          turns = admitted.turns; extractionReceiptId = admitted.receipt.receiptId;
+        }
         // Pin extraction STORAGE to the effective namespace rather than letting the
         // orchestrator re-derive one from the session key + coding overlay — that
         // re-derivation would have to reparse identity and could miss the overlay
@@ -899,27 +908,18 @@ export class AccessObserveWriteSurface {
         `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued} transcript=${transcriptPersisted}`
       );
 
-      return {
+      const response: EngramAccessObserveResponse = {
         accepted: request.messages.length,
         sessionKey: request.sessionKey,
         namespace,
         effectiveNamespace: writeNamespace,
-        scopeDebug: {
-          principal: scope.principal,
-          explicitNamespace: scope.explicitNamespace,
-          baseNamespace: scope.baseNamespace,
-          writeNamespace: scope.writeNamespace,
-          codingOverlayApplied: scope.codingOverlayApplied,
-          readNamespaces: scope.readNamespaces,
-          scopeProfile: scope.scopeProfile,
-          writeLayer: scope.writeLayer,
-          layers: scope.layers,
-          promotionTargets: scope.promotionTargets,
-        },
+        scopeDebug: observeScopeDebug(scope),
         lcmArchived,
         extractionQueued,
         transcriptPersisted,
       };
+      if (extractionReceiptId) response.extractionReceiptId = extractionReceiptId;
+      return response;
     } catch (err) {
       // Failed requests always get phase attribution (noncontent), regardless of duration.
       stageTimer.logFailed(request.messages.length);

@@ -1,3 +1,5 @@
+import { looksLikeExtractionResultPayload } from "./extraction-payload-shape.js";
+import { receiptProviderPayload, receiptBoundedInput, blockReceiptCoverage } from "./extraction-receipt-runtime.js";
 import OpenAI from "openai";
 import { isAbortError } from "./abort-error.js";
 import { log } from "./logger.js";
@@ -264,6 +266,7 @@ export class ExtractionEngine {
           cueAnchors: extractionCueAnchors(fact.cueAnchors),
         };
       });
+    if (facts.length !== result.facts.length) blockReceiptCoverage();
     return { ...result, facts, episodeTitle: extractionText(result.episodeTitle) };
   }
 
@@ -275,18 +278,8 @@ export class ExtractionEngine {
       || (result.relationships?.length ?? 0) > 0;
   }
 
-  private looksLikeExtractionResultPayload(parsed: any): boolean {
-    return !!parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      (
-        "facts" in parsed ||
-        "entities" in parsed ||
-        "profileUpdates" in parsed ||
-        "questions" in parsed ||
-        "relationships" in parsed ||
-        "identityReflection" in parsed
-      );
+  private looksLikeExtractionResultPayload(parsed: Parameters<typeof looksLikeExtractionResultPayload>[0]): boolean {
+    return looksLikeExtractionResultPayload(parsed);
   }
 
   private normalizeExtractionResultPayload(parsed: any): ExtractionResult {
@@ -390,7 +383,7 @@ export class ExtractionEngine {
         })
       : undefined;
 
-    return {
+    return receiptProviderPayload(parsed, {
       facts,
       entities,
       profileUpdates,
@@ -398,7 +391,7 @@ export class ExtractionEngine {
       identityReflection: extractionText(parsed?.identityReflection),
       episodeTitle: extractionText(parsed?.episodeTitle),
       relationships,
-    };
+    });
   }
 
   private normalizeEntityUpdate(entity: unknown): ExtractedEntityResult | undefined {
@@ -1100,6 +1093,7 @@ export class ExtractionEngine {
           : turn.content,
       }))
       .filter((turn) => turn.content.trim().length > 0);
+    receiptBoundedInput(turns, boundedTurns);
     // One derivation, over the turns the model actually sees (boundedTurns) —
     // the same set the qualifier, grounding source, and telemetry filter
     // operate on. result.sourceConnector carries it to persistence so the
@@ -1454,6 +1448,7 @@ export class ExtractionEngine {
 
     const maxConversationChars = contextSizes.maxInputChars;
     const truncatedConversation = truncateLocalExtractionConversation(conversation, maxConversationChars);
+    if (truncatedConversation !== conversation) blockReceiptCoverage();
 
     const localPrompt = `You are a memory extraction system. Extract durable, reusable memories from this conversation.
 

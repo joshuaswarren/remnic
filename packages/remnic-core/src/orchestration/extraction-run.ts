@@ -1,3 +1,4 @@
+import { withExtractionReceipt, receiptProviderResult, receiptPersisted } from "../extraction-receipt-runtime.js";
 /**
  * Buffer → extract → persist coordinator (issue #1526, seam 15).
  * Owns runExtraction, shouldQueueExtraction, buildExtractionFingerprint,
@@ -439,6 +440,7 @@ export class ExtractionRunCoordinator {
       forceExtractionAttempt?: boolean;
     } = {}
   ): Promise<ExtractionRunResult> {
+    return withExtractionReceipt(this.config.memoryDir, turns, this.config.extractionMaxTurnChars, async () => {
     log.debug(`running extraction on ${turns.length} turns`);
     const clearBufferAfterExtraction = options.clearBufferAfterExtraction ?? true;
     const clearMatchingTurns = options.clearMatchingTurns === true;
@@ -915,6 +917,7 @@ export class ExtractionRunCoordinator {
         durableOutputCount: 0,
       };
     }
+    receiptProviderResult(result);
     const extractionFailure =
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure
@@ -1062,6 +1065,7 @@ export class ExtractionRunCoordinator {
         .map((t) => t.content)
         .join("\n\n")
     );
+    receiptPersisted(deferredCount, pendingReviewIds);
     try {
       options.onDurableCommit?.();
     } catch (error) {
@@ -1178,5 +1182,6 @@ export class ExtractionRunCoordinator {
       // never reach the inner try above.
       if (extractionProbeOwned) this.providerBreaker.releaseProbe(extractionProbeToken);
     }
+    });
   }
 }
