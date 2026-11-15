@@ -100,6 +100,8 @@ export async function cleanupDir(dir: string): Promise<void> {
 /** The field-level extraction seam replaced by {@link stubExtraction}. */
 interface ExtractionClientSeam {
   extraction: { extract: (turns: BufferTurn[]) => Promise<ExtractionResult> };
+  // Claim drains extract on their own engine; the stub covers it too.
+  drainExtraction: { extract: (turns: BufferTurn[]) => Promise<ExtractionResult> } | undefined;
 }
 
 /**
@@ -121,6 +123,7 @@ export function stubExtraction(
       return factory(turns, calls.length);
     },
   };
+  seam.drainExtraction = seam.extraction;
   return calls;
 }
 

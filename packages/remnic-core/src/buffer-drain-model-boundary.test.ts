@@ -475,14 +475,18 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
       { facts: "not-an-array", entities: [], questions: [], profileUpdates: [] },
       null,
     ];
-    const extractionSeam = asTestSeam<{ extraction: { extract: () => Promise<ExtractionRunResult | null> } }>(
-      orchestrator
-    );
+    interface DrainSeam {
+      extraction: { extract: () => Promise<ExtractionRunResult | null> };
+      drainExtraction: { extract: () => Promise<ExtractionRunResult | null> } | undefined;
+    }
+    const extractionSeam = asTestSeam<DrainSeam>(orchestrator);
     extractionSeam.extraction = {
       // SAFETY: the queue re-drives malformed/null extractor output through
       // the boundary; the stub result is cast to the named verdict shape.
       extract: async () => extractorResults.shift() as ExtractionRunResult | null,
     };
+    // Claim drains extract on their own engine; stub it with the same results.
+    extractionSeam.drainExtraction = extractionSeam.extraction;
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       const outcome = await runner.drainSession("invalid-result-sess", { ownerId: "drain-invalid" });
