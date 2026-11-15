@@ -1,7 +1,7 @@
 import type { RemnicClient, ObserveMessage, ObserveOptions } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import { hashObservedMessage, toObserveMessage } from "./messages.js";
-import type { DrainOptions, ObserveOutbox } from "./outbox.js";
+import { classifyObserveFailure, type DrainOptions, type ObserveFailureClass, type ObserveOutbox } from "./outbox.js";
 
 /** Minimal session surface the outbox drain needs. */
 export type OutboxSession = { notify: (message: string, level: "info" | "success" | "warning" | "error") => void };
@@ -74,6 +74,9 @@ export async function drainObserveOutbox(
 ): Promise<void> {
   const drainOptions: DrainOptions = { notify: (message, level) => session.notify(message, level) };
   if (bounded) drainOptions.maxAttempts = 1;
+  // Why the drain stopped, from the last send. The drain stops on the first
+  // 401/403 and already tells the user to fix the credentials (#3381).
+  let stopReason: ObserveFailureClass | undefined;
   const result = await outbox.drain(async (entry) => {
     const observeOptions: ObserveOptions = {
       timeoutMs: config.turnRequestTimeoutMs,
@@ -84,7 +87,13 @@ export async function drainObserveOutbox(
       // One cheap attempt: never let a hanging daemon hold session start or shutdown for a full turn budget.
       observeOptions.timeoutMs = Math.min(config.turnRequestTimeoutMs, STARTUP_DRAIN_ATTEMPT_MS);
     }
-    await client.observe(entry.sessionKey, entry.cwd, entry.messages, observeOptions);
+    try {
+      await client.observe(entry.sessionKey, entry.cwd, entry.messages, observeOptions);
+      stopReason = undefined;
+    } catch (err) {
+      stopReason = err instanceof Error ? classifyObserveFailure(err) : "retry-ambiguous";
+      throw err;
+    }
     // Delivered: remember identity so later turns and the shutdown replay skip these.
     for (const hash of entry.messageHashes) {
       if (hash !== null) rememberObservedHash(observedHashes, hash);
@@ -95,7 +104,7 @@ export async function drainObserveOutbox(
       }
     }
   }, drainOptions);
-  if (result.pending > 0 && !result.skipped) {
+  if (result.pending > 0 && !result.skipped && stopReason !== "blocked") {
     session.notify(
       `Remnic observe outbox: ${result.pending} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
       "warning",

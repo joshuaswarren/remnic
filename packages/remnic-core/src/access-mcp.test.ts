@@ -174,6 +174,44 @@ test("MCP reports a missing storage target as a non-retryable storage_target_req
   assert.deepEqual(result.result?.structuredContent, { code: "storage_target_required", retryable: false }, JSON.stringify(response));
 });
 
+test("#3381: MCP returns the missing storage target explanation and does not log it as an internal error", async () => {
+  const failure = new Error("accepted capture requires an explicit storage target");
+  failure.name = "StorageTargetRequiredError";
+  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
+  const service = Object.assign({} as EngramAccessService, {
+    observe: async () => {
+      throw failure;
+    },
+  });
+  const errorLines: string[] = [];
+  initLogger(
+    {
+      info() {},
+      warn() {},
+      error(msg: string) {
+        errorLines.push(msg);
+      },
+    },
+    false,
+    { timestamps: false },
+  );
+  try {
+    const outcome = readCallToolOutcome(
+      await new EngramMcpServer(service).handleRequest(
+        makeToolRequest("engram.observe", {
+          sessionKey: "no-target-session",
+          messages: [{ role: "user", content: "cannot succeed on retry" }],
+        }),
+      ),
+    );
+    assert.equal(outcome.isError, true);
+    assert.equal(outcome.text, failure.message, "a request fault must explain itself, not read as an internal error");
+    assert.deepEqual(errorLines, [], "a request fault is not a server error");
+  } finally {
+    resetLogger();
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // Finding 2 (#396 new): invalid MCP briefing format values must be rejected
 // ──────────────────────────────────────────────────────────────────────────

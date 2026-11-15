@@ -6,11 +6,11 @@ import test from "node:test";
 
 import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
-import { RemnicClient } from "./client.js";
+import { RemnicClient, RemnicHttpError } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import { createRemnicPiExtension, observeMessages } from "./index.js";
 import type { PiApi } from "./index.js";
-import { settleObserveOutboxDrain } from "./observe-flow.js";
+import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
 // ---------------------------------------------------------------------------
@@ -231,4 +231,33 @@ test("session start survives a locked outbox: no rejection, bounded, and the sta
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
   }
   assert.ok(urls.some((url) => !url.endsWith("/engram/v1/observe")), "the startup health probe still ran");
+});
+
+test("#3381: a replay stopped by rejected credentials names the credentials, not daemon saturation", async () => {
+  for (const status of [401, 403, 503]) {
+    const outboxPath = tmpOutboxPath();
+    const config = drainTestConfig(outboxPath);
+    const outbox = new ObserveOutbox(outboxPath);
+    await outbox.enqueue(queuedEntry);
+    const client = new RemnicClient(config);
+    client.observe = async () => {
+      throw new RemnicHttpError(status, `HTTP ${status}`);
+    };
+    const warnings: string[] = [];
+    const session = { notify: (message: string) => warnings.push(message) };
+
+    await drainObserveOutbox(session, client, config, outbox, new Set<string>(), undefined, true);
+
+    assert.equal(await outbox.size(), 1, `HTTP ${status}: the capture stays queued`);
+    const saturated = warnings.some((message) => message.includes("daemon saturated"));
+    if (status === 503) {
+      assert.ok(saturated, "a capacity stop still reports saturation");
+    } else {
+      assert.ok(
+        warnings.some((message) => message.includes(`rejected the request credentials (HTTP ${status})`)),
+        `HTTP ${status}: the stop reason reaches the user`,
+      );
+      assert.equal(saturated, false, `HTTP ${status}: a credential stop is not daemon saturation`);
+    }
+  }
 });

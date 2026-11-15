@@ -100,10 +100,16 @@ function throwMcpAbort(signal: AbortSignal | undefined, message: string): void {
 /**
  * Map tools/call failures to a client-safe message. Unexpected backend/fs
  * errors become a stable generic string; detail stays in the server log.
- * Intended EngramAccessInputError / EngramAccessForbiddenError stay readable.
+ * Intended EngramAccessInputError / EngramAccessForbiddenError stay readable, and
+ * so does a missing storage target: it is a request fault, as on HTTP (400),
+ * not a server error (#3381).
  */
 function mcpToolErrorMessage(err: Error): string {
-  if (err instanceof EngramAccessInputError || err instanceof EngramAccessForbiddenError) {
+  if (
+    err instanceof EngramAccessInputError ||
+    err instanceof EngramAccessForbiddenError ||
+    err.name === "StorageTargetRequiredError"
+  ) {
     return err.message;
   }
   log.error("engram MCP tools/call internal error", err);
