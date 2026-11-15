@@ -24,7 +24,7 @@ import { log } from "../logger.js";
  * commitConsolidatedProfile.
  */
 
-interface FactDedupMatchOptions {
+export interface FactDedupMatchOptions {
   readonly category: string;
   readonly contentHashDedupKey: string;
   readonly connector?: string;
@@ -32,7 +32,7 @@ interface FactDedupMatchOptions {
   readonly citationTemplate: string;
 }
 
-function matchesActiveConnectorDuplicate(memory: MemoryFile, opts: FactDedupMatchOptions): boolean {
+export function matchesActiveConnectorDuplicate(memory: MemoryFile, opts: FactDedupMatchOptions): boolean {
   if (memory.frontmatter.category !== opts.category) return false;
   if ((memory.frontmatter.status ?? "active") !== "active") return false;
   // Thread 5 (QPDE5): for procedures the hash is keyed on the full
@@ -59,12 +59,20 @@ export async function confirmActiveFactDuplicate(
   storage: StorageManager,
   opts: FactDedupMatchOptions,
 ): Promise<boolean> {
+  return (await findActiveFactDuplicate(storage, opts)) !== null;
+}
+
+/** Preserve the authoritative matched record for callers that must prove an existing effect. */
+export async function findActiveFactDuplicate(
+  storage: StorageManager,
+  opts: FactDedupMatchOptions,
+): Promise<MemoryFile | null> {
   try {
     // One lookup returns the MISS together with the authority behind it, so a
     // stale MISS is never paired with authority from another moment: any
     // second read of authority can rebuild the index and bless it (#3312).
     const lookup = await storage.lookupContentHash(opts.contentHashDedupKey);
-    if (!lookup.present && lookup.authoritative) return false;
+    if (!lookup.present && lookup.authoritative) return null;
   } catch {
     // Dedup lookup failed (e.g. the authoritative rebuild could not run). Do
     // NOT fail-open into a possible duplicate — confirm against the corpus.
@@ -77,17 +85,17 @@ export async function confirmActiveFactDuplicate(
       storage.readAllMemories(),
       storage.readAllColdMemories(),
     ]);
-    return hotMems.some((m) => matchesActiveConnectorDuplicate(m, opts)) ||
-      coldMems.some((m) => matchesActiveConnectorDuplicate(m, opts));
+    return hotMems.find((m) => matchesActiveConnectorDuplicate(m, opts)) ??
+      coldMems.find((m) => matchesActiveConnectorDuplicate(m, opts)) ?? null;
   } catch (err) {
     log.warn(
       `connector-aware dedup scan failed for storage ${storage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return false;
+    return null;
   }
 }
 
-export type FactDedupWindowOutcome<T> = { suppressed: true } | { suppressed: false; result: T };
+export type FactDedupWindowOutcome<T> = { suppressed: true; match?: MemoryFile } | { suppressed: false; result: T };
 
 /**
  * Run `write` inside the per-dir fact-dedup window: recheck `recheck` (the
@@ -98,7 +106,7 @@ export type FactDedupWindowOutcome<T> = { suppressed: true } | { suppressed: fal
  */
 export async function persistUnderFactDedupWindow<T>(
   storageDir: string,
-  recheck: () => Promise<boolean>,
+  recheck: () => Promise<boolean | MemoryFile>,
   write: () => Promise<T>,
 ): Promise<FactDedupWindowOutcome<T>> {
   return serializeMutations(`fact-dedup:${storageDir}`, () =>
@@ -111,7 +119,9 @@ export async function persistUnderFactDedupWindow<T>(
         if (!acquired) {
           throw new Error(`fact write skipped: fact-dedup.lock not acquired (${storageDir})`);
         }
-        if (await recheck()) return { suppressed: true };
+        const match = await recheck();
+        if (match === true) return { suppressed: true };
+        if (match) return { suppressed: true, match };
         return { suppressed: false, result: await write() };
       },
     ),

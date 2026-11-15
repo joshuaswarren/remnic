@@ -15,7 +15,8 @@ const empty: ExtractionResult = { facts: [], entities: [], questions: [], profil
 async function fixture(t: import("node:test").TestContext) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "access-receipt-"));
   const config = makeLifecycleConfig(dir, {
-    extractionReceiptsEnabled: true, namespacesEnabled: true,
+    extractionReceiptsEnabled: true,
+    namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
     sharedContextEnabled: false,
@@ -124,9 +125,47 @@ test("observe -> durable buffer -> writer distinguishes valid empty from persist
   }
 });
 
-test("experimental receipt admission is default off", async t => {
+test("experimental receipt admission is default off", async (t) => {
   const f = await fixture(t);
   assert.equal(makeLifecycleConfig(f.dir).extractionReceiptsEnabled, false);
   f.orchestrator.config.extractionReceiptsEnabled = false;
-  await assert.rejects(f.service.observe({ sessionKey: "owner:disabled", namespace: "owner", authenticatedPrincipal: "owner", messages: [{ role: "user", content: "Synthetic input" }], extractionReceipt: { sourceDigest: "d".repeat(64), chunkStart: 0, chunkEnd: 1, chunkVersion: "v1" } }), /Extraction receipts are disabled/);
+  await assert.rejects(
+    f.service.observe({
+      sessionKey: "owner:disabled",
+      namespace: "owner",
+      authenticatedPrincipal: "owner",
+      messages: [{ role: "user", content: "Synthetic input" }],
+      extractionReceipt: { sourceDigest: "d".repeat(64), chunkStart: 0, chunkEnd: 1, chunkVersion: "v1" },
+    }),
+    /Extraction receipts are disabled/
+  );
+});
+
+test("a repeated exact fact uses a verified existing ID rather than a boolean dedup hit", async (t) => {
+  const f = await fixture(t);
+  const content = "The synthetic project's release gate requires a green test result before deployment.";
+  stubExtraction(f.orchestrator, () => {
+    const result = singleFactResult(content);
+    return receiptProviderPayload(result, result);
+  });
+  const receipts = [];
+  for (const iteration of [1, 2]) {
+    const sessionKey = `owner:duplicate-${iteration}`;
+    const accepted = await f.service.observe({
+      sessionKey,
+      namespace: "owner",
+      authenticatedPrincipal: "owner",
+      messages: [{ role: "user", content }],
+      extractionReceipt: { sourceDigest: String(iteration).repeat(64), chunkStart: 0, chunkEnd: 1, chunkVersion: "v1" },
+    });
+    assert.ok(accepted.extractionReceiptId);
+    await f.service.extractionForceFlush({ sessionKey, namespace: "owner", authenticatedPrincipal: "owner" });
+    const receipt = await new ExtractionReceiptStore(f.dir).get(accepted.extractionReceiptId);
+    assert.ok(receipt);
+    assert.equal(receipt.coverageComplete, true, JSON.stringify(receipt));
+    receipts.push(receipt);
+  }
+  assert.equal(receipts[1]!.artifacts[0]!.id, receipts[0]!.artifacts[0]!.id);
+  assert.equal(receipts[1]!.artifacts[0]!.disposition, "deduplicated");
+  assert.match(receipts[1]!.artifacts[0]!.effectDigest!, /^[a-f0-9]{64}$/);
 });

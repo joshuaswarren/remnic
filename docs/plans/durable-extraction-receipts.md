@@ -103,3 +103,46 @@ removal of inherited daemon-routing/auth environment variables; otherwise
 ambient operator configuration contaminates the existing contract tests.
 No live configuration or test expectations were changed to obtain a pass.
 These checks validate the conservative checkpoint, not backfill readiness.
+
+## Next layer: verified exact fact deduplication
+
+An exact fact duplicate may supply receipt evidence only when the actual matched
+memory is retained by the initial check or the serialized commit-window recheck.
+A boolean hash hit is insufficient. Before confirmation, reread that exact path,
+verify its ID, active category, normalized content, connector, entity and subject,
+and sync its file and ancestor directories. Record the existing ID with
+`deduplicated` disposition and a digest of the checked effect. Receipt namespace
+must match the target storage namespace. Candidate quality gates still apply.
+
+| Scenario | Required outcome |
+| --- | --- |
+| Initial exact match, same namespace and metadata, active fact | Verified existing ID may cover the processed members |
+| Locked recheck finds a peer's committed exact fact | Preserve and verify that exact winning ID |
+| Hash hit without matched memory | Deferred |
+| Matched path removed, replaced or changed before confirmation | Deferred; never reuse stale evidence |
+| Different namespace, connector, category, entity or subject | Deferred |
+| Judge reject/defer, low importance or faithfulness pending | Deferred |
+| Structured or temporal fact, chunked parent, semantic/novelty match | Deferred in this bounded layer |
+| Prior unresolved journal or partial writer failure | Remains incomplete; dedup does not reconcile ambiguous writes |
+| Existing match reread/sync fails | Incomplete; no terminal receipt |
+
+Crash reconciliation and unsupported writer proofs remain separate work. This
+layer must not enable automated backfill or reinterpret prior ambiguous journals.
+
+### Exact fact reuse validation
+
+The nine TypeScript/JSON paths changed after checkpoint `35fe00e` have source
+fingerprint `4166ccfc45e3e2083685ca51309330b42cbb24b08ebb6825e543a2a465a20257`,
+using the checkpoint hash recipe above. Independent review approved this bounded
+layer after stored temporal, chunk and legacy artifact cases were excluded.
+Read-back also checks file identity and modification metadata across artifact
+sync, so replacing a file with the same body cannot supply unchecked evidence.
+
+Full isolated `preflight:quick` passes, including package/test compilation,
+structural ratchets without ceiling increases, and 352 hardening tests. The
+receipt regression set has 69 tests: 66 pass and three documented provider
+identity rows are skipped. Removing only the stored temporal/chunk-parent guards
+in an isolated source copy makes both corresponding regression tests fail.
+The explicit full-diff lifecycle check covers nine paths, keeps two existing
+grandfathered paths and reports zero violations. These results do not authorize
+backfill or reconcile prior ambiguous journals.

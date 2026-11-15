@@ -34,6 +34,8 @@ export interface ArtifactEvidence {
   namespace: string;
   id: string;
   disposition: "written" | "deduplicated" | "pending_review";
+  /** Digest of the read-back effect; contains no source text. */
+  effectDigest?: string;
 }
 export type ReceiptOutcome = "durable_extracted" | "empty_success" | "failed" | "deferred" | "retry";
 export interface ArtifactJournal {
@@ -96,6 +98,10 @@ const artifactSchema = z.object({
   namespace: z.string(),
   id: z.string(),
   disposition: z.enum(["written", "deduplicated", "pending_review"]),
+  effectDigest: z
+    .string()
+    .regex(/^[a-f0-9]{64}$/)
+    .optional(),
 });
 const memberSchema = z.object({
   memberId: z.string(),
@@ -191,7 +197,15 @@ function artifactValue(a: ArtifactEvidence): ArtifactEvidence {
   if (!a || !kinds.has(a.kind) || !dispositions.has(a.disposition)) throw new Error("Invalid artifact evidence");
   text(a.id, "artifact id");
   text(a.namespace, "artifact namespace");
-  return { kind: a.kind, namespace: a.namespace, id: a.id, disposition: a.disposition };
+  if (a.effectDigest !== undefined && !/^[a-f0-9]{64}$/.test(a.effectDigest)) throw new Error("Invalid effect digest");
+  const evidence: ArtifactEvidence = {
+    kind: a.kind,
+    namespace: a.namespace,
+    id: a.id,
+    disposition: a.disposition,
+  };
+  if (a.effectDigest !== undefined) evidence.effectDigest = a.effectDigest;
+  return evidence;
 }
 function artifactKey(a: ArtifactEvidence): string {
   return JSON.stringify([a.kind, a.namespace, a.id]);

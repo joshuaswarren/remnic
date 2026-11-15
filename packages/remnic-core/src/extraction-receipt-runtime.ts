@@ -1,11 +1,12 @@
 /** Writer-owned receipt context. Caller queue settlement never completes receipts. */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
+import { lstat } from "node:fs/promises";
 import { z } from "zod";
 import { syncReceiptArtifact } from "./extraction-receipt-artifact-sync.js";
 import { type ArtifactEvidence, type AttemptToken, ExtractionReceiptStore } from "./extraction-receipts.js";
 import type { StorageManager } from "./storage.js";
-import type { BufferTurn, ExtractionResult } from "./types.js";
+import type { BufferTurn, ExtractionResult, MemoryFile } from "./types.js";
 
 type Context = {
   store: ExtractionReceiptStore;
@@ -197,6 +198,44 @@ export async function withExtractionReceipt<T>(
       throw error;
     }
   });
+}
+/** Existing effects require exact-path readback, durable files, and a stable second read. */
+export async function receiptExistingMemory(
+  storage: StorageManager,
+  namespace: string,
+  verify: () => Promise<MemoryFile | null>
+): Promise<boolean> {
+  const c = current.getStore();
+  if (!c || namespace !== c.namespace) return false;
+  await c.store.assertCurrent(c.token);
+  const memory = await verify();
+  if (!memory) return false;
+  const effectDigest = receiptDigest(memory);
+  const evidence: ArtifactEvidence = {
+    kind: "memory",
+    namespace,
+    id: memory.frontmatter.id,
+    disposition: "deduplicated",
+    effectDigest,
+  };
+  const journal = await c.store.prepareArtifact(c.token, evidence);
+  const before = await lstat(memory.path, { bigint: true });
+  if (!(await syncReceiptArtifact(storage, "memory", evidence.id, { id: evidence.id, memory }))) return false;
+  const checked = await verify();
+  const after = await lstat(memory.path, { bigint: true });
+  if (
+    !checked ||
+    receiptDigest(checked) !== effectDigest ||
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeNs !== after.mtimeNs ||
+    before.ctimeNs !== after.ctimeNs
+  )
+    return false;
+  await c.store.confirmArtifact(c.token, journal, evidence);
+  c.artifacts.push(evidence);
+  return true;
 }
 const methods = {
   writeSealedMemory: "memory",

@@ -1,7 +1,8 @@
+import { confirmReceiptFactDuplicate } from "./extraction-receipt-fact-dedup.js";
 import { limitedExtractionOutputs } from "./extraction-persist-output-limits.js";
 import { receiptStorage, receiptStorageRouter, blockReceiptCoverage } from "../extraction-receipt-runtime.js";
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
-import { confirmActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
+import { findActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
 import { type ArgsAfterFinalization, CommittedWriteFinalization, rethrowAfterCommittedWriteFinalization } from "./extraction-persist-failure.js";
 import { evaluateInjectionScreen, screenEntityForIndex, screenPersistStrings } from "./extraction-injection-gate.js";
@@ -1657,6 +1658,14 @@ export class ExtractionPersistCoordinator {
         fact.tags,
       );
       let exactDuplicate = false;
+      let exactDuplicateEvidence: MemoryFile | null = null;
+      const extractionSourceConnector = sourceContext?.sourceConnector;
+      const factToolScoped = withholdToolScopedFromSharedNamespace({
+        content: fact.content,
+        sourceConnector: extractionSourceConnector,
+        procedureSteps: fact.procedureSteps,
+      });
+
       try {
         exactDuplicate = await this.deps.hasContentHashDedup(targetStorage, contentHashDedupKey);
       } catch (err) {
@@ -1681,8 +1690,15 @@ export class ExtractionPersistCoordinator {
       // confirmation, so a disabled deployment never suppresses a write via
       // dedup (PR #2016 thread SD-nH).
       if (factDedupEnabled) {
-        exactDuplicate = await confirmActiveFactDuplicate(targetStorage, raceDedupOpts(contentHashDedupKey));
+        exactDuplicateEvidence = await findActiveFactDuplicate(targetStorage, raceDedupOpts(contentHashDedupKey));
+        exactDuplicate = exactDuplicateEvidence !== null;
       }
+      const recordExactDuplicate = (match: MemoryFile | null | undefined) => confirmReceiptFactDuplicate(
+        targetStorage, targetNamespaceName, match, raceDedupOpts(contentHashDedupKey), {
+          fact, subject: factSubject, config: this.deps.config, importance: importance.level,
+          faithfulness: faithfulnessResultsByFactIndex?.get(factLoopIndex), judge: judgeVerdictsByFactIndex?.get(factLoopIndex),
+          temporal: biTemporal !== undefined || sourceContext?.validAt !== undefined, toolScoped: factToolScoped,
+        });
       // PR #2016/#3231: finalize committed writes before a fail-closed
       // window throw propagates (PRRT_kwDORJXyws6zxG6H).
       const finalizeOnWindowFailure = async (err: Error): Promise<never> => {
@@ -1694,7 +1710,7 @@ export class ExtractionPersistCoordinator {
       const raceRecheck = (storage: StorageManager, key: string) => () => {
         // Gates mirror the persist-time suppression gates (PR #2016 SD-nH; #1645 quarantine).
         if (!factDedupEnabled || injectionScreenStatus === "pending_review") return Promise.resolve(false);
-        return confirmActiveFactDuplicate(storage, raceDedupOpts(key));
+        return findActiveFactDuplicate(storage, raceDedupOpts(key)).then((match) => match ?? false);
       };
       // #1671/#1707 — backfill bi-temporal bounds onto the surviving copy
       // when a duplicate short-circuits: persist-time hit OR raced duplicate
@@ -1770,7 +1786,8 @@ export class ExtractionPersistCoordinator {
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
         dedupedCount++;
-        blockReceiptCoverage(); continue;
+        if (!(await recordExactDuplicate(exactDuplicateEvidence))) blockReceiptCoverage();
+        continue;
       }
       if (writeCategory === "procedure" && this.deps.config.procedural?.enabled !== true && injectionScreenStatus !== "pending_review") {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
@@ -1958,12 +1975,6 @@ export class ExtractionPersistCoordinator {
         (fact as any).source === "proactive"
           ? "extraction-proactive"
           : "extraction";
-      const extractionSourceConnector = sourceContext?.sourceConnector;
-      const factToolScoped = withholdToolScopedFromSharedNamespace({
-        content: fact.content,
-        sourceConnector: extractionSourceConnector,
-        procedureSteps: fact.procedureSteps,
-      });
 
       // Check for contradictions before writing (Phase 2B).
       // NOTE: This block was moved above the chunking branch so that the
@@ -2614,7 +2625,8 @@ export class ExtractionPersistCoordinator {
         await backfillDuplicateTemporalBounds();
         log.info(`dedup: raced duplicate suppressed in fact-dedup window for storage ${targetStorage.dir}`);
         dedupedCount++;
-        blockReceiptCoverage(); continue;
+        if (!(await recordExactDuplicate(factWriteOutcome.match))) blockReceiptCoverage();
+        continue;
       }
       const factWrite = factWriteOutcome.result;
       const memoryId = factWrite.id;

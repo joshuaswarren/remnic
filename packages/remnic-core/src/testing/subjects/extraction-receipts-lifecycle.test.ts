@@ -8,7 +8,7 @@ import { receiptProviderPayload } from "../../extraction-receipt-runtime.js";
 import { ExtractionReceiptStore } from "../../extraction-receipts.js";
 import { Orchestrator } from "../../orchestrator.js";
 import { type LifecycleSubject, runLifecycleMatrix } from "../lifecycle-matrix.js";
-import { makeLifecycleConfig, stubExtraction } from "../orchestrator-lite.js";
+import { makeLifecycleConfig, singleFactResult, stubExtraction } from "../orchestrator-lite.js";
 
 const request = {
   sessionKey: "owner:receipt",
@@ -21,6 +21,7 @@ function build(dir: string) {
   const orchestrator = new Orchestrator(
     makeLifecycleConfig(dir, {
       extractionReceiptsEnabled: true,
+      extractionFaithfulnessEnabled: false,
       namespacesEnabled: true,
       defaultNamespace: "default",
       sharedNamespace: "shared",
@@ -33,8 +34,8 @@ function build(dir: string) {
     })
   );
   stubExtraction(orchestrator, () => {
-    const empty = { facts: [], entities: [], questions: [], profileUpdates: [], relationships: [] };
-    return receiptProviderPayload(empty, empty);
+    const result = singleFactResult(request.messages[0].content);
+    return receiptProviderPayload(result, result);
   });
   return orchestrator;
 }
@@ -83,15 +84,27 @@ const subject: LifecycleSubject<State> = {
       const replay = await new EngramAccessService(state.orchestrator).observe(request);
       assert.equal(replay.extractionReceiptId, state.receiptId);
       await new EngramAccessService(state.orchestrator).extractionForceFlush(request);
+      const duplicateRequest = {
+        ...request,
+        sessionKey: "owner:duplicate",
+        extractionReceipt: { ...request.extractionReceipt, sourceDigest: "d".repeat(64) },
+      };
+      const duplicate = await new EngramAccessService(state.orchestrator).observe(duplicateRequest);
+      await new EngramAccessService(state.orchestrator).extractionForceFlush(duplicateRequest);
+      assert.ok(duplicate.extractionReceiptId);
+      const reused = await new ExtractionReceiptStore(state.dir).get(duplicate.extractionReceiptId);
+      assert.equal(reused?.coverageComplete, true);
+      assert.equal(reused?.artifacts[0]?.disposition, "deduplicated");
+      assert.match(reused?.artifacts[0]?.effectDigest ?? "", /^[a-f0-9]{64}$/);
     }
   },
   async invariants(state) {
     const receipt = await new ExtractionReceiptStore(state.dir).get(state.receiptId);
     assert.equal(receipt?.coverageComplete, true, JSON.stringify(receipt));
-    assert.equal(receipt?.status, "empty_success");
+    assert.equal(receipt?.status, "durable_extracted");
     assert.equal(receipt?.identity.principal, "owner");
     assert.equal(receipt?.identity.namespace, "owner");
-    assert.deepEqual(receipt?.artifacts, []);
+    assert.equal(receipt?.artifacts.length, 1);
   },
   async teardown(state) {
     await state.orchestrator.destroy();
