@@ -100,7 +100,7 @@ test("only explicit valid provider empty establishes empty success", async (t) =
     const f = await fixture(t, "abc");
     await withExtractionReceipt(f.dir, f.turns, 3, async () => {
       receiptProviderPayload(empty, empty);
-      receiptProviderResult({ ...empty, extractionFailure: failed ? "provider unavailable" : undefined });
+      await receiptProviderResult({ ...empty, extractionFailure: failed ? "provider unavailable" : undefined });
     });
     assert.equal((await f.store.get(f.receipt.receiptId))!.coverageComplete, !failed);
   }
@@ -186,7 +186,7 @@ test("malformed/partial provider objects and normalized-away candidates cannot b
     const f = await fixture(t, "abc");
     await withExtractionReceipt(f.dir, f.turns, 3, async () => {
       receiptProviderPayload(raw, empty);
-      receiptProviderResult(empty);
+      await receiptProviderResult(empty);
     });
     assert.equal((await f.store.get(f.receipt.receiptId))!.coverageComplete, false);
   }
@@ -263,3 +263,39 @@ test("memory evidence must match writer ID and exact file path", async (t) => {
     false
   );
 });
+
+for (const interrupted of [false, true])
+  test(`real entity writer ${interrupted ? "interrupted retry subset stays incomplete" : "fresh proof remains supported"}`, async (t) => {
+    const f = await fixture(t, "abc");
+    const storage = new StorageManager(f.dir);
+    const result: ExtractionResult = {
+      ...empty,
+      entities: [{ name: "Synthetic", type: "other", facts: ["Synthetic fact"] }],
+    };
+    const run = (providerResult = result) =>
+      withExtractionReceipt(f.dir, f.turns, 3, async () => {
+        receiptProviderPayload(providerResult, providerResult);
+        await receiptProviderResult(providerResult);
+        await receiptStorage(storage, "tenant").writeEntity("Synthetic", "other", ["Synthetic fact"]);
+        receiptPersisted(0, []);
+      });
+    if (interrupted) {
+      const confirm = ExtractionReceiptStore.prototype.confirmArtifact;
+      ExtractionReceiptStore.prototype.confirmArtifact = async () => {
+        throw new Error("synthetic entity interruption");
+      };
+      try {
+        await assert.rejects(
+          run({
+            ...result,
+            entities: [...result.entities, { name: "Other", type: "other", facts: ["Unprocessed synthetic fact"] }],
+          }),
+          /synthetic entity interruption/
+        );
+      } finally {
+        ExtractionReceiptStore.prototype.confirmArtifact = confirm;
+      }
+    }
+    await run();
+    assert.equal((await f.store.get(f.receipt.receiptId))!.coverageComplete, !interrupted);
+  });

@@ -4,6 +4,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { z } from "zod";
 import { syncReceiptArtifact } from "./extraction-receipt-artifact-sync.js";
+import {
+  type ReceiptEffect,
+  type ReceiptPlan,
+  receiptHash,
+  receiptMemoryDigest,
+  withReceiptEffect,
+} from "./extraction-receipt-provenance.js";
+import {
+  type RecoveredReceiptFact,
+  confirmReceiptMemory,
+  reconcileReceiptFacts,
+} from "./extraction-receipt-reconciliation.js";
 import { type ArtifactEvidence, type AttemptToken, ExtractionReceiptStore } from "./extraction-receipts.js";
 import type { StorageManager } from "./storage.js";
 import type { BufferTurn, ExtractionResult, MemoryFile } from "./types.js";
@@ -19,6 +31,13 @@ type Context = {
   blocked: boolean;
   persisted: boolean;
   empty: boolean;
+  identityDigest: string;
+  unresolved: boolean;
+  priorPlan: boolean;
+  plan?: ReceiptPlan;
+  slot?: string;
+  completedSlots: Set<string>;
+  recoveredFacts?: Map<string, RecoveredReceiptFact>;
 };
 const current = new AsyncLocalStorage<Context>();
 export const receiptDigest = <T>(value: T): string =>
@@ -93,7 +112,7 @@ export function receiptProviderPayload<T extends ExtractionResult>(raw: ReceiptP
     c.blocked = true;
   return normalized;
 }
-export function receiptProviderResult(result: ExtractionResult): void {
+export async function receiptProviderResult(result: ExtractionResult): Promise<void> {
   const c = current.getStore();
   if (!c) return;
   c.empty =
@@ -115,6 +134,30 @@ export function receiptProviderResult(result: ExtractionResult): void {
   const actual = new Set(candidateKeys(parsed.data));
   if ([...c.proposedKeys].some((key) => !actual.has(key)) || result.extractionFailure || result.extractionSkippedReason)
     c.blocked = true;
+  const plain =
+    result.facts.length > 0 &&
+    result.facts.every(
+      (fact) => fact.category === "fact" && fact.scope !== "project" && !fact.structuredAttributes && !fact.entityRef
+    ) &&
+    !result.entities.length &&
+    !result.questions.length &&
+    !result.profileUpdates.length &&
+    !result.relationships?.length &&
+    !result.identityReflection;
+  if (c.priorPlan && (!plain || c.blocked || !c.providerNonempty))
+    throw new Error("Extraction receipt plan changed or unsupported");
+  if (plain && c.providerNonempty && !c.blocked && !result.extractionFailure && !result.extractionSkippedReason) {
+    const slots = result.facts.map((fact) => receiptHash(fact));
+    if (new Set(slots).size !== slots.length) {
+      c.blocked = true;
+      return;
+    }
+    const members = [...c.token.members].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    const data = { version: 1 as const, identityDigest: c.identityDigest, members, slots };
+    const plan = { ...data, digest: receiptHash(data) };
+    await c.store.closePlan(c.token, plan);
+    c.plan = plan;
+  }
 }
 export function receiptBoundedInput(
   before: readonly { content: string }[],
@@ -170,20 +213,31 @@ export async function withExtractionReceipt<T>(
     token,
     namespace: receipt.identity.namespace,
     proposedKeys: new Set(),
+    completedSlots: new Set(),
     providerEmpty: false,
     providerNonempty: false,
     artifacts: [],
-    blocked:
-      unresolved ||
-      turns.some((t) => !t.extractionContextOnly && (!t.content.trim() || t.content.trim().length > maxChars)),
+    blocked: turns.some((t) => !t.extractionContextOnly && (!t.content.trim() || t.content.trim().length > maxChars)),
     persisted: false,
     empty: false,
+    unresolved,
+    priorPlan: members.some(
+      (m) => records.get(m.receiptId)!.members.find((s) => s.memberId === m.memberId)?.plan !== undefined
+    ),
+    identityDigest: receiptHash(
+      [...records.values()]
+        .filter((r) => members.some((m) => m.receiptId === r.receiptId))
+        .map((r) => ({ receiptId: r.receiptId, identity: r.identity }))
+        .sort((a, b) => a.receiptId.localeCompare(b.receiptId))
+    ),
   };
   return current.run(context, async () => {
     try {
       const result = await run();
-      const durable = context.persisted && !context.blocked && context.artifacts.length > 0;
-      const empty = context.empty && !context.blocked && !context.artifacts.length;
+      const planComplete = !context.plan || context.plan.slots.every((slot) => context.completedSlots.has(slot));
+      const durable =
+        planComplete && context.persisted && !context.blocked && !context.unresolved && context.artifacts.length > 0;
+      const empty = context.empty && !context.blocked && !context.unresolved && !context.artifacts.length;
       await store.finish(token, {
         status: durable ? "durable_extracted" : empty ? "empty_success" : "deferred",
         artifacts: context.artifacts,
@@ -210,7 +264,7 @@ export async function receiptExistingMemory(
   await c.store.assertCurrent(c.token);
   const memory = await verify();
   if (!memory) return false;
-  const effectDigest = receiptDigest(memory);
+  const effectDigest = receiptMemoryDigest(memory.frontmatter, memory.content);
   const evidence: ArtifactEvidence = {
     kind: "memory",
     namespace,
@@ -218,14 +272,28 @@ export async function receiptExistingMemory(
     disposition: "deduplicated",
     effectDigest,
   };
-  const journal = await c.store.prepareArtifact(c.token, evidence);
+  const effect = effectFor(c);
+  const journal = await c.store.prepareArtifact(c.token, evidence, effect);
+  if (effect) {
+    const provenance = {
+      ...effect,
+      journalId: journal,
+      effectDigest: receiptMemoryDigest(memory.frontmatter, memory.content),
+    };
+    const written = await c.store.withCurrent(c.token, () =>
+      storage.writeMemoryFrontmatterIfUnchanged(memory, {
+        extractionEffects: [...(memory.frontmatter.extractionEffects ?? []), provenance],
+      })
+    );
+    if (!written) return false;
+  }
   const before = await lstat(memory.path, { bigint: true });
   if (!(await syncReceiptArtifact(storage, "memory", evidence.id, { id: evidence.id, memory }))) return false;
   const checked = await verify();
   const after = await lstat(memory.path, { bigint: true });
   if (
     !checked ||
-    receiptDigest(checked) !== effectDigest ||
+    receiptMemoryDigest(checked.frontmatter, checked.content) !== effectDigest ||
     before.dev !== after.dev ||
     before.ino !== after.ino ||
     before.size !== after.size ||
@@ -233,9 +301,46 @@ export async function receiptExistingMemory(
     before.ctimeNs !== after.ctimeNs
   )
     return false;
-  await c.store.confirmArtifact(c.token, journal, evidence);
+  await confirmReceiptMemory(c.store, c.token, journal, evidence, storage, checked);
   c.artifacts.push(evidence);
+  if (effect) c.completedSlots.add(effect.slot);
   return true;
+}
+export async function receiptReconcile(storage: StorageManager): Promise<void> {
+  const c = current.getStore();
+  if (!c?.plan) return;
+  const recovered = await reconcileReceiptFacts(c.store, c.token, c.plan, storage);
+  c.artifacts.push(...recovered.artifacts);
+  c.recoveredFacts = recovered.facts;
+  if (!recovered.fresh) c.unresolved = !recovered.complete;
+  if (recovered.complete && recovered.artifacts.length) for (const slot of c.plan.slots) c.completedSlots.add(slot);
+}
+/** Called after current candidate filters, before any new fact commit/event. */
+export async function receiptRecoveredFact(storage: StorageManager): Promise<boolean> {
+  const c = current.getStore();
+  const proof = c?.slot ? c.recoveredFacts?.get(c.slot) : undefined;
+  if (!c || !proof) return false;
+  await confirmReceiptMemory(c.store, c.token, proof.journalId, proof.evidence, storage, proof.memory);
+  return true;
+}
+export function receiptFactSlot(fact: ExtractionResult["facts"][number]): void {
+  const c = current.getStore();
+  if (c) c.slot = receiptHash(fact);
+}
+function effectFor(c: Context): Omit<ReceiptEffect, "journalId"> | undefined {
+  if (!c.plan || !c.slot || !c.plan.slots.includes(c.slot)) return undefined;
+  return {
+    version: 1,
+    planDigest: c.plan.digest,
+    identityDigest: c.identityDigest,
+    namespace: c.namespace,
+    attemptId: c.token.attemptId,
+    slot: c.slot,
+    members: c.token.members.map((m) => ({
+      ...m,
+      generation: c.token.generations[JSON.stringify([m.receiptId, m.memberId])]!,
+    })),
+  };
 }
 const methods = {
   writeSealedMemory: "memory",
@@ -276,8 +381,13 @@ export function receiptStorage<T extends StorageManager>(storage: T, namespace: 
           id: generatedId ? `pending:${randomUUID()}` : `${kind}:${receiptDigest(args)}`,
           disposition: "written",
         };
-        const journalId = await c.store.prepareArtifact(c.token, prepared);
-        const result = await value.apply(target, args);
+        const effect = property === "writeSealedMemory" ? effectFor(c) : undefined;
+        const journalId = await c.store.prepareArtifact(c.token, prepared, effect);
+        const result = effect
+          ? await c.store.withCurrent(c.token, () =>
+              withReceiptEffect({ ...effect, journalId }, () => value.apply(target, args))
+            )
+          : await value.apply(target, args);
         if (!generatedId) {
           c.blocked = true;
           return result;
@@ -300,9 +410,22 @@ export function receiptStorage<T extends StorageManager>(storage: T, namespace: 
           c.blocked = true;
           return result;
         }
-        const evidence = { ...prepared, id };
-        await c.store.confirmArtifact(c.token, journalId, evidence);
+        const evidence: ArtifactEvidence = { ...prepared, id };
+        if (effect) {
+          const pathname = z.object({ memory: z.object({ path: z.string() }) }).parse(result).memory.path;
+          const memory = await target.readMemoryByPath(pathname);
+          const provenance = memory?.frontmatter.extractionEffects?.find((e) => e.journalId === journalId);
+          if (
+            !memory ||
+            !provenance ||
+            provenance.effectDigest !== receiptMemoryDigest(memory.frontmatter, memory.content)
+          )
+            throw new Error("Receipt write provenance mismatch");
+          evidence.effectDigest = provenance.effectDigest;
+          await confirmReceiptMemory(c.store, c.token, journalId, evidence, target, memory);
+        } else await c.store.confirmArtifact(c.token, journalId, evidence);
         c.artifacts.push(evidence);
+        if (effect) c.completedSlots.add(effect.slot);
         return result;
       };
     },

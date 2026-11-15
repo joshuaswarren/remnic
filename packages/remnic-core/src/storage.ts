@@ -1,3 +1,4 @@
+import { receiptWriteEffects, parseReceiptEffects } from "./extraction-receipt-provenance.js";
 import { formatProjectionAge, readProjectionRebuiltAt } from "./maintenance/projection-support.js";
 import {
   lstat,
@@ -338,6 +339,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     lines.push(`sourceConnector: ${safe ? fm.sourceConnector : JSON.stringify(fm.sourceConnector)}`);
   }
   if (fm.toolScoped === true) lines.push("toolScoped: true");
+  if (fm.extractionEffects) lines.push(`extractionEffects: ${JSON.stringify(fm.extractionEffects)}`);
   if (fm.supersedes) lines.push(`supersedes: ${fm.supersedes}`);
   if (fm.expiresAt) lines.push(`expiresAt: ${fm.expiresAt}`);
   if (fm.lineage && fm.lineage.length > 0) {
@@ -860,7 +862,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     importance = { score, level, reasons, keywords };
   }
 
-  const result: { frontmatter: MemoryFrontmatter; content: string } = {
+  const result: ReturnType<typeof parseFrontmatter> = {
     frontmatter: {
       id: fm.id ?? "",
       category: (fm.category ?? "fact") as MemoryCategory,
@@ -877,6 +879,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       subject: fm.subject === "user" || fm.subject === "agent" ? fm.subject : undefined,
       sourceConnector: fm.sourceConnector ? decodeYamlScalar(fm.sourceConnector) || undefined : undefined,
       toolScoped: fm.toolScoped === "true" ? true : undefined,
+      extractionEffects: parseReceiptEffects(fm.extractionEffects),
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
@@ -3734,7 +3737,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
     const observedAt = normalizeMemoryWriteTimestamp("observedAt", options.observedAt);
 
-    // Auto-set TTL for speculative memories
     let expiresAt: string | undefined;
     if (typeof options.expiresAt === "string" && options.expiresAt.length > 0) {
       expiresAt = options.expiresAt;
@@ -3871,6 +3873,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     };
     await applyTombstoneGate();
 
+    fm.extractionEffects = receiptWriteEffects(this.withOkfType(fm), sanitized.text);
     const fileContent = `${serializeFrontmatter(this.withOkfType(fm))}\n\n${sanitized.text}\n`;
 
     const filePath = await this.resolveCategoryWritePath(category, id, today);

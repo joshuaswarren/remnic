@@ -1,3 +1,4 @@
+import type { ReceiptMemoryProvenance } from "./extraction-receipt-provenance.js";
 import type { BoundedJsonlStateConfig } from "./bounded-jsonl-state.js";
 import type { ProjectionRebuildScheduleConfig } from "./projection-rebuild-config.js";
 import type { MeetingsConfig } from "./meetings/types.js";
@@ -2815,7 +2816,7 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
-export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata, MemoryDriftProvenance {
+export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMetadata, MemoryDriftProvenance, ReceiptMemoryProvenance {
   /** True when write-time classification ties this memory to its source connector's tools or commands. */
   toolScoped?: true;
   id: string;

@@ -12,10 +12,11 @@ import { makeLifecycleConfig, singleFactResult, stubExtraction } from "./testing
 import type { ExtractionResult } from "./types.js";
 
 const empty: ExtractionResult = { facts: [], entities: [], questions: [], profileUpdates: [], relationships: [] };
-async function fixture(t: import("node:test").TestContext) {
+async function fixture(t: import("node:test").TestContext, factDeduplicationEnabled = true) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "access-receipt-"));
   const config = makeLifecycleConfig(dir, {
     extractionReceiptsEnabled: true,
+    factDeduplicationEnabled,
     namespacesEnabled: true,
     defaultNamespace: "default",
     sharedNamespace: "shared",
@@ -168,4 +169,81 @@ test("a repeated exact fact uses a verified existing ID rather than a boolean de
   assert.equal(receipts[1]!.artifacts[0]!.id, receipts[0]!.artifacts[0]!.id);
   assert.equal(receipts[1]!.artifacts[0]!.disposition, "deduplicated");
   assert.match(receipts[1]!.artifacts[0]!.effectDigest!, /^[a-f0-9]{64}$/);
+});
+
+test("observe retry reconciles a real fact committed before receipt confirmation", async (t) => {
+  const f = await fixture(t, false);
+  const content = "The synthetic release gate requires green tests before publishing.";
+  stubExtraction(f.orchestrator, () => {
+    const result = singleFactResult(content);
+    return receiptProviderPayload(result, result);
+  });
+  const sessionKey = "owner:crash-recovery";
+  const accepted = await f.service.observe({
+    sessionKey,
+    namespace: "owner",
+    authenticatedPrincipal: "owner",
+    messages: [{ role: "user", content }],
+    extractionReceipt: { sourceDigest: "e".repeat(64), chunkStart: 0, chunkEnd: 1, chunkVersion: "v1" },
+  });
+  assert.ok(accepted.extractionReceiptId);
+  const flush = () =>
+    f.service.extractionForceFlush({ sessionKey, namespace: "owner", authenticatedPrincipal: "owner" });
+  const confirm = ExtractionReceiptStore.prototype.confirmArtifact;
+  ExtractionReceiptStore.prototype.confirmArtifact = async () => {
+    throw new Error("synthetic lost receipt confirmation");
+  };
+  try {
+    await assert.rejects(flush(), /synthetic lost receipt confirmation/);
+  } finally {
+    ExtractionReceiptStore.prototype.confirmArtifact = confirm;
+  }
+  const interrupted = (await new ExtractionReceiptStore(f.dir).get(accepted.extractionReceiptId))!;
+  assert.equal(interrupted.coverageComplete, false);
+  await flush();
+  const recovered = (await new ExtractionReceiptStore(f.dir).get(accepted.extractionReceiptId))!;
+  assert.equal(recovered.coverageComplete, true, JSON.stringify(recovered));
+  assert.equal(new Set(recovered.artifacts.map((a) => a.id)).size, 1);
+});
+
+test("prepare-only journal stays incomplete without hiding later real fact recovery", async (t) => {
+  const f = await fixture(t, false);
+  const content = "The synthetic immutable plan must survive retries without duplicate fact writes.";
+  stubExtraction(f.orchestrator, () => {
+    const result = singleFactResult(content);
+    return receiptProviderPayload(result, result);
+  });
+  const sessionKey = "owner:prepare-only";
+  const accepted = await f.service.observe({
+    sessionKey,
+    namespace: "owner",
+    authenticatedPrincipal: "owner",
+    messages: [{ role: "user", content }],
+    extractionReceipt: { sourceDigest: "f".repeat(64), chunkStart: 0, chunkEnd: 1, chunkVersion: "v1" },
+  });
+  assert.ok(accepted.extractionReceiptId);
+  const flush = () =>
+    f.service.extractionForceFlush({ sessionKey, namespace: "owner", authenticatedPrincipal: "owner" });
+  const prepare = ExtractionReceiptStore.prototype.prepareArtifact;
+  ExtractionReceiptStore.prototype.prepareArtifact = async function (...args) {
+    await prepare.apply(this, args);
+    throw new Error("synthetic prepare-only interruption");
+  };
+  try {
+    await assert.rejects(flush(), /synthetic prepare-only interruption/);
+  } finally {
+    ExtractionReceiptStore.prototype.prepareArtifact = prepare;
+  }
+  await flush();
+  const first = (await new ExtractionReceiptStore(f.dir).get(accepted.extractionReceiptId))!;
+  assert.equal(first.coverageComplete, false);
+  assert.equal(first.artifacts.length, 1);
+  await flush();
+  const retry = (await new ExtractionReceiptStore(f.dir).get(accepted.extractionReceiptId))!;
+  assert.equal(retry.coverageComplete, false);
+  assert.deepEqual(
+    retry.artifacts.map((a) => a.id),
+    first.artifacts.map((a) => a.id)
+  );
+  assert.equal(retry.journal.length, 2);
 });

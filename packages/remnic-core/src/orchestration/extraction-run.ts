@@ -917,7 +917,7 @@ export class ExtractionRunCoordinator {
         durableOutputCount: 0,
       };
     }
-    receiptProviderResult(result);
+    await receiptProviderResult(result);
     const extractionFailure =
       typeof result.extractionFailure === "string" && result.extractionFailure.trim().length > 0
         ? result.extractionFailure

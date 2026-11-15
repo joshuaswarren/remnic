@@ -11,6 +11,13 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import {
+  type ReceiptEffect,
+  type ReceiptPlan,
+  receiptEffectSchema,
+  receiptHash,
+  receiptPlanSchema,
+} from "./extraction-receipt-provenance.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { serializeMutations, withHeldFileLock } from "./utils/serialize-mutations.js";
 
@@ -43,6 +50,7 @@ export interface ArtifactJournal {
   artifact: ArtifactEvidence;
   confirmed: boolean;
   proposedArtifact?: ArtifactEvidence;
+  effect?: ReceiptEffect;
 }
 export interface ReceiptMemberState {
   memberId: string;
@@ -52,6 +60,7 @@ export interface ReceiptMemberState {
   artifacts: ArtifactEvidence[];
   journal: ArtifactJournal[];
   reason?: string;
+  plan?: ReceiptPlan;
 }
 export interface Receipt {
   version: 1;
@@ -115,9 +124,11 @@ const memberSchema = z.object({
       artifact: artifactSchema,
       confirmed: z.boolean(),
       proposedArtifact: artifactSchema.optional(),
+      effect: receiptEffectSchema.optional(),
     })
   ),
   reason: z.string().optional(),
+  plan: receiptPlanSchema.optional(),
 });
 const recordSchema = z.object({
   version: z.literal(1),
@@ -464,52 +475,119 @@ export class ExtractionReceiptStore {
       return token;
     });
   }
-  async prepareArtifact(token: AttemptToken, artifact: ArtifactEvidence): Promise<string> {
+  /** Close the exact plan before any effects; interrupted plans are immutable. */
+  async closePlan(token: AttemptToken, plan: ReceiptPlan): Promise<void> {
+    const validated = receiptPlanSchema.parse(plan);
+    await this.locked(async (refresh) => {
+      const records = await this.active(token);
+      const members = [...token.members].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+      const identityDigest = receiptHash(
+        [...records.values()]
+          .map((r) => ({ receiptId: r.receiptId, identity: r.identity }))
+          .sort((a, b) => a.receiptId.localeCompare(b.receiptId))
+      );
+      const { digest, ...body } = validated;
+      if (
+        receiptHash(validated.members) !== receiptHash(members) ||
+        validated.identityDigest !== identityDigest ||
+        digest !== receiptHash(body) ||
+        !validated.slots.length ||
+        new Set(validated.slots).size !== validated.slots.length
+      )
+        throw new Error("Invalid closed receipt plan");
+      for (const member of token.members) {
+        const state = required(
+          required(records.get(member.receiptId)).members.find((m) => m.memberId === member.memberId)
+        );
+        if (state.plan && JSON.stringify(state.plan) !== JSON.stringify(validated))
+          throw new Error("Extraction receipt plan changed");
+        state.plan = validated;
+      }
+      for (const record of records.values()) await this.writeJSON(this.filename(record.receiptId), record, refresh);
+    });
+  }
+  /** Keep generation fencing authoritative through the actual artifact commit. */
+  async withCurrent<T>(token: AttemptToken, run: () => Promise<T>): Promise<T> {
+    return this.locked(async () => {
+      await this.active(token);
+      return run();
+    });
+  }
+  async prepareArtifact(
+    token: AttemptToken,
+    artifact: ArtifactEvidence,
+    effect?: Omit<ReceiptEffect, "journalId">
+  ): Promise<string> {
     const a = artifactValue(artifact);
     return this.locked(async (refresh) => {
       const records = await this.active(token);
       const journalId = randomUUID();
+      if (effect) {
+        const expectedMembers = token.members.map((m) => ({ ...m, generation: token.generations[key(m)] }));
+        if (
+          effect.attemptId !== token.attemptId ||
+          effect.namespace !== a.namespace ||
+          receiptHash(effect.members) !== receiptHash(expectedMembers)
+        )
+          throw new Error("Receipt effect attempt mismatch");
+        for (const m of token.members) {
+          const state = required(required(records.get(m.receiptId)).members.find((s) => s.memberId === m.memberId));
+          if (
+            !state.plan ||
+            state.plan.digest !== effect.planDigest ||
+            state.plan.identityDigest !== effect.identityDigest ||
+            !state.plan.slots.includes(effect.slot)
+          )
+            throw new Error("Receipt effect plan mismatch");
+        }
+      }
       for (const m of token.members) {
         const r = required(records.get(m.receiptId));
         if (a.namespace !== r.identity.namespace) throw new Error("Artifact scope mismatch");
-        required(r.members.find((x) => x.memberId === m.memberId)).journal.push({
-          journalId,
-          artifact: a,
-          confirmed: false,
-        });
+        const entry: ArtifactJournal = { journalId, artifact: a, confirmed: false };
+        if (effect) entry.effect = receiptEffectSchema.parse({ ...effect, journalId });
+        required(r.members.find((x) => x.memberId === m.memberId)).journal.push(entry);
       }
       for (const r of records.values()) await this.writeJSON(this.filename(r.receiptId), r, refresh);
       return journalId;
     });
   }
-  async confirmArtifact(token: AttemptToken, journalId: string, evidence: ArtifactEvidence): Promise<void> {
+  async confirmArtifact(
+    token: AttemptToken,
+    journalId: string,
+    evidence: ArtifactEvidence,
+    guard?: (commit: () => Promise<void>) => Promise<void>
+  ): Promise<void> {
     text(journalId, "journal id");
     const a = artifactValue(evidence);
     return this.locked(async (refresh) => {
       const records = await this.active(token);
-      for (const m of token.members) {
-        const r = required(records.get(m.receiptId));
-        const state = required(r.members.find((x) => x.memberId === m.memberId));
-        const j = state.journal.find((x) => x.journalId === journalId);
-        const pendingReplacement =
-          j &&
-          !j.confirmed &&
-          /^pending:[a-f0-9-]{36}$/.test(j.artifact.id) &&
-          j.artifact.kind === a.kind &&
-          j.artifact.namespace === a.namespace &&
-          !a.id.startsWith("pending:");
-        if (
-          !j ||
-          (artifactKey(j.artifact) !== artifactKey(a) && !pendingReplacement) ||
-          a.namespace !== r.identity.namespace
-        )
-          throw new Error("Artifact journal mismatch");
-        j.proposedArtifact ??= j.artifact;
-        j.confirmed = true;
-        j.artifact = a;
-        state.artifacts = uniqueArtifacts([...state.artifacts, a]);
-      }
-      for (const r of records.values()) await this.writeJSON(this.filename(r.receiptId), r, refresh);
+      const commit = async () => {
+        for (const m of token.members) {
+          const r = required(records.get(m.receiptId));
+          const state = required(r.members.find((x) => x.memberId === m.memberId));
+          const j = state.journal.find((x) => x.journalId === journalId);
+          const pendingReplacement =
+            j &&
+            !j.confirmed &&
+            /^pending:[a-f0-9-]{36}$/.test(j.artifact.id) &&
+            j.artifact.kind === a.kind &&
+            j.artifact.namespace === a.namespace &&
+            !a.id.startsWith("pending:");
+          if (
+            !j ||
+            (artifactKey(j.artifact) !== artifactKey(a) && !pendingReplacement) ||
+            a.namespace !== r.identity.namespace
+          )
+            throw new Error("Artifact journal mismatch");
+          j.proposedArtifact ??= j.artifact;
+          j.confirmed = true;
+          j.artifact = a;
+          state.artifacts = uniqueArtifacts([...state.artifacts, a]);
+        }
+        for (const r of records.values()) await this.writeJSON(this.filename(r.receiptId), r, refresh);
+      };
+      await (guard ? guard(commit) : commit());
     });
   }
   async finish(token: AttemptToken, outcome: FinishOutcome): Promise<void> {
@@ -534,6 +612,15 @@ export class ExtractionReceiptStore {
           throw new Error("Empty success cannot contain artifacts or journals");
         if (outcome.status === "durable_extracted") {
           const allArtifacts = uniqueArtifacts([...state.artifacts, ...artifacts]);
+          if (
+            state.plan?.slots.some(
+              (slot) =>
+                !state.journal.some(
+                  (j) => j.confirmed && j.effect?.planDigest === state.plan!.digest && j.effect.slot === slot
+                )
+            )
+          )
+            throw new Error("Receipt plan has uncovered effects");
           if (
             !artifacts.length ||
             allArtifacts.some((a) => a.disposition === "pending_review" || a.id.startsWith("pending:")) ||

@@ -146,3 +146,43 @@ in an isolated source copy makes both corresponding regression tests fail.
 The explicit full-diff lifecycle check covers nine paths, keeps two existing
 grandfathered paths and reports zero violations. These results do not authorize
 backfill or reconcile prior ambiguous journals.
+
+## Plain-fact crash reconciliation contract
+
+Before persistence, the writer durably closes an immutable plan over the exact
+registered member set, authenticated identity digests, validated provider candidate
+identities, and each normalized fact slot. A retry must produce the same plan. A
+changed plan stops before effects; it never replaces an interrupted plan. Provider
+failure, filtering, unsupported output kinds, and changed input cannot authorize
+recovery. Each fact slot must have its own exact durable effect proof.
+
+The writer embeds versioned operation provenance in the same atomic fact-file
+write as the effect. It binds the complete member set, original attempt and
+generations, plan, journal, slot, namespace and principal/input identity digest.
+The receipt WAL is not proof. Recovery reads the actual file, validates exact
+provenance and effect identity, syncs file and directories, and only then confirms
+the retained journal using a current generation. Existing deduplicated records
+require an atomic provenance append under the memory mutation lock.
+
+| Failure or retry | Required behavior |
+| --- | --- |
+| Before plan or journal | No recovered coverage |
+| Prepared journal, missing fact | Deferred; no fabricated effect |
+| Fact committed before sync/confirm | Exact readback and sync may recover |
+| Confirm committed before finish | Same-plan retry verifies all effects |
+| One of several fact slots absent | Whole affected member remains incomplete |
+| Retry returns a different provider plan | Stop before persistence effects |
+| Attempt generation changes during write | Old attempt cannot confirm/finish |
+| Principal, namespace, membership or provenance differs | Reject recovery |
+| Fact changed, removed, or legacy without provenance | Remain unproven |
+| Void/entity/chunk or richer fact effects | Explicitly unsupported for recovery |
+
+Retries remain at-least-once. This layer requires the provider to reproduce the
+validated plan; provider-free recovery is separate unfinished work. The flag stays
+off by default, and neither flushing nor a prewrite journal establishes coverage.
+
+Fresh entity, question and artifact writer proofs retain the existing receipt
+behavior. They do not participate in plain-fact crash reconciliation: an unresolved
+unplanned effect keeps a retry incomplete even if the retry persists other output.
+Canonical plan hashing removes JSON-omitted optional fields before sorting keys,
+including nested objects, so equivalent provider and parsed disk records agree.

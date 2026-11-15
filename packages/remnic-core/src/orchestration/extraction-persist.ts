@@ -1,6 +1,6 @@
 import { confirmReceiptFactDuplicate } from "./extraction-receipt-fact-dedup.js";
 import { limitedExtractionOutputs } from "./extraction-persist-output-limits.js";
-import { receiptStorage, receiptStorageRouter, blockReceiptCoverage } from "../extraction-receipt-runtime.js";
+import { receiptReconcile, receiptRecoveredFact, receiptFactSlot, receiptStorage, receiptStorageRouter, blockReceiptCoverage } from "../extraction-receipt-runtime.js";
 import { classifyExtractionOrigin, type ExtractionSourceContext } from "./extraction-origin-context.js";
 import { findActiveFactDuplicate, persistUnderFactDedupWindow } from "./fact-dedup-window.js";
 import { writePromotionUnderFactDedupWindow } from "./promotion-dedup-window.js";
@@ -172,6 +172,7 @@ export class ExtractionPersistCoordinator {
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.deps.config),
     lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.deps.config),
   ): Promise<ExtractionPersistResult> {
+    await receiptReconcile(storage);
     storage = receiptStorage(storage, baseNamespace ?? this.deps.storageDirNamespace(storage.dir));
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
@@ -1472,7 +1473,7 @@ export class ExtractionPersistCoordinator {
 
     let factLoopIndex = -1;
     for (const fact of facts) {
-      factLoopIndex++;
+      receiptFactSlot(fact); factLoopIndex++;
       if (
         !fact ||
         typeof (fact as any).content !== "string" ||
@@ -2576,6 +2577,7 @@ export class ExtractionPersistCoordinator {
         },
         { source: extractionWriteSource },
 );
+      if (await receiptRecoveredFact(targetStorage)) { dedupedCount++; continue; }
       const factWriteOutcome = await persistUnderFactDedupWindow(
         targetStorage.dir,
         raceRecheck(targetStorage, contentHashDedupKey),
