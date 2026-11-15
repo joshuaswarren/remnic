@@ -108,3 +108,74 @@ test("the orchestrator's claim-drain coordinator extracts with one attempt", asy
     await cleanupDir(memoryDir);
   }
 });
+
+function liveEngineOf(orchestrator: Orchestrator): ExtractionEngine {
+  // The extraction field is orchestrator-private: read the own property and narrow it by class, with no cast.
+  const live: unknown = Object.getOwnPropertyDescriptor(orchestrator, "extraction")?.value;
+  assert.ok(live instanceof ExtractionEngine, "the orchestrator's live extraction engine");
+  return live;
+}
+
+const emptyExtractionResponse = () =>
+  new Response(
+    JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ facts: [], entities: [], questions: [], profileUpdates: [] }) } }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+
+test("a drain extraction starts while a live extraction holds the shared client", async () => {
+  const memoryDir = await mkTempMemoryDir("drain-extraction-lane");
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, {
+      localLlmEnabled: true,
+      localLlmModel: "fixture-local",
+      localLlmUrl: "http://127.0.0.1:1234",
+      localLlmFallback: false,
+      // The held live request ends at the client's own timeout, or at destroy() below. Retries are off
+      // so a drain engine that shared the live client would still pass the one-attempt test.
+      localLlmTimeoutMs: 5_000,
+      localLlmRetry5xxCount: 0,
+      slowLogEnabled: false,
+    }),
+  );
+  const liveStarted = Promise.withResolvers<void>();
+  let liveSettled = false;
+  let liveSettledWhenDrainStarted: boolean | undefined;
+  const original = globalThis.fetch;
+  let chat = 0;
+  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    if (!String(url).endsWith("/chat/completions")) {
+      return Promise.resolve(new Response(modelsBody, { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    chat += 1;
+    if (chat === 1) {
+      liveStarted.resolve();
+      return neverAnswers(init).catch((err: Error) => {
+        liveSettled = true;
+        throw err;
+      });
+    }
+    liveSettledWhenDrainStarted ??= liveSettled;
+    return Promise.resolve(emptyExtractionResponse());
+  }) as typeof fetch;
+  try {
+    const live = liveEngineOf(orchestrator).extract(TURNS);
+    await liveStarted.promise;
+    await orchestrator.extractionRunCoordinatorForBuffer(orchestrator.buffer).runExtraction(TURNS, {
+      skipCharThreshold: true,
+      skipUserTurnThreshold: true,
+      clearBufferAfterExtraction: false,
+      bufferKey: "drain-lane",
+    });
+    assert.equal(liveSettledWhenDrainStarted, false, "the drain's model call started while the live request was still held");
+    await orchestrator.destroy();
+    await live;
+  } finally {
+    globalThis.fetch = original;
+    await orchestrator.destroy().catch(() => undefined);
+    await cleanupDir(memoryDir);
+  }
+});
