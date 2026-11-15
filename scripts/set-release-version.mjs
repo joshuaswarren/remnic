@@ -34,6 +34,7 @@ function companionManifestPaths(relativePackageJsonPath) {
     paths.push(path.join(packageDir, "openclaw.plugin.json"));
     paths.push(path.join(packageDir, ".claude-plugin", "plugin.json"));
     paths.push(path.join(packageDir, ".codex-plugin", "plugin.json"));
+    paths.push(path.join(packageDir, ".devin-plugin", "plugin.json"));
   }
   if (packageDir === path.join("packages", "plugin-openclaw")) {
     paths.push("openclaw.plugin.json");

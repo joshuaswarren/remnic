@@ -13,7 +13,7 @@ Triggers:
 
 - "What do you remember about …"
 - "Have we talked about …"
-- `/remnic:recall <query>` slash command invocation.
+- `/remnic:remnic-recall <query>` slash command invocation.
 - A new task begins and the agent wants background.
 
 ## Inputs

@@ -107,6 +107,35 @@ function run(config) {
   // becomes "/remnic/engram/v1/observe"; a bare root ("/") yields "".
   const DAEMON_BASE_PATH = DAEMON_URL ? DAEMON_URL.pathname.replace(/\/+$/, "") : "";
 
+  // URL.hostname keeps the brackets on IPv6 literals ("[::1]"); Node's
+  // http(s).request options.hostname does not accept them, so strip them
+  // once here for every request path below.
+  const DAEMON_HOSTNAME = DAEMON_URL
+    ? DAEMON_URL.hostname.replace(/^\[|\]$/g, "")
+    : "";
+
+  // Plain-http daemon URLs to non-loopback hosts send the bearer token
+  // cleartext. Remote-daemon-over-http is a supported deployment shape
+  // (trusted LAN/Tailscale), so this warns rather than refuses — but the
+  // operator should see the exposure once per hook invocation batch.
+  if (DAEMON_URL && DAEMON_URL.protocol === "http:" && !isLoopbackHost(DAEMON_HOSTNAME)) {
+    if (process.env.REMNIC_HOOK_QUIET !== "1") {
+      try {
+        process.stderr.write(
+          `[${PROG_NAME}] REMNIC_DAEMON_URL uses plain http:// to a non-loopback host; ` +
+            "the bearer token will be sent cleartext — prefer https:// for remote daemons.\n",
+        );
+      } catch {}
+    }
+  }
+
+  function isLoopbackHost(hostname) {
+    const h = (hostname || "").toLowerCase();
+    if (h === "localhost") return true;
+    if (h === "::1") return true;
+    return /^127(?:\.\d{1,3}){3}$/.test(h);
+  }
+
   // Internal re-entrant mode: post-tool-observe spawns a detached copy of
   // itself so the (slow) observe runs in the background and never blocks the
   // host past the short PostToolUse timeout — mirroring the original
@@ -323,7 +352,7 @@ function run(config) {
       const req = transport.request(
         {
           protocol: DAEMON_URL.protocol,
-          hostname: DAEMON_URL.hostname,
+          hostname: DAEMON_HOSTNAME,
           port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
           path: DAEMON_BASE_PATH + urlPath,
           method: "POST",
@@ -384,7 +413,7 @@ function run(config) {
       const req = transport.request(
         {
           protocol: DAEMON_URL.protocol,
-          hostname: DAEMON_URL.hostname,
+          hostname: DAEMON_HOSTNAME,
           port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
           path: DAEMON_BASE_PATH + path,
           method: "GET",
@@ -537,6 +566,16 @@ function run(config) {
   function isString(v) {
     return Object.prototype.toString.call(v) === "[object String]";
   }
+  // ATIF `message` and `content` are a string or an array of ContentPart
+  // objects. Return the concatenated text of text parts; images are skipped.
+  function atifText(v) {
+    if (isString(v)) return v;
+    if (!Array.isArray(v)) return "";
+    return v
+      .filter((p) => isJsonObject(p) && p.type === "text" && isString(p.text))
+      .map((p) => p.text)
+      .join("\n");
+  }
   function parseAtifTranscript(transcriptPath) {
     const doc = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
     const steps = doc && Array.isArray(doc.steps) ? doc.steps : [];
@@ -546,8 +585,9 @@ function run(config) {
       const source = step.source;
       if (source !== "user" && source !== "agent") continue;
       const parts = [];
-      if (isString(step.message) && step.message.trim()) {
-        parts.push(step.message.trim());
+      const message = atifText(step.message).trim();
+      if (message) {
+        parts.push(message);
       }
       if (source === "agent") {
         const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
@@ -573,7 +613,7 @@ function run(config) {
             ? step.observation.results
             : [];
         for (const r of results) {
-          const content = isJsonObject(r) && isString(r.content) ? r.content : "";
+          const content = isJsonObject(r) ? atifText(r.content) : "";
           if (content.trim()) {
             parts.push(`[tool result] ${content.trim().slice(0, ATIF_TOOL_RESULT_CAP)}`);
           }
@@ -1055,62 +1095,81 @@ function run(config) {
     let state = null;
     if (safe) state = resolveState(sessionId, log);
 
-    let removeCursorAfterFlush = true;
-
-    if (token && state && transcriptPath && fs.existsSync(transcriptPath)) {
-      const { cursorFile } = state;
-      migrateTmpCursor(sessionId, cursorFile, log);
-      const lastCount = readCursor(cursorFile, log);
-      if (lastCount === null) {
-        log(`final flush skipped for ${sessionId} due to unsafe cursor`);
-      } else {
-        let newMessages = null;
-        try {
-          newMessages = parseTranscript(transcriptPath).slice(lastCount);
-        } catch {
-          log(`final flush parse failed for ${sessionId}; cursor retained for retry`);
-          removeCursorAfterFlush = false;
-        }
-        if (newMessages && newMessages.length > 0) {
-          log(`final flush for ${sessionId}`);
-          const res = await httpPost(
-            "/engram/v1/observe",
-            token,
-            { sessionKey: sessionId, messages: newMessages },
-            30000,
-          );
-          if (res.ok) {
-            log(`final flush OK for ${sessionId}`);
-          } else {
-            // Critical: retain the cursor so the tail is retried, never lost.
-            log(`final flush failed for ${sessionId} (http=${res.status}); cursor retained for retry`);
-            removeCursorAfterFlush = false;
-          }
-        }
+    // Serialize the final drain and cleanup with the per-session lock so a
+    // still-running detached observe worker cannot race the cursor read,
+    // duplicate the tail observation, or have its lock removed mid-flight.
+    // If the worker outlasts the retry budget we leave cursor and lock in
+    // place — the stale-lock reaper and the next session's cursor logic
+    // tolerate leftovers, while a forced cleanup here could drop queued work.
+    let lockAcquired = false;
+    if (state) {
+      lockAcquired = acquireLock(state.lockFile, log);
+      if (!lockAcquired) {
+        log(`final flush skipped for ${sessionId}: session lock busy`);
+        if (config.enableMaterialize) runMaterialize(log);
+        return;
       }
     }
 
-    // Cleanup — only remove the cursor when the flush succeeded or there was
-    // nothing pending.
-    if (state) {
-      const { cursorFile, lockFile, legacyCursor, legacyLock } = state;
-      if (removeCursorAfterFlush) removeCursor(cursorFile, log);
-      releaseLock(lockFile);
-      if (cursorFile !== legacyCursor) {
-        try {
-          const info = fs.lstatSync(legacyCursor);
-          if (!info.isSymbolicLink()) fs.rmSync(legacyCursor, { force: true });
-        } catch {
-          /* absent */
+    let removeCursorAfterFlush = true;
+
+    try {
+      if (token && state && transcriptPath && fs.existsSync(transcriptPath)) {
+        const { cursorFile } = state;
+        migrateTmpCursor(sessionId, cursorFile, log);
+        const lastCount = readCursor(cursorFile, log);
+        if (lastCount === null) {
+          log(`final flush skipped for ${sessionId} due to unsafe cursor`);
+        } else {
+          let newMessages = null;
+          try {
+            newMessages = parseTranscript(transcriptPath).slice(lastCount);
+          } catch {
+            log(`final flush parse failed for ${sessionId}; cursor retained for retry`);
+            removeCursorAfterFlush = false;
+          }
+          if (newMessages && newMessages.length > 0) {
+            log(`final flush for ${sessionId}`);
+            const res = await httpPost(
+              "/engram/v1/observe",
+              token,
+              { sessionKey: sessionId, messages: newMessages },
+              30000,
+            );
+            if (res.ok) {
+              log(`final flush OK for ${sessionId}`);
+            } else {
+              // Critical: retain the cursor so the tail is retried, never lost.
+              log(`final flush failed for ${sessionId} (http=${res.status}); cursor retained for retry`);
+              removeCursorAfterFlush = false;
+            }
+          }
         }
       }
-      if (lockFile !== legacyLock) {
-        try {
-          fs.rmdirSync(legacyLock);
-        } catch {
-          /* absent */
+
+      // Cleanup — only remove the cursor when the flush succeeded or there
+      // was nothing pending. The lock we hold is released in `finally`.
+      if (state) {
+        const { cursorFile, legacyCursor, legacyLock } = state;
+        if (removeCursorAfterFlush) removeCursor(cursorFile, log);
+        if (cursorFile !== legacyCursor) {
+          try {
+            const info = fs.lstatSync(legacyCursor);
+            if (!info.isSymbolicLink()) fs.rmSync(legacyCursor, { force: true });
+          } catch {
+            /* absent */
+          }
+        }
+        if (state.lockFile !== legacyLock) {
+          try {
+            fs.rmdirSync(legacyLock);
+          } catch {
+            /* absent */
+          }
         }
       }
+    } finally {
+      if (lockAcquired && state) releaseLock(state.lockFile);
     }
 
     if (config.enableMaterialize) runMaterialize(log);

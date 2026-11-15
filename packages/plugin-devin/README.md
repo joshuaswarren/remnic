@@ -30,8 +30,12 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
     export REMNIC_DAEMON_URL="https://remnic.example.com:4318"
     ```
 
-    Plain `http://` is refused for non-loopback hosts because the bearer token
-    travels with every request; use `https://` or a loopback address.
+    Plain `http://` is refused by the MCP proxy for non-loopback hosts because
+    the bearer token travels with every request; use `https://` or a loopback
+    address. The lifecycle hooks accept any `http(s)://` daemon URL (remote
+    daemons on trusted LAN/Tailscale links are supported) but print a
+    cleartext-token warning on stderr for non-loopback `http://` targets —
+    prefer `https://` there too.
 
 ## What ships
 
@@ -60,8 +64,9 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 - **LCM coordination** — `PostCompaction` drains any unobserved transcript
   tail, then calls `/engram/v1/lcm/compaction/flush` so long-term memory is
   flushed before context is lost.
-- **Memory skills** — `/remnic-recall`, `/remnic-search`, `/remnic-remember`,
-  `/remnic-entities`, `/remnic-status`, `/remnic-memory-workflow`.
+- **Memory skills** — `/remnic:remnic-recall`, `/remnic:remnic-search`,
+  `/remnic:remnic-remember`, `/remnic:remnic-entities`,
+  `/remnic:remnic-status`, `/remnic:remnic-memory-workflow`.
 - **MCP tools** — the full Remnic tool surface (`mcp__remnic__*`) for
   on-demand recall, store, search, and entity lookups.
 - **Cross-agent sharing** — the same memory store is shared with every other

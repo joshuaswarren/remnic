@@ -11,7 +11,7 @@ Triggers:
 
 - "Is Remnic running?"
 - "Check memory status."
-- `/remnic:status` slash command invocation.
+- `/remnic:remnic-status` slash command invocation.
 - Recall/store tools returned connection errors in this turn.
 
 ## Inputs

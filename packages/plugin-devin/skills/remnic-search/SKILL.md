@@ -1,19 +1,19 @@
 ---
 name: remnic-search
-description: Run a deep full-text search across every Remnic memory. Trigger phrases include "search memories for", "find anything about", "deep search".
+description: Run a deep full-text search across the Remnic LCM conversation archive. Trigger phrases include "search memories for", "find anything about", "deep search".
 allowed-tools:
   - mcp__remnic__remnic_lcm_search
 ---
 
 ## When to use
 
-Use when `remnic-recall` did not surface something the user insists exists, or when the task genuinely needs exhaustive coverage rather than a ranked semantic summary.
+Use when `remnic-recall` did not surface something the user insists exists, or when the task genuinely needs exhaustive coverage of archived conversations rather than a ranked semantic summary. `remnic_lcm_search` reads only the LCM conversation archive — durable memories stored via `remnic_memory_store` are not included; use `remnic-recall` or `remnic-entities` for those.
 
 Triggers:
 
 - "Search memories for …"
 - "Deep search on …"
-- `/remnic:search <query>` slash command invocation.
+- `/remnic:remnic-search <query>` slash command invocation.
 - Follow-up after `remnic-recall` returned nothing useful.
 
 ## Inputs

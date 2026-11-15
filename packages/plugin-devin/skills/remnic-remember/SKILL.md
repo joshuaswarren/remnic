@@ -14,7 +14,7 @@ Triggers:
 
 - "Remember that …"
 - "Save this for later."
-- `/remnic:remember <text>` slash command invocation.
+- `/remnic:remnic-remember <text>` slash command invocation.
 - End-of-turn consolidation after a non-trivial conclusion.
 
 ## Inputs

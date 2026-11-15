@@ -43,6 +43,7 @@ const expectedPublishDirs = [
   "packages/plugin-openclaw",
   "packages/plugin-claude-code",
   "packages/plugin-codex",
+  "packages/plugin-devin",
   "packages/shim-openclaw-engram",
 ] as const;
 test("release workflow publish order matches the supported npm install surfaces", async () => {

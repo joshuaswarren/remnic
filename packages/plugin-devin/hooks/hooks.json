@@ -6,7 +6,7 @@
         {
           "type": "command",
           "command": "sh \"${PLUGIN_ROOT}/hooks/bin/remnic-devin-hook.sh\" session-start",
-          "timeout": 45
+          "timeout": 75
         }
       ]
     }

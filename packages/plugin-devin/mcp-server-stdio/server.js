@@ -259,20 +259,39 @@ function forward(msg, isNotification) {
   };
   if (!isNotification) payload.id = msg.id ?? null;
   const body = JSON.stringify(payload);
+  // Mirror the hook runner's namespace override: REMNIC_NAMESPACE (or the
+  // legacy ENGRAM_NAMESPACE) scopes every MCP call the same way it scopes
+  // hook observe/recall/flush bodies.
+  const nsHeader = envOrEmpty("REMNIC_NAMESPACE") || envOrEmpty("ENGRAM_NAMESPACE");
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "application/json, text/event-stream",
+    "X-Engram-Client-Id": "devin-cli",
+    Authorization: `Bearer ${token}`,
+    "Content-Length": Buffer.byteLength(body, "utf8"),
+  };
+  if (nsHeader) headers["X-Engram-Namespace"] = nsHeader;
   return new Promise((resolve) => {
+    // One-shot completion guard: req.destroy() can surface the same failure
+    // on both the request and response error channels (and a late socket
+    // error can follow a completed response). Only the first terminal path
+    // may write a JSON-RPC reply or resolve.
+    let answered = false;
+    const respond = (emit) => {
+      if (answered) return;
+      answered = true;
+      emit();
+      resolve();
+    };
     const req = transport.request(
       {
         method: "POST",
-        hostname: parsed.hostname,
+        // URL.hostname retains brackets on IPv6 literals ("[::1]"); the
+        // request options want the bare address.
+        hostname: parsed.hostname.replace(/^\[|\]$/g, ""),
         port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
         path: `${parsed.pathname || ""}${parsed.search || ""}` || "/mcp",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json, text/event-stream",
-          "X-Engram-Client-Id": "claude-code",
-          Authorization: `Bearer ${token}`,
-          "Content-Length": Buffer.byteLength(body, "utf8"),
-        },
+        headers,
       },
       (res) => {
         let chunks = "";
@@ -298,18 +317,18 @@ function forward(msg, isNotification) {
                   `remnic-mcp-proxy: notification ${msg.method} got HTTP ${res.statusCode}: ${sanitizeMessage(chunks).slice(0, 200)}\n`
                 );
               }
-              writeNotificationAck();
-              resolve();
+              respond(() => writeNotificationAck());
               return;
             }
             if (res.statusCode < 200 || res.statusCode >= 300) {
-              writeError(
-                msg.id ?? null,
-                -32001,
-                `daemon responded ${res.statusCode}: ${sanitizeMessage(chunks).slice(0, 200)}`,
-                msg.id ?? null
+              respond(() =>
+                writeError(
+                  msg.id ?? null,
+                  -32001,
+                  `daemon responded ${res.statusCode}: ${sanitizeMessage(chunks).slice(0, 200)}`,
+                  msg.id ?? null
+                )
               );
-              resolve();
               return;
             }
             const trimmed = chunks.trim();
@@ -317,13 +336,14 @@ function forward(msg, isNotification) {
             // (the daemon should always JSON-RPC). Surface as a parse error
             // so MCP clients see the real failure mode.
             if (trimmed.length === 0) {
-              writeError(
-                msg.id ?? null,
-                -32002,
-                `daemon returned empty body with HTTP ${res.statusCode}`,
-                msg.id ?? null
+              respond(() =>
+                writeError(
+                  msg.id ?? null,
+                  -32002,
+                  `daemon returned empty body with HTTP ${res.statusCode}`,
+                  msg.id ?? null
+                )
               );
-              resolve();
               return;
             }
             // The Remnic /mcp endpoint may emit SSE in streaming mode —
@@ -338,57 +358,58 @@ function forward(msg, isNotification) {
             try {
               parsedResp = JSON.parse(cleaned);
             } catch (err) {
-              writeError(
-                msg.id ?? null,
-                -32002,
-                `daemon returned non-JSON: ${sanitizeMessage(err.message)} (preview: ${cleaned.slice(0, 200)})`,
-                msg.id ?? null
+              respond(() =>
+                writeError(
+                  msg.id ?? null,
+                  -32002,
+                  `daemon returned non-JSON: ${sanitizeMessage(err.message)} (preview: ${cleaned.slice(0, 200)})`,
+                  msg.id ?? null
+                )
               );
-              resolve();
               return;
             }
             if (parsedResp && "error" in parsedResp) {
-              writeRaw(JSON.stringify(parsedResp));
-              resolve();
+              respond(() => writeRaw(JSON.stringify(parsedResp)));
               return;
             }
-            writeResult(msg.id ?? null, parsedResp.result ?? parsedResp);
-            resolve();
+            respond(() => writeResult(msg.id ?? null, parsedResp.result ?? parsedResp));
           } catch (err) {
             // The outer guard catches anything that slipped through the inner
             // parses. For requests, emit a JSON-RPC error envelope so the MCP
             // client sees a real failure rather than a silent stall. For
             // notifications (which carry no id and to which the receiver MUST
             // NOT reply per JSON-RPC 2.0), log to stderr only.
+            respond(() => {
+              if (isNotification) {
+                process.stderr.write(
+                  `remnic-mcp-proxy: notification ${msg.method} handler error: ${sanitizeMessage(err.message)}\n`
+                );
+              } else {
+                writeError(
+                  msg.id ?? null,
+                  -32603,
+                  `internal proxy error: ${sanitizeMessage(err.message)}`,
+                  msg.id ?? null
+                );
+              }
+            });
+          }
+        });
+        res.on("error", (err) => {
+          respond(() => {
             if (isNotification) {
               process.stderr.write(
-                `remnic-mcp-proxy: notification ${msg.method} handler error: ${sanitizeMessage(err.message)}\n`
+                `remnic-mcp-proxy: notification ${msg.method} response stream error: ${sanitizeMessage(err.message)}\n`
               );
             } else {
               writeError(
                 msg.id ?? null,
-                -32603,
-                `internal proxy error: ${sanitizeMessage(err.message)}`,
+                -32003,
+                `response stream error: ${sanitizeMessage(err.message)}`,
                 msg.id ?? null
               );
             }
-            resolve();
-          }
-        });
-        res.on("error", (err) => {
-          if (isNotification) {
-            process.stderr.write(
-              `remnic-mcp-proxy: notification ${msg.method} response stream error: ${sanitizeMessage(err.message)}\n`
-            );
-          } else {
-            writeError(
-              msg.id ?? null,
-              -32003,
-              `response stream error: ${sanitizeMessage(err.message)}`,
-              msg.id ?? null
-            );
-          }
-          resolve();
+          });
         });
       }
     );
@@ -396,14 +417,15 @@ function forward(msg, isNotification) {
       req.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`));
     });
     req.on("error", (err) => {
-      if (isNotification) {
-        process.stderr.write(
-          `remnic-mcp-proxy: notification ${msg.method} transport error: ${sanitizeMessage(err.message)}\n`
-        );
-      } else {
-        writeError(msg.id ?? null, -32003, `transport error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
-      }
-      resolve();
+      respond(() => {
+        if (isNotification) {
+          process.stderr.write(
+            `remnic-mcp-proxy: notification ${msg.method} transport error: ${sanitizeMessage(err.message)}\n`
+          );
+        } else {
+          writeError(msg.id ?? null, -32003, `transport error: ${sanitizeMessage(err.message)}`, msg.id ?? null);
+        }
+      });
     });
     req.write(body);
     req.end();

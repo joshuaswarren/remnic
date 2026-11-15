@@ -13,7 +13,7 @@ Triggers:
 
 - "Tell me about the entity …"
 - "Look up …"
-- `/remnic:entities <name>` slash command invocation.
+- `/remnic:remnic-entities <name>` slash command invocation.
 - Any reference to a named thing that could have linked facts.
 
 ## Inputs

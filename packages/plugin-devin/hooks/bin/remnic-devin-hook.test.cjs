@@ -219,8 +219,12 @@ test("post-tool-observe: observes ATIF transcript delta resolved from session_id
     assert.equal(messages[1].role, "assistant");
     assert.match(messages[1].content, /tool call\] edit/);
     assert.match(messages[1].content, /tool result\] edit applied/);
-    // Cursor advanced past the observed messages.
-    await new Promise((r) => setTimeout(r, 300));
+    // Cursor advances only after the observe response succeeds; poll with a
+    // deadline rather than a fixed sleep.
+    const cursorDeadline = Date.now() + 10000;
+    while (!fs.existsSync(cursorPath(home, sessionId)) && Date.now() < cursorDeadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     assert.ok(fs.existsSync(cursorPath(home, sessionId)), "cursor file written");
   } finally {
     server.close();
