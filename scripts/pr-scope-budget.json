@@ -61,6 +61,7 @@
     "packages/plugin-openclaw/": "plugin-openclaw",
     "packages/plugin-claude-code/": "plugin-claude-code",
     "packages/plugin-codex/": "plugin-codex",
+    "packages/plugin-devin/": "plugin-devin",
     "packages/plugin-hermes/": "plugin-hermes",
     "packages/plugin-pi/": "plugin-pi",
     "packages/shim-openclaw-engram/": "shim",

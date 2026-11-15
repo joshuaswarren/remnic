@@ -70,6 +70,7 @@ export const CORE_PATH_PREFIXES = [
   "packages/plugin-openclaw/",
   "packages/plugin-claude-code/",
   "packages/plugin-codex/",
+  "packages/plugin-devin/",
   "packages/plugin-hermes/",
   "packages/plugin-pi/",
   "packages/shim-openclaw-engram/",

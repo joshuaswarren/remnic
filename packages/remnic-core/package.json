@@ -276,6 +276,16 @@
       "remnic-source": "./src/adapters/codex.ts",
       "import": "./dist/adapters/codex.js"
     },
+    "./adapters/devin": {
+      "types": "./dist/adapters/devin.d.ts",
+      "remnic-source": "./src/adapters/devin.ts",
+      "import": "./dist/adapters/devin.js"
+    },
+    "./adapters/devin.js": {
+      "types": "./dist/adapters/devin.d.ts",
+      "remnic-source": "./src/adapters/devin.ts",
+      "import": "./dist/adapters/devin.js"
+    },
     "./adapters/hermes": {
       "types": "./dist/adapters/hermes.d.ts",
       "remnic-source": "./src/adapters/hermes.ts",

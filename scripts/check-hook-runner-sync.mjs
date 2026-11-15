@@ -10,6 +10,7 @@ const source = path.resolve(repoRoot, "scripts", "hook-runner", "remnic-hook-cor
 const targets = [
   path.resolve(repoRoot, "packages", "plugin-claude-code", "hooks", "bin", "remnic-hook-core.cjs"),
   path.resolve(repoRoot, "packages", "plugin-codex", "hooks", "bin", "remnic-hook-core.cjs"),
+  path.resolve(repoRoot, "packages", "plugin-devin", "hooks", "bin", "remnic-hook-core.cjs"),
 ];
 
 const canonical = await readFile(source, "utf8");

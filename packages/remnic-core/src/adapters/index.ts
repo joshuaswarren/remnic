@@ -1,6 +1,7 @@
 export type { AdapterContext, EngramAdapter, ResolvedIdentity } from "./types.js";
 export { ClaudeCodeAdapter } from "./claude-code.js";
 export { CodexAdapter } from "./codex.js";
+export { DevinAdapter } from "./devin.js";
 export { GrokAdapter } from "./grok.js";
 export { OpenCodeAdapter } from "./opencode.js";
 export { ReplitAdapter } from "./replit.js";

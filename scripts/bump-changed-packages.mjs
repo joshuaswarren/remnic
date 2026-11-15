@@ -276,6 +276,7 @@ const companionManifestsByPackageDir = new Map([
   ["packages/shim-openclaw-engram", ["packages/shim-openclaw-engram/openclaw.plugin.json"]],
   ["packages/plugin-claude-code", ["packages/plugin-claude-code/.claude-plugin/plugin.json"]],
   ["packages/plugin-codex", ["packages/plugin-codex/.codex-plugin/plugin.json"]],
+  ["packages/plugin-devin", ["packages/plugin-devin/.devin-plugin/plugin.json"]],
 ]);
 
 async function syncCompanionVersions(repoRoot, pkg, version, dryRun) {

@@ -43,6 +43,8 @@ Published npm packages:
   @remnic/plugin-codex     Codex CLI plugin (hooks + MCP + memory extension).
   @remnic/plugin-claude-code  Claude Code plugin (hooks, skills, agents, MCP).
                            Files-only, zero dependencies.
+  @remnic/plugin-devin     Devin CLI plugin (hooks, skills, agents, MCP).
+                           Shares the unified hook runner with ATIF transcript support.
   @remnic/plugin-pi        Remnic memory extension for the Pi Coding Agent.
   @remnic/replit           Replit Agent MCP connector.
   @remnic/connector-limitless  Limitless Pendant wearable connector.

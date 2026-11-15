@@ -561,6 +561,8 @@ importers:
         specifier: workspace:^
         version: link:../remnic-core
 
+  packages/plugin-devin: {}
+
   packages/plugin-openclaw:
     dependencies:
       '@remnic/core':

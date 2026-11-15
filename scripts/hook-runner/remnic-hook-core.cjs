@@ -107,11 +107,55 @@ function run(config) {
   // becomes "/remnic/engram/v1/observe"; a bare root ("/") yields "".
   const DAEMON_BASE_PATH = DAEMON_URL ? DAEMON_URL.pathname.replace(/\/+$/, "") : "";
 
+  // URL.hostname keeps the brackets on IPv6 literals ("[::1]"); Node's
+  // http(s).request options.hostname does not accept them, so strip them
+  // once here for every request path below.
+  const DAEMON_HOSTNAME = DAEMON_URL
+    ? DAEMON_URL.hostname.replace(/^\[|\]$/g, "")
+    : "";
+
+  // Plain-http daemon URLs to non-loopback hosts send the bearer token
+  // cleartext. Remote-daemon-over-http is a supported deployment shape
+  // (trusted LAN/Tailscale), so this warns rather than refuses — but the
+  // operator should see the exposure once per hook invocation batch.
+  if (DAEMON_URL && DAEMON_URL.protocol === "http:" && !isLoopbackHost(DAEMON_HOSTNAME)) {
+    if (process.env.REMNIC_HOOK_QUIET !== "1") {
+      try {
+        process.stderr.write(
+          `[${PROG_NAME}] REMNIC_DAEMON_URL uses plain http:// to a non-loopback host; ` +
+            "the bearer token will be sent cleartext — prefer https:// for remote daemons.\n",
+        );
+      } catch {}
+    }
+  }
+
+  function isLoopbackHost(hostname) {
+    const h = (hostname || "").toLowerCase();
+    if (h === "localhost") return true;
+    if (h === "::1") return true;
+    return /^127(?:\.\d{1,3}){3}$/.test(h);
+  }
+
   // Internal re-entrant mode: post-tool-observe spawns a detached copy of
   // itself so the (slow) observe runs in the background and never blocks the
   // host past the short PostToolUse timeout — mirroring the original
   // `( … ) & disown`.
   const OBSERVE_WORKER = "__observe-worker__";
+
+  // Detached worker that retries the SessionEnd tail drain after lock
+  // contention. The foreground session-end hook gives up after ~5s so the
+  // host is never blocked; this worker waits longer for a still-running
+  // observe worker to release the session lock, then performs the same
+  // drain + cursor cleanup.
+  const SESSION_END_DRAIN = "__session-end-drain__";
+
+  // Lock-wait budget (100ms each → ~120s) for the detached session-end
+  // drain: an in-flight observe worker's /engram/v1/observe can take up to
+  // 120s, so the drain waits roughly that long before giving up and leaving
+  // cursor state for the stale-lock reaper.
+  const _sedRaw = process.env.REMNIC_SESSION_END_DRAIN_LOCK_RETRIES;
+  const _sedParsed = _sedRaw != null && _sedRaw !== "" ? Number.parseInt(_sedRaw, 10) : 1200;
+  const SESSION_END_DRAIN_LOCK_RETRIES = Number.isFinite(_sedParsed) && _sedParsed >= 0 ? _sedParsed : 1200;
 
   // PreCompact tail-drain lock-wait budget (100ms each → ~15s). Bounds how
   // long handlePreCompact waits for a detached PostToolUse observe worker
@@ -323,7 +367,7 @@ function run(config) {
       const req = transport.request(
         {
           protocol: DAEMON_URL.protocol,
-          hostname: DAEMON_URL.hostname,
+          hostname: DAEMON_HOSTNAME,
           port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
           path: DAEMON_BASE_PATH + urlPath,
           method: "POST",
@@ -384,7 +428,7 @@ function run(config) {
       const req = transport.request(
         {
           protocol: DAEMON_URL.protocol,
-          hostname: DAEMON_URL.hostname,
+          hostname: DAEMON_HOSTNAME,
           port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
           path: DAEMON_BASE_PATH + path,
           method: "GET",
@@ -490,7 +534,9 @@ function run(config) {
   }
 
   // ── transcript parsing ─────────────────────────────────────────────────────
-  function parseTranscript(transcriptPath) {
+  // JSONL hosts (Claude Code, Codex): one JSON object per line with
+  // {type:"user"|"assistant", message:{role, content}}.
+  function parseJsonlTranscript(transcriptPath) {
     const lines = fs.readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean);
     const messages = [];
     for (const line of lines) {
@@ -516,6 +562,118 @@ function run(config) {
       }
     }
     return messages;
+  }
+
+  // ATIF hosts (Devin CLI): a single JSON document
+  // {schema_version, session_id, steps:[{source, message, tool_calls,
+  // observation, ...}]}. Agent steps carry tool_calls and observation
+  // results alongside the assistant text; we fold a bounded rendering of
+  // both into the observed content so tool activity reaches memory, not
+  // just prose. System steps are skipped (they are prompt scaffolding).
+  const ATIF_MESSAGE_CAP = 8000;
+  const ATIF_TOOL_CALL_ARG_CAP = 500;
+  const ATIF_TOOL_RESULT_CAP = 2000;
+  // JSON.parse only yields plain objects, arrays, and primitives, so
+  // `instanceof Object && !Array.isArray` is an exact plain-object test.
+  function isJsonObject(v) {
+    return v instanceof Object && !Array.isArray(v);
+  }
+  function isString(v) {
+    return Object.prototype.toString.call(v) === "[object String]";
+  }
+  // ATIF `message` and `content` are a string or an array of ContentPart
+  // objects. Return the concatenated text of text parts; images are skipped.
+  function atifText(v) {
+    if (isString(v)) return v;
+    if (!Array.isArray(v)) return "";
+    return v
+      .filter((p) => isJsonObject(p) && p.type === "text" && isString(p.text))
+      .map((p) => p.text)
+      .join("\n");
+  }
+  function parseAtifTranscript(transcriptPath) {
+    const doc = JSON.parse(fs.readFileSync(transcriptPath, "utf8"));
+    const steps = doc && Array.isArray(doc.steps) ? doc.steps : [];
+    const messages = [];
+    for (const step of steps) {
+      if (!isJsonObject(step)) continue;
+      const source = step.source;
+      if (source !== "user" && source !== "agent") continue;
+      const parts = [];
+      const message = atifText(step.message).trim();
+      if (message) {
+        parts.push(message);
+      }
+      if (source === "agent") {
+        const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+        for (const tc of toolCalls) {
+          if (!isJsonObject(tc)) continue;
+          const name = tc.function_name || tc.name || "tool";
+          let argStr = "";
+          try {
+            argStr = isString(tc.arguments)
+              ? tc.arguments
+              : JSON.stringify(tc.arguments);
+          } catch {
+            argStr = "";
+          }
+          if (argStr && argStr !== "{}") {
+            parts.push(`[tool call] ${name}(${argStr.slice(0, ATIF_TOOL_CALL_ARG_CAP)})`);
+          } else {
+            parts.push(`[tool call] ${name}`);
+          }
+        }
+        const results =
+          step.observation && Array.isArray(step.observation.results)
+            ? step.observation.results
+            : [];
+        for (const r of results) {
+          const content = isJsonObject(r) ? atifText(r.content) : "";
+          if (content.trim()) {
+            parts.push(`[tool result] ${content.trim().slice(0, ATIF_TOOL_RESULT_CAP)}`);
+          }
+        }
+      }
+      const content = parts.join("\n").trim();
+      if (!content) continue;
+      messages.push({
+        role: source === "user" ? "user" : "assistant",
+        content: content.slice(0, ATIF_MESSAGE_CAP),
+      });
+    }
+    return messages;
+  }
+
+  function parseTranscript(transcriptPath) {
+    if (config.transcriptFormat === "atif") return parseAtifTranscript(transcriptPath);
+    return parseJsonlTranscript(transcriptPath);
+  }
+
+  // Hosts that do not put transcript_path in the hook payload (Devin CLI)
+  // can supply config.resolveTranscriptPath(input) to derive it — e.g. from
+  // the session id and a well-known transcript directory.
+  function transcriptPathFor(input) {
+    const transcriptPath = input.transcript_path || "";
+    if (isString(transcriptPath) && transcriptPath) {
+      return transcriptPath;
+    }
+    if (config.resolveTranscriptPath instanceof Function) {
+      try {
+        const resolved = config.resolveTranscriptPath(input);
+        return isString(resolved) ? resolved : "";
+      } catch {
+        return "";
+      }
+    }
+    return "";
+  }
+
+  // Hosts that omit cwd from the hook payload still export a project-dir
+  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR).
+  function cwdFor(input) {
+    const cwd = input.cwd || "";
+    if (isString(cwd) && cwd) return cwd;
+    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
   }
 
   // ── cursor / lock state hardening (post-tool + session-end) ────────────────
@@ -564,7 +722,8 @@ function run(config) {
       cursorFile = legacyCursor;
       lockFile = legacyLock;
     }
-    return { cursorFile, lockFile, legacyCursor, legacyLock };
+    const doneFile = path.join(stateDir, `remnic-done-${sessionId}`);
+    return { cursorFile, lockFile, doneFile, legacyCursor, legacyLock };
   }
 
   // true if the cursor file is safe to read/write (or absent).
@@ -618,6 +777,44 @@ function run(config) {
       /* best effort */
     }
     return true;
+  }
+
+  // Completion tombstone: written by the session-end drain once the final
+  // flush succeeds (or there is nothing left to flush). Its content is the
+  // observed-message checkpoint, which handleSessionStart restores into the
+  // cursor when a session resumes under the same id. Detached observe
+  // workers queued behind the session lock check this under the lock and
+  // exit instead of treating the missing cursor as 0 and replaying the
+  // whole transcript. The file is tiny and persists for the life of the
+  // state dir, like leftover locks from crashed sessions.
+  function sessionDone(doneFile) {
+    try {
+      const info = fs.lstatSync(doneFile);
+      return !info.isSymbolicLink() && info.isFile() && ownedByUs(info);
+    } catch {
+      return false;
+    }
+  }
+
+  function markSessionDone(doneFile, checkpoint, log) {
+    try {
+      const tmp = `${doneFile}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, `${checkpoint}\n`, { mode: 0o600 });
+      fs.renameSync(tmp, doneFile);
+      return true;
+    } catch (err) {
+      log(`failed to write session-done marker ${doneFile}: ${err && err.message}`);
+      return false;
+    }
+  }
+
+  function readDoneCheckpoint(doneFile) {
+    try {
+      const n = parseInt(fs.readFileSync(doneFile, "utf8").trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+      return null;
+    }
   }
 
   // Adopt a higher os.tmpdir() (or /tmp) cursor written by an older
@@ -703,10 +900,30 @@ function run(config) {
 
   async function handleSessionStart(input, token, log) {
     const sessionId = input.session_id || "";
-    const cwd = input.cwd || "";
+    const cwd = cwdFor(input);
     const projectName = (cwd && path.basename(cwd)) || "unknown";
     const codingContext = resolveCodingContext(cwd);
     log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
+
+    // A session-start means this session id is active again — Devin and
+    // Claude Code reuse the id across resume. Restore the observation
+    // checkpoint stored in the done tombstone into the cursor, then clear
+    // the tombstone so queued and future workers observe the new tail
+    // instead of exiting early. Without this, a resumed session would never
+    // observe again.
+    if (sessionId && !/[^A-Za-z0-9._-]/.test(sessionId)) {
+      const st = resolveState(sessionId, log);
+      if (st && sessionDone(st.doneFile)) {
+        const checkpoint = readDoneCheckpoint(st.doneFile);
+        if (checkpoint !== null) writeCursor(st.cursorFile, checkpoint, log);
+        try {
+          fs.rmSync(st.doneFile, { force: true });
+        } catch {
+          /* best effort */
+        }
+        log(`cleared done marker for session ${sessionId} (checkpoint=${checkpoint})`);
+      }
+    }
 
     // Health check — start daemon if not running.
     if (!(await httpHealthy(2000, token))) {
@@ -860,8 +1077,8 @@ function run(config) {
   // PostToolUse timeout.
   async function observeWorker(input, token, log) {
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
-    const projectName = (input.cwd && path.basename(input.cwd)) || "unknown";
+    const transcriptPath = transcriptPathFor(input);
+    const projectName = (cwdFor(input) && path.basename(cwdFor(input))) || "unknown";
     const toolName = input.tool_name || "";
 
     if (!sessionId || /[^A-Za-z0-9._-]/.test(sessionId)) {
@@ -877,6 +1094,13 @@ function run(config) {
 
     if (!acquireLock(lockFile, log)) return;
     try {
+      // A queued worker that acquires the lock after SessionEnd removed the
+      // cursor must not treat the missing cursor as 0 and replay the whole
+      // transcript — the done tombstone marks completed sessions.
+      if (sessionDone(state.doneFile)) {
+        log(`session ${sessionId} already flushed; skipping queued observe`);
+        return;
+      }
       migrateTmpCursor(sessionId, cursorFile, log);
       const lastCount = readCursor(cursorFile, log);
       if (lastCount === null) return;
@@ -941,73 +1165,138 @@ function run(config) {
     }
   }
 
-  async function handleSessionEnd(input, token, log) {
+  async function handleSessionEnd(input, token, log, raw, opts) {
+    const drainRetry = !!(opts && opts.drainRetry);
     // Acknowledge immediately.
     emit({ continue: true });
 
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
+    const transcriptPath = transcriptPathFor(input);
     const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
 
     let state = null;
     if (safe) state = resolveState(sessionId, log);
 
-    let removeCursorAfterFlush = true;
-
-    if (token && state && transcriptPath && fs.existsSync(transcriptPath)) {
-      const { cursorFile } = state;
-      migrateTmpCursor(sessionId, cursorFile, log);
-      const lastCount = readCursor(cursorFile, log);
-      if (lastCount === null) {
-        log(`final flush skipped for ${sessionId} due to unsafe cursor`);
-      } else {
-        let newMessages = null;
-        try {
-          newMessages = parseTranscript(transcriptPath).slice(lastCount);
-        } catch {
-          log(`final flush parse failed for ${sessionId}; cursor retained for retry`);
-          removeCursorAfterFlush = false;
-        }
-        if (newMessages && newMessages.length > 0) {
-          log(`final flush for ${sessionId}`);
-          const res = await httpPost(
-            "/engram/v1/observe",
-            token,
-            { sessionKey: sessionId, messages: newMessages },
-            30000,
-          );
-          if (res.ok) {
-            log(`final flush OK for ${sessionId}`);
-          } else {
-            // Critical: retain the cursor so the tail is retried, never lost.
-            log(`final flush failed for ${sessionId} (http=${res.status}); cursor retained for retry`);
-            removeCursorAfterFlush = false;
+    // Serialize the final drain and cleanup with the per-session lock so a
+    // still-running detached observe worker cannot race the cursor read,
+    // duplicate the tail observation, or have its lock removed mid-flight.
+    // The foreground hook waits ~5s; on contention it hands the drain to a
+    // detached worker with a much longer budget so messages that land after
+    // the in-flight worker's snapshot are still observed before the session
+    // state is cleaned up. If even that worker gives up, cursor and lock stay
+    // for the stale-lock reaper — a forced cleanup could drop queued work.
+    let lockAcquired = false;
+    if (state) {
+      lockAcquired = acquireLock(
+        state.lockFile,
+        log,
+        drainRetry ? SESSION_END_DRAIN_LOCK_RETRIES : 50,
+      );
+      if (!lockAcquired) {
+        log(`final flush skipped for ${sessionId}: session lock busy`);
+        if (!drainRetry && raw) {
+          try {
+            const child = spawn(process.execPath, [ENTRY_FILE, SESSION_END_DRAIN], {
+              detached: true,
+              stdio: ["pipe", "ignore", "ignore"],
+              env: { ...process.env, REMNIC_HOOK_TOKEN: token || "" },
+            });
+            child.on("error", (e) => log(`session-end drain spawn error: ${e && e.message}`));
+            child.stdin.on("error", () => {
+              /* ignore EPIPE if the worker exits before we finish writing */
+            });
+            child.stdin.end(raw);
+            child.unref();
+          } catch (err) {
+            log(`failed to spawn session-end drain: ${err && err.message}`);
           }
         }
+        if (config.enableMaterialize && !drainRetry) runMaterialize(log);
+        return;
       }
     }
 
-    // Cleanup — only remove the cursor when the flush succeeded or there was
-    // nothing pending.
-    if (state) {
-      const { cursorFile, lockFile, legacyCursor, legacyLock } = state;
-      if (removeCursorAfterFlush) removeCursor(cursorFile, log);
-      releaseLock(lockFile);
-      if (cursorFile !== legacyCursor) {
-        try {
-          const info = fs.lstatSync(legacyCursor);
-          if (!info.isSymbolicLink()) fs.rmSync(legacyCursor, { force: true });
-        } catch {
-          /* absent */
+    // `finalized` becomes true only when the tail was observed or confirmed
+    // empty — the done tombstone (which stores the observed-message
+    // checkpoint) is written solely then. The cursor is removed only after
+    // the marker lands; if marker creation fails the checkpointed cursor
+    // stays, so a queued worker reads the observed count instead of
+    // replaying from 0. When the drain cannot run at all (no token, no
+    // transcript, unsafe cursor, parse or observe failure) neither the
+    // marker nor the cursor changes, leaving state intact for a retry.
+    let finalized = false;
+    let checkpoint = 0;
+
+    try {
+      if (state && sessionDone(state.doneFile)) {
+        log(`final flush skipped for ${sessionId}: session already marked done`);
+      } else if (state && token && transcriptPath && fs.existsSync(transcriptPath)) {
+        const { cursorFile } = state;
+        migrateTmpCursor(sessionId, cursorFile, log);
+        const lastCount = readCursor(cursorFile, log);
+        if (lastCount === null) {
+          log(`final flush skipped for ${sessionId} due to unsafe cursor`);
+        } else {
+          let messages = null;
+          try {
+            messages = parseTranscript(transcriptPath);
+          } catch {
+            log(`final flush parse failed for ${sessionId}; cursor retained for retry`);
+          }
+          const newMessages = messages ? messages.slice(lastCount) : null;
+          if (newMessages && newMessages.length > 0) {
+            log(`final flush for ${sessionId}`);
+            const res = await httpPost(
+              "/engram/v1/observe",
+              token,
+              { sessionKey: sessionId, messages: newMessages },
+              30000,
+            );
+            if (res.ok) {
+              log(`final flush OK for ${sessionId}`);
+              writeCursor(cursorFile, messages.length, log);
+              checkpoint = messages.length;
+              finalized = true;
+            } else {
+              // Critical: retain the cursor so the tail is retried, never lost.
+              log(`final flush failed for ${sessionId} (http=${res.status}); cursor retained for retry`);
+            }
+          } else if (newMessages) {
+            // Confirmed empty tail — nothing left to observe.
+            writeCursor(cursorFile, messages.length, log);
+            checkpoint = messages.length;
+            finalized = true;
+          }
+        }
+      } else {
+        log(`final flush skipped for ${sessionId}: drain unavailable; cursor retained`);
+      }
+
+      // Tombstone + legacy migration cleanup. The lock we hold is released
+      // in `finally`.
+      if (state) {
+        const { cursorFile, doneFile, legacyCursor, legacyLock } = state;
+        if (finalized && markSessionDone(doneFile, checkpoint, log)) {
+          removeCursor(cursorFile, log);
+        }
+        if (cursorFile !== legacyCursor) {
+          try {
+            const info = fs.lstatSync(legacyCursor);
+            if (!info.isSymbolicLink()) fs.rmSync(legacyCursor, { force: true });
+          } catch {
+            /* absent */
+          }
+        }
+        if (state.lockFile !== legacyLock) {
+          try {
+            fs.rmdirSync(legacyLock);
+          } catch {
+            /* absent */
+          }
         }
       }
-      if (lockFile !== legacyLock) {
-        try {
-          fs.rmdirSync(legacyLock);
-        } catch {
-          /* absent */
-        }
-      }
+    } finally {
+      if (lockAcquired && state) releaseLock(state.lockFile);
     }
 
     if (config.enableMaterialize) runMaterialize(log);
@@ -1057,6 +1346,7 @@ function run(config) {
       return "busy";
     }
     try {
+      if (sessionDone(state.doneFile)) return true;
       migrateTmpCursor(sessionId, cursorFile, log);
       const lastCount = readCursor(cursorFile, log);
       if (lastCount === null) {
@@ -1105,7 +1395,7 @@ function run(config) {
   // compact entirely), so this handler is fail-open end to end.
   async function handlePreCompact(input, token, log) {
     const sessionId = input.session_id || "";
-    const transcriptPath = input.transcript_path || "";
+    const transcriptPath = transcriptPathFor(input);
     const trigger = input.trigger || "auto";
     // Acknowledge first so the host never waits on the network for compaction
     // to proceed — the drain + flush are best-effort coordination, not a gate.
@@ -1223,6 +1513,20 @@ function run(config) {
       return;
     }
 
+    // Detached retry of the SessionEnd tail drain after lock contention.
+    if (event === SESSION_END_DRAIN) {
+      const log = makeLogger("session-end");
+      try {
+        const raw = readStdin();
+        const input = parseInput(raw);
+        const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
+        await handleSessionEnd(input, token, log, raw, { drainRetry: true });
+      } catch (err) {
+        log(`session-end drain error: ${err && err.message}`);
+      }
+      return;
+    }
+
     if (!Object.prototype.hasOwnProperty.call(LOG_FILES, event)) {
       // Unknown event — fail open without side effects.
       emit({ continue: true });
@@ -1240,7 +1544,12 @@ function run(config) {
       "post-tool-observe": handlePostToolObserve,
       "session-end": handleSessionEnd,
     };
-    if (config.enablePreCompact) handlers["pre-compact"] = handlePreCompact;
+    if (config.enablePreCompact) {
+      handlers["pre-compact"] = handlePreCompact;
+      // Devin CLI emits PostCompaction (after the fact) rather than a
+      // pre-compact event; the drain+flush is equally correct there.
+      handlers["post-compaction"] = handlePreCompact;
+    }
 
     try {
       ensureMigrated();
