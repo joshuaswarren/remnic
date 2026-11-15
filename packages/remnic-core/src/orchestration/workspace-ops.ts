@@ -120,9 +120,35 @@ export interface WorkspaceOpsDeps {
   readonly meetingsServiceByNamespace: Map<string, MeetingsService>;
 }
 
-function matchesMemoryPath(candidatePath: string, requestedPath: string, memoryDir: string): boolean {
-  const normalizedCandidate = path.resolve(candidatePath);
-  return normalizedCandidate === path.resolve(requestedPath) || normalizedCandidate === path.resolve(memoryDir, requestedPath);
+/** A namespace's memories keyed for lookup: first index per resolved path, first memory per id (corpus order wins). */
+interface MemoryIndex {
+  readonly list: MemoryFile[];
+  readonly byPath: Map<string, number>;
+  readonly byId: Map<string, MemoryFile>;
+}
+
+// COS-666e: the old per-update `find` over the corpus resolved paths on every comparison (a 40 s stall at 130k memories).
+function indexMemories(list: MemoryFile[]): MemoryIndex {
+  const byPath = new Map<string, number>();
+  const byId = new Map<string, MemoryFile>();
+  list.forEach((memory, i) => {
+    const resolved = path.resolve(memory.path);
+    if (!byPath.has(resolved)) byPath.set(resolved, i);
+    if (!byId.has(memory.frontmatter.id)) byId.set(memory.frontmatter.id, memory);
+  });
+  return { list, byPath, byId };
+}
+
+/** The first memory, in corpus order, whose path is a requested path as given or relative to the memory dir. */
+function findByRequestedPaths(index: MemoryIndex, requestedPaths: string[], memoryDir: string): MemoryFile | undefined {
+  let best: number | undefined;
+  for (const requested of requestedPaths) {
+    for (const key of [path.resolve(requested), path.resolve(memoryDir, requested)]) {
+      const i = index.byPath.get(key);
+      if (i !== undefined && (best === undefined || i < best)) best = i;
+    }
+  }
+  return best === undefined ? undefined : index.list[best];
 }
 
 function accessTrackingPathCandidates(storageDir: string, memoryPath: string): string[] {
@@ -1016,6 +1042,7 @@ export class WorkspaceOpsCoordinator {
     const entriesByNamespace = new Map<string, AccessTrackingEntry[]>();
     const mergedEntriesByNamespace = new Map<string, Map<string, AccessTrackingEntry>>();
     const storageDirByNamespace = new Map<string, string | null>();
+    const indexByNamespace = new Map<string, MemoryIndex>();
     for (const [, update] of this.deps.accessTrackingBuffer) {
       const memoryPath = update.memoryPath;
       const namespace =
@@ -1036,16 +1063,15 @@ export class WorkspaceOpsCoordinator {
             ...(storageDir ? accessTrackingPathCandidates(storageDir, memoryPath) : []),
           ]
         : [];
+      let index = indexByNamespace.get(namespace);
+      if (index === undefined && namespaceMemories) {
+        index = indexMemories(namespaceMemories);
+        indexByNamespace.set(namespace, index);
+      }
       const memory = memoryPath
-        ? namespaceMemories?.find((candidate) =>
-            matchesMemoryPath(candidate.path, memoryPath, this.deps.config.memoryDir),
-          ) ??
-          namespaceMemories?.find((candidate) =>
-            requestedPaths.some((requestedPath) =>
-              matchesMemoryPath(candidate.path, requestedPath, this.deps.config.memoryDir),
-            ),
-          )
-        : namespaceMemories?.find((candidate) => candidate.frontmatter.id === update.memoryId);
+        ? (index && (findByRequestedPaths(index, [memoryPath], this.deps.config.memoryDir) ??
+            findByRequestedPaths(index, requestedPaths, this.deps.config.memoryDir)))
+        : index?.byId.get(update.memoryId);
       if (!memory) continue;
 
       const namespaceEntries = mergedEntriesByNamespace.get(namespace) ?? new Map();
