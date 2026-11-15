@@ -20,7 +20,7 @@ export function createMemorySnapshot(memory: MemoryFile): string {
  * later read of itself (refused every time, not by clock tick). Key presence follows the parser, which trims the key.
  */
 export function loadTimeStamps(raw: string, parsed: MemoryFrontmatter, loaded: MemoryFrontmatter): Pick<MemoryFrontmatter, "created" | "updated"> {
-  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? "";
+  const front = raw.slice(0, raw.indexOf("\n---", 3)); // the block parseFrontmatter reads, without a lazy regex
   return {
     created: /^[ \t]*created[ \t]*:/m.test(front) ? parsed.created : loaded.created,
     updated: /^[ \t]*updated[ \t]*:/m.test(front) ? parsed.updated : loaded.updated,

@@ -88,8 +88,10 @@ test("a tier move ignores a rewrite that only reorders frontmatter keys (the sna
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
     const disk = await readFile(memory.path, "utf8");
-    const [, front, body] = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(disk) ?? [];
-    assert.ok(front && body !== undefined, "memory file has frontmatter");
+    const closing = disk.indexOf("\n---\n", 4);
+    assert.ok(disk.startsWith("---\n") && closing > 0, "memory file has frontmatter");
+    const front = disk.slice(4, closing);
+    const body = disk.slice(closing + 5);
     await writeFile(memory.path, `---\n${front.split("\n").reverse().join("\n")}\n---\n${body}`);
     assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
   });
