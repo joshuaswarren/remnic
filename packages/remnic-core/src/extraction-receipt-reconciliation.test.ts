@@ -95,6 +95,22 @@ test("same-plan retry recovers actual committed provenance after lost confirmati
   assert.equal(after[0]!.frontmatter.id, before[0]!.frontmatter.id);
   assert.equal((await f.store.get(f.admission.receipt.receiptId))!.coverageComplete, true);
 });
+test("recovery claims only the exact settled plan and never fences a live attempt", async (t) => {
+  const f = await fixture(t);
+  await assert.rejects(f.run(result, 1), /synthetic crash/);
+  const receipt = (await f.store.get(f.admission.receipt.receiptId))!;
+  const plan = receipt.members[0]!.plan!;
+  assert.ok(plan);
+  await assert.rejects(f.store.beginRecovery({ ...plan, identityDigest: "b".repeat(64) }), /Invalid recovery plan/);
+  const token = await f.store.beginRecovery(plan);
+  await assert.rejects(f.store.beginRecovery(plan), /not eligible/);
+  await f.store.assertCurrent(token);
+  assert.equal((await f.store.get(receipt.receiptId))!.coverageComplete, false);
+  await f.store.finish(token, { status: "retry", artifacts: [], reason: "synthetic" });
+  const retry = await f.store.beginRecovery(plan);
+  await assert.rejects(f.store.assertCurrent(token), /Stale/);
+  await f.store.assertCurrent(retry);
+});
 test("different provider plan cannot write over an interrupted plan", async (t) => {
   const f = await fixture(t);
   await assert.rejects(f.run(result, 1), /synthetic crash/);

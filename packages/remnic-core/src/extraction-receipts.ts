@@ -475,6 +475,45 @@ export class ExtractionReceiptStore {
       return token;
     });
   }
+  /** Claim only settled attempts of one immutable plan without fencing a live writer. */
+  async beginRecovery(plan: ReceiptPlan): Promise<AttemptToken> {
+    const validated = receiptPlanSchema.parse(plan);
+    return this.locked(async (refresh) => {
+      const records = await this.selected(validated.members);
+      const { digest, ...body } = validated;
+      const identityDigest = receiptHash(
+        [...records.values()]
+          .map((r) => ({ receiptId: r.receiptId, identity: r.identity }))
+          .sort((a, b) => a.receiptId.localeCompare(b.receiptId))
+      );
+      if (
+        digest !== receiptHash(body) ||
+        validated.identityDigest !== identityDigest ||
+        !validated.slots.length ||
+        new Set(validated.slots).size !== validated.slots.length
+      )
+        throw new Error("Invalid recovery plan");
+      for (const m of validated.members) {
+        const state = required(required(records.get(m.receiptId)).members.find((x) => x.memberId === m.memberId));
+        if (!["retry", "deferred"].includes(state.status) || receiptHash(state.plan) !== receiptHash(validated))
+          throw new Error("Receipt is not eligible for recovery");
+      }
+      const token: AttemptToken = {
+        attemptId: randomUUID(),
+        members: structuredClone(validated.members),
+        generations: {},
+      };
+      for (const m of token.members) {
+        const state = required(required(records.get(m.receiptId)).members.find((x) => x.memberId === m.memberId));
+        state.generation++;
+        state.attemptId = token.attemptId;
+        state.status = "extracting";
+        token.generations[key(m)] = state.generation;
+      }
+      for (const r of records.values()) await this.writeJSON(this.filename(r.receiptId), r, refresh);
+      return token;
+    });
+  }
   /** Close the exact plan before any effects; interrupted plans are immutable. */
   async closePlan(token: AttemptToken, plan: ReceiptPlan): Promise<void> {
     const validated = receiptPlanSchema.parse(plan);

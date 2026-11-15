@@ -181,6 +181,14 @@ Retries remain at-least-once. This layer requires the provider to reproduce the
 validated plan; provider-free recovery is separate unfinished work. The flag stays
 off by default, and neither flushing nor a prewrite journal establishes coverage.
 
+Provider-free recovery also needs durable proof that the whole extraction run passed
+all coverage gates. A closed plan and one verified artifact per slot are insufficient:
+the in-memory blocked flag can be set after plan closure and is lost on interruption.
+Recovery must not infer success from artifacts until a writer-owned completion barrier
+captures the final gate state and is durably committed. A recovery claim must also
+atomically reject active or terminal members and bind the full immutable plan; the
+store's `beginRecovery` implements that claim but does not itself establish coverage.
+
 Fresh entity, question and artifact writer proofs retain the existing receipt
 behavior. They do not participate in plain-fact crash reconciliation: an unresolved
 unplanned effect keeps a retry incomplete even if the retry persists other output.
