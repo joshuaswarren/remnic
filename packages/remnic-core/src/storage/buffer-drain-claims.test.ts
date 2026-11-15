@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, truncateSync, utimesSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { hostname } from "node:os";
@@ -10,7 +10,7 @@ import test from "node:test";
 import { BufferDrainClaims, type AckOutcome, type DrainLease } from "./buffer-drain-claims.js";
 import { BufferSessionFiles, bufferSessionFileName } from "./buffer-session-files.js";
 import { ClaimBufferStorage } from "../orchestration/buffer-drain-runner.js";
-import type { BufferEntryState } from "../types.js";
+import type { BufferEntryState, BufferTurn } from "../types.js";
 import { withHeldFileLock } from "../utils/serialize-mutations.js";
 /** Plain-file BufferFileIo double: claims logic is file-atomic, not crypto-aware. */
 function plainIo() {
@@ -1150,6 +1150,179 @@ test("a finished drain is verified with one real read before it reads as drained
 
     assert.equal(await claims.isDrained("sess-1"), true);
     assert.equal(spied.readPaths.filter((p) => p === drainFile(s.stateDir, "sess-1")).length, 1, "the TRUE answer parses the body once");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/** The turn contents of each inbox record, in file order. */
+function inboxRecords(stateDir: string, key: string): string[][] {
+  const lines = readFileSync(inboxFile(stateDir, key), "utf8").split("\n").filter((line) => line.length > 0);
+  return lines.map((line) =>
+    z.object({ turns: z.array(z.object({ content: z.string() })) }).parse(JSON.parse(line)).turns.map((t) => t.content),
+  );
+}
+
+const at = (minute: number): string => `2026-11-01T00:${String(minute).padStart(2, "0")}:00.000Z`;
+
+test("a hand-in appends only the turns the claim does not hold yet", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const turns = [turn("a", at(0)), turn("b", at(1))];
+    await s.claims.mergeIntoClaim("sess-1", entry(turns));
+    turns.push(turn("c", at(2)));
+    await s.claims.mergeIntoClaim("sess-1", entry(turns));
+    turns.push(turn("d", at(3)));
+    await s.claims.mergeIntoClaim("sess-1", entry(turns));
+
+    assert.deepEqual(inboxRecords(s.stateDir, "sess-1"), [["a", "b"], ["c"], ["d"]], "records after the first carry only new turns");
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "b", "c", "d"]);
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a hand-in that changes nothing appends nothing", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const same = entry([turn("a", at(0)), turn("b", at(1))]);
+    await s.claims.mergeIntoClaim("sess-1", same);
+    const before = statSync(inboxFile(s.stateDir, "sess-1")).size;
+    await s.claims.mergeIntoClaim("sess-1", same);
+    assert.equal(statSync(inboxFile(s.stateDir, "sess-1")).size, before, "no second record");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a hand-in still carries a new occurrence of a turn the claim already holds", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("x", at(1))]));
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("x", at(1)), turn("x", at(1))]));
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "x", "x"], "the second equal turn is not lost");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("delta hand-ins fold to exactly what full snapshots fold to", async () => {
+  let seed = 7;
+  const next = (n: number): number => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  for (let round = 0; round < 25; round += 1) {
+    const delta = setup();
+    const full = setup();
+    try {
+      const base = entry([turn("a", at(0))]);
+      delta.seedSession("sess-1", base);
+      full.seedSession("sess-1", base);
+      await delta.claims.claimFromSessionFile("sess-1", makeLease());
+      await full.claims.claimFromSessionFile("sess-1", makeLease());
+      let active: BufferTurn[] = [turn("a", at(0))];
+      let retained: BufferTurn[] = [];
+      for (let step = 0; step < 8; step += 1) {
+        const move = next(4);
+        if (move === 0) active = [...active, turn(`t${next(3)}`, at(next(3)))];
+        else if (move === 1 && active.length > 1) {
+          const [moved] = active.splice(next(active.length), 1);
+          if (moved) retained = [...retained, moved];
+        } else if (move === 2 && retained.length > 0) active = [...active, ...retained.splice(0, 1)];
+        else active = active.slice(1).concat(turn(`u${next(2)}`, at(3 + next(2))));
+        const snapshot: BufferEntryState = { turns: [...active], lastExtractionAt: null, extractionCount: step };
+        if (retained.length > 0) snapshot.retainedTurns = [...retained];
+        await delta.claims.mergeIntoClaim("sess-1", snapshot);
+        mkdirSync(path.dirname(inboxFile(full.stateDir, "sess-1")), { recursive: true });
+        appendFileSync(inboxFile(full.stateDir, "sess-1"), record("sess-1", snapshot));
+      }
+      const got = await delta.claims.load("sess-1");
+      const want = await full.claims.load("sess-1");
+      assert.deepEqual(got?.entry.turns, want?.entry.turns, `round ${round}: active turns`);
+      assert.deepEqual(got?.entry.retainedTurns, want?.entry.retainedTurns, `round ${round}: retained turns`);
+      assert.equal(got?.entry.extractionCount, want?.entry.extractionCount, `round ${round}: extraction count`);
+    } finally {
+      delta.cleanup();
+      full.cleanup();
+    }
+  }
+});
+
+test("a hand-in sends the whole entry again when the inbox changed behind its back", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1))]));
+    // Another process compacted or removed the inbox; "b" is no longer anywhere.
+    rmSync(inboxFile(s.stateDir, "sess-1"));
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1)), turn("c", at(2))]));
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["a", "b", "c"], "b is handed in again, not lost");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a hand-in after a drain progress write sends the whole entry again", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1))]));
+    const loaded = await s.claims.load("sess-1");
+    assert.ok(loaded);
+    // The drainer extracts "a" and compacts the inbox into the body.
+    await s.claims.writeEntry("sess-1", "worker-1", entry([turn("b", at(1))]), loaded.entry);
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1)), turn("c", at(2))]));
+    const claim = await s.claims.load("sess-1");
+    assert.deepEqual(claim?.entry.turns.map((t) => t.content), ["b", "c"], "b stays, c arrives, the drained a does not return");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a listing does not read a large inbox while the body still has pending turns", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    const filler = "x".repeat(1_100_000);
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn(filler, at(1))]));
+    assert.ok(statSync(inboxFile(s.stateDir, "sess-1")).size > 1_048_576, "fixture: the inbox is over 1 MiB");
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    const page = await claims.listPage(undefined, 10);
+    assert.deepEqual(page.entries.map((e) => e.key), ["sess-1"], "the claim is still listed");
+    assert.ok((page.entries[0]?.turnCount ?? 0) >= 1, "with at least its body count");
+    assert.equal(spied.readPaths.filter((p) => p === inboxFile(s.stateDir, "sess-1")).length, 0, "the inbox is not read");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a listing skips an inbox too long to read as one string, without reading it", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await s.claims.claimFromSessionFile("sess-1", makeLease());
+    await s.claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1))]));
+    truncateSync(inboxFile(s.stateDir, "sess-1"), 0x1fffffe9);
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    assert.deepEqual((await claims.listPage(undefined, 10)).entries, [], "an unreadable claim is skipped, as before");
+    assert.equal(spied.readPaths.filter((p) => p === inboxFile(s.stateDir, "sess-1")).length, 0, "and never read");
   } finally {
     s.cleanup();
   }
