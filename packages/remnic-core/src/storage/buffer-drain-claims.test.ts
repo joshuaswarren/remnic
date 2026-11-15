@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, truncateSync, utimesSync } from "node:fs";
+import { mkdtempSync, readdirSync, existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync, rmSync, statSync, truncateSync, utimesSync, renameSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { hostname } from "node:os";
@@ -1375,3 +1375,57 @@ test("a listing skips an unreadably long inbox beside a drained body without rea
     s.cleanup();
   }
 });
+
+const PINNED_MTIME_S = 1_700_000_000;
+
+/** Plain io, except every append leaves the inbox mtime at a known whole second, so a test can
+ * change exactly one of inode, size and mtime afterwards. */
+function pinnedMtimeIo() {
+  const io = plainIo();
+  return {
+    ...io,
+    append: async (filePath: string, content: string) => {
+      await io.append(filePath, content);
+      utimesSync(filePath, PINNED_MTIME_S, PINNED_MTIME_S);
+    },
+  };
+}
+
+/** Hand "a","b" in, change the inbox so "b" is gone and only `changed` differs, hand "a","b","c" in. */
+async function handInAfterInboxChangedOnlyIn(changed: "inode" | "size" | "mtime"): Promise<string[]> {
+  const s = setup();
+  try {
+    const claims = new BufferDrainClaims(s.stateDir, pinnedMtimeIo());
+    s.seedSession("sess-1", entry([turn("a", at(0))]));
+    await claims.claimFromSessionFile("sess-1", makeLease());
+    await claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1))]));
+    const file = inboxFile(s.stateDir, "sess-1");
+    const before = statSync(file);
+    const text = readFileSync(file, "utf8");
+    // "z" keeps the byte length; "zz" grows it by one.
+    const replaced = text.replace('"content":"b"', changed === "size" ? '"content":"zz"' : '"content":"z"');
+    assert.notEqual(replaced, text, "fixture: b was in the inbox");
+    if (changed === "inode") {
+      writeFileSync(`${file}.new`, replaced);
+      renameSync(`${file}.new`, file);
+    } else {
+      writeFileSync(file, replaced);
+    }
+    utimesSync(file, changed === "mtime" ? PINNED_MTIME_S + 100 : PINNED_MTIME_S, changed === "mtime" ? PINNED_MTIME_S + 100 : PINNED_MTIME_S);
+    const after = statSync(file);
+    assert.equal(after.ino === before.ino, changed !== "inode", "fixture: inode");
+    assert.equal(after.size === before.size, changed !== "size", "fixture: size");
+    assert.equal(after.mtimeMs === before.mtimeMs, changed !== "mtime", "fixture: mtime");
+    await claims.mergeIntoClaim("sess-1", entry([turn("a", at(0)), turn("b", at(1)), turn("c", at(2))]));
+    return (await claims.load("sess-1"))?.entry.turns.map((t) => t.content) ?? [];
+  } finally {
+    s.cleanup();
+  }
+}
+
+for (const changed of ["inode", "size", "mtime"] as const) {
+  test(`a hand-in sends the whole entry again when only the inbox ${changed} changed`, async () => {
+    const contents = await handInAfterInboxChangedOnlyIn(changed);
+    assert.ok(contents.includes("b") && contents.includes("c"), `b is handed in again, not lost: ${contents.join(",")}`);
+  });
+}
