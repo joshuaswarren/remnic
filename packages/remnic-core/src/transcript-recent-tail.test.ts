@@ -138,7 +138,7 @@ test("readRecent(hours, undefined, N) equals the last N of the full window, read
     for (const n of [1, 50, 700]) {
       const { result, parses } = await countParses(() => manager.readRecent(hours, undefined, n));
       assert.deepEqual(result.map((e) => e.turnId), full.slice(-n).map((e) => e.turnId), `last ${n}`);
-      if (n <= 50) assert.ok(parses < 3000, `last ${n} must not parse the window (${full.length} entries), parsed ${parses}`);
+      if (n <= 50) assert.ok(parses < 700, `last ${n} must not parse the window (${full.length} entries), parsed ${parses}`);
     }
   });
 });
@@ -147,5 +147,38 @@ test("readRecent(hours, undefined, N) with fewer than N entries returns them all
   await withStore(async ({ root, manager, now }) => {
     await writeFileOf(path.join(root, "session/one", `${today(now)}.jsonl`), [entry("a", now - 3 * HOUR), entry("b", now - HOUR)], now);
     assert.deepEqual((await manager.readRecent(12, undefined, 50)).map((e) => e.turnId), ["a", "b"]);
+  });
+});
+
+test("bad lines among a file's newest do not shrink the newest-N result", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const file = path.join(root, "session/bad", `${today(now)}.jsonl`);
+    await mkdir(path.dirname(file), { recursive: true });
+    const lines: string[] = [];
+    for (let i = 0; i < 60; i++) lines.push(JSON.stringify(entry(`v${i}`, now - 5 * HOUR + i * MIN)));
+    lines.splice(58, 0, "not json");
+    lines.push(JSON.stringify({ sessionKey: "k", turnId: "no-ts", role: "user", content: "x" }));
+    lines.push(JSON.stringify(entry("future", now + 2 * HOUR)));
+    // A torn, unterminated final append.
+    await writeFile(file, `${lines.join("\n")}\n{"sessionKey":"agent:a:main","turnId":"torn","ti`, "utf-8");
+    for (const n of [1, 50]) {
+      const want = (await manager.readRecent(12)).slice(-n).map((e) => e.turnId);
+      const got = (await manager.readRecent(12, undefined, n)).map((e) => e.turnId);
+      assert.equal(got.length, n, `last ${n}`);
+      assert.deepEqual(got, want, `last ${n}`);
+    }
+  });
+});
+
+test("newest-N does not read a file modified too long ago to hold a newer entry", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const recent: TranscriptEntry[] = [];
+    for (let i = 0; i < 60; i++) recent.push(entry(`r${i}`, now - (61 - i) * MIN));
+    await writeFileOf(path.join(root, "session/live", `${today(now)}.jsonl`), recent, now);
+    // Violates the append invariant on purpose (newer than its own mtime) to pin the stop rule.
+    await writeFileOf(path.join(root, "session/stale", `${today(now)}.jsonl`), [entry("stale-newer", now - 30_000)], now - 5 * HOUR);
+    const ids = (await manager.readRecent(12, undefined, 50)).map((e) => e.turnId);
+    assert.equal(ids.length, 50);
+    assert.ok(!ids.includes("stale-newer"));
   });
 });

@@ -30,6 +30,21 @@ function countNewlines(chunk: Buffer): number {
   return n;
 }
 
+const FS_CONCURRENCY = 48;
+
+/** `items.map(fn)` with at most FS_CONCURRENCY in flight (the libuv pool is shared); results keep input order. */
+async function mapLimited<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(FS_CONCURRENCY, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  }));
+  return out;
+}
+
 /**
  * Lines of a daily transcript file that can be stamped at or after `cutoffMs`.
  * Files are appended in write order, so the recent window is the file's tail:
@@ -52,7 +67,8 @@ async function readLinesSince(filePath: string, cutoffMs: number, maxLines = Inf
       const buf = Buffer.allocUnsafe(Math.min(RECENT_TAIL_CHUNK_BYTES, pos));
       pos -= buf.length;
       const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
-      chunks.unshift(buf.subarray(0, bytesRead));
+      if (bytesRead !== buf.length) throw new Error(`short read on ${filePath}`); // a gap would silently drop lines
+      chunks.unshift(buf);
       newlines += countNewlines(chunks[0]);
       // One newline ends the partial first line; each further one ends a complete line.
       if (pos > 0 && (newlines > maxLines || firstLineBefore(chunks[0], cutoffMs))) break;
@@ -628,7 +644,7 @@ export class TranscriptManager {
       // A channel type directory (discord, slack, cron, main, etc.)
       const channelTypeDir = path.join(this.transcriptsDir, entry.name);
       const children = await readdir(channelTypeDir, { withFileTypes: true }).catch(() => []);
-      const perChild = await Promise.all(children.map(async (child): Promise<string[]> => {
+      const perChild = await mapLimited(children, async (child): Promise<string[]> => {
         if (child.isDirectory()) {
           // A channel ID directory - contains daily transcript files
           const channelFiles = await readdir(path.join(channelTypeDir, child.name)).catch(() => []);
@@ -636,7 +652,7 @@ export class TranscriptManager {
         }
         // Legacy: channel type dir contains .jsonl files directly
         return child.isFile() && isJsonl(child.name) ? [path.join(entry.name, child.name)] : [];
-      }));
+      });
       return perChild.flat();
     }));
     return perTop.flat();
@@ -751,25 +767,32 @@ export class TranscriptManager {
     const minDate = new Date(startMs - 86_400_000).toISOString().slice(0, 10);
     try {
       const files = (await this.getAllTranscriptFiles()).filter((f) => !isDailyFileDatedBefore(f, minDate));
-      const stamped = await Promise.all(files.map(async (f) => {
+      const stamped = await mapLimited(files, async (f) => {
         const filePath = path.join(this.transcriptsDir, f);
         return { filePath, mtimeMs: await stat(filePath).then((s) => s.mtimeMs, () => -Infinity) };
-      }));
+      });
       stamped.sort((a, b) => b.mtimeMs - a.mtimeMs);
       let newest: TranscriptEntry[] = []; // ascending by timestamp, at most `limit`
       for (const { filePath, mtimeMs } of stamped) {
         // The Nth-newest timestamp so far; a file modified more than the skew before it holds nothing newer.
         const floorMs = newest.length >= limit ? new Date(newest[0].timestamp).getTime() : startMs;
         if (mtimeMs + RECENT_SKEW_MS < floorMs) break;
-        const found: TranscriptEntry[] = [];
-        for (const line of await readLinesSince(filePath, floorMs - RECENT_SKEW_MS, limit).catch(() => [])) {
-          try {
-            const entry = JSON.parse(line) as TranscriptEntry;
-            const entryTime = new Date(entry.timestamp);
-            if (entryTime >= start && entryTime < end) found.push(entry);
-          } catch {
-            log.debug(`skipped malformed transcript line in ${filePath}`);
+        let found: TranscriptEntry[] = [];
+        // A bad line (torn append, no timestamp, future-dated) takes a slot without yielding an entry:
+        // widen the tail until `limit` entries are found or the file's window is exhausted.
+        for (let cap = limit; ; cap *= 2) {
+          const lines = await readLinesSince(filePath, floorMs - RECENT_SKEW_MS, cap).catch(() => []);
+          found = [];
+          for (const line of lines) {
+            try {
+              const entry = JSON.parse(line) as TranscriptEntry;
+              const entryTime = new Date(entry.timestamp);
+              if (entryTime >= start && entryTime < end) found.push(entry);
+            } catch {
+              log.debug(`skipped malformed transcript line in ${filePath}`);
+            }
           }
+          if (found.length >= limit || lines.length < cap) break;
         }
         newest = [...newest, ...found].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()).slice(-limit);
       }
