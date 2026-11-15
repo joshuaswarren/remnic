@@ -306,3 +306,35 @@ test("run() queues a session's first append behind earlier ones for the same pri
   assert.equal(outcome, "ran");
   assert.equal(order.at(-1), "remembered");
 });
+
+test("run() keeps serving a primary directory's queue after one first append fails", async () => {
+  const memo = new WriteDirMemo();
+  const failed = memo.run("root", "s1", "primary", async () => {
+    throw new Error("boom");
+  });
+  const queued = memo.run("root", "s2", "primary", async () => "ran");
+  await assert.rejects(failed, /boom/);
+  assert.equal(await queued, "ran", "a failed first append must not fail the next one in the lane");
+  assert.equal(memo.pendingLanes, 0);
+});
+
+test("cleanup drops the remembered directories when it deletes a file whose rows are all expired", async () => {
+  await withManager(async ({ manager, root }) => {
+    const owner = "pi-geek:memo-emptied-file";
+    const channelDir = path.join(root, manager.getTranscriptPath(owner).dir);
+    await mkdir(channelDir, { recursive: true });
+    // Not a YYYY-MM-DD.jsonl name, so cleanup() takes the cleanupTranscriptFile path and deletes it once nothing is left.
+    const old = { ...entry(owner, "old"), timestamp: "2026-01-01T00:00:00.000Z" };
+    await writeFile(path.join(channelDir, "notes.jsonl"), `${JSON.stringify(old)}\n`, "utf-8");
+    await manager.append(entry(owner, "h1"));
+    assert.equal(await manager.cleanup(30), 1);
+    assert.equal((await readdir(channelDir)).includes("notes.jsonl"), false);
+    const verify = mock.method(JsonlOwnershipDigestCache.prototype, "verify");
+    try {
+      await manager.append(entry(owner, "h2"));
+      assert.ok(verify.mock.callCount() >= 1, "the directory was not verified again after the file was deleted");
+    } finally {
+      verify.mock.restore();
+    }
+  });
+});
