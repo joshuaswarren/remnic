@@ -383,3 +383,116 @@ test("trackMemoryAccess preserves namespaces for relative paths", () => {
     ],
   );
 });
+
+// COS-666e: flushAccessTracking scanned the whole corpus for every buffered update and resolved paths on each
+// comparison: 100 updates x 130k memories x 2-3 resolves was a 40 s main-thread stall in production.
+type FlushMemory = { path: string; frontmatter: { id: string; accessCount: number } };
+type FlushBuffer = WorkspaceOpsDeps["accessTrackingBuffer"];
+
+interface FlushOut {
+  flushed: AccessTrackingEntry[];
+}
+
+
+function flushHarness(memories: FlushMemory[], buffered: FlushBuffer) {
+  const out: FlushOut = { flushed: [] };
+  const deps = {
+    config: {
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      memoryDir: "/memory",
+    },
+    accessTrackingBuffer: buffered,
+    readAllMemoriesForNamespaces: async () => memories,
+    namespaceFromPath: () => "default",
+    storageRouter: {
+      storageFor: async () => ({
+        flushAccessTracking: async (entries: AccessTrackingEntry[]) => {
+          out.flushed = entries;
+        },
+      }),
+    },
+  };
+  // SAFETY: flushAccessTracking reads only the fields stubbed above; the full deps object is not worth building.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+  return { out, coordinator: new WorkspaceOpsCoordinator(deps as unknown as WorkspaceOpsDeps) };
+}
+
+const stamp = "2026-07-19T00:00:00.000Z";
+
+test("flushAccessTracking picks the first memory in corpus order when several match a buffered path or id", async () => {
+  const first = path.join("/memory", "facts", "dup.md");
+  const memories = [
+    { path: first, frontmatter: { id: "dup-a", accessCount: 10 } },
+    { path: path.join("/memory", "facts", "..", "facts", "dup.md"), frontmatter: { id: "dup-b", accessCount: 20 } }, // same resolved path
+    { path: path.join("/memory", "facts", "other.md"), frontmatter: { id: "same-id", accessCount: 30 } },
+    { path: path.join("/memory", "facts", "other2.md"), frontmatter: { id: "same-id", accessCount: 40 } },
+  ];
+  const buffered: FlushBuffer = new Map([
+    ["default:dup", { memoryId: "x", memoryPath: path.join("facts", "dup.md"), count: 1, lastAccessed: stamp }],
+    ["default:same-id", { memoryId: "same-id", count: 1, lastAccessed: stamp }],
+  ]);
+  const { out, coordinator } = flushHarness(memories, buffered);
+  await coordinator.flushAccessTracking();
+  const byPath = new Map(out.flushed.map((e) => [e.memoryPath, e.newCount]));
+  assert.equal(byPath.get(first), 11);
+  assert.equal(byPath.get(memories[2].path), 31);
+  assert.equal(out.flushed.length, 2);
+});
+
+test("flushAccessTracking looks buffered paths up in an index, not by scanning the corpus per update", async (t) => {
+  const corpus = 3000;
+  const memories = Array.from({ length: corpus }, (_, i) => ({
+    path: path.join("/memory", "facts", `m${i}.md`),
+    frontmatter: { id: `m${i}`, accessCount: i },
+  }));
+  const buffered: FlushBuffer = new Map();
+  for (let i = 0; i < 100; i++) {
+    const at = 2900 - i * 20; // late in the corpus: a scan walks almost all of it
+    buffered.set(`default:m${at}`, {
+      memoryId: `m${at}`,
+      memoryPath: i % 2 === 0 ? memories[at].path : path.join("facts", `m${at}.md`), // absolute, or relative to the memory dir
+      count: 1,
+      lastAccessed: stamp,
+    });
+  }
+  const { out, coordinator } = flushHarness(memories, buffered);
+  const resolve = t.mock.method(path, "resolve");
+  await coordinator.flushAccessTracking();
+  assert.equal(out.flushed.length, 100);
+  assert.equal(out.flushed.find((e) => e.memoryId === "m2900")?.newCount, 2901);
+  assert.equal(out.flushed.find((e) => e.memoryId === "m1000")?.newCount, 1001);
+  assert.ok(resolve.mock.callCount() < corpus * 4, `${resolve.mock.callCount()} path.resolve calls for ${corpus} memories and 100 updates`);
+});
+
+test("flushAccessTracking with 100 updates over 20,000 memories finishes in well under a second", async () => {
+  const memories = Array.from({ length: 20_000 }, (_, i) => ({
+    path: path.join("/memory", "facts", `m${i}.md`),
+    frontmatter: { id: `m${i}`, accessCount: 0 },
+  }));
+  const buffered: FlushBuffer = new Map();
+  for (let i = 0; i < 100; i++) {
+    const at = 19_999 - i * 7;
+    buffered.set(`default:m${at}`, { memoryId: `m${at}`, memoryPath: memories[at].path, count: 1, lastAccessed: stamp });
+  }
+  const { out, coordinator } = flushHarness(memories, buffered);
+  const started = performance.now();
+  await coordinator.flushAccessTracking();
+  const elapsed = performance.now() - started;
+  assert.equal(out.flushed.length, 100);
+  assert.ok(elapsed < 1000, `flush took ${Math.round(elapsed)} ms`); // the per-update corpus scan took several seconds here
+});
+
+test("flushAccessTracking takes the earlier memory when a relative path matches one as given and another under the memory dir", async () => {
+  const underMemoryDir = path.join("/memory", "facts", "x.md");
+  const memories = [
+    { path: underMemoryDir, frontmatter: { id: "under-dir", accessCount: 5 } },
+    { path: path.resolve("facts", "x.md"), frontmatter: { id: "as-given", accessCount: 50 } },
+  ];
+  const buffered: FlushBuffer = new Map([["default:x", { memoryId: "x", memoryPath: path.join("facts", "x.md"), count: 1, lastAccessed: stamp }]]);
+  const { out, coordinator } = flushHarness(memories, buffered);
+  await coordinator.flushAccessTracking();
+  assert.deepEqual(out.flushed.map((e) => [e.memoryPath, e.newCount]), [[underMemoryDir, 6]]);
+});
