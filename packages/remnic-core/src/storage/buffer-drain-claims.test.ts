@@ -1217,9 +1217,11 @@ test("a hand-in still carries a new occurrence of a turn the claim already holds
 test("delta hand-ins fold to exactly what full snapshots fold to", async () => {
   let seed = 7;
   const next = (n: number): number => {
-    seed = (seed * 1103515245 + 12345) % 2147483648;
-    return seed % n;
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return (seed >>> 16) % n;
   };
+  let sawRetained = 0;
+  let sawDuplicate = 0;
   for (let round = 0; round < 25; round += 1) {
     const delta = setup();
     const full = setup();
@@ -1241,6 +1243,8 @@ test("delta hand-ins fold to exactly what full snapshots fold to", async () => {
         else active = active.slice(1).concat(turn(`u${next(2)}`, at(3 + next(2))));
         const snapshot: BufferEntryState = { turns: [...active], lastExtractionAt: null, extractionCount: step };
         if (retained.length > 0) snapshot.retainedTurns = [...retained];
+        if (retained.length > 0) sawRetained += 1;
+        if (new Set(active.map((t) => `${t.content}|${t.timestamp}`)).size < active.length) sawDuplicate += 1;
         await delta.claims.mergeIntoClaim("sess-1", snapshot);
         mkdirSync(path.dirname(inboxFile(full.stateDir, "sess-1")), { recursive: true });
         appendFileSync(inboxFile(full.stateDir, "sess-1"), record("sess-1", snapshot));
@@ -1255,6 +1259,8 @@ test("delta hand-ins fold to exactly what full snapshots fold to", async () => {
       full.cleanup();
     }
   }
+  assert.ok(sawRetained > 10, "the sequences really move turns to retained");
+  assert.ok(sawDuplicate > 10, "the sequences really hold duplicate occurrences");
 });
 
 test("a hand-in sends the whole entry again when the inbox changed behind its back", async () => {
@@ -1322,6 +1328,48 @@ test("a listing skips an inbox too long to read as one string, without reading i
     const spied = spyIo();
     const claims = new BufferDrainClaims(s.stateDir, spied.io);
     assert.deepEqual((await claims.listPage(undefined, 10)).entries, [], "an unreadable claim is skipped, as before");
+    assert.equal(spied.readPaths.filter((p) => p === inboxFile(s.stateDir, "sess-1")).length, 0, "and never read");
+  } finally {
+    s.cleanup();
+  }
+});
+
+/** A claim whose body has nothing pending (the drainer extracted it) but whose inbox holds a hand-in. */
+async function drainedBodyClaimWithInbox(s: ReturnType<typeof setup>, handIn: BufferEntryState): Promise<void> {
+  s.seedSession("sess-1", entry([turn("a", at(0))]));
+  await s.claims.claimFromSessionFile("sess-1", makeLease());
+  const loaded = await s.claims.load("sess-1");
+  assert.ok(loaded);
+  await s.claims.writeEntry("sess-1", "worker-1", entry([]), loaded.entry);
+  await s.claims.releaseLease("sess-1", "worker-1");
+  await s.claims.mergeIntoClaim("sess-1", handIn);
+}
+
+test("a listing does not read a large inbox beside a drained body, and keeps the claim a candidate", async () => {
+  const s = setup();
+  try {
+    await drainedBodyClaimWithInbox(s, entry([turn("x".repeat(1_100_000), at(1))]));
+    assert.ok(statSync(inboxFile(s.stateDir, "sess-1")).size > 1_048_576, "fixture: the inbox is over 1 MiB");
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    const page = await claims.listPage(undefined, 10);
+    assert.deepEqual(page.entries.map((e) => e.key), ["sess-1"], "the claim is still a candidate");
+    assert.equal(spied.readPaths.filter((p) => p === inboxFile(s.stateDir, "sess-1")).length, 0, "the inbox is not read");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("a listing skips an unreadably long inbox beside a drained body without reading it", async () => {
+  const s = setup();
+  try {
+    await drainedBodyClaimWithInbox(s, entry([turn("b", at(1))]));
+    truncateSync(inboxFile(s.stateDir, "sess-1"), 0x1fffffe9);
+
+    const spied = spyIo();
+    const claims = new BufferDrainClaims(s.stateDir, spied.io);
+    assert.deepEqual((await claims.listPage(undefined, 10)).entries, []);
     assert.equal(spied.readPaths.filter((p) => p === inboxFile(s.stateDir, "sess-1")).length, 0, "and never read");
   } finally {
     s.cleanup();

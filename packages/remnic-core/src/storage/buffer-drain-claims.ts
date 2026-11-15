@@ -986,12 +986,14 @@ export class BufferDrainClaims {
     let inboxTurns = 0;
     try {
       const inboxBytes = (await stat(this.inboxFor(summary.key)).catch(() => null))?.size ?? 0;
-      if (summary.pending > 0 && inboxBytes > INBOX_UNREADABLE_BYTES) throw new Error(`inbox is ${inboxBytes} bytes, too long to read`);
-      // A pending body already makes the claim a candidate; the inbox only
-      // adds to a count the drain recomputes exactly, so a large one is not parsed here.
-      if (summary.pending === 0 || inboxBytes <= INBOX_LISTING_PARSE_LIMIT) {
+      if (inboxBytes > INBOX_UNREADABLE_BYTES) throw new Error(`inbox is ${inboxBytes} bytes, too long to read`);
+      if (inboxBytes <= INBOX_LISTING_PARSE_LIMIT) {
         for (const record of await this.readInbox(summary.key)) inboxTurns += pendingTurns(record.entry);
+      } else if (summary.pending === 0) {
+        // Unknown but positive: the claim stays a candidate, and the drain counts the inbox exactly.
+        inboxTurns = 1;
       }
+      // A large inbox beside a pending body adds nothing here: the body already makes the claim a candidate.
     } catch (err) {
       log.debug(`buffer drain: skipping claim ${name} with an unreadable inbox: ${err instanceof Error ? err.message : String(err)}`);
       return null;
