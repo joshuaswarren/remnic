@@ -22,7 +22,7 @@ import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-se
 import path from "node:path";
 import { resolveSafeStoragePath } from "./storage-paths.js";
 import { log } from "./logger.js";
-import { createMemorySnapshot } from "./memory-snapshot.js";
+import { createMemorySnapshot, loadTimeStamps } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migration-sources.js";
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
@@ -4343,12 +4343,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return lineCount > threshold;
   }
 
-  /**
-   * Memories loaded from disk keep their file text (`readRawMemoryDocument`), so their load-time snapshot
-   * is derived from it when a tier move needs it (`snapshotFromLoadedDocument`) instead of being built for
-   * the whole corpus on every cache rebuild (COS-666d: 5-6.6 s of main-thread time at ~120k facts).
-   * Only a memory with no retained text is snapshotted eagerly, as before.
-   */
+  /** Loaded memories keep their file text, so the load-time snapshot is derived from it when a tier move needs it, not built per memory on every corpus read (COS-666d). */
   private rememberMemorySnapshot<T extends MemoryFile | null>(memory: T): T {
     if (memory !== null && readRawMemoryDocument(memory) === undefined && !StorageManager.loadedMemorySnapshots.has(memory)) {
       StorageManager.loadedMemorySnapshots.set(memory, createMemorySnapshot(memory));
@@ -4356,23 +4351,14 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return memory;
   }
 
-  /** The snapshot of `memory` as it was loaded, rebuilt from the retained file text; undefined when none was retained. */
+  /** The snapshot of `memory` as loaded, rebuilt from its retained file text; undefined when none was retained. */
   private snapshotFromLoadedDocument(memory: MemoryFile): string | undefined {
     const raw = readRawMemoryDocument(memory);
     const parsed = raw === undefined ? null : parseFrontmatter(raw);
     if (raw === undefined || !parsed) return undefined;
-    const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)?.[1] ?? "";
-    // Key presence follows parseFrontmatter (it trims the key). It stamps a missing created/updated with "now"; take the load-time stamp instead, as the
-    // old eager snapshot did, so such a file never matches a later read of itself (refused every time, not by clock tick).
-    const stamps = {
-      created: /^[ \t]*created[ \t]*:/m.test(front) ? parsed.frontmatter.created : memory.frontmatter.created,
-      updated: /^[ \t]*updated[ \t]*:/m.test(front) ? parsed.frontmatter.updated : memory.frontmatter.updated,
-    };
-    return createMemorySnapshot({
-      path: memory.path,
-      frontmatter: normalizeFrontmatterForPath({ ...parsed.frontmatter, ...stamps }, toMemoryPathRel(this.baseDir, memory.path), parsed.content),
-      content: parsed.content,
-    });
+    const frontmatter = { ...parsed.frontmatter, ...loadTimeStamps(raw, parsed.frontmatter, memory.frontmatter) };
+    const normalized = normalizeFrontmatterForPath(frontmatter, toMemoryPathRel(this.baseDir, memory.path), parsed.content);
+    return createMemorySnapshot({ path: memory.path, frontmatter: normalized, content: parsed.content });
   }
 
   private rememberMemorySnapshots(memories: MemoryFile[]): MemoryFile[] {
