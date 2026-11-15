@@ -1593,3 +1593,113 @@ test("#3227: a failed reflection-only persist stays retryable instead of an empt
     await h.cleanup();
   }
 });
+
+test("half-open probe: a probe that cannot answer in time re-opens the breaker instead of holding every attempt", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 0, // the next call flips open to half_open and probes
+  });
+  try {
+    let calls = 0;
+    const abortedWhenStopped: boolean[] = [];
+    const coord = new ExtractionRunCoordinator({
+      ...h.makeDeps(),
+      halfOpenProbeTimeoutMs: 40,
+      getExtraction: () => ({
+        extract: async (_turns, _entities, signal) => {
+          calls += 1;
+          if (calls === 1) return failureResult("provider_retryable");
+          // The probe: no answer until the caller gives up.
+          const stopped = Promise.withResolvers<void>();
+          signal?.addEventListener("abort", () => stopped.resolve(), { once: true });
+          await stopped.promise;
+          abortedWhenStopped.push(signal?.aborted === true);
+          return successResult();
+        },
+      }),
+    });
+    await h.run(coord, "fp-1"); // one failure opens the breaker
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open");
+
+    const guard = Promise.withResolvers<null>();
+    const guardTimer = setTimeout(() => guard.resolve(null), 1_500);
+    const outcome = await Promise.race([h.run(coord, "fp-2"), guard.promise]);
+    clearTimeout(guardTimer);
+    assert.ok(outcome !== null, "the probe is bounded, not held until the provider answers");
+    assert.deepEqual(abortedWhenStopped, [true], "the in-flight request was cancelled");
+    assert.equal(coord.getExtractionResilienceStatus().breaker.state, "open", "a timed-out probe re-opens the breaker");
+    assert.equal(outcome.retainedBuffer, true, "the turns are kept for a retry");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("half-open probe timeout bounds only the probe: a normal attempt may run longer", async () => {
+  const h = await makeHarness({ extractionRetryScheduleMs: [3_600_000] });
+  try {
+    const coord = new ExtractionRunCoordinator({
+      ...h.makeDeps(),
+      halfOpenProbeTimeoutMs: 20,
+      getExtraction: () => ({
+        extract: async () => {
+          const slow = Promise.withResolvers<void>();
+          setTimeout(() => slow.resolve(), 150);
+          await slow.promise;
+          return successResult();
+        },
+      }),
+    });
+    const outcome = await h.run(coord, "fp-1"); // breaker closed: no probe, no bound
+    assert.equal(outcome.status, "completed");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+test("half-open probe timeout keeps the caller deadline enforced while the failure is recorded", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 0,
+  });
+  try {
+    let calls = 0;
+    const coord = new ExtractionRunCoordinator({
+      ...h.makeDeps(),
+      halfOpenProbeTimeoutMs: 20,
+      getExtraction: () => ({
+        extract: async (_turns, _entities, signal) => {
+          calls += 1;
+          if (calls === 1) return failureResult("provider_retryable");
+          const stopped = Promise.withResolvers<void>();
+          signal?.addEventListener("abort", () => stopped.resolve(), { once: true });
+          await stopped.promise;
+          return successResult();
+        },
+      }),
+    });
+    await h.run(coord, "fp-1"); // opens the breaker
+    // Recording the probe failure must not outlive the caller deadline.
+    const storage = await h.storageForNs("default");
+    storage.updateMeta = () => new Promise<never>(() => {});
+    const guard = Promise.withResolvers<"hung">();
+    const guardTimer = setTimeout(() => guard.resolve("hung"), 2_000);
+    const outcome = await Promise.race([
+      coord
+        .runExtraction(makeTurns("fp-2"), {
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          clearBufferAfterExtraction: false,
+          bufferKey: "fp-2",
+          deadlineMs: Date.now() + 300,
+        })
+        .then(() => "returned", () => "rejected"),
+      guard.promise,
+    ]);
+    clearTimeout(guardTimer);
+    assert.notEqual(outcome, "hung", "the caller deadline cut the hung metadata write");
+  } finally {
+    await h.cleanup();
+  }
+});

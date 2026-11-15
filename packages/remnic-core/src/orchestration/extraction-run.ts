@@ -117,6 +117,9 @@ export interface ExtractionRunCoordinatorDeps {
    *  abort signal: queued tasks never start and in-flight runs abort the
    *  moment destroy() begins. Absent for standalone coordinators (tests). */
   shutdownSignal?: AbortSignal;
+  /** Test seam: how long a half-open probe may run before it counts as a
+   *  provider failure. Defaults to HALF_OPEN_PROBE_TIMEOUT_MS (provider-breaker.ts). */
+  halfOpenProbeTimeoutMs?: number;
 }
 
 // Recall/extraction abort helpers live in orchestrator-helpers.ts since
@@ -138,6 +141,7 @@ import {
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
 import type { ExtractionPersistResult } from "./extraction-persist.js";
 import { ProviderCircuitBreaker, type ProbeOwnerToken } from "./provider-breaker.js";
+import { probeTimedOutResult, startProbeDeadline } from "./probe-deadline.js";
 
 export {
   capExtractionRetryStateEntries,
@@ -852,18 +856,26 @@ export class ExtractionRunCoordinator {
         "during_list_entity_names",
       );
       let result: ExtractionResult;
+      // The half-open probe is bounded: one that gets no answer in time counts as
+      // a provider failure (re-opens the breaker) instead of holding every other
+      // attempt until the provider answers or times out.
+      const probe = startProbeDeadline(extractionProbeOwned, extractionAbortSignal, this.deps.halfOpenProbeTimeoutMs);
       try {
         result = await raceRecallAbort(
-          this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractionAbortSignal),
-          extractionAbortSignal,
+          this.deps.getExtraction().extract(normalizedTurns, existingEntities, probe.signal),
+          probe.signal,
           "extraction aborted (during_extract)",
         );
       } catch (error) {
-        clearExtractionDeadlineTimer();
-        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
-          throw new ExtractionDeadlineError("during_extract");
-        }
-        throw error;
+        const pastDeadline = deadlineMs !== undefined && Date.now() >= deadlineMs;
+        // Keep the caller deadline timer running while a probe timeout is turned into a failure result.
+        if (pastDeadline || !probe.timedOut()) clearExtractionDeadlineTimer();
+        if (pastDeadline) throw new ExtractionDeadlineError("during_extract");
+        if (!probe.timedOut()) throw error;
+        log.warn("runExtraction: half-open probe got no answer in time; treating it as a provider failure");
+        result = probeTimedOutResult();
+      } finally {
+        probe.stop();
       }
     try {
       throwIfDeadlineExceeded("before_persist");

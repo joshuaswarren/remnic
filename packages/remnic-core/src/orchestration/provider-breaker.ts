@@ -7,6 +7,16 @@ export interface ProviderBreakerConfig {
   readonly authCooldownMs: number;
 }
 
+/**
+ * How long the single half-open probe may run before it counts as a provider
+ * failure and re-opens the breaker. Before this bound, a probe waiting in the
+ * local LLM queue and then timing out twice held every drain for up to 55 min.
+ * 15 min covers the slowest probe that did succeed in a 24 h production log
+ * (10 min) and caps a failed one at 15 min plus the cooldown.
+ * shortcut: a constant, not config; make it a config key if hosts need to tune it.
+ */
+export const HALF_OPEN_PROBE_TIMEOUT_MS = 900_000;
+
 export interface ProbeOwnerToken {
   readonly __probeOwner: true;
 }
