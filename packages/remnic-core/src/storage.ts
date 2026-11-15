@@ -62,7 +62,7 @@ import {
   type EntityCanonicalIdMigrationHost,
 } from "./storage/entity-canonical-id-migration-adapter.js";
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
-import { rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
+import { readRawMemoryDocument, rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
 import { createMemoryEntityRefSerializer } from "./storage/memory-migration-serialization.js";
 import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
 import { assertSafeEntityId } from "./storage/entity-id-safety.js";
@@ -4343,11 +4343,29 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return lineCount > threshold;
   }
 
+  /**
+   * Memories loaded from disk keep their file text (`readRawMemoryDocument`), so their load-time snapshot
+   * is derived from it when a tier move needs it (`snapshotFromLoadedDocument`) instead of being built for
+   * the whole corpus on every cache rebuild (COS-666d: 5-6.6 s of main-thread time at ~120k facts).
+   * Only a memory with no retained text is snapshotted eagerly, as before.
+   */
   private rememberMemorySnapshot<T extends MemoryFile | null>(memory: T): T {
-    if (memory !== null && !StorageManager.loadedMemorySnapshots.has(memory)) {
+    if (memory !== null && readRawMemoryDocument(memory) === undefined && !StorageManager.loadedMemorySnapshots.has(memory)) {
       StorageManager.loadedMemorySnapshots.set(memory, createMemorySnapshot(memory));
     }
     return memory;
+  }
+
+  /** The snapshot of `memory` as it was loaded, rebuilt from the retained file text; undefined when none was retained. */
+  private snapshotFromLoadedDocument(memory: MemoryFile): string | undefined {
+    const raw = readRawMemoryDocument(memory);
+    const parsed = raw === undefined ? null : parseFrontmatter(raw);
+    if (!parsed) return undefined;
+    return createMemorySnapshot({
+      path: memory.path,
+      frontmatter: normalizeFrontmatterForPath(parsed.frontmatter, toMemoryPathRel(this.baseDir, memory.path), parsed.content),
+      content: parsed.content,
+    });
   }
 
   private rememberMemorySnapshots(memories: MemoryFile[]): MemoryFile[] {
@@ -5015,7 +5033,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           if (current === null && destination?.frontmatter.id === memory.frontmatter.id) return false;
           throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
         }
-        const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory);
+        const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory) ?? this.snapshotFromLoadedDocument(memory);
         const currentSnapshot = createMemorySnapshot(current);
         if (
           callerSnapshot === undefined
