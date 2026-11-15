@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { log } from "./logger.js";
 import type { TranscriptEntry, Checkpoint, PluginConfig } from "./types.js";
@@ -8,6 +8,62 @@ import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { JsonlOwnershipDigestCache } from "./transcript-ownership-digest.js";
+
+const RECENT_TAIL_CHUNK_BYTES = 1 << 18;
+const RECENT_SKEW_MS = 3_600_000;
+
+/** True when the first complete line in `chunk` (which starts mid-line) is stamped before `cutoffMs`. */
+function firstLineBefore(chunk: Buffer, cutoffMs: number): boolean {
+  const from = chunk.indexOf(0x0a) + 1;
+  const to = chunk.indexOf(0x0a, from);
+  if (from === 0 || to < 0) return false;
+  try {
+    return new Date((JSON.parse(chunk.toString("utf-8", from, to)) as TranscriptEntry).timestamp).getTime() < cutoffMs;
+  } catch {
+    return false;
+  }
+}
+
+function countNewlines(chunk: Buffer): number {
+  let n = 0;
+  for (let i = chunk.indexOf(0x0a); i >= 0; i = chunk.indexOf(0x0a, i + 1)) n++;
+  return n;
+}
+
+/**
+ * Lines of a daily transcript file that can be stamped at or after `cutoffMs`.
+ * Files are appended in write order, so the recent window is the file's tail:
+ * read 256 KiB chunks from the end and stop once the first complete line in hand is
+ * older than the cutoff, or (with `maxLines`) once `maxLines` complete lines are in hand,
+ * returning at most the last `maxLines`. A file not modified since the cutoff holds nothing in the window.
+ * shortcut: assumes a file's timestamps never run backwards by more than the
+ * RECENT_SKEW_MS the caller subtracts, and that its last `maxLines` lines hold its newest
+ * `maxLines` entries; widen the margin if writers can lag further.
+ */
+async function readLinesSince(filePath: string, cutoffMs: number, maxLines = Infinity): Promise<string[]> {
+  const { size, mtimeMs } = await stat(filePath);
+  if (mtimeMs < cutoffMs) return [];
+  const fh = await open(filePath, "r");
+  try {
+    const chunks: Buffer[] = [];
+    let pos = size;
+    let newlines = 0;
+    while (pos > 0) {
+      const buf = Buffer.allocUnsafe(Math.min(RECENT_TAIL_CHUNK_BYTES, pos));
+      pos -= buf.length;
+      const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+      chunks.unshift(buf.subarray(0, bytesRead));
+      newlines += countNewlines(chunks[0]);
+      // One newline ends the partial first line; each further one ends a complete line.
+      if (pos > 0 && (newlines > maxLines || firstLineBefore(chunks[0], cutoffMs))) break;
+    }
+    let text = Buffer.concat(chunks).toString("utf-8");
+    if (pos > 0) text = text.slice(text.indexOf("\n") + 1); // drop the partial first line
+    return text.trim().split("\n").filter(Boolean).slice(-maxLines);
+  } finally {
+    await fh.close();
+  }
+}
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 
@@ -559,52 +615,31 @@ export class TranscriptManager {
   /**
    * Get all transcript files from the hierarchical directory structure.
    * Recursively finds all .jsonl files in transcripts/{channelType}/{channelId}/ subdirectories.
+   * Directories are listed concurrently: a large store has ~17k channel directories and a
+   * sequential walk spent ~1.5 s on round trips alone. Results keep readdir order.
    */
   private async getAllTranscriptFiles(): Promise<string[]> {
-    const files: string[] = [];
-
-    try {
-      const entries = await readdir(this.transcriptsDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          // This is a channel type directory (discord, slack, cron, main, etc.)
-          const channelTypeDir = path.join(this.transcriptsDir, entry.name);
-          try {
-            const channelTypeEntries = await readdir(channelTypeDir, { withFileTypes: true });
-
-            for (const channelTypeEntry of channelTypeEntries) {
-              if (channelTypeEntry.isDirectory()) {
-                // This is a channel ID directory - contains daily transcript files
-                const channelDir = path.join(channelTypeDir, channelTypeEntry.name);
-                try {
-                  const channelFiles = await readdir(channelDir);
-                  for (const file of channelFiles) {
-                    if (file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file)) {
-                      files.push(path.join(entry.name, channelTypeEntry.name, file));
-                    }
-                  }
-                } catch {
-                  // Skip unreadable directories
-                }
-              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
-                // Legacy: channel type dir contains .jsonl files directly
-                files.push(path.join(entry.name, channelTypeEntry.name));
-              }
-            }
-          } catch {
-            // Skip unreadable directories
-          }
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(entry.name)) {
-          // Legacy flat file - still include for backward compatibility
-          files.push(entry.name);
+    const isJsonl = (name: string): boolean => name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(name);
+    // Directory doesn't exist or is unreadable: skip it.
+    const top = await readdir(this.transcriptsDir, { withFileTypes: true }).catch(() => []);
+    const perTop = await Promise.all(top.map(async (entry): Promise<string[]> => {
+      // Legacy flat file - still include for backward compatibility
+      if (!entry.isDirectory()) return entry.isFile() && isJsonl(entry.name) ? [entry.name] : [];
+      // A channel type directory (discord, slack, cron, main, etc.)
+      const channelTypeDir = path.join(this.transcriptsDir, entry.name);
+      const children = await readdir(channelTypeDir, { withFileTypes: true }).catch(() => []);
+      const perChild = await Promise.all(children.map(async (child): Promise<string[]> => {
+        if (child.isDirectory()) {
+          // A channel ID directory - contains daily transcript files
+          const channelFiles = await readdir(path.join(channelTypeDir, child.name)).catch(() => []);
+          return channelFiles.filter(isJsonl).map((file) => path.join(entry.name, child.name, file));
         }
-      }
-    } catch {
-      // Directory doesn't exist or is unreadable
-    }
-
-    return files;
+        // Legacy: channel type dir contains .jsonl files directly
+        return child.isFile() && isJsonl(child.name) ? [path.join(entry.name, child.name)] : [];
+      }));
+      return perChild.flat();
+    }));
+    return perTop.flat();
   }
 
   /**
@@ -641,8 +676,9 @@ export class TranscriptManager {
       for (const relativePath of transcriptFiles) {
         const filePath = path.join(this.transcriptsDir, relativePath);
         try {
-          const content = await readFile(filePath, "utf-8");
-          const lines = content.trim().split("\n").filter(Boolean);
+          const lines = skipFilesDatedBefore !== undefined
+            ? await readLinesSince(filePath, start.getTime() - RECENT_SKEW_MS)
+            : (await readFile(filePath, "utf-8")).trim().split("\n").filter(Boolean);
 
           for (const line of lines) {
             try {
@@ -682,9 +718,12 @@ export class TranscriptManager {
    * Read the last N hours of transcript.
    *
    * Fast path: when sessionKey is given, reads only the 1-2 daily files for that channel. Without one,
-   * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped.
+   * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped,
+   * and each file is read from its tail. With `maxEntries` and no sessionKey, only the newest `maxEntries`
+   * entries are returned (what a caller that keeps `slice(-maxEntries)` would see) and files are visited
+   * newest-modified first, stopping once no remaining file can hold a newer entry.
    */
-  async readRecent(hours: number, sessionKey?: string): Promise<TranscriptEntry[]> {
+  async readRecent(hours: number, sessionKey?: string, maxEntries?: number): Promise<TranscriptEntry[]> {
     const now = new Date();
     // The recent-read window is inclusive of "now": a turn that is buffered and
     // then immediately read back can carry the same millisecond timestamp as
@@ -700,7 +739,45 @@ export class TranscriptManager {
     if (sessionKey) {
       return this.readRecentForSession(start, end, sessionKey);
     }
+    if (maxEntries !== undefined && Number.isInteger(maxEntries) && maxEntries >= 1) {
+      return this.readNewestEntries(start, end, maxEntries);
+    }
     return this.readRange(start.toISOString(), end.toISOString(), undefined, new Date(start.getTime() - 86_400_000).toISOString().slice(0, 10));
+  }
+
+  /** Newest `limit` entries in `[start, end)` across every channel; see {@link readRecent}. */
+  private async readNewestEntries(start: Date, end: Date, limit: number): Promise<TranscriptEntry[]> {
+    const startMs = start.getTime();
+    const minDate = new Date(startMs - 86_400_000).toISOString().slice(0, 10);
+    try {
+      const files = (await this.getAllTranscriptFiles()).filter((f) => !isDailyFileDatedBefore(f, minDate));
+      const stamped = await Promise.all(files.map(async (f) => {
+        const filePath = path.join(this.transcriptsDir, f);
+        return { filePath, mtimeMs: await stat(filePath).then((s) => s.mtimeMs, () => -Infinity) };
+      }));
+      stamped.sort((a, b) => b.mtimeMs - a.mtimeMs);
+      let newest: TranscriptEntry[] = []; // ascending by timestamp, at most `limit`
+      for (const { filePath, mtimeMs } of stamped) {
+        // The Nth-newest timestamp so far; a file modified more than the skew before it holds nothing newer.
+        const floorMs = newest.length >= limit ? new Date(newest[0].timestamp).getTime() : startMs;
+        if (mtimeMs + RECENT_SKEW_MS < floorMs) break;
+        const found: TranscriptEntry[] = [];
+        for (const line of await readLinesSince(filePath, floorMs - RECENT_SKEW_MS, limit).catch(() => [])) {
+          try {
+            const entry = JSON.parse(line) as TranscriptEntry;
+            const entryTime = new Date(entry.timestamp);
+            if (entryTime >= start && entryTime < end) found.push(entry);
+          } catch {
+            log.debug(`skipped malformed transcript line in ${filePath}`);
+          }
+        }
+        newest = [...newest, ...found].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()).slice(-limit);
+      }
+      return newest;
+    } catch (err) {
+      log.error("failed to read newest transcript entries:", err);
+      return [];
+    }
   }
 
   /**
