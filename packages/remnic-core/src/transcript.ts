@@ -8,6 +8,7 @@ import { sessionStoragePaths } from "./session-identity.js";
 import { estimateTokenCount } from "./token-estimate.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 import { JsonlOwnershipDigestCache } from "./transcript-ownership-digest.js";
+import { RECENT_SKEW_MS, mapLimited, readLinesSince, readNewestFromFiles } from "./transcript-recent.js";
 
 type DirectorySessionStatus = "missing" | "empty" | "matches" | "occupied";
 
@@ -559,52 +560,31 @@ export class TranscriptManager {
   /**
    * Get all transcript files from the hierarchical directory structure.
    * Recursively finds all .jsonl files in transcripts/{channelType}/{channelId}/ subdirectories.
+   * Directories are listed concurrently: a large store has ~17k channel directories and a
+   * sequential walk spent ~1.5 s on round trips alone. Results keep readdir order.
    */
   private async getAllTranscriptFiles(): Promise<string[]> {
-    const files: string[] = [];
-
-    try {
-      const entries = await readdir(this.transcriptsDir, { withFileTypes: true });
-
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          // This is a channel type directory (discord, slack, cron, main, etc.)
-          const channelTypeDir = path.join(this.transcriptsDir, entry.name);
-          try {
-            const channelTypeEntries = await readdir(channelTypeDir, { withFileTypes: true });
-
-            for (const channelTypeEntry of channelTypeEntries) {
-              if (channelTypeEntry.isDirectory()) {
-                // This is a channel ID directory - contains daily transcript files
-                const channelDir = path.join(channelTypeDir, channelTypeEntry.name);
-                try {
-                  const channelFiles = await readdir(channelDir);
-                  for (const file of channelFiles) {
-                    if (file.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(file)) {
-                      files.push(path.join(entry.name, channelTypeEntry.name, file));
-                    }
-                  }
-                } catch {
-                  // Skip unreadable directories
-                }
-              } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
-                // Legacy: channel type dir contains .jsonl files directly
-                files.push(path.join(entry.name, channelTypeEntry.name));
-              }
-            }
-          } catch {
-            // Skip unreadable directories
-          }
-        } else if (entry.isFile() && entry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(entry.name)) {
-          // Legacy flat file - still include for backward compatibility
-          files.push(entry.name);
+    const isJsonl = (name: string): boolean => name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(name);
+    // Directory doesn't exist or is unreadable: skip it.
+    const top = await readdir(this.transcriptsDir, { withFileTypes: true }).catch(() => []);
+    const perTop = await Promise.all(top.map(async (entry): Promise<string[]> => {
+      // Legacy flat file - still include for backward compatibility
+      if (!entry.isDirectory()) return entry.isFile() && isJsonl(entry.name) ? [entry.name] : [];
+      // A channel type directory (discord, slack, cron, main, etc.)
+      const channelTypeDir = path.join(this.transcriptsDir, entry.name);
+      const children = await readdir(channelTypeDir, { withFileTypes: true }).catch(() => []);
+      const perChild = await mapLimited(children, async (child): Promise<string[]> => {
+        if (child.isDirectory()) {
+          // A channel ID directory - contains daily transcript files
+          const channelFiles = await readdir(path.join(channelTypeDir, child.name)).catch(() => []);
+          return channelFiles.filter(isJsonl).map((file) => path.join(entry.name, child.name, file));
         }
-      }
-    } catch {
-      // Directory doesn't exist or is unreadable
-    }
-
-    return files;
+        // Legacy: channel type dir contains .jsonl files directly
+        return child.isFile() && isJsonl(child.name) ? [path.join(entry.name, child.name)] : [];
+      });
+      return perChild.flat();
+    }));
+    return perTop.flat();
   }
 
   /**
@@ -641,8 +621,9 @@ export class TranscriptManager {
       for (const relativePath of transcriptFiles) {
         const filePath = path.join(this.transcriptsDir, relativePath);
         try {
-          const content = await readFile(filePath, "utf-8");
-          const lines = content.trim().split("\n").filter(Boolean);
+          const lines = skipFilesDatedBefore !== undefined
+            ? await readLinesSince(filePath, start.getTime() - RECENT_SKEW_MS)
+            : (await readFile(filePath, "utf-8")).trim().split("\n").filter(Boolean);
 
           for (const line of lines) {
             try {
@@ -682,9 +663,13 @@ export class TranscriptManager {
    * Read the last N hours of transcript.
    *
    * Fast path: when sessionKey is given, reads only the 1-2 daily files for that channel. Without one,
-   * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped.
+   * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped,
+   * and each file is read from its tail. With `maxEntries` and no sessionKey, only the newest `maxEntries`
+   * entries are returned (what a caller that keeps `slice(-maxEntries)` would see) and files are visited
+   * newest-modified first, stopping once no remaining file can hold a newer entry. The per-file read cap of
+   * 48 applies per channel-type directory, not globally.
    */
-  async readRecent(hours: number, sessionKey?: string): Promise<TranscriptEntry[]> {
+  async readRecent(hours: number, sessionKey?: string, maxEntries?: number): Promise<TranscriptEntry[]> {
     const now = new Date();
     // The recent-read window is inclusive of "now": a turn that is buffered and
     // then immediately read back can carry the same millisecond timestamp as
@@ -700,7 +685,22 @@ export class TranscriptManager {
     if (sessionKey) {
       return this.readRecentForSession(start, end, sessionKey);
     }
+    if (maxEntries !== undefined && Number.isInteger(maxEntries) && maxEntries >= 1) {
+      return this.readNewestEntries(start, end, maxEntries);
+    }
     return this.readRange(start.toISOString(), end.toISOString(), undefined, new Date(start.getTime() - 86_400_000).toISOString().slice(0, 10));
+  }
+
+  /** Newest `limit` entries in `[start, end)` across every channel; see {@link readRecent}. */
+  private async readNewestEntries(start: Date, end: Date, limit: number): Promise<TranscriptEntry[]> {
+    const minDate = new Date(start.getTime() - 86_400_000).toISOString().slice(0, 10);
+    try {
+      const files = (await this.getAllTranscriptFiles()).filter((f) => !isDailyFileDatedBefore(f, minDate));
+      return await readNewestFromFiles(this.transcriptsDir, files, start, end, limit);
+    } catch (err) {
+      log.error("failed to read newest transcript entries:", err);
+      return [];
+    }
   }
 
   /**
