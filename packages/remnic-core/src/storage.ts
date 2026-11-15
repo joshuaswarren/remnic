@@ -22,7 +22,7 @@ import { selectArtifactMatches, type ArtifactSearchOptions } from "./artifact-se
 import path from "node:path";
 import { resolveSafeStoragePath } from "./storage-paths.js";
 import { log } from "./logger.js";
-import { createMemorySnapshot } from "./memory-snapshot.js";
+import { createMemorySnapshot, loadTimeStamps } from "./memory-snapshot.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { createTombstoneMigrationSourceContents } from "./storage/tombstone-migration-sources.js";
 import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, type WindowedMemoryReadResult } from "./storage/memory-read-store.js";
@@ -62,7 +62,7 @@ import {
   type EntityCanonicalIdMigrationHost,
 } from "./storage/entity-canonical-id-migration-adapter.js";
 import { EntityCanonicalIdMigrationRunner } from "./storage/entity-canonical-id-migration-runner.js";
-import { rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
+import { readRawMemoryDocument, rememberRawFrontmatter } from "./storage/memory-frontmatter-metadata.js";
 import { createMemoryEntityRefSerializer } from "./storage/memory-migration-serialization.js";
 import { readEntityAliasConfigSync } from "./storage/entity-alias-config.js";
 import { assertSafeEntityId } from "./storage/entity-id-safety.js";
@@ -4343,11 +4343,22 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     return lineCount > threshold;
   }
 
+  /** Loaded memories keep their file text, so the load-time snapshot is derived from it when a tier move needs it, not built per memory on every corpus read (COS-666d). */
   private rememberMemorySnapshot<T extends MemoryFile | null>(memory: T): T {
-    if (memory !== null && !StorageManager.loadedMemorySnapshots.has(memory)) {
+    if (memory !== null && readRawMemoryDocument(memory) === undefined && !StorageManager.loadedMemorySnapshots.has(memory)) {
       StorageManager.loadedMemorySnapshots.set(memory, createMemorySnapshot(memory));
     }
     return memory;
+  }
+
+  /** The snapshot of `memory` as loaded, rebuilt from its retained file text; undefined when none was retained. */
+  private snapshotFromLoadedDocument(memory: MemoryFile): string | undefined {
+    const raw = readRawMemoryDocument(memory);
+    const parsed = raw === undefined ? null : parseFrontmatter(raw);
+    if (raw === undefined || !parsed) return undefined;
+    const frontmatter = { ...parsed.frontmatter, ...loadTimeStamps(raw, parsed.frontmatter, memory.frontmatter) };
+    const normalized = normalizeFrontmatterForPath(frontmatter, toMemoryPathRel(this.baseDir, memory.path), parsed.content);
+    return createMemorySnapshot({ path: memory.path, frontmatter: normalized, content: parsed.content });
   }
 
   private rememberMemorySnapshots(memories: MemoryFile[]): MemoryFile[] {
@@ -5015,7 +5026,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
           if (current === null && destination?.frontmatter.id === memory.frontmatter.id) return false;
           throw new Error(`memory ${memory.frontmatter.id} changed before its tier move`);
         }
-        const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory);
+        const callerSnapshot = StorageManager.loadedMemorySnapshots.get(memory) ?? this.snapshotFromLoadedDocument(memory);
         const currentSnapshot = createMemorySnapshot(current);
         if (
           callerSnapshot === undefined
