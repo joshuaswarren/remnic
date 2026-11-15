@@ -1656,3 +1656,50 @@ test("half-open probe timeout bounds only the probe: a normal attempt may run lo
     await h.cleanup();
   }
 });
+
+test("half-open probe timeout keeps the caller deadline enforced while the failure is recorded", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [3_600_000],
+    extractionBreakerFailureThreshold: 1,
+    extractionBreakerCooldownMs: 0,
+  });
+  try {
+    let calls = 0;
+    const coord = new ExtractionRunCoordinator({
+      ...h.makeDeps(),
+      halfOpenProbeTimeoutMs: 20,
+      getExtraction: () => ({
+        extract: async (_turns, _entities, signal) => {
+          calls += 1;
+          if (calls === 1) return failureResult("provider_retryable");
+          const stopped = Promise.withResolvers<void>();
+          signal?.addEventListener("abort", () => stopped.resolve(), { once: true });
+          await stopped.promise;
+          return successResult();
+        },
+      }),
+    });
+    await h.run(coord, "fp-1"); // opens the breaker
+    // Recording the probe failure must not outlive the caller deadline.
+    const storage = await h.storageForNs("default");
+    storage.updateMeta = () => new Promise<never>(() => {});
+    const guard = Promise.withResolvers<"hung">();
+    const guardTimer = setTimeout(() => guard.resolve("hung"), 2_000);
+    const outcome = await Promise.race([
+      coord
+        .runExtraction(makeTurns("fp-2"), {
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          clearBufferAfterExtraction: false,
+          bufferKey: "fp-2",
+          deadlineMs: Date.now() + 300,
+        })
+        .then(() => "returned", () => "rejected"),
+      guard.promise,
+    ]);
+    clearTimeout(guardTimer);
+    assert.notEqual(outcome, "hung", "the caller deadline cut the hung metadata write");
+  } finally {
+    await h.cleanup();
+  }
+});

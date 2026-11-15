@@ -118,7 +118,7 @@ export interface ExtractionRunCoordinatorDeps {
    *  moment destroy() begins. Absent for standalone coordinators (tests). */
   shutdownSignal?: AbortSignal;
   /** Test seam: how long a half-open probe may run before it counts as a
-   *  provider failure. Defaults to HALF_OPEN_PROBE_TIMEOUT_MS. */
+   *  provider failure. Defaults to HALF_OPEN_PROBE_TIMEOUT_MS (provider-breaker.ts). */
   halfOpenProbeTimeoutMs?: number;
 }
 
@@ -140,7 +140,8 @@ import {
 } from "./extraction-run-helpers.js";
 import type { ExtractionResilienceStatus, ExtractionRetryStateEntry } from "./extraction-run-helpers.js";
 import type { ExtractionPersistResult } from "./extraction-persist.js";
-import { HALF_OPEN_PROBE_TIMEOUT_MS, ProviderCircuitBreaker, type ProbeOwnerToken } from "./provider-breaker.js";
+import { ProviderCircuitBreaker, type ProbeOwnerToken } from "./provider-breaker.js";
+import { probeTimedOutResult, startProbeDeadline } from "./probe-deadline.js";
 
 export {
   capExtractionRetryStateEntries,
@@ -858,38 +859,23 @@ export class ExtractionRunCoordinator {
       // The half-open probe is bounded: one that gets no answer in time counts as
       // a provider failure (re-opens the breaker) instead of holding every other
       // attempt until the provider answers or times out.
-      const probeTimeout = extractionProbeOwned ? new AbortController() : undefined;
-      const probeTimer = probeTimeout
-        ? setTimeout(() => probeTimeout.abort(), this.deps.halfOpenProbeTimeoutMs ?? HALF_OPEN_PROBE_TIMEOUT_MS)
-        : undefined;
-      const extractSignal = probeTimeout
-        ? extractionAbortSignal
-          ? AbortSignal.any([extractionAbortSignal, probeTimeout.signal])
-          : probeTimeout.signal
-        : extractionAbortSignal;
+      const probe = startProbeDeadline(extractionProbeOwned, extractionAbortSignal, this.deps.halfOpenProbeTimeoutMs);
       try {
         result = await raceRecallAbort(
-          this.deps.getExtraction().extract(normalizedTurns, existingEntities, extractSignal),
-          extractSignal,
+          this.deps.getExtraction().extract(normalizedTurns, existingEntities, probe.signal),
+          probe.signal,
           "extraction aborted (during_extract)",
         );
       } catch (error) {
-        clearExtractionDeadlineTimer();
-        if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
-          throw new ExtractionDeadlineError("during_extract");
-        }
-        if (probeTimeout?.signal.aborted !== true) throw error;
+        const pastDeadline = deadlineMs !== undefined && Date.now() >= deadlineMs;
+        // Keep the caller deadline timer running while a probe timeout is turned into a failure result.
+        if (pastDeadline || !probe.timedOut()) clearExtractionDeadlineTimer();
+        if (pastDeadline) throw new ExtractionDeadlineError("during_extract");
+        if (!probe.timedOut()) throw error;
         log.warn("runExtraction: half-open probe got no answer in time; treating it as a provider failure");
-        result = {
-          facts: [],
-          profileUpdates: [],
-          entities: [],
-          questions: [],
-          extractionFailure: "local_llm_unavailable",
-          extractionFailureClass: "provider_retryable",
-        };
+        result = probeTimedOutResult();
       } finally {
-        clearTimeout(probeTimer);
+        probe.stop();
       }
     try {
       throwIfDeadlineExceeded("before_persist");
