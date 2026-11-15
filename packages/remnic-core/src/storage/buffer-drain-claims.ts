@@ -61,6 +61,7 @@ import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:
 import path from "node:path";
 
 import { bufferSessionFileName, type BufferFileIo } from "./buffer-session-files.js";
+import { HandInMemo } from "./buffer-drain-handin-memo.js";
 import { bufferTurnIdentityKey, subtractBufferTurns, type DrainedTurnSets } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -426,6 +427,11 @@ function leaseBelongsToProcess(lease: DrainLease | null, ownerId: string): boole
 const INBOX_SUFFIX = ".inbox.jsonl";
 /** Cached turn counts beside a claim body (see `ClaimSummary`). */
 const COUNT_SUFFIX = ".count";
+/** Above this, a listing does not parse an inbox while the body still has pending turns (COS-666i). */
+const INBOX_LISTING_PARSE_LIMIT = 1_048_576;
+/** Node cannot build a string longer than this; an inbox this big can never be read. */
+// shortcut: counts bytes, so a multi-byte-heavy inbox just over this is skipped though readable; fold it by hand then.
+const INBOX_UNREADABLE_BYTES = 0x1fffffe8;
 
 /** Claim bodies `listPage` may read per requested entry: bounds one scan's
  *  I/O even when the directory is mostly empty tombstones. */
@@ -436,6 +442,8 @@ export class BufferDrainClaims {
     private readonly stateDir: string,
     private readonly io: BufferFileIo,
   ) {}
+
+  private readonly handIns = new HandInMemo();
 
   private get dir(): string {
     return path.join(this.stateDir, "buffer", "drain");
@@ -695,6 +703,16 @@ export class BufferDrainClaims {
     );
   }
 
+  /** The inbox as this process last left it (identity, size, mtime); "absent" when there is none, null when unknown. */
+  private async handInStamp(key: string): Promise<string | null> {
+    try {
+      const inbox = await stat(this.inboxFor(key));
+      return `${inbox.ino}:${inbox.size}:${inbox.mtimeMs}`;
+    } catch (err) {
+      return isErrnoCode(err, "ENOENT") ? "absent" : null;
+    }
+  }
+
   /**
    * Hand a live owner's in-memory entry to the claim (the path a buffer owner
    * takes instead of persisting a claimed session): ONE append to the inbox,
@@ -716,7 +734,10 @@ export class BufferDrainClaims {
       if (!this.isClaimed(key)) return;
       // Leading newline: a torn tail from a kill mid-append ends at this
       // record's newline instead of fusing into it.
-      await this.io.append(this.inboxFor(key), `\n${JSON.stringify({ id: randomUUID(), key, ...incoming })}`);
+      const plan = this.handIns.plan(key, await this.handInStamp(key), incoming);
+      if (plan === null) return;
+      await this.io.append(this.inboxFor(key), `\n${JSON.stringify({ id: randomUUID(), key, ...plan.record })}`);
+      plan.remember(await this.handInStamp(key));
     });
   }
 
@@ -964,7 +985,15 @@ export class BufferDrainClaims {
     if (!summary) return null;
     let inboxTurns = 0;
     try {
-      for (const record of await this.readInbox(summary.key)) inboxTurns += pendingTurns(record.entry);
+      const inboxBytes = (await stat(this.inboxFor(summary.key)).catch(() => null))?.size ?? 0;
+      if (inboxBytes > INBOX_UNREADABLE_BYTES) throw new Error(`inbox is ${inboxBytes} bytes, too long to read`);
+      if (inboxBytes <= INBOX_LISTING_PARSE_LIMIT) {
+        for (const record of await this.readInbox(summary.key)) inboxTurns += pendingTurns(record.entry);
+      } else if (summary.pending === 0) {
+        // Unknown but positive: the claim stays a candidate, and the drain counts the inbox exactly.
+        inboxTurns = 1;
+      }
+      // A large inbox beside a pending body adds nothing here: the body already makes the claim a candidate.
     } catch (err) {
       log.debug(`buffer drain: skipping claim ${name} with an unreadable inbox: ${err instanceof Error ? err.message : String(err)}`);
       return null;
