@@ -188,3 +188,121 @@ test("the memo is a bounded LRU", async () => {
   assert.equal((await memo.resolve("r", "b", chooser("b2"))).dir, "b2");
   assert.throws(() => new WriteDirMemo(0), RangeError);
 });
+
+const ALICE = "agent:alice:discord:channel:123";
+const BOB = "agent:bob:discord:channel:123";
+
+async function sessionsIn(dir: string): Promise<string[]> {
+  const text = await jsonlContents(dir);
+  return [ALICE, BOB].filter((key) => text.includes(`"sessionKey":"${key}"`));
+}
+
+test("two sessions that share a primary directory never share a directory, even when their first appends overlap", async () => {
+  await withManager(async ({ manager, root }) => {
+    const alice = manager.getTranscriptPath(ALICE);
+    const bob = manager.getTranscriptPath(BOB);
+    assert.equal(alice.dir, bob.dir, "the keys must map to one primary directory for this test");
+    await Promise.allSettled([manager.append(entry(ALICE, "a1")), manager.append(entry(BOB, "b1"))]);
+    for (const n of [2, 3, 4]) {
+      await manager.append(entry(ALICE, `a${n}`));
+      await manager.append(entry(BOB, `b${n}`));
+    }
+    let rows = 0;
+    for (const dir of [alice.dir, alice.alternateDir, bob.alternateDir]) {
+      const owners = await sessionsIn(path.join(root, dir));
+      assert.ok(owners.length <= 1, `${dir} holds rows of ${owners.length} sessions`);
+      rows += (await jsonlContents(path.join(root, dir))).split("\n").filter(Boolean).length;
+    }
+    assert.equal(rows, 8, "every row must be written once");
+  });
+});
+
+test("a directory emptied by cleanup and claimed by another session is re-checked by the first session", async () => {
+  await withManager(async ({ manager, root }) => {
+    const alice = manager.getTranscriptPath(ALICE);
+    // Alice's only file is from a past day, so cleanup() will delete it and empty the directory.
+    mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 0, 1, 12) });
+    try {
+      await manager.append(entry(ALICE, "a1"));
+    } finally {
+      mock.timers.reset();
+    }
+    assert.equal(await manager.cleanup(30), 1);
+    await manager.append(entry(BOB, "b1")); // claims the emptied directory
+    await manager.append(entry(ALICE, "a2"));
+    assert.deepEqual(await sessionsIn(path.join(root, alice.dir)), [BOB]);
+    assert.ok((await jsonlContents(path.join(root, alice.alternateDir))).includes('"turnId":"a2"'));
+  });
+});
+
+test("cleanup drops the remembered directories after deleting a single file", async () => {
+  await withManager(async ({ manager, root }) => {
+    const owner = "pi-geek:memo-one-file";
+    const channelDir = path.join(root, manager.getTranscriptPath(owner).dir);
+    await writeOldDays(channelDir, owner, 1);
+    await manager.append(entry(owner, "g1"));
+    assert.equal(await manager.cleanup(30), 1);
+    const verify = mock.method(JsonlOwnershipDigestCache.prototype, "verify");
+    try {
+      await manager.append(entry(owner, "g2"));
+      assert.ok(verify.mock.callCount() >= 1, "the directory was not verified again after a one-file cleanup");
+    } finally {
+      verify.mock.restore();
+    }
+  });
+});
+
+test("removing() drops every remembered directory once the removal has run", async () => {
+  const memo = new WriteDirMemo();
+  let calls = 0;
+  const choose = async () => ({ dir: `d${++calls}`, channelDir: "c" });
+  await memo.resolve("root", "session", choose);
+  let removed = false;
+  await memo.removing(async () => {
+    assert.equal((await memo.resolve("root", "session", choose)).dir, "d1", "still remembered while the removal runs");
+    removed = true;
+  });
+  assert.ok(removed);
+  assert.equal((await memo.resolve("root", "session", choose)).dir, "d2");
+  await assert.rejects(memo.removing(async () => { throw new Error("unlink failed"); }), /unlink failed/);
+  assert.equal((await memo.resolve("root", "session", choose)).dir, "d3", "a failed removal may still have emptied a directory");
+});
+
+test("run() queues a session's first append behind earlier ones for the same primary directory, and lets remembered sessions through", async () => {
+  const memo = new WriteDirMemo();
+  const order: string[] = [];
+  let releaseFirst: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  const first = memo.run("root", "s1", "primary", async () => {
+    order.push("first start");
+    await gate;
+    order.push("first end");
+    await memo.resolve("root", "s1", async () => ({ dir: "p", channelDir: "p" }));
+  });
+  const second = memo.run("root", "s2", "primary", async () => {
+    order.push("second start");
+  });
+  const otherDir = memo.run("root", "s3", "elsewhere", async () => {
+    order.push("other dir");
+  });
+  await otherDir;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(order, ["first start", "other dir"], "second must wait for first");
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.deepEqual(order, ["first start", "other dir", "first end", "second start"]);
+  assert.equal(memo.pendingLanes, 0, "idle lanes must be pruned");
+  // s1 is remembered now, so it runs immediately even while another run holds the lane
+  const holder = memo.run("root", "s4", "primary", () => new Promise<void>(() => {}));
+  void holder;
+  const outcome = await Promise.race([
+    memo.run("root", "s1", "primary", async () => {
+      order.push("remembered");
+    }).then(() => "ran"),
+    new Promise((resolve) => setTimeout(() => resolve("blocked"), 200)),
+  ]);
+  assert.equal(outcome, "ran");
+  assert.equal(order.at(-1), "remembered");
+});

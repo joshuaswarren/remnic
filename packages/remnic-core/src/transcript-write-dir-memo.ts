@@ -22,11 +22,18 @@ export class WriteDirMemo {
   private readonly entries = new Map<string, WriteDirChoice>();
   /** Bumped by every invalidation; a choice that was pending across one is not remembered. */
   private generation = 0;
+  /** Tail of the queue of memo-miss runs, per primary directory. */
+  private readonly lanes = new Map<string, Promise<void>>();
 
   constructor(private readonly maxEntries: number = DEFAULT_WRITE_DIR_MEMO_ENTRIES) {
     if (!Number.isInteger(maxEntries) || maxEntries < 1) {
       throw new RangeError("maxEntries must be a positive integer");
     }
+  }
+
+  /** Primary directories with a first append queued or running; empty when idle. */
+  get pendingLanes(): number {
+    return this.lanes.size;
   }
 
   /** The remembered choice for the session, else the result of `choose` (remembered when it resolves). */
@@ -47,6 +54,38 @@ export class WriteDirMemo {
       if (!oldest.done) this.entries.delete(oldest.value);
     }
     return chosen;
+  }
+
+  /**
+   * Run a session's append. A session whose directory is already remembered
+   * runs at once. Any other session's first append runs after the earlier
+   * first appends that share its primary directory: two sessions that map to
+   * one directory (two agents in one channel) must not both find it empty and
+   * both claim it, so the second check has to see the first session's row.
+   */
+  async run<T>(root: string, sessionKey: string, primaryDir: string, fn: () => Promise<T>): Promise<T> {
+    if (this.entries.has(this.keyFor(root, sessionKey))) return fn();
+    const lane = `${root}\0${primaryDir}`;
+    const result = (this.lanes.get(lane) ?? Promise.resolve()).then(fn);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.lanes.set(lane, tail);
+    try {
+      return await result;
+    } finally {
+      if (this.lanes.get(lane) === tail) this.lanes.delete(lane);
+    }
+  }
+
+  /** Run a file removal, then drop every remembered directory: the removal may have emptied one that another session can now claim. */
+  async removing<T>(remove: () => Promise<T>): Promise<T> {
+    try {
+      return await remove();
+    } finally {
+      this.clear();
+    }
   }
 
   clear(): void {

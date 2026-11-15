@@ -544,17 +544,19 @@ export class TranscriptManager {
         return;
       }
 
-      const { dir: writeDir, channelDir } = await this.writeDirs.resolve(this.transcriptsDir, entry.sessionKey, () =>
-        this.selectStorageDirForWrite(this.transcriptsDir, dir, legacyDir, entry.sessionKey, alternateDir),
-      );
-      const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
+      await this.writeDirs.run(this.transcriptsDir, entry.sessionKey, dir, async () => {
+        const { dir: writeDir, channelDir } = await this.writeDirs.resolve(this.transcriptsDir, entry.sessionKey, () =>
+          this.selectStorageDirForWrite(this.transcriptsDir, dir, legacyDir, entry.sessionKey, alternateDir),
+        );
+        const filePath = await resolveSafeStoragePath(this.transcriptsDir, writeDir, file);
 
-      // Ensure channel directory exists
-      await mkdir(channelDir, { recursive: true });
+        // Ensure channel directory exists
+        await mkdir(channelDir, { recursive: true });
 
-      const line = JSON.stringify(entry) + "\n";
-      await appendFile(filePath, line, "utf-8");
-      log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
+        const line = JSON.stringify(entry) + "\n";
+        await appendFile(filePath, line, "utf-8");
+        log.debug(`appended transcript entry for ${entry.sessionKey}: ${entry.turnId}`);
+      });
     } catch (err) {
       log.error("failed to append transcript entry:", err);
       this.writeDirs.forget(this.transcriptsDir, entry.sessionKey);
@@ -820,7 +822,7 @@ export class TranscriptManager {
 
                       if (!isNaN(fileDate.getTime()) && fileDate < cutoff) {
                         try {
-                          await unlink(filePath);
+                          await this.writeDirs.removing(() => unlink(filePath));
                           processed++;
                           log.debug(`deleted old daily transcript file: ${entry.name}/${channelTypeEntry.name}/${file}`);
                         } catch (err) {
@@ -859,7 +861,7 @@ export class TranscriptManager {
             if (!isNaN(fileDate.getTime()) && fileDate < cutoff) {
               const filePath = path.join(this.transcriptsDir, entry.name);
               try {
-                await unlink(filePath);
+                await this.writeDirs.removing(() => unlink(filePath));
                 processed++;
                 log.debug(`deleted old legacy transcript file: ${entry.name}`);
               } catch (err) {
@@ -872,7 +874,6 @@ export class TranscriptManager {
 
       if (processed > 0) {
         log.info(`cleaned up ${processed} transcript file(s) older than ${retentionDays} days`);
-        this.writeDirs.clear(); // a directory emptied here can be claimed by another session
       }
 
       return processed;
@@ -914,7 +915,7 @@ export class TranscriptManager {
       if (validLines.length === 0) {
         // No valid entries left, delete the file
         try {
-          await unlink(filePath);
+          await this.writeDirs.removing(() => unlink(filePath));
           log.debug(`deleted empty transcript file: ${filePath}`);
           return true;
         } catch (err) {
