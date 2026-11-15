@@ -409,6 +409,7 @@ function flushHarness(memories: FlushMemory[], buffered: FlushBuffer) {
     namespaceFromPath: () => "default",
     storageRouter: {
       storageFor: async () => ({
+        dir: "/memory",
         flushAccessTracking: async (entries: AccessTrackingEntry[]) => {
           out.flushed = entries;
         },
@@ -495,4 +496,17 @@ test("flushAccessTracking takes the earlier memory when a relative path matches 
   const { out, coordinator } = flushHarness(memories, buffered);
   await coordinator.flushAccessTracking();
   assert.deepEqual(out.flushed.map((e) => [e.memoryPath, e.newCount]), [[underMemoryDir, 6]]);
+});
+
+test("flushAccessTracking tries the plain path before the QMD collection candidates", async () => {
+  const viaCandidate = path.join("/memory", "facts", "x.md");
+  const viaPlainPath = path.join("/memory", "collection", "facts", "x.md");
+  const memories = [
+    { path: viaCandidate, frontmatter: { id: "cand-a", accessCount: 5 } },
+    { path: viaPlainPath, frontmatter: { id: "plain-b", accessCount: 50 } },
+  ];
+  const buffered: FlushBuffer = new Map([["default:x", { memoryId: "x", memoryPath: "collection/facts/x.md", count: 1, lastAccessed: stamp }]]);
+  const { out, coordinator } = flushHarness(memories, buffered);
+  await coordinator.flushAccessTracking();
+  assert.deepEqual(out.flushed.map((e) => [e.memoryPath, e.newCount]), [[viaPlainPath, 51]]);
 });
