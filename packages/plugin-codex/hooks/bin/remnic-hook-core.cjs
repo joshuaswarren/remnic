@@ -142,6 +142,21 @@ function run(config) {
   // `( … ) & disown`.
   const OBSERVE_WORKER = "__observe-worker__";
 
+  // Detached worker that retries the SessionEnd tail drain after lock
+  // contention. The foreground session-end hook gives up after ~5s so the
+  // host is never blocked; this worker waits longer for a still-running
+  // observe worker to release the session lock, then performs the same
+  // drain + cursor cleanup.
+  const SESSION_END_DRAIN = "__session-end-drain__";
+
+  // Lock-wait budget (100ms each → ~120s) for the detached session-end
+  // drain: an in-flight observe worker's /engram/v1/observe can take up to
+  // 120s, so the drain waits roughly that long before giving up and leaving
+  // cursor state for the stale-lock reaper.
+  const _sedRaw = process.env.REMNIC_SESSION_END_DRAIN_LOCK_RETRIES;
+  const _sedParsed = _sedRaw != null && _sedRaw !== "" ? Number.parseInt(_sedRaw, 10) : 1200;
+  const SESSION_END_DRAIN_LOCK_RETRIES = Number.isFinite(_sedParsed) && _sedParsed >= 0 ? _sedParsed : 1200;
+
   // PreCompact tail-drain lock-wait budget (100ms each → ~15s). Bounds how
   // long handlePreCompact waits for a detached PostToolUse observe worker
   // (whose own /observe can run up to 120s) to release the session lock
@@ -707,7 +722,8 @@ function run(config) {
       cursorFile = legacyCursor;
       lockFile = legacyLock;
     }
-    return { cursorFile, lockFile, legacyCursor, legacyLock };
+    const doneFile = path.join(stateDir, `remnic-done-${sessionId}`);
+    return { cursorFile, lockFile, doneFile, legacyCursor, legacyLock };
   }
 
   // true if the cursor file is safe to read/write (or absent).
@@ -761,6 +777,31 @@ function run(config) {
       /* best effort */
     }
     return true;
+  }
+
+  // Completion tombstone: written by the session-end drain once the final
+  // flush succeeds (or there is nothing left to flush) and the cursor is
+  // removed. Detached observe workers queued behind the session lock check
+  // this under the lock and exit instead of treating the missing cursor as
+  // 0 and replaying the whole transcript. The file is tiny and persists for
+  // the life of the state dir, like leftover locks from crashed sessions.
+  function sessionDone(doneFile) {
+    try {
+      const info = fs.lstatSync(doneFile);
+      return !info.isSymbolicLink() && info.isFile() && ownedByUs(info);
+    } catch {
+      return false;
+    }
+  }
+
+  function markSessionDone(doneFile, log) {
+    try {
+      fs.writeFileSync(doneFile, `${Date.now()}\n`, { mode: 0o600 });
+      return true;
+    } catch (err) {
+      log(`failed to write session-done marker ${doneFile}: ${err && err.message}`);
+      return false;
+    }
   }
 
   // Adopt a higher os.tmpdir() (or /tmp) cursor written by an older
@@ -1020,6 +1061,13 @@ function run(config) {
 
     if (!acquireLock(lockFile, log)) return;
     try {
+      // A queued worker that acquires the lock after SessionEnd removed the
+      // cursor must not treat the missing cursor as 0 and replay the whole
+      // transcript — the done tombstone marks completed sessions.
+      if (sessionDone(state.doneFile)) {
+        log(`session ${sessionId} already flushed; skipping queued observe`);
+        return;
+      }
       migrateTmpCursor(sessionId, cursorFile, log);
       const lastCount = readCursor(cursorFile, log);
       if (lastCount === null) return;
@@ -1084,7 +1132,8 @@ function run(config) {
     }
   }
 
-  async function handleSessionEnd(input, token, log) {
+  async function handleSessionEnd(input, token, log, raw, opts) {
+    const drainRetry = !!(opts && opts.drainRetry);
     // Acknowledge immediately.
     emit({ continue: true });
 
@@ -1098,15 +1147,38 @@ function run(config) {
     // Serialize the final drain and cleanup with the per-session lock so a
     // still-running detached observe worker cannot race the cursor read,
     // duplicate the tail observation, or have its lock removed mid-flight.
-    // If the worker outlasts the retry budget we leave cursor and lock in
-    // place — the stale-lock reaper and the next session's cursor logic
-    // tolerate leftovers, while a forced cleanup here could drop queued work.
+    // The foreground hook waits ~5s; on contention it hands the drain to a
+    // detached worker with a much longer budget so messages that land after
+    // the in-flight worker's snapshot are still observed before the session
+    // state is cleaned up. If even that worker gives up, cursor and lock stay
+    // for the stale-lock reaper — a forced cleanup could drop queued work.
     let lockAcquired = false;
     if (state) {
-      lockAcquired = acquireLock(state.lockFile, log);
+      lockAcquired = acquireLock(
+        state.lockFile,
+        log,
+        drainRetry ? SESSION_END_DRAIN_LOCK_RETRIES : 50,
+      );
       if (!lockAcquired) {
         log(`final flush skipped for ${sessionId}: session lock busy`);
-        if (config.enableMaterialize) runMaterialize(log);
+        if (!drainRetry && raw) {
+          try {
+            const child = spawn(process.execPath, [ENTRY_FILE, SESSION_END_DRAIN], {
+              detached: true,
+              stdio: ["pipe", "ignore", "ignore"],
+              env: { ...process.env, REMNIC_HOOK_TOKEN: token || "" },
+            });
+            child.on("error", (e) => log(`session-end drain spawn error: ${e && e.message}`));
+            child.stdin.on("error", () => {
+              /* ignore EPIPE if the worker exits before we finish writing */
+            });
+            child.stdin.end(raw);
+            child.unref();
+          } catch (err) {
+            log(`failed to spawn session-end drain: ${err && err.message}`);
+          }
+        }
+        if (config.enableMaterialize && !drainRetry) runMaterialize(log);
         return;
       }
     }
@@ -1148,10 +1220,16 @@ function run(config) {
       }
 
       // Cleanup — only remove the cursor when the flush succeeded or there
-      // was nothing pending. The lock we hold is released in `finally`.
+      // was nothing pending. The done tombstone is written first so a queued
+      // observe worker that acquires the lock after we release it exits
+      // instead of replaying the transcript from a missing cursor. The lock
+      // we hold is released in `finally`.
       if (state) {
-        const { cursorFile, legacyCursor, legacyLock } = state;
-        if (removeCursorAfterFlush) removeCursor(cursorFile, log);
+        const { cursorFile, doneFile, legacyCursor, legacyLock } = state;
+        if (removeCursorAfterFlush) {
+          markSessionDone(doneFile, log);
+          removeCursor(cursorFile, log);
+        }
         if (cursorFile !== legacyCursor) {
           try {
             const info = fs.lstatSync(legacyCursor);
@@ -1219,6 +1297,7 @@ function run(config) {
       return "busy";
     }
     try {
+      if (sessionDone(state.doneFile)) return true;
       migrateTmpCursor(sessionId, cursorFile, log);
       const lastCount = readCursor(cursorFile, log);
       if (lastCount === null) {
@@ -1381,6 +1460,20 @@ function run(config) {
         if (token) await observeWorker(input, token, log);
       } catch (err) {
         log(`observe worker error: ${err && err.message}`);
+      }
+      return;
+    }
+
+    // Detached retry of the SessionEnd tail drain after lock contention.
+    if (event === SESSION_END_DRAIN) {
+      const log = makeLogger("session-end");
+      try {
+        const raw = readStdin();
+        const input = parseInput(raw);
+        const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
+        await handleSessionEnd(input, token, log, raw, { drainRetry: true });
+      } catch (err) {
+        log(`session-end drain error: ${err && err.message}`);
       }
       return;
     }

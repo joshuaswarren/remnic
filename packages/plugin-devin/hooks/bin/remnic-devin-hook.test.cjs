@@ -115,6 +115,10 @@ function cursorPath(home, sessionId) {
   return path.join(home, "state", "remnic", "hooks", `remnic-cursor-${sessionId}`);
 }
 
+function donePath(home, sessionId) {
+  return path.join(home, "state", "remnic", "hooks", `remnic-done-${sessionId}`);
+}
+
 function okServer(extra) {
   return (req, res) => {
     if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
@@ -287,6 +291,36 @@ test("session-end: final flush observes remaining tail and clears cursor", async
     assert.ok(observe, "final flush observed the tail");
     assert.match(observe.body.messages[0].content, /migration/);
     assert.ok(!fs.existsSync(cursorPath(home, sessionId)), "cursor removed after successful flush");
+    assert.ok(fs.existsSync(donePath(home, sessionId)), "done tombstone written");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-end: a queued observe worker does not replay the transcript", async () => {
+  const home = mkHome();
+  const sessionId = "sess-end-queued";
+  atifTranscript(home, sessionId, [
+    { step_id: 1, timestamp: "t", source: "user", message: "the last message of the session" },
+  ]);
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    await runHook("session-end", { session_id: sessionId, reason: "exit" }, { port, home });
+    const observesBefore = calls.filter((c) => c.url === "/engram/v1/observe").length;
+    assert.equal(observesBefore, 1, "session-end flushed the tail once");
+    // A detached observe worker spawned just before SessionEnd can still be
+    // queued behind the lock; once it runs it must see the done tombstone
+    // and exit instead of treating the removed cursor as 0.
+    await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1" },
+      { port, home },
+    );
+    // Give the detached worker time to acquire the lock and (wrongly) observe.
+    await new Promise((r) => setTimeout(r, 3000));
+    const observesAfter = calls.filter((c) => c.url === "/engram/v1/observe").length;
+    assert.equal(observesAfter, observesBefore, "queued worker did not replay the transcript");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
