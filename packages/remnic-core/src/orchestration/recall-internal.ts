@@ -2361,11 +2361,7 @@ export class RecallInternalCoordinator {
       }
 
       if (!checkpointInjected) {
-        const entries = await this.deps.transcript.readRecent(
-          transcriptLookbackHours,
-          sessionKey,
-          transcriptMaxTurns,
-        );
+        const entries = await this.deps.transcript.readRecent(transcriptLookbackHours, sessionKey, transcriptMaxTurns);
         log.debug(
           `recall: read ${entries.length} transcript entries for sessionKey=${sessionKey}`,
         );

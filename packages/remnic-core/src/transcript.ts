@@ -18,6 +18,7 @@ function firstLineBefore(chunk: Buffer, cutoffMs: number): boolean {
   const to = chunk.indexOf(0x0a, from);
   if (from === 0 || to < 0) return false;
   try {
+    // SAFETY: only `.timestamp` is read; any other shape gives NaN, and NaN < cutoffMs is false (keep reading).
     return new Date((JSON.parse(chunk.toString("utf-8", from, to)) as TranscriptEntry).timestamp).getTime() < cutoffMs;
   } catch {
     return false;
@@ -75,8 +76,8 @@ async function readLinesSince(filePath: string, cutoffMs: number, maxLines = Inf
     }
     let text = Buffer.concat(chunks).toString("utf-8");
     if (pos > 0) text = text.slice(text.indexOf("\n") + 1); // drop the partial first line
-    // Blank lines stay: they count toward `maxLines` like the chunk stop counts them, and a blank fails to parse like any bad line.
-    return text.trim().split("\n").slice(-maxLines);
+    // Blank lines stay (only the final terminator goes): they count toward `maxLines` like the chunk stop counts them, and a blank fails to parse like any bad line.
+    return (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").slice(-maxLines);
   } finally {
     await fh.close();
   }
@@ -787,6 +788,7 @@ export class TranscriptManager {
           found = [];
           for (const line of lines) {
             try {
+              // SAFETY: the same cast the full-window read made here; `timestamp` is validated on the next line.
               const entry = JSON.parse(line) as TranscriptEntry;
               const entryTime = new Date(entry.timestamp);
               if (entryTime >= start && entryTime < end) found.push(entry);

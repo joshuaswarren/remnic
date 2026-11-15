@@ -13,17 +13,18 @@ import fsp from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { mock } from "node:test";
 
+import { parseConfig } from "./config.js";
 import { TranscriptManager } from "./transcript.js";
-import type { PluginConfig, TranscriptEntry } from "./types.js";
+import type { TranscriptEntry } from "./types.js";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
 const PAD = "x".repeat(2000);
 
 function entry(turnId: string, timestampMs: number, content = `content-${turnId}`): TranscriptEntry {
-  return { sessionKey: "agent:a:main", turnId, role: "user", content, timestamp: new Date(timestampMs).toISOString() } as TranscriptEntry;
+  return { sessionKey: "agent:a:main", turnId, role: "user", content, timestamp: new Date(timestampMs).toISOString() };
 }
 
 async function writeFileOf(file: string, entries: TranscriptEntry[], mtimeMs?: number): Promise<void> {
@@ -35,7 +36,7 @@ async function writeFileOf(file: string, entries: TranscriptEntry[], mtimeMs?: n
 async function withStore(run: (ctx: { root: string; manager: TranscriptManager; now: number }) => Promise<void>): Promise<void> {
   const memoryDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "remnic-tx-tail-")));
   try {
-    const config = { memoryDir, transcriptSkipChannelTypes: [] } as unknown as PluginConfig;
+    const config = parseConfig({ memoryDir, transcriptSkipChannelTypes: [] });
     await run({ root: path.join(memoryDir, "transcripts"), manager: new TranscriptManager(config), now: Date.now() });
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -44,18 +45,14 @@ async function withStore(run: (ctx: { root: string; manager: TranscriptManager; 
 
 const today = (now: number): string => new Date(now).toISOString().slice(0, 10);
 
-function countParses<T>(fn: () => Promise<T>): Promise<{ result: T; parses: number }> {
-  const real = JSON.parse;
-  let parses = 0;
-  JSON.parse = ((...args: Parameters<typeof JSON.parse>) => {
-    parses++;
-    return real(...args);
-  }) as typeof JSON.parse;
-  return fn().then(
-    (result) => ({ result, parses }),
-  ).finally(() => {
-    JSON.parse = real;
-  });
+async function countParses<T>(fn: () => Promise<T>): Promise<{ result: T; parses: number }> {
+  const spy = mock.method(JSON, "parse");
+  try {
+    const result = await fn();
+    return { result, parses: spy.mock.callCount() };
+  } finally {
+    spy.mock.restore();
+  }
 }
 
 test("a file not modified since before the window (less an hour of skew) is not read", async () => {
@@ -126,7 +123,7 @@ async function seedManySessions(root: string, now: number): Promise<void> {
     const mtime = now - (40 - s) * 10 * MIN;
     const lines: TranscriptEntry[] = [];
     for (let i = 0; i < 600; i++) {
-      lines.push({ ...entry(`s${s}-${i}`, mtime - 8 * HOUR + (i + 1) * (8 * HOUR / 600) - s * 7, PAD), sessionKey: `agent:${s}:main` } as TranscriptEntry);
+      lines.push({ ...entry(`s${s}-${i}`, mtime - 8 * HOUR + (i + 1) * (8 * HOUR / 600) - s * 7, PAD), sessionKey: `agent:${s}:main` });
     }
     await writeFileOf(path.join(root, `session/s${s}`, `${day}.jsonl`), lines, mtime);
   }
@@ -256,18 +253,14 @@ test("a short read skips that file rather than returning a gap", async (t) => {
       const fh = await realOpen(...args);
       if (!String(args[0]).includes("/short/")) return fh;
       // Report one byte fewer than were read: the data is intact, only the count is short.
-      return new Proxy(fh, {
-        get(target, prop) {
-          if (prop === "read") {
-            return async (...a: Parameters<typeof fh.read>) => {
-              const r = await (target.read as (...x: unknown[]) => Promise<{ bytesRead: number }>)(...a);
-              return { ...r, bytesRead: r.bytesRead - 1 };
-            };
-          }
-          const v = Reflect.get(target, prop);
-          return typeof v === "function" ? v.bind(target) : v;
+      const realRead = fh.read.bind(fh);
+      Object.defineProperty(fh, "read", {
+        value: async (buffer: Buffer, offset: number, length: number, position: number) => {
+          const r = await realRead(buffer, offset, length, position);
+          return { buffer: r.buffer, bytesRead: r.bytesRead - 1 };
         },
       });
+      return fh;
     });
     syncBuiltinESMExports();
     try {
@@ -316,5 +309,24 @@ test("an unreadable channel or channel-type directory is skipped", { skip: proce
       await chmod(path.join(root, "session/locked"), 0o755);
       await chmod(path.join(root, "lockedtype"), 0o755);
     }
+  });
+});
+
+test("blank lines at the end of a file do not shrink the newest-N result", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    // 100 lines of exactly 5300 bytes, then four blank lines: the last 256 KiB chunk holds 50 entry
+    // terminators plus the blanks, so the stop rule counts blanks that trim() would later drop.
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `f${String(i).padStart(4, "0")}`;
+      const pad = 5300 - 1 - JSON.stringify(entry(id, 0, "")).length;
+      lines.push(JSON.stringify(entry(id, now - 8 * HOUR + i * 2 * MIN, "p".repeat(pad))));
+    }
+    const file = path.join(root, "session/trailing", `${today(now)}.jsonl`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${lines.join("\n")}\n\n\n\n\n`, "utf-8");
+    const got = await manager.readRecent(12, undefined, 50);
+    assert.equal(got.length, 50);
+    assert.deepEqual(ids(got), ids(await manager.readRecent(12)).slice(-50));
   });
 });
