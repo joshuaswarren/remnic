@@ -27,6 +27,7 @@ import { chunkContent, type ChunkingConfig } from "./chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "./semantic-chunking.js";
 import { ExtractionEngine } from "./extraction.js";
 import type { RevalidationFastChatCompletion } from "./orchestration/dependency-revalidation.js";
+import { createDrainExtractionEngine } from "./orchestration/drain-extraction.js";
 import { detectPassiveCorrections } from "./correction/passive-correction-detector.js";
 import { capturePassiveCorrections, type PassiveCaptureConfig } from "./correction/passive-capture.js";
 import { createCorrectionService } from "./correction/correction-access-wiring.js";
@@ -652,6 +653,7 @@ export class Orchestrator {
   readonly embeddingFallback: EmbeddingFallback;
   private readonly conversationIndexDir: string;
   private readonly extraction: ExtractionEngine;
+  private drainExtraction: ExtractionEngine | undefined;
   readonly config: PluginConfig;
   readonly profiler: ProfilingCollector;
   private readonly threading: ThreadingManager;
@@ -827,7 +829,10 @@ export class Orchestrator {
   /** An extraction run coordinator bound to `buffer` — per drain task, so a
    * claim-backed drain never shares the live buffer's mutable state. */
   extractionRunCoordinatorForBuffer(buffer: SmartBuffer): ExtractionRunCoordinator {
-    return new ExtractionRunCoordinator(this.extractionRunDeps(() => buffer));
+    // Drains use their own engine and LLM lane, built on first use (COS-666).
+    const getExtraction = (): ExtractionEngine => (this.drainExtraction ??= createDrainExtractionEngine(
+      this.config, this.profiler, this.modelRegistry, this.shutdownSignal, this.fastChatCompletion.bind(this)));
+    return new ExtractionRunCoordinator({ ...this.extractionRunDeps(() => buffer), getExtraction });
   }
   private _consolidationRunCoordinator: ConsolidationRunCoordinator | undefined;
   private get consolidationRunCoordinator(): ConsolidationRunCoordinator {
@@ -1728,14 +1733,8 @@ export class Orchestrator {
     if (config.modelSource === "gateway") {
       log.debug(`orchestrator: gateway model source active (primary: ${config.gatewayAgentId ?? "none"}, fast: ${config.fastGatewayAgentId ?? "none"})`);
     }
-    this.extraction = new ExtractionEngine(
-      config,
-      this.profiler,
-      this.localLlm,
-      config.gatewayConfig,
-      this.modelRegistry,
-      this.fastChatCompletion.bind(this),
-    );
+    this.extraction = new ExtractionEngine(config, this.profiler, this.localLlm, config.gatewayConfig,
+      this.modelRegistry, this.fastChatCompletion.bind(this));
     this.lifecyclePolicyCoordinator = new LifecyclePolicyCoordinator({
       config,
       getStorage: () => this.storage,
