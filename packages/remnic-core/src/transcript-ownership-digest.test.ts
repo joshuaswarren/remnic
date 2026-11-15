@@ -64,6 +64,7 @@ test("same-size foreign rewrite with restored mtime is never served a cached own
     const primary = path.join(root, dir, file);
     await rewriteSameSize(primary, (text) => text.replaceAll(owner, intruder));
 
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "3"));
 
     const primaryText = await jsonlContents(path.join(root, dir));
@@ -83,6 +84,7 @@ test("same-size malformed rewrite with restored mtime is never served a cached o
     const primary = path.join(root, dir, file);
     await rewriteSameSize(primary, (text) => text.replace('{"timestamp"', '{"timestamp:'));
 
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "3"));
 
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"3"'), false);
@@ -102,6 +104,7 @@ test("a read error after a cached owner verdict makes the directory occupied", a
     await manager.append(entry(owner, "2"));
     const primary = path.join(root, dir, file);
     await chmod(primary, 0o000);
+    manager.resetWriteDirs();
     try {
       await manager.append(entry(owner, "3"));
     } finally {
@@ -126,6 +129,7 @@ test("editing a cached prefix while the file grows is detected by content, not s
     const grown = (await readFile(primary, "utf-8")) + JSON.stringify(entry(owner, "x")) + "\n";
     await writeFile(primary, grown, "utf-8");
 
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "4"));
 
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"4"'), false);
@@ -375,12 +379,14 @@ test("warm multi-file directory: equal-size restored-mtime foreign rewrite of an
     const original = await readFile(target, "utf-8");
     await rewriteSameSize(target, (text) => text.replaceAll(owner, intruder));
 
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "after-foreign"));
 
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-foreign"'), false);
     assert.equal((await jsonlContents(path.join(root, alternateDir))).includes('"turnId":"after-foreign"'), true);
 
     await writeFile(target, original, "utf-8");
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "after-restore"));
 
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-restore"'), true);
@@ -395,6 +401,7 @@ test("warm multi-file directory: equal-size restored-mtime malformed rewrite of 
     const target = await warmedHistory(manager, root, owner);
     await rewriteSameSize(target, (text) => text.replace('{"timestamp"', '{"timestamp:'));
 
+    manager.resetWriteDirs();
     await manager.append(entry(owner, "after-malformed"));
 
     assert.equal((await jsonlContents(path.join(root, dir))).includes('"turnId":"after-malformed"'), false);
