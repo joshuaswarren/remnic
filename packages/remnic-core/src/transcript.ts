@@ -53,7 +53,7 @@ async function mapLimited<T, R>(items: T[], fn: (item: T) => Promise<R>): Promis
  * returning at most the last `maxLines`. A file not modified since the cutoff holds nothing in the window.
  * shortcut: assumes a file's timestamps never run backwards by more than the
  * RECENT_SKEW_MS the caller subtracts, and that its last `maxLines` lines hold its newest
- * `maxLines` entries; widen the margin if writers can lag further.
+ * `maxLines` entries (the newest-N path has no skew margin: a writer stamping entries late can change which N are returned); widen the margin if writers can lag further.
  */
 async function readLinesSince(filePath: string, cutoffMs: number, maxLines = Infinity): Promise<string[]> {
   const { size, mtimeMs } = await stat(filePath);
@@ -75,7 +75,8 @@ async function readLinesSince(filePath: string, cutoffMs: number, maxLines = Inf
     }
     let text = Buffer.concat(chunks).toString("utf-8");
     if (pos > 0) text = text.slice(text.indexOf("\n") + 1); // drop the partial first line
-    return text.trim().split("\n").filter(Boolean).slice(-maxLines);
+    // Blank lines stay: they count toward `maxLines` like the chunk stop counts them, and a blank fails to parse like any bad line.
+    return text.trim().split("\n").slice(-maxLines);
   } finally {
     await fh.close();
   }
@@ -737,7 +738,8 @@ export class TranscriptManager {
    * every channel is scanned but daily files older than the window (less a day of clock skew) are skipped,
    * and each file is read from its tail. With `maxEntries` and no sessionKey, only the newest `maxEntries`
    * entries are returned (what a caller that keeps `slice(-maxEntries)` would see) and files are visited
-   * newest-modified first, stopping once no remaining file can hold a newer entry.
+   * newest-modified first, stopping once no remaining file can hold a newer entry. The per-file read cap of
+   * 48 applies per channel-type directory, not globally.
    */
   async readRecent(hours: number, sessionKey?: string, maxEntries?: number): Promise<TranscriptEntry[]> {
     const now = new Date();

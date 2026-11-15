@@ -8,7 +8,9 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
+import fsp from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -180,5 +182,139 @@ test("newest-N does not read a file modified too long ago to hold a newer entry"
     const ids = (await manager.readRecent(12, undefined, 50)).map((e) => e.turnId);
     assert.equal(ids.length, 50);
     assert.ok(!ids.includes("stale-newer"));
+  });
+});
+
+const ids = (entries: TranscriptEntry[]): string[] => entries.map((e) => e.turnId);
+
+test("blank lines among a file's newest do not shrink the newest-N result", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    // 200 x ~40 KB: each 256 KiB tail chunk holds only a few lines, so the stop rule runs often.
+    const lines: string[] = [];
+    for (let i = 0; i < 200; i++) {
+      lines.push(JSON.stringify(entry(`t${i}`, now - 10 * HOUR + i * 2 * MIN, "y".repeat(40_000))));
+      if (i >= 170 && i % 2 === 0) lines.push(""); // 15 blanks among the newest 30
+    }
+    const file = path.join(root, "session/blank", `${today(now)}.jsonl`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${lines.join("\n")}\n`, "utf-8");
+    const got = await manager.readRecent(12, undefined, 50);
+    assert.equal(got.length, 50);
+    assert.deepEqual(ids(got), ids(await manager.readRecent(12)).slice(-50));
+  });
+});
+
+test("a tail chunk holding exactly N lines is not mistaken for the whole window", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    // Every line is 5300 bytes, so the final 256 KiB chunk holds exactly 50 newlines: the partial first
+    // line plus 49 complete lines. Stopping there (`>=` instead of `>`) would return 49.
+    const lineBytes = 5300;
+    const lines: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const id = `f${String(i).padStart(4, "0")}`;
+      const pad = lineBytes - 1 - JSON.stringify(entry(id, 0, "")).length;
+      lines.push(JSON.stringify(entry(id, now - 8 * HOUR + i * 2 * MIN, "p".repeat(pad))));
+    }
+    const file = path.join(root, "session/exact", `${today(now)}.jsonl`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, `${lines.join("\n")}\n`, "utf-8");
+    const got = await manager.readRecent(12, undefined, 50);
+    assert.equal(got.length, 50);
+    assert.deepEqual(ids(got), ids(await manager.readRecent(12)).slice(-50));
+  });
+});
+
+test("newest-N leaves out entries stamped before the window even when they sit in a file's tail", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const inWindow: TranscriptEntry[] = [];
+    for (let i = 0; i < 20; i++) inWindow.push(entry(`in${i}`, now - HOUR + i * MIN));
+    const old: TranscriptEntry[] = [];
+    for (let i = 0; i < 30; i++) old.push(entry(`old${i}`, now - 20 * HOUR + i * MIN));
+    await writeFileOf(path.join(root, "session/mixed", `${today(now)}.jsonl`), [...inWindow, ...old], now);
+    assert.deepEqual(ids(await manager.readRecent(6, undefined, 50)), ids(inWindow));
+  });
+});
+
+test("maxEntries that is not a positive integer falls back to the full window", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const all: TranscriptEntry[] = [];
+    for (let i = 0; i < 8; i++) all.push(entry(`e${i}`, now - HOUR + i * MIN));
+    await writeFileOf(path.join(root, "session/guard", `${today(now)}.jsonl`), all, now);
+    for (const bad of [0, -3, 2.5, Number.NaN]) {
+      assert.deepEqual(ids(await manager.readRecent(6, undefined, bad)), ids(all), `maxEntries ${bad}`);
+    }
+    assert.deepEqual(ids(await manager.readRecent(6, undefined, 3)), ["e5", "e6", "e7"]);
+  });
+});
+
+test("a short read skips that file rather than returning a gap", async (t) => {
+  await withStore(async ({ root, manager, now }) => {
+    await writeFileOf(path.join(root, "session/short", `${today(now)}.jsonl`), [entry("s1", now - 2 * HOUR), entry("s2", now - HOUR)], now);
+    await writeFileOf(path.join(root, "session/whole", `${today(now)}.jsonl`), [entry("w1", now - 90 * MIN)], now);
+    const realOpen = fsp.open;
+    t.mock.method(fsp, "open", async (...args: Parameters<typeof fsp.open>) => {
+      const fh = await realOpen(...args);
+      if (!String(args[0]).includes("/short/")) return fh;
+      // Report one byte fewer than were read: the data is intact, only the count is short.
+      return new Proxy(fh, {
+        get(target, prop) {
+          if (prop === "read") {
+            return async (...a: Parameters<typeof fh.read>) => {
+              const r = await (target.read as (...x: unknown[]) => Promise<{ bytesRead: number }>)(...a);
+              return { ...r, bytesRead: r.bytesRead - 1 };
+            };
+          }
+          const v = Reflect.get(target, prop);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.deepEqual(ids(await manager.readRecent(6, undefined, 50)), ["w1"]);
+      assert.deepEqual(ids(await manager.readRecent(6)), ["w1"]);
+    } finally {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    }
+  });
+});
+
+test("a missing transcripts directory reads as empty", async () => {
+  await withStore(async ({ manager }) => {
+    assert.deepEqual(await manager.readRecent(6, undefined, 50), []);
+    assert.deepEqual(await manager.readRecent(6), []);
+  });
+});
+
+test("unreadable and unstatable files do not hide the readable ones", async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const day = today(now);
+    await writeFileOf(path.join(root, "session/good", `${day}.jsonl`), [entry("g1", now - HOUR)], now);
+    // A directory named like a daily file: stat works, reading it fails.
+    await mkdir(path.join(root, "session/isdir", `${day}.jsonl`), { recursive: true });
+    // A dangling symlink: listed by name, stat fails.
+    await mkdir(path.join(root, "session/dangling"), { recursive: true });
+    await symlink(path.join(root, "nowhere"), path.join(root, "session/dangling", `${day}.jsonl`));
+    assert.deepEqual(ids(await manager.readRecent(6, undefined, 50)), ["g1"]);
+    assert.deepEqual(ids(await manager.readRecent(6)), ["g1"]);
+  });
+});
+
+test("an unreadable channel or channel-type directory is skipped", { skip: process.getuid?.() === 0 && "root ignores directory modes" }, async () => {
+  await withStore(async ({ root, manager, now }) => {
+    const day = today(now);
+    await writeFileOf(path.join(root, "session/good", `${day}.jsonl`), [entry("g1", now - HOUR)], now);
+    await writeFileOf(path.join(root, "session/locked", `${day}.jsonl`), [entry("hidden1", now - HOUR)], now);
+    await writeFileOf(path.join(root, "lockedtype/chan", `${day}.jsonl`), [entry("hidden2", now - HOUR)], now);
+    await chmod(path.join(root, "session/locked"), 0o000);
+    await chmod(path.join(root, "lockedtype"), 0o000);
+    try {
+      assert.deepEqual(ids(await manager.readRecent(6, undefined, 50)), ["g1"]);
+      assert.deepEqual(ids(await manager.readRecent(6)), ["g1"]);
+    } finally {
+      await chmod(path.join(root, "session/locked"), 0o755);
+      await chmod(path.join(root, "lockedtype"), 0o755);
+    }
   });
 });
