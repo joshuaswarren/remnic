@@ -8,7 +8,7 @@
  */
 
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { mock } from "node:test";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,18 +17,14 @@ import { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
 import { resetStaticCaches } from "./harness.js";
 
-/** Calls to the snapshot serializer: JSON.stringify with a replacer function. */
+/** Calls to the snapshot serializer: the only JSON.stringify here that is given a replacer function. */
 async function countSnapshotCalls<T>(fn: () => Promise<T>): Promise<{ result: T; calls: number }> {
-  const real = JSON.stringify;
-  let calls = 0;
-  JSON.stringify = ((...args: unknown[]) => {
-    if (typeof args[1] === "function") calls++;
-    return (real as (...a: unknown[]) => string)(...args);
-  }) as typeof JSON.stringify;
+  const spy = mock.method(JSON, "stringify");
   try {
-    return { result: await fn(), calls };
+    const result = await fn();
+    return { result, calls: spy.mock.calls.filter((call) => call.arguments[1] instanceof Function).length };
   } finally {
-    JSON.stringify = real;
+    spy.mock.restore();
   }
 }
 
@@ -175,6 +171,22 @@ test("a loaded memory under an entities path moves: the snapshot normalizes with
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
     assert.ok(memory.frontmatter.tags.includes("vendor"), "loaded tags carry the type read from the content");
+    assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
+  });
+});
+
+test("an indented created or updated key counts as present: caller edits to it do not refuse the move", async () => {
+  await withStorage(async (storage) => {
+    const { id } = await storage.writeMemory("fact", "indented timestamp keys");
+    const file = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(file);
+    const disk = await readFile(file.path, "utf8");
+    await writeFile(file.path, disk.replace(/^(created|updated):/gm, "  $1:"));
+    resetStaticCaches();
+    const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(memory);
+    memory.frontmatter.created = "2000-01-01T00:00:00.000Z";
+    memory.frontmatter.updated = "2000-01-02T00:00:00.000Z";
     assert.equal(await storage.moveMemoryToPath(memory, storage.buildTierMemoryPath(memory, "cold")), true);
   });
 });
