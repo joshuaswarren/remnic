@@ -327,6 +327,49 @@ test("session-end: a queued observe worker does not replay the transcript", asyn
   }
 });
 
+test("session resume: done marker restores the cursor checkpoint and observation resumes", async () => {
+  const home = mkHome();
+  const sessionId = "sess-resume-1";
+  atifTranscript(home, sessionId, [
+    { step_id: 1, timestamp: "t", source: "user", message: "first message before the break" },
+  ]);
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    await runHook("session-end", { session_id: sessionId, reason: "exit" }, { port, home });
+    assert.ok(fs.existsSync(donePath(home, sessionId)), "done marker written");
+    assert.ok(!fs.existsSync(cursorPath(home, sessionId)), "cursor removed after flush");
+
+    // Devin reuses session_id across resume; the transcript gains a step.
+    atifTranscript(home, sessionId, [
+      { step_id: 1, timestamp: "t", source: "user", message: "first message before the break" },
+      { step_id: 2, timestamp: "t", source: "user", message: "new message after resume" },
+    ]);
+    await runHook("session-start", { session_id: sessionId, source: "resume" }, { port, home });
+    assert.ok(!fs.existsSync(donePath(home, sessionId)), "done marker cleared on resume");
+    assert.ok(fs.existsSync(cursorPath(home, sessionId)), "cursor restored from checkpoint");
+
+    await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p2" },
+      { port, home },
+    );
+    const deadline = Date.now() + 10000;
+    let observes = [];
+    while (Date.now() < deadline) {
+      observes = calls.filter((c) => c.url === "/engram/v1/observe");
+      if (observes.length >= 2) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(observes.length >= 2, "post-resume observe ran");
+    const last = observes[observes.length - 1];
+    assert.equal(last.body.messages.length, 1, "only the new tail was observed");
+    assert.match(last.body.messages[0].content, /after resume/);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── fail-open ──────────────────────────────────────────────────────────────
 
 test("fail-open: dead daemon still emits continue and never throws", async () => {

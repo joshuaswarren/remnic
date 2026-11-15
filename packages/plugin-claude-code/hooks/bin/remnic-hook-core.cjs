@@ -780,11 +780,13 @@ function run(config) {
   }
 
   // Completion tombstone: written by the session-end drain once the final
-  // flush succeeds (or there is nothing left to flush) and the cursor is
-  // removed. Detached observe workers queued behind the session lock check
-  // this under the lock and exit instead of treating the missing cursor as
-  // 0 and replaying the whole transcript. The file is tiny and persists for
-  // the life of the state dir, like leftover locks from crashed sessions.
+  // flush succeeds (or there is nothing left to flush). Its content is the
+  // observed-message checkpoint, which handleSessionStart restores into the
+  // cursor when a session resumes under the same id. Detached observe
+  // workers queued behind the session lock check this under the lock and
+  // exit instead of treating the missing cursor as 0 and replaying the
+  // whole transcript. The file is tiny and persists for the life of the
+  // state dir, like leftover locks from crashed sessions.
   function sessionDone(doneFile) {
     try {
       const info = fs.lstatSync(doneFile);
@@ -794,13 +796,24 @@ function run(config) {
     }
   }
 
-  function markSessionDone(doneFile, log) {
+  function markSessionDone(doneFile, checkpoint, log) {
     try {
-      fs.writeFileSync(doneFile, `${Date.now()}\n`, { mode: 0o600 });
+      const tmp = `${doneFile}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, `${checkpoint}\n`, { mode: 0o600 });
+      fs.renameSync(tmp, doneFile);
       return true;
     } catch (err) {
       log(`failed to write session-done marker ${doneFile}: ${err && err.message}`);
       return false;
+    }
+  }
+
+  function readDoneCheckpoint(doneFile) {
+    try {
+      const n = parseInt(fs.readFileSync(doneFile, "utf8").trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : null;
+    } catch {
+      return null;
     }
   }
 
@@ -891,6 +904,26 @@ function run(config) {
     const projectName = (cwd && path.basename(cwd)) || "unknown";
     const codingContext = resolveCodingContext(cwd);
     log(`session=${sessionId} project=${projectName} coding-context=${codingContext ? "yes" : ""}`);
+
+    // A session-start means this session id is active again — Devin and
+    // Claude Code reuse the id across resume. Restore the observation
+    // checkpoint stored in the done tombstone into the cursor, then clear
+    // the tombstone so queued and future workers observe the new tail
+    // instead of exiting early. Without this, a resumed session would never
+    // observe again.
+    if (sessionId && !/[^A-Za-z0-9._-]/.test(sessionId)) {
+      const st = resolveState(sessionId, log);
+      if (st && sessionDone(st.doneFile)) {
+        const checkpoint = readDoneCheckpoint(st.doneFile);
+        if (checkpoint !== null) writeCursor(st.cursorFile, checkpoint, log);
+        try {
+          fs.rmSync(st.doneFile, { force: true });
+        } catch {
+          /* best effort */
+        }
+        log(`cleared done marker for session ${sessionId} (checkpoint=${checkpoint})`);
+      }
+    }
 
     // Health check — start daemon if not running.
     if (!(await httpHealthy(2000, token))) {
@@ -1183,23 +1216,34 @@ function run(config) {
       }
     }
 
-    let removeCursorAfterFlush = true;
+    // `finalized` becomes true only when the tail was observed or confirmed
+    // empty — the done tombstone (which stores the observed-message
+    // checkpoint) is written solely then. The cursor is removed only after
+    // the marker lands; if marker creation fails the checkpointed cursor
+    // stays, so a queued worker reads the observed count instead of
+    // replaying from 0. When the drain cannot run at all (no token, no
+    // transcript, unsafe cursor, parse or observe failure) neither the
+    // marker nor the cursor changes, leaving state intact for a retry.
+    let finalized = false;
+    let checkpoint = 0;
 
     try {
-      if (token && state && transcriptPath && fs.existsSync(transcriptPath)) {
+      if (state && sessionDone(state.doneFile)) {
+        log(`final flush skipped for ${sessionId}: session already marked done`);
+      } else if (state && token && transcriptPath && fs.existsSync(transcriptPath)) {
         const { cursorFile } = state;
         migrateTmpCursor(sessionId, cursorFile, log);
         const lastCount = readCursor(cursorFile, log);
         if (lastCount === null) {
           log(`final flush skipped for ${sessionId} due to unsafe cursor`);
         } else {
-          let newMessages = null;
+          let messages = null;
           try {
-            newMessages = parseTranscript(transcriptPath).slice(lastCount);
+            messages = parseTranscript(transcriptPath);
           } catch {
             log(`final flush parse failed for ${sessionId}; cursor retained for retry`);
-            removeCursorAfterFlush = false;
           }
+          const newMessages = messages ? messages.slice(lastCount) : null;
           if (newMessages && newMessages.length > 0) {
             log(`final flush for ${sessionId}`);
             const res = await httpPost(
@@ -1210,24 +1254,29 @@ function run(config) {
             );
             if (res.ok) {
               log(`final flush OK for ${sessionId}`);
+              writeCursor(cursorFile, messages.length, log);
+              checkpoint = messages.length;
+              finalized = true;
             } else {
               // Critical: retain the cursor so the tail is retried, never lost.
               log(`final flush failed for ${sessionId} (http=${res.status}); cursor retained for retry`);
-              removeCursorAfterFlush = false;
             }
+          } else if (newMessages) {
+            // Confirmed empty tail — nothing left to observe.
+            writeCursor(cursorFile, messages.length, log);
+            checkpoint = messages.length;
+            finalized = true;
           }
         }
+      } else {
+        log(`final flush skipped for ${sessionId}: drain unavailable; cursor retained`);
       }
 
-      // Cleanup — only remove the cursor when the flush succeeded or there
-      // was nothing pending. The done tombstone is written first so a queued
-      // observe worker that acquires the lock after we release it exits
-      // instead of replaying the transcript from a missing cursor. The lock
-      // we hold is released in `finally`.
+      // Tombstone + legacy migration cleanup. The lock we hold is released
+      // in `finally`.
       if (state) {
         const { cursorFile, doneFile, legacyCursor, legacyLock } = state;
-        if (removeCursorAfterFlush) {
-          markSessionDone(doneFile, log);
+        if (finalized && markSessionDone(doneFile, checkpoint, log)) {
           removeCursor(cursorFile, log);
         }
         if (cursorFile !== legacyCursor) {
