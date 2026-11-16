@@ -521,3 +521,176 @@ test("summarizeExtractionLiveness: no throw when the extractionLiveness block is
     assert.ok(!check.summary.includes("liveness check disabled"), "missing/partial block reads as enabled default");
   }
 });
+
+// ── evaluateExtractionLiveness: claimed drain backlog (#3442) ────────────────
+
+const freshTs = new Date(NOW).toISOString();
+const emptySnap = snapshot();
+
+test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh watermark", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 2_328,
+      claimedPendingTurns: 317_246,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      verifiedSidecars: 2_328,
+      unverifiedClaims: 422,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, true, "claimed backlog stuck past the window is degraded");
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.match(status.degradedReason ?? "", /2,?328 claimed session/);
+  assert.match(status.degradedReason ?? "", /317,?246 claimed turn/);
+  assert.equal(status.claimedSessionCount, 2_328);
+  assert.equal(status.claimedPendingTurnCount, 317_246);
+  assert.equal(status.oldestClaimedTurnAgeMs, 10 * WINDOW);
+  assert.equal(status.claimedBacklogTruncated, false);
+});
+
+test("evaluate: claimed backlog within the window does NOT degrade but is still reported", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 3,
+      claimedPendingTurns: 12,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      verifiedSidecars: 3,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.degradedReason, null);
+  assert.equal(status.claimedPendingTurnCount, 12);
+});
+
+test("evaluate: the claimed-backlog reason appends the LLM failure reason while the extractor is unreachable", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+    llmFailureReason: "gateway returned no models",
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.match(status.degradedReason ?? "", /extraction LLM unavailable: gateway returned no models/);
+});
+
+test("evaluate: half-open boundary applies to claimed turns too — exactly staleWindowMs is stale (§23)", () => {
+  const atBoundary = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - WINDOW).toISOString(),
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(atBoundary.degraded, true);
+
+  const justUnder = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(justUnder.degraded, false);
+});
+
+test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, but count", () => {
+  // Legacy sidecars without oldestTurnAt: the stale rule needs an age, so the
+  // rule stays inert, while the totals remain visible for operators.
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 5,
+      claimedPendingTurns: 50,
+      oldestClaimedTurnAt: null,
+      verifiedSidecars: 5,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedSessionCount, 5);
+  assert.equal(status.oldestClaimedTurnAgeMs, null);
+});
+
+test("evaluate: an unreadable claims scan degrades with a distinct reason (§22)", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claimsReadError: "EACCES: scan denied",
+  });
+  assert.equal(status.degraded, true, "an unreadable claims scan is a fault, not a healthy empty queue");
+  assert.match(status.degradedReason ?? "", /claimed drain backlog unreadable/);
+  assert.match(status.degradedReason ?? "", /EACCES: scan denied/);
+});
+
+test("evaluate: without claims the payload is unchanged (back-compat)", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedSessionCount, undefined);
+  assert.equal(status.claimedPendingTurnCount, undefined);
+  assert.equal(status.oldestClaimedTurnAgeMs, undefined);
+  assert.equal(status.claimedBacklogTruncated, undefined);
+});
+
+test("evaluate: the disabled gate suppresses claimed-backlog degradation", () => {
+  const status = evaluateExtractionLiveness({
+    config: { enabled: false, staleWindowMs: WINDOW },
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedPendingTurnCount, 9);
+});

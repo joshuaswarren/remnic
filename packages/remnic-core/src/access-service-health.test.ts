@@ -767,3 +767,109 @@ test("health surfaces extraction-LLM availability and last failure reason (#3140
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+// ── #3442: claimed drain backlog in the extraction block ─────────────────────
+
+test("health reports claimed drain backlog totals and degrades when the oldest claimed turn is stale", async (t) => {
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: nowMs });
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-claims-"));
+  try {
+    const freshTs = new Date(nowMs - 100).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      // In-memory buffer is EMPTY: every pending turn lives in drain claims.
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: freshTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+      drainClaimTotals: async () => ({
+        claimedSessions: 2328,
+        claimedPendingTurns: 317246,
+        oldestClaimedTurnAt: new Date(nowMs - 10_000).toISOString(),
+        verifiedSidecars: 2328,
+        unverifiedClaims: 422,
+        truncated: false,
+      }),
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true, "an old claimed backlog degrades even with a fresh watermark");
+    assert.equal(health.extraction.claimedSessionCount, 2328);
+    assert.equal(health.extraction.claimedPendingTurnCount, 317246);
+    assert.equal(health.extraction.oldestClaimedTurnAgeMs, 10_000);
+    assert.equal(health.extraction.claimedBacklogTruncated, false);
+    assert.match(health.extraction.degradedReason ?? "", /claimed drain backlog/);
+    assert.match(health.extraction.degradedReason ?? "", /317,?246 claimed turn/);
+
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health()
+    );
+    assert.equal(scopedHealth.extraction.degraded, true);
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /claimed drain backlog|claimed turn/);
+    assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /0 buffered session/);
+  } finally {
+    t.mock.timers.reset();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports claim totals without degrading while the oldest claimed turn is inside the window", async (t) => {
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: nowMs });
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-claims-fresh-"));
+  try {
+    const freshTs = new Date(nowMs - 100).toISOString();
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const service = new EngramAccessService({
+      config,
+      qmd: makeQmd({}),
+      buffer: {
+        getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+      },
+      storage: {
+        loadMeta: async () => ({
+          lastExtractionAt: freshTs,
+          extractionCount: 4,
+          lastConsolidationAt: null,
+          totalMemories: 0,
+          totalEntities: 0,
+        }),
+      },
+      async getStorage() {
+        return { dir: memoryDir };
+      },
+      drainClaimTotals: async () => ({
+        claimedSessions: 3,
+        claimedPendingTurns: 12,
+        oldestClaimedTurnAt: new Date(nowMs - 100).toISOString(),
+        verifiedSidecars: 3,
+        unverifiedClaims: 0,
+        truncated: false,
+      }),
+    } as unknown as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, false);
+    assert.equal(health.extraction.claimedSessionCount, 3);
+    assert.equal(health.extraction.claimedPendingTurnCount, 12);
+    assert.equal(health.extraction.degradedReason, null);
+  } finally {
+    t.mock.timers.reset();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
