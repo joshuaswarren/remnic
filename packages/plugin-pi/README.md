@@ -49,6 +49,8 @@ You can also load the npm package directly from Pi after configuring the daemon 
 pi -e npm:@remnic/plugin-pi
 ```
 
+That spec resolves the npm `latest` (stable) tag. Every merge to `main` publishes to `alpha`, and `latest` moves only on a maintainer promotion, so check `npm view @remnic/plugin-pi dist-tags` and match the channel your daemon runs (for example install with `npm install @remnic/plugin-pi@alpha` where you manage the package yourself). See [docs/releases.md](../../docs/releases.md).
+
 For direct loading, provide either `REMNIC_PI_CONFIG` or the default config file at `~/.pi/agent/extensions/remnic/remnic.config.json`.
 
 ## Configuration
