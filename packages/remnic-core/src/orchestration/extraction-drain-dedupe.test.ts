@@ -342,3 +342,136 @@ test("a dropped chunk drops its duplicates too, and the recovery copy holds ever
     "the drop removes every identity in the chunk and the tail drains: nothing left behind",
   );
 });
+
+/** Ten-char contents so a 20-char budget packs exactly two representatives per chunk. */
+const tenChars = (tag: string): string => tag.padEnd(10, "0");
+
+test("a duplicate between two chunks is cleared with the chunk before it", async () => {
+  const a = makeTurn(tenChars("aaaa"));
+  const b = makeTurn(tenChars("bbbb"), { timestamp: "2026-11-16T12:00:01.000Z" });
+  const aAgain = makeTurn(tenChars("aaaa"), { timestamp: "2026-11-16T12:00:02.000Z" });
+  const c = makeTurn(tenChars("cccc"), { timestamp: "2026-11-16T12:00:03.000Z" });
+  const { spy, buffer } = await withDrain(
+    { turns: [a, b, aAgain, c], results: [DONE, DONE], budgetChars: 20 },
+    async (drain, _spy, window) => {
+      return await drain.run(window, SINGLE_RUN());
+    },
+  );
+  assert.equal(spy.calls.length, 2, "two chunks");
+  assert.deepEqual(
+    buffer.getTurns("s1"),
+    [],
+    "the gap duplicate rides with the preceding chunk: nothing left behind after success",
+  );
+});
+
+test("a duplicate after the last representative is cleared with the last chunk", async () => {
+  const a = makeTurn(tenChars("aaaa"));
+  const b = makeTurn(tenChars("bbbb"), { timestamp: "2026-11-16T12:00:01.000Z" });
+  const c = makeTurn(tenChars("cccc"), { timestamp: "2026-11-16T12:00:02.000Z" });
+  const aAgain = makeTurn(tenChars("aaaa"), { timestamp: "2026-11-16T12:00:03.000Z" });
+  const { spy, buffer } = await withDrain(
+    { turns: [a, b, c, aAgain], results: [DONE, DONE], budgetChars: 20 },
+    async (drain, _spy, window) => {
+      return await drain.run(window, SINGLE_RUN());
+    },
+  );
+  assert.equal(spy.calls.length, 2, "two chunks");
+  assert.deepEqual(
+    buffer.getTurns("s1"),
+    [],
+    "the trailing duplicate rides with the last chunk: nothing left behind after success",
+  );
+});
+
+/** Seeded PRNG so the property run is reproducible. */
+function mulberry32(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state |= 0;
+    state = (state + 0x6d2b79f5) | 0;
+    let mixed = Math.imul(state ^ (state >>> 15), 1 | state);
+    mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("chunks partition every window: each turn cleared once, model never sees a duplicate", async () => {
+  // A window's first turn is always a representative by construction — there is no
+  // earlier occurrence to duplicate — so windows never start with a duplicate.
+  const random = mulberry32(3443);
+  for (let trial = 0; trial < 12; trial++) {
+    const size = 6 + Math.floor(random() * 10);
+    const window: BufferTurn[] = [];
+    let stamp = 0;
+    const nextTimestamp = (): string => {
+      const current = `2026-11-16T13:${String(Math.floor(stamp / 60) % 60).padStart(2, "0")}:${String(stamp % 60).padStart(2, "0")}.${String(stamp % 1000).padStart(3, "0")}Z`;
+      stamp += 1;
+      return current;
+    };
+    for (let index = 0; index < size; index++) {
+      if (index > 0 && random() < 0.3) {
+        const source = Math.floor(random() * index);
+        window.push(makeTurn(window[source]!.content, { timestamp: nextTimestamp() }));
+      } else {
+        window.push(makeTurn(`${trial}-${index}`.padEnd(10, "0"), { timestamp: nextTimestamp() }));
+      }
+    }
+    const identity = (entry: BufferTurn): string => `${entry.timestamp}|${entry.content}`;
+    const budget = 10 * (1 + Math.floor(random() * 3));
+    const { spy, buffer } = await withDrain(
+      { turns: window, results: Array.from({ length: window.length }, () => DONE), budgetChars: budget },
+      async (drain, _spy, drainWindow) => {
+        return await drain.run(drainWindow, SINGLE_RUN());
+      },
+    );
+    const chunked = spy.calls.flatMap((call) => call.turns);
+    assert.deepEqual(
+      chunked.map(identity),
+      window.map(identity),
+      `trial ${trial}: chunks partition the window — every turn exactly once, in order`,
+    );
+    const modelSeen = spy.calls.flatMap((call) => modelTurnsOf(call).map((seen) => `${seen.role}\u0000${seen.content}`));
+    assert.equal(modelSeen.length, new Set(modelSeen).size, `trial ${trial}: the model never sees a duplicate`);
+    assert.deepEqual(buffer.getTurns("s1"), [], `trial ${trial}: a fully successful drain clears the whole window`);
+  }
+});
+
+test("a failed chunk keeps its identities; its gap duplicate drains on the retry pass", async () => {
+  // Window [A, B | C, A-dup]: chunk 1 holds A and B; the gap duplicate sits before
+  // chunk 2's span, so it rides with chunk 2. Below the drop threshold a retained
+  // failure STOPS the drain, so on the failing pass chunk 2 (and the duplicate) are
+  // not attempted; on the retry pass both chunks succeed and the duplicate drains
+  // with chunk 2. If the failing chunk is eventually dropped instead, its recovery
+  // side-file copy holds its identities — the duplicate's text is identical to its
+  // representative's, so no content is lost either way (ACCEPTED TRADE-OFF, also
+  // documented in the PR).
+  const a = makeTurn(tenChars("aaaa"));
+  const b = makeTurn(tenChars("bbbb"), { timestamp: "2026-11-16T12:00:01.000Z" });
+  const c = makeTurn(tenChars("cccc"), { timestamp: "2026-11-16T12:00:02.000Z" });
+  const aAgain = makeTurn(tenChars("aaaa"), { timestamp: "2026-11-16T12:00:03.000Z" });
+  const { spy, buffer } = await withDrain(
+    { turns: [a, b, c, aAgain], results: [FAILED, DONE, DONE], budgetChars: 20 },
+    async (drain, runSpy, window, liveBuffer) => {
+      const failed = await drain.run(window, SINGLE_RUN());
+      assert.equal(failed.status, "skipped", "chunk 1 fails and retains");
+      assert.equal(runSpy.calls.length, 1, "a retained failure stops the drain before chunk 2");
+      assert.deepEqual(
+        liveBuffer.getTurns("s1").map((seen) => seen.timestamp),
+        [a.timestamp, b.timestamp, c.timestamp, aAgain.timestamp],
+        "nothing cleared: chunk 1's identities stay retained, the duplicate still rides with chunk 2",
+      );
+      return await drain.run(window, SINGLE_RUN());
+    },
+  );
+  assert.equal(spy.calls.length, 3, "retry: both chunks run and succeed");
+  assert.deepEqual(
+    spy.calls[2]?.turns.map((seen) => [seen.content, seen.extractionDuplicateOf]),
+    [
+      [tenChars("cccc"), undefined],
+      [tenChars("aaaa"), true],
+    ],
+    "on the retry the gap duplicate rides with chunk 2, marked — the model never re-reads A's text",
+  );
+  assert.deepEqual(buffer.getTurns("s1"), [], "the retry pass drains every identity, including the gap duplicate");
+});
