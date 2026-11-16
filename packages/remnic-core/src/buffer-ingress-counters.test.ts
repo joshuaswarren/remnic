@@ -79,6 +79,20 @@ test("counters-disabled control records nothing (differential seam)", () => {
   assert.deepEqual(counters.snapshot(), EMPTY_BUFFER_INGRESS_SNAPSHOT);
 });
 
+test("snapshot drops hour buckets older than 24h while totals stay cumulative", () => {
+  let t = Date.parse("2026-04-12T12:00:00.000Z");
+  const counters = new BufferIngressCounters(() => t);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("old"));
+  assert.equal(counters.snapshot().hours.length, 1);
+  t += 30 * HOUR_MS; // 30 h later
+  counters.noteAppendedTurn(entry, turn("new"));
+  const snapshot = counters.snapshot();
+  assert.equal(snapshot.hours.length, 1);
+  assert.equal(snapshot.hours[0].accepted.turns, 1);
+  assert.equal(snapshot.totals.accepted.turns, 2);
+});
+
 test("snapshot is a fresh read-only structure and never aliases internals", () => {
   const counters = new BufferIngressCounters();
   const entry = fakeEntry();

@@ -164,8 +164,9 @@ export class BufferIngressCounters {
   }
 
   snapshot(): BufferIngressSnapshot {
+    const nowHourMs = Math.floor(this.now() / HOUR_MS) * HOUR_MS;
     const hours = this.ring
-      .filter((slot): slot is RingSlot => slot !== null)
+      .filter((slot): slot is RingSlot => slot !== null && nowHourMs - slot.hourStartMs < HOUR_MS * RING_SLOTS)
       .sort((a, b) => a.hourStartMs - b.hourStartMs)
       .map((slot) => ({
         hourStart: new Date(slot.hourStartMs).toISOString(),
