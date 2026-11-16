@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -8,6 +8,8 @@ import { EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { TOKEN_CAPABILITIES_VERSION, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
+import { NamespaceStorageRouter } from "./namespaces/storage.js";
+import { SmartBuffer } from "./buffer.js";
 import type { Orchestrator } from "./orchestrator.js";
 import type { SearchBackend } from "./search/port.js";
 
@@ -764,6 +766,105 @@ test("health surfaces extraction-LLM availability and last failure reason (#3140
     assert.equal(healthy.extraction.lastFailureAt, null);
   } finally {
     resetExtractionLlmHealthForTests();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── #3442: claimed drain backlog in the extraction block ─────────────────────
+
+test("health reports claimed drain backlog totals and degrades when the oldest claimed turn is stale", async (t) => {
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: nowMs });
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-claims-"));
+  try {
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const router = new NamespaceStorageRouter(config);
+    // Seed REAL claims so the provider's sidecar scan sees them: one stuck
+    // (oldest 10s > 1s window) and one fresh. Claims live under <baseDir>/state.
+    const drainDir = path.join(memoryDir, "state", "buffer", "drain");
+    await mkdir(drainDir, { recursive: true });
+    const writeClaim = async (n: number, pending: number, oldestTurnAt: string) => {
+      const body = path.join(drainDir, `s-${String(n).padStart(64, "0")}.json`);
+      await writeFile(body, JSON.stringify({ key: `k${n}`, entry: { turns: [] } }));
+      const identity = await stat(body);
+      await writeFile(`${body}.count`, JSON.stringify({ key: `k${n}`, size: identity.size, mtimeMs: identity.mtimeMs, pending, drained: 0, oldestTurnAt }));
+    };
+    await writeClaim(1, 5, new Date(nowMs - 10_000).toISOString());
+    await writeClaim(2, 7, new Date(nowMs - 100).toISOString());
+    // SAFETY: /health reads only buffer.getBufferSnapshot; the rest of SmartBuffer is unused by this path.
+    const buffer = {
+      getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+    } as SmartBuffer;
+    const fake = {
+      config,
+      qmd: makeQmd({}),
+      // In-memory buffer is EMPTY: every pending turn lives in drain claims.
+      buffer,
+      storage: await router.storageFor(config.defaultNamespace),
+      getStorage: (namespace?: string) => router.storageFor(namespace ?? config.defaultNamespace),
+    };
+    // SAFETY: /health touches only config, qmd, buffer.getBufferSnapshot, storage.loadMeta, storage.bufferDrainClaims and getStorage; the rest of the Orchestrator is unused here.
+    const service = new EngramAccessService(fake as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, true, "an old claimed backlog degrades even with a fresh watermark");
+    assert.equal(health.extraction.claimedSessionCount, 2);
+    assert.equal(health.extraction.claimedPendingTurnCount, 12);
+    assert.equal(health.extraction.oldestClaimedTurnAgeMs, 10_000);
+    assert.equal(health.extraction.oldestClaimedAgeBasis, "turn");
+    assert.equal(health.extraction.claimedBacklogTruncated, false);
+    assert.equal(health.extraction.claimedBacklogUnverified, 0);
+    assert.equal(health.extraction.claimedBacklogPendingInbox, 0);
+    assert.match(health.extraction.degradedReason ?? "", /claimed drain backlog/);
+    assert.match(health.extraction.degradedReason ?? "", /12 claimed turn/);
+
+    const scopedHealth = await tokenCapabilityStore.run(
+      { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] },
+      () => service.health()
+    );
+    assert.equal(scopedHealth.extraction.degraded, true);
+    assert.match(scopedHealth.extraction.degradedReason ?? "", /claimed drain backlog|claimed turn/);
+    assert.doesNotMatch(scopedHealth.extraction.degradedReason ?? "", /0 buffered session/);
+  } finally {
+    t.mock.timers.reset();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health reports claim totals without degrading while the oldest claimed turn is inside the window", async (t) => {
+  const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
+  t.mock.timers.enable({ apis: ["Date"], now: nowMs });
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-health-claims-fresh-"));
+  try {
+    const config = parseConfig({ memoryDir, qmdEnabled: false, extractionLiveness: { staleWindowMs: 1000 } });
+    const router = new NamespaceStorageRouter(config);
+    const drainDir = path.join(memoryDir, "state", "buffer", "drain");
+    await mkdir(drainDir, { recursive: true });
+    const body = path.join(drainDir, `s-${"0".repeat(64)}.json`);
+    await writeFile(body, JSON.stringify({ key: "k1", entry: { turns: [] } }));
+    const identity = await stat(body);
+    await writeFile(`${body}.count`, JSON.stringify({ key: "k1", size: identity.size, mtimeMs: identity.mtimeMs, pending: 12, drained: 0, oldestTurnAt: new Date(nowMs - 100).toISOString() }));
+    // SAFETY: /health reads only buffer.getBufferSnapshot; the rest of SmartBuffer is unused by this path.
+    const buffer = {
+      getBufferSnapshot: async () => ({ bufferedSessionCount: 0, pendingTurnCount: 0, oldestTurnTimestamp: null }),
+    } as SmartBuffer;
+    const fake = {
+      config,
+      qmd: makeQmd({}),
+      buffer,
+      storage: await router.storageFor(config.defaultNamespace),
+      getStorage: (namespace?: string) => router.storageFor(namespace ?? config.defaultNamespace),
+    };
+    // SAFETY: /health touches only config, qmd, buffer.getBufferSnapshot, storage.loadMeta, storage.bufferDrainClaims and getStorage; the rest of the Orchestrator is unused here.
+    const service = new EngramAccessService(fake as Orchestrator);
+
+    const health = await service.health();
+    assert.equal(health.extraction.degraded, false);
+    assert.equal(health.extraction.claimedSessionCount, 1);
+    assert.equal(health.extraction.claimedPendingTurnCount, 12);
+    assert.equal(health.extraction.degradedReason, null);
+  } finally {
+    t.mock.timers.reset();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

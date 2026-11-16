@@ -521,3 +521,232 @@ test("summarizeExtractionLiveness: no throw when the extractionLiveness block is
     assert.ok(!check.summary.includes("liveness check disabled"), "missing/partial block reads as enabled default");
   }
 });
+
+// ── evaluateExtractionLiveness: claimed drain backlog (#3442) ────────────────
+
+const freshTs = new Date(NOW).toISOString();
+const emptySnap = snapshot();
+
+test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh watermark", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 2_328,
+      claimedPendingTurns: 317_246,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 2_328,
+      unverifiedClaims: 422,
+      claimsPendingInbox: 7,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, true, "claimed backlog stuck past the window is degraded");
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.match(status.degradedReason ?? "", /2,?328 claimed session/);
+  assert.match(status.degradedReason ?? "", /317,?246 claimed turn/);
+  assert.equal(status.claimedSessionCount, 2_328);
+  assert.equal(status.claimedPendingTurnCount, 317_246);
+  assert.equal(status.oldestClaimedTurnAgeMs, 10 * WINDOW);
+  assert.equal(status.claimedBacklogTruncated, false);
+  assert.equal(status.oldestClaimedAgeBasis, "turn");
+  assert.equal(status.claimedBacklogUnverified, 422);
+  assert.equal(status.claimedBacklogPendingInbox, 7);
+});
+
+test("evaluate: a claim-mtime lower bound past the window degrades legacy sidecars (all pre-#3442 sidecars)", () => {
+  // Live legacy sidecars carry no oldestTurnAt; the reader falls back to the
+  // claim body's mtime, a TRUE lower bound on the oldest turn's age (every
+  // body mutation is a whole-file rewrite, so mtime >= newest turn >= oldest
+  // turn). The degrade rule must fire on it exactly as on a turn timestamp.
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 2_456,
+      claimedPendingTurns: 313_000,
+      oldestClaimedTurnAt: new Date(NOW - 3 * 86_400_000).toISOString(),
+      oldestClaimedAgeBasis: "claim-mtime-lower-bound",
+      verifiedSidecars: 2_456,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, true, "a >=3d-old claim write is at least 3d-old backlog");
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.equal(status.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+});
+
+test("evaluate: a fresh claim-mtime lower bound does NOT degrade", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 5,
+      claimedPendingTurns: 50,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "claim-mtime-lower-bound",
+      verifiedSidecars: 5,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+});
+
+test("evaluate: claimed backlog within the window does NOT degrade but is still reported", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 3,
+      claimedPendingTurns: 12,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 3,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.degradedReason, null);
+  assert.equal(status.claimedPendingTurnCount, 12);
+});
+
+test("evaluate: the claimed-backlog reason appends the LLM failure reason while the extractor is unreachable", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+    llmFailureReason: "gateway returned no models",
+  });
+  assert.equal(status.degraded, true);
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.match(status.degradedReason ?? "", /extraction LLM unavailable: gateway returned no models/);
+});
+
+test("evaluate: half-open boundary applies to claimed turns too — exactly staleWindowMs is stale (§23)", () => {
+  const atBoundary = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(atBoundary.degraded, true);
+
+  const justUnder = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(justUnder.degraded, false);
+});
+
+test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, but count", () => {
+  // Legacy sidecars without oldestTurnAt: the stale rule needs an age, so the
+  // rule stays inert, while the totals remain visible for operators.
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 5,
+      claimedPendingTurns: 50,
+      oldestClaimedTurnAt: null,
+      oldestClaimedAgeBasis: null,
+      verifiedSidecars: 5,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedSessionCount, 5);
+  assert.equal(status.oldestClaimedTurnAgeMs, null);
+  assert.equal(status.oldestClaimedAgeBasis, null);
+});
+
+test("evaluate: without claims the payload is unchanged (back-compat)", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: nonEmpty,
+    nowMs: NOW,
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedSessionCount, undefined);
+  assert.equal(status.claimedPendingTurnCount, undefined);
+  assert.equal(status.oldestClaimedTurnAgeMs, undefined);
+  assert.equal(status.claimedBacklogTruncated, undefined);
+  assert.equal(status.oldestClaimedAgeBasis, undefined);
+  assert.equal(status.claimedBacklogUnverified, undefined);
+  assert.equal(status.claimedBacklogPendingInbox, undefined);
+});
+
+test("evaluate: the disabled gate suppresses claimed-backlog degradation", () => {
+  const status = evaluateExtractionLiveness({
+    config: { enabled: false, staleWindowMs: WINDOW },
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 1,
+      claimedPendingTurns: 9,
+      oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
+      verifiedSidecars: 1,
+      unverifiedClaims: 0,
+      claimsPendingInbox: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.claimedPendingTurnCount, 9);
+  assert.equal(status.oldestClaimedAgeBasis, "turn");
+});

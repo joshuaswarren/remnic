@@ -1429,3 +1429,69 @@ for (const changed of ["inode", "size", "mtime"] as const) {
     assert.ok(contents.includes("b") && contents.includes("c"), `b is handed in again, not lost: ${contents.join(",")}`);
   });
 }
+
+// ── #3442: sidecar oldest-turn timestamp + cheap TTL-cached totals ──────────
+
+test("claim summaries record the oldest pending turn timestamp across active and retained turns", async () => {
+  const s = setup();
+  try {
+    s.seedSession("sess-a", {
+      turns: [turn("newer", "2026-11-10T00:00:00.000Z")],
+      retainedTurns: [turn("older-retained", "2026-11-01T00:00:00.000Z")],
+      lastExtractionAt: null,
+      extractionCount: 0,
+    });
+    assert.equal(await s.claims.claimFromSessionFile("sess-a", makeLease()), "claimed");
+    const countPath = path.join(s.stateDir, "buffer", "drain", `${bufferSessionFileName("sess-a")}.count`);
+    const summary = JSON.parse(readFileSync(countPath, "utf8"));
+    assert.equal(summary.oldestTurnAt, "2026-11-01T00:00:00.000Z");
+  } finally {
+    s.cleanup();
+  }
+});
+
+test("claimTotals reads sidecars only (never a claim body), TTL-cached, bounded", async () => {
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-totals-ttl-"));
+  try {
+    const dir = path.join(stateDir, "buffer", "drain");
+    mkdirSync(dir, { recursive: true });
+    // Throwing io: any claim-body/inbox read would fail the test loudly — the
+    // health path must stay on the sidecars.
+    const claims = new BufferDrainClaims(stateDir, {
+      read: async () => {
+        throw new Error("claimTotals must not read claim bodies");
+      },
+      write: async () => {
+        throw new Error("claimTotals must not write");
+      },
+      append: async () => {
+        throw new Error("claimTotals must not append");
+      },
+    });
+    const writeClaimFiles = (key: string, pending: number, oldestTurnAt: string) => {
+      const body = path.join(dir, bufferSessionFileName(key));
+      writeFileSync(body, JSON.stringify({ key, entry: { turns: [], lastExtractionAt: null, extractionCount: 0 } }));
+      const identity = statSync(body);
+      writeFileSync(`${body}.count`, JSON.stringify({ key, size: identity.size, mtimeMs: identity.mtimeMs, pending, drained: 0, oldestTurnAt }));
+    };
+    writeClaimFiles("s1", 5, "2026-11-01T00:00:00.000Z");
+
+    const first = await claims.claimTotals({ ttlMs: 1_000, nowMs: 1_000 });
+    assert.equal(first.claimedSessions, 1);
+    assert.equal(first.claimedPendingTurns, 5);
+
+    writeClaimFiles("s2", 7, "2026-11-02T00:00:00.000Z");
+    const cached = await claims.claimTotals({ ttlMs: 1_000, nowMs: 1_500 });
+    assert.deepEqual(cached, first, "inside the TTL the cached snapshot is returned");
+
+    const refreshed = await claims.claimTotals({ ttlMs: 1_000, nowMs: 3_000 });
+    assert.equal(refreshed.claimedSessions, 2);
+    assert.equal(refreshed.claimedPendingTurns, 12);
+
+    const bounded = await claims.claimTotals({ ttlMs: 0, nowMs: 3_000, maxClaims: 1 });
+    assert.equal(bounded.claimedSessions, 2);
+    assert.equal(bounded.truncated, true);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
