@@ -27,7 +27,6 @@ import {
   resolveSecurityCapabilities,
 } from "./capabilities.js";
 import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
-import { EMPTY_BUFFER_INGRESS_SNAPSHOT } from "./buffer-ingress-counters.js";
 import { ExtractionLivenessWarnThrottle, computeExtractionLivenessStatus } from "./extraction-liveness.js";
 import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
@@ -2381,7 +2380,15 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
       // #3444: process-local buffer add-path counters, TOP LEVEL (not inside `extraction`).
-      bufferIngress: this.orchestrator.buffer?.ingress?.snapshot() ?? EMPTY_BUFFER_INGRESS_SNAPSHOT,
+      bufferIngress: this.orchestrator.buffer?.ingress?.snapshot() ?? {
+        totals: {
+          accepted: { turns: 0, chars: 0 },
+          acceptedExactDuplicate: { turns: 0, chars: 0 },
+          filtered: { turns: 0, chars: 0 },
+          refused: { turns: 0, chars: 0 },
+        },
+        hours: [],
+      },
       extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
       // Describes THIS response's array (round 8): a separate scan could report
