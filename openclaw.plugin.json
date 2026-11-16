@@ -675,6 +675,11 @@
         "default": 1000,
         "description": "Distinct sessions the extraction buffer admits before backpressure (#3303); raised from 200"
       },
+      "bufferMaxTurnsPerSession": {
+        "type": "number",
+        "default": 200,
+        "description": "Retained turns admitted per session before live backpressure (#3415 bound)"
+      },
       "extractionQueueConcurrency": {
         "type": "integer",
         "default": 1,
