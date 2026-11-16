@@ -273,6 +273,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxSessions` | `1000` | Distinct sessions the extraction buffer admits before backpressure; raised from 200 in #3303 so live captures survive single-worker backlog drains |
+| `bufferMaxTurnsPerSession` | `200` | Retained turns admitted per session before live backpressure (#3415 bound). A full session refuses new turns (retryable) instead of growing without bound during an outage; extraction still drains it. |
 | `extractionQueueConcurrency` | `1` | How many background extraction tasks the daemon's queue runs at once. `1` is the historical serial queue; tasks sharing a buffer/session key never run concurrently regardless of the value, and the per-process model limiter is unchanged. Must be a positive integer (0/negative/non-integer rejected at config load). Applied at daemon start. |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
 | `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer/` (one file per session) on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |

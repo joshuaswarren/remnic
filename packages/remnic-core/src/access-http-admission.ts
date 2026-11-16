@@ -23,7 +23,7 @@ export function respondBufferAdmissionError(
     respond(400, { error: err.message, code: "storage_target_required" });
     return true;
   }
-  if (err.name === "ReplayAdmissionRefusedError") {
+  if (err.name === "ReplayAdmissionRefusedError" || err.name === "BufferSessionTurnRefusedError") {
     log.warn(`engram access HTTP buffer admission refused [${correlationId}]: ${err.message}`);
     res.setHeader("retry-after", String(BUFFER_ADMISSION_RETRY_AFTER_SECONDS));
     respond(503, { error: err.message, code: "buffer_admission_refused" });

@@ -18,6 +18,22 @@ export class BufferAdmissionRefusedError extends Error {
   }
 }
 
+/**
+ * Raised when live capture targets an EXISTING session whose retained turns
+ * already reach the per-session cap. The turn was never accepted and no
+ * buffered turn is dropped; the request is retryable once extraction drains
+ * the session. Companion to the session-entry cap above (#3415 bound).
+ */
+export class BufferSessionTurnRefusedError extends Error {
+  constructor(bufferKey: string, maxTurnsPerSession: number) {
+    super(
+      `buffer[${bufferKey}]: live capture refused at the per-session turn cap (${maxTurnsPerSession}); ` +
+        "retained backlog is not evicted to admit new turns. Retry after extraction drains the session",
+    );
+    this.name = "BufferSessionTurnRefusedError";
+  }
+}
+
 /** Durable observe capture refused at the entry cap; the request is retryable. */
 export class ReplayAdmissionRefusedError extends Error {
   constructor(message: string) {

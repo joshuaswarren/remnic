@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SmartBuffer, BufferAdmissionRefusedError } from "./buffer.js";
+import { SmartBuffer, BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer.js";
 import { parseConfig } from "./config.js";
 import type { BufferSurpriseProbe } from "./buffer.js";
 import type { BufferState, BufferTurn } from "./types.js";
@@ -724,6 +724,39 @@ test("pruneEntries never evicts non-empty backlog; live admission is refused pas
   assert.equal(buffer.getTurns("session-000").length, 1, "oldest non-empty entry keeps its turn for extraction");
   assert.ok(buffer.getTurns("session-209").length > 0, "newest pre-existing entry survives");
   assert.ok(!savedKeys.includes("session-newest"), "the refused turn was never buffered");
+});
+
+test("per-session turn cap refuses live admission past the cap without dropping retained turns (#3415 bound)", async () => {
+  // A sustained outage with retention on keeps every failed turn. The
+  // session-entry cap does not bound turns inside one entry, so a second
+  // cap refuses new turns for a full session (retryable backpressure) while
+  // a healthy session keeps admitting.
+  const at = "2026-04-12T12:00:00.000Z";
+  const fullTurns = [0, 1, 2, 3].map((i) => ({ role: "user" as const, content: `retained turn ${i}`, timestamp: at, sessionKey: "session-full" }));
+  const storage = new FakeStorage({
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    entries: {
+      "session-full": { turns: fullTurns, lastExtractionAt: at, extractionCount: 0 },
+      "session-healthy": { turns: [makeTurn("session-healthy", "one turn")], lastExtractionAt: at, extractionCount: 0 },
+    },
+  });
+  // SAFETY: FakeStorage implements the load/save surface this test exercises;
+  // the cast only satisfies the constructor's StorageManager parameter.
+  const buffer = new SmartBuffer(parseConfig({ bufferSaveDebounceMs: 0, bufferMaxTurnsPerSession: 4 }), storage as any);
+  await buffer.load();
+  await assert.rejects(
+    buffer.addTurnWithOutcome("session-full", makeTurn("session-full", "one turn too many")),
+    BufferSessionTurnRefusedError,
+    "a full session refuses rather than growing without bound",
+  );
+  assert.equal(buffer.getTurns("session-full").length, 4, "retained turns are kept, not dropped");
+  await buffer.addTurnWithOutcome("session-healthy", makeTurn("session-healthy", "second turn"));
+  assert.equal(buffer.getTurns("session-healthy").length, 2, "a session under the cap keeps admitting");
+  const batch = await buffer.addTurnsBounded([{ bufferKey: "session-full", turns: [makeTurn("session-full", "batched")] }]);
+  assert.equal(batch, null, "bounded batch admission refuses atomically, recording nothing");
+  assert.equal(buffer.getTurns("session-full").length, 4);
 });
 
 // ---------------------------------------------------------------------------

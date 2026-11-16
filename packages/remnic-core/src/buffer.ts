@@ -33,8 +33,8 @@ import {
   selectRetainedDeferredTurns,
   type BufferEntryCounts,
 } from "./buffer-turn-helpers.js";
-import { BufferAdmissionRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
-export { BufferAdmissionRefusedError } from "./buffer-admission.js";
+import { BufferAdmissionRefusedError, BufferSessionTurnRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
+export { BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer-admission.js";
 import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
 
 export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from "./buffer-types.js";
@@ -49,6 +49,12 @@ import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-
 // Raised from 200 in #3303: live captures were being dropped at busy hours
 // while the single extraction worker drained a backlog.
 const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
+
+// Per-session turn cap (#3415 bound): the session-entry cap does not bound
+// turns inside one entry, so a sustained outage with retention on would grow
+// a single session without limit. Far above the extraction trigger
+// (bufferMaxTurns, default 5), so healthy sessions never touch it.
+const FALLBACK_MAX_TURNS_PER_SESSION = 200;
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -123,6 +129,20 @@ export class SmartBuffer {
     // boundary; FALLBACK_MAX_BUFFER_SESSIONS covers direct constructions with
     // configs from before the knob existed.
     return this.config.bufferMaxSessions ?? FALLBACK_MAX_BUFFER_SESSIONS;
+  }
+
+  /** Retained turns admitted per session before live backpressure; configurable (#3415 bound). */
+  private get maxTurnsPerSession(): number {
+    // parseConfig defaults and validates bufferMaxTurnsPerSession at the I/O
+    // boundary; the fallback covers direct constructions with configs from
+    // before the knob existed.
+    return this.config.bufferMaxTurnsPerSession ?? FALLBACK_MAX_TURNS_PER_SESSION;
+  }
+
+  /** True when an existing entry already holds the per-session turn cap. */
+  private sessionTurnCapReached(key: string): boolean {
+    const entry = this.peekEntry(key);
+    return entry !== null && entry.turns.length >= this.maxTurnsPerSession;
   }
 
   private enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
@@ -447,6 +467,11 @@ export class SmartBuffer {
           );
           return null;
         }
+      } else if (this.sessionTurnCapReached(bufferKey)) {
+        log.warn(
+          `buffer[${bufferKey}]: durable capture refused at the per-session turn cap (${this.maxTurnsPerSession})`,
+        );
+        return null;
       }
       return this.recordTurnUnlocked(bufferKey, turn);
     });
@@ -470,6 +495,17 @@ export class SmartBuffer {
         }
       }
 
+      // Per-session turn cap (#3415 bound): refuse the whole batch when any
+      // existing entry would overflow. Refusal records nothing and drops nothing.
+      for (const batch of batches) {
+        const existing = this.peekEntry(batch.bufferKey);
+        if (existing !== null && existing.turns.length + batch.turns.length > this.maxTurnsPerSession) {
+          log.warn(
+            `buffer[${batch.bufferKey}]: durable capture refused at the per-session turn cap (${this.maxTurnsPerSession})`,
+          );
+          return null;
+        }
+      }
       const entries = this.state.entries ?? {};
       const newKeys = [...new Set(
         additions
@@ -524,6 +560,9 @@ export class SmartBuffer {
         !canAdmitNewEntryUnlocked(this.state.entries ?? {}, bufferKey, this.maxSessionEntries, EVICTION_HOOKS)
       ) {
         throw new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries);
+      }
+      if (this.sessionTurnCapReached(bufferKey)) {
+        throw new BufferSessionTurnRefusedError(bufferKey, this.maxTurnsPerSession);
       }
       return this.recordTurnUnlocked(bufferKey, turn);
     });
