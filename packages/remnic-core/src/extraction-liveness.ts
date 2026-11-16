@@ -142,6 +142,14 @@ export interface ExtractionLivenessStatus {
   claimedSessionCount?: number;
   claimedPendingTurnCount?: number;
   oldestClaimedTurnAgeMs?: number | null;
+  /**
+   * How `oldestClaimedTurnAgeMs` was derived: "turn" = a sidecar's oldestTurnAt;
+   * "claim-mtime-lower-bound" = at least one legacy claim contributed only its
+   * body mtime, a true lower bound on the oldest turn's age (whole-file body
+   * rewrites keep mtime >= newest turn >= oldest turn), so the true backlog age
+   * is at least the reported one. null when no claim contributed a candidate.
+   */
+  oldestClaimedAgeBasis?: "turn" | "claim-mtime-lower-bound" | null;
   /** The claims sidecar scan hit its bound; the pending sum may undercount. */
   claimedBacklogTruncated?: boolean;
 }
@@ -304,6 +312,7 @@ export function evaluateExtractionLiveness(input: {
     status.claimedSessionCount = claims.claimedSessions;
     status.claimedPendingTurnCount = claimsPending;
     status.oldestClaimedTurnAgeMs = claimsOldestAge;
+    status.oldestClaimedAgeBasis = claims.oldestClaimedAgeBasis;
     status.claimedBacklogTruncated = claims.truncated === true;
   }
   return status;

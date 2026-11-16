@@ -195,8 +195,8 @@ test("readDrainClaimTotals: a stale sidecar is skipped WITHOUT parsing the body 
     const before = readFileSync(`${body}.count`, "utf8");
     const totals = await readDrainClaimTotals(dir);
     assert.deepEqual(
-      { ...totals, oldestClaimedTurnAt: totals.oldestClaimedTurnAt },
-      { claimedSessions: 1, claimedPendingTurns: 0, oldestClaimedTurnAt: null, verifiedSidecars: 0, unverifiedClaims: 1, truncated: false },
+      { ...totals, oldestClaimedTurnAt: totals.oldestClaimedTurnAt, oldestClaimedAgeBasis: null },
+      { claimedSessions: 1, claimedPendingTurns: 0, oldestClaimedTurnAt: null, oldestClaimedAgeBasis: null, verifiedSidecars: 0, unverifiedClaims: 1, truncated: false },
     );
     assert.equal(readFileSync(`${body}.count`, "utf8"), before, "sidecar must not be rewritten by the health-path reader");
   } finally {
