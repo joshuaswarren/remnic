@@ -32,10 +32,11 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 
     Plain `http://` is refused by the MCP proxy for non-loopback hosts because
     the bearer token travels with every request; use `https://` or a loopback
-    address. The lifecycle hooks accept any `http(s)://` daemon URL (remote
-    daemons on trusted LAN/Tailscale links are supported) but print a
-    cleartext-token warning on stderr for non-loopback `http://` targets —
-    prefer `https://` there too.
+    address. On a trusted LAN/Tailscale link you can opt in explicitly with
+    `REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1` — the proxy then warns on stderr and
+    proceeds. The lifecycle hooks accept any `http(s)://` daemon URL but
+    print a cleartext-token warning on stderr for non-loopback `http://`
+    targets — prefer `https://` there too.
 
 ## What ships
 
