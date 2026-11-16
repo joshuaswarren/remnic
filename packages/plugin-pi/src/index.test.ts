@@ -1654,6 +1654,7 @@ async function startStubDaemon(
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
+  // SAFETY: listen(0, host) binds a TCP socket, so address() is an AddressInfo, never a pipe-path string.
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
@@ -1689,6 +1690,7 @@ test("session_before_compact answers inside the turn budget when the daemon neve
       turnRequestTimeoutMs: 400,
     },
   });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await extension(pi as any);
 
   const startedAt = Date.now();
@@ -1735,6 +1737,7 @@ test("session_before_compact shares one deadline across flush, record and checkp
       turnRequestTimeoutMs: 900,
     },
   });
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await extension(pi as any);
 
   const startedAt = Date.now();
@@ -1751,7 +1754,7 @@ test("session_before_compact shares one deadline across flush, record and checkp
 
   // flush 250ms + record 250ms leave ~400ms for the checkpoint. Per-call budgets would let it run to 900ms or more.
   assert.ok(elapsedMs < 1300, `the three calls took ${elapsedMs}ms; they share one 900ms deadline`);
-  assert.ok(result && typeof result === "object" && "compaction" in result, "the compaction summary is still returned");
+  assert.ok(result instanceof Object && "compaction" in result, "the compaction summary is still returned");
   assert.ok(
     notifications.some((n) => n.level === "warning" && n.message.includes("Remnic context checkpoint failed")),
     "the checkpoint timeout is surfaced as a warning",
