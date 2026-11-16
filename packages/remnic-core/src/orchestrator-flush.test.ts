@@ -1534,6 +1534,8 @@ test("runExtraction writes buffered turns to active scope profile write layer", 
     ...makeTurn("pi-observer:abc123", "remember the team profile target"),
     persistProcessedFingerprint: true,
   };
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => undefined };
@@ -1853,13 +1855,16 @@ test("runExtraction does not persist processed fingerprints for failed empty ext
   assert.deepEqual(meta.processedExtractionFingerprints, []);
 });
 
-test("runExtraction clears the buffer on a failed extraction when extractionRetryEnabled=false (behavior parity)", async () => {
-  // With retry disabled the failure path must match pre-#1908 behavior: the
-  // buffer is cleared (no retry state is recorded, so there is nothing to retain).
+test("runExtraction retains the buffer on a failed extraction when extractionRetryEnabled=false (issue #3415)", async () => {
+  // Retention follows the actual extraction failure, not the retry bookkeeping:
+  // with retry disabled no retry state is recorded, but the turns must still
+  // be kept for the next attempt. Dropped turns are silent loss.
   const config = parseConfig({ extractionRetryEnabled: false });
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
   let clearCalls = 0;
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
@@ -1878,7 +1883,68 @@ test("runExtraction clears the buffer on a failed extraction when extractionRetr
   const result = await orchestrator.runExtraction(turns, { bufferKey: "logical-thread:retry-off" });
   assert.equal(result.status, "skipped");
   assert.equal(result.reason, "empty_extraction_result");
-  assert.equal(clearCalls, 1, "retry disabled → buffer cleared (pre-#1908 behavior)");
+  assert.equal(clearCalls, 0, "failed extraction retains the buffer even with retry disabled");
+  assert.equal(result.retainedBuffer, true);
+  assert.equal(result.failureClass, "provider_retryable");
+});
+
+test("runExtraction retains the buffer on a parse_empty failure when extractionRetryEnabled=false (issue #3415)", async () => {
+  const config = parseConfig({ extractionRetryEnabled: false });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+  let clearCalls = 0;
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
+  orchestrator.storageRouter = {
+    storageFor: async () => withMetaSeam({
+      listEntityNames: async () => [],
+      loadMeta: async () => ({ extractionCount: 0, lastExtractionAt: null, lastConsolidationAt: null, totalMemories: 0, totalEntities: 0, processedExtractionFingerprints: [] }),
+      saveMeta: async () => {},
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [], extractionFailure: "local_llm_unusable", extractionFailureClass: "parse_empty" }),
+  };
+  stubPersistExtraction(orchestrator);
+  const turns = [{ ...makeTurn("session-retry-off-empty", "unparseable reply"), logicalSessionKey: "logical-thread:retry-off-empty", turnFingerprint: "fp-retry-off-empty", persistProcessedFingerprint: true }];
+  const result = await orchestrator.runExtraction(turns, { bufferKey: "logical-thread:retry-off-empty" });
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(clearCalls, 0);
+  assert.equal(result.retainedBuffer, true);
+  assert.equal(result.failureClass, "parse_empty");
+});
+
+test("runExtraction still clears the buffer on a successful empty extraction when extractionRetryEnabled=false", async () => {
+  const config = parseConfig({ extractionRetryEnabled: false });
+  config.extractionMinChars = 0;
+  config.extractionMinUserTurns = 1;
+  let clearCalls = 0;
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
+  const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = config;
+  orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
+  orchestrator.storageRouter = {
+    storageFor: async () => withMetaSeam({
+      listEntityNames: async () => [],
+      loadMeta: async () => ({ extractionCount: 0, lastExtractionAt: null, lastConsolidationAt: null, totalMemories: 0, totalEntities: 0, processedExtractionFingerprints: [] }),
+      saveMeta: async () => {},
+    }),
+  };
+  orchestrator.extraction = {
+    extract: async () => ({ facts: [], entities: [], questions: [], profileUpdates: [] }),
+  };
+  stubPersistExtraction(orchestrator);
+  const turns = [{ ...makeTurn("session-retry-off-ok", "nothing to remember"), logicalSessionKey: "logical-thread:retry-off-ok", turnFingerprint: "fp-retry-off-ok", persistProcessedFingerprint: true }];
+  const result = await orchestrator.runExtraction(turns, { bufferKey: "logical-thread:retry-off-ok" });
+  assert.equal(result.status, "skipped");
+  assert.equal(result.reason, "empty_extraction_result");
+  assert.equal(clearCalls, 1, "a successful empty extraction still clears the buffer");
+  assert.equal(result.retainedBuffer, undefined);
 });
 
 test("runExtraction retains buffers and keeps in-memory backoff when the meta lock is unavailable", async () => {
@@ -1892,6 +1958,8 @@ test("runExtraction retains buffers and keeps in-memory backoff when the meta lo
 
   let clearCalls = 0;
   let updateMetaCalls = 0;
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   // SAFETY: runExtraction is driven only through the stub members assigned below;
   // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;

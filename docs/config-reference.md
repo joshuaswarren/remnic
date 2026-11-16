@@ -1025,7 +1025,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmRateLimitBackoffBaseMs` | `1000` | Base delay for rate-limit backoff; the ceiling doubles per consecutive rate-limit response. |
 | `localLlmRateLimitBackoffMaxMs` | `60000` | Ceiling for rate-limit backoff. A server hint longer than this skips the retry instead of waiting. |
 | `localLlmMaxConcurrency` | `4` | Process-wide cap on concurrent local LLM HTTP attempts across all clients. Caps above `1` reserve one permit for recall-critical work; background requests share the remaining permits. `1` stays serial; `0` disables the cap. |
-| `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, restores pre-change behavior exactly: the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). |
+| `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). A failed extraction still retains the buffer for the next attempt (issue #3415); only a successful empty result clears it. |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | Per-fingerprint exponential backoff schedule (1m, 5m, 30m, 2h), indexed by attempt. After a failed extraction, that fingerprint is not re-attempted until its backoff elapses. |
 | `extractionRetryMaxBackoffMs` | `21600000` | Upper bound (6h) on any single backoff interval, and the long-park interval once `parse_empty` exhausts its attempt cap. |
 | `extractionRetryJitterRatio` | `0.2` | Multiplicative jitter (±ratio) applied to each backoff interval to avoid synchronized retries. |
@@ -2294,7 +2294,7 @@ value matches the shipped default.
 | `localLlmRateLimitBackoffBaseMs` | `1000` | `1000` |
 | `localLlmRateLimitBackoffMaxMs` | `60000` | `60000` |
 | `localLlmMaxConcurrency` | `4` | `4` |
-| `extractionRetryEnabled` | `true` | `true` (set `false` to fully restore pre-change extraction behavior — the config-only rollback) |
+| `extractionRetryEnabled` | `true` | `true` (set `false` for no backoff gate; failed extractions still retain the buffer — the config-only rollback) |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | `[60000, 300000, 1800000, 7200000]` |
 | `extractionRetryMaxBackoffMs` | `21600000` | `21600000` |
 | `extractionRetryJitterRatio` | `0.2` | `0.2` |
