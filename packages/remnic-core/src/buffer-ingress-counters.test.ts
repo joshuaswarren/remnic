@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { initLogger, resetLogger } from "./logger.js";
 import {
-  EMPTY_BUFFER_INGRESS_SNAPSHOT,
   BufferIngressCounters,
   type BufferIngressSnapshot,
+  EMPTY_BUFFER_INGRESS_SNAPSHOT,
 } from "./buffer-ingress-counters.js";
+import { initLogger, resetLogger } from "./logger.js";
 
 const HOUR_MS = 3_600_000;
 

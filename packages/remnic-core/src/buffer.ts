@@ -23,7 +23,7 @@ import {
   bufferTurnsEqual,
   copyBufferTurn,
   describeError,
-  entryActivityAt,
+  EVICTION_HOOKS,
   entryHoldsAcceptedCapture,
   hasPinnedCaptureScope,
   liveTurnsFromExtractionSnapshot,
@@ -34,15 +34,12 @@ import {
   type BufferEntryCounts,
 } from "./buffer-turn-helpers.js";
 import { BufferAdmissionRefusedError, BufferSessionTurnRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
+import { BufferIngressCounters } from "./buffer-ingress-counters.js";
 import { refuseOverCapBatch, refuseOverCapSingle, resolveMaxTurnsPerSession, sessionTurnCapReached } from "./buffer-session-cap.js";
 export { BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer-admission.js";
 import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
 
 export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from "./buffer-types.js";
-
-// Eviction hooks are pure functions of an entry; one shared instance serves
-// pruneEntries, the admission probe and the batch preflight.
-const EVICTION_HOOKS = { activityAt: entryActivityAt, holdsAcceptedCapture: entryHoldsAcceptedCapture };
 
 export type { BufferSurpriseProbe } from "./buffer-types.js";
 import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-types.js";
@@ -75,6 +72,8 @@ export class SmartBuffer {
   private loaded = false;
   private loadPromise: Promise<void> | null = null;
   private readonly surpriseProbe: BufferSurpriseProbe | null;
+  /** Process-local add-path counters (#3444); instance-owned, no module state. Read via `ingress.snapshot()`. */
+  readonly ingress = new BufferIngressCounters();
   private mutationChain: Promise<unknown> = Promise.resolve();
   /**
    * Serialized write chain for `BUFFER_SURPRISE` telemetry events.
@@ -440,14 +439,12 @@ export class SmartBuffer {
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
-      if (refuseOverCapSingle(this.peekEntry(bufferKey), resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession), bufferKey)) return null;
+      if (refuseOverCapSingle(this.peekEntry(bufferKey), resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession), bufferKey)) return this.ingress.refuseOne(turn);
       if (this.peekEntry(bufferKey) === null) {
         this.makeRoomForEntryUnlocked();
         if (Object.keys(this.state.entries ?? {}).length >= this.maxSessionEntries) {
-          log.warn(
-            `buffer[${bufferKey}]: durable capture refused at the session-entry cap (${this.maxSessionEntries})`,
-          );
-          return null;
+          log.warn(`buffer[${bufferKey}]: durable capture refused at the session-entry cap (${this.maxSessionEntries})`);
+          return this.ingress.refuseOne(turn);
         }
       }
       return this.recordTurnUnlocked(bufferKey, turn);
@@ -472,7 +469,7 @@ export class SmartBuffer {
         }
       }
 
-      if (refuseOverCapBatch((key) => this.peekEntry(key), batches, resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession))) return null;
+      if (refuseOverCapBatch((key) => this.peekEntry(key), batches, resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession))) return this.ingress.refuseAll(additions);
       const entries = this.state.entries ?? {};
       const newKeys = [...new Set(
         additions
@@ -484,14 +481,15 @@ export class SmartBuffer {
       if (requiredEvictions > 0) {
         const target = Math.max(0, this.maxSessionEntries - newKeys.length);
         const evicted = selectEvictedBufferKeys(entries, newKeys, target, EVICTION_HOOKS);
-        if (newKeys.length > 0 && evicted.length < requiredEvictions) return null;
+        if (newKeys.length > 0 && evicted.length < requiredEvictions) return this.ingress.refuseAll(additions);
         for (const key of evicted) delete entries[key];
         this.persistence.markEvicted(evicted);
       }
 
       const recorded: Array<{ bufferKey: string; turn: BufferTurn; mutation: AddTurnMutationResult }> = [];
+      const batchSeen = new Set<string>();
       for (const { bufferKey, turn } of additions) {
-        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn) });
+        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn, batchSeen) });
       }
       return recorded;
     });
@@ -526,10 +524,10 @@ export class SmartBuffer {
         this.peekEntry(bufferKey) === null &&
         !canAdmitNewEntryUnlocked(this.state.entries ?? {}, bufferKey, this.maxSessionEntries, EVICTION_HOOKS)
       ) {
-        throw new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries);
+        throw this.ingress.refuseThrow(turn, new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries));
       }
       const maxTurns = resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession);
-      if (sessionTurnCapReached(this.peekEntry(bufferKey), 1, maxTurns)) throw new BufferSessionTurnRefusedError(bufferKey, maxTurns);
+      if (sessionTurnCapReached(this.peekEntry(bufferKey), 1, maxTurns)) throw this.ingress.refuseThrow(turn, new BufferSessionTurnRefusedError(bufferKey, maxTurns));
       return this.recordTurnUnlocked(bufferKey, turn);
     });
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);
@@ -541,6 +539,8 @@ export class SmartBuffer {
     turn: BufferTurn,
     mutation: AddTurnMutationResult,
   ): Promise<AddTurnOutcome> {
+    // #3444: the turn was counted filtered/deduplicated and never entered an entry — no trigger, no probe, no save.
+    if (mutation.turnCountInWindow === 0) return { decision: "keep_buffering" };
     let decision = mutation.decision;
     let extractionTurns: BufferTurn[] | undefined;
 
@@ -640,8 +640,11 @@ export class SmartBuffer {
     return extractionTurns ? { decision, extractionTurns } : { decision };
   }
 
-  private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn): Promise<AddTurnMutationResult> {
+  private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn, batchSeen?: Set<string>): Promise<AddTurnMutationResult> {
     await this.loadUnlocked();
+    // #3444: classify before entryFor — filtered/duplicate offers never conjure phantom entries; counted exactly once here.
+    const droppedMutation = this.ingress.classifyAndCountUnlocked(this.peekEntry(bufferKey), turn, batchSeen);
+    if (droppedMutation !== null) return droppedMutation;
     const entry = this.entryFor(bufferKey);
     const signal = scanSignals(turn.content, this.config.highSignalPatterns);
     entry.turns.push(turn);
@@ -902,10 +905,7 @@ export class SmartBuffer {
    * Return the current retention window (issue #562, PR 2). Primarily for
    * tests and diagnostics.
    */
-  getRetainedDeferredTurns(bufferKey = "default"): BufferTurn[] {
-    const entry = this.peekEntry(bufferKey);
-    return entry?.retainedTurns ? [...entry.retainedTurns] : [];
-  }
+  getRetainedDeferredTurns(bufferKey = "default"): BufferTurn[] { const entry = this.peekEntry(bufferKey); return entry?.retainedTurns ? [...entry.retainedTurns] : []; }
 
   /**
    * Clear deferred retention copies for a force-flushed session. Normal
@@ -1175,9 +1175,7 @@ export class SmartBuffer {
     });
   }
 
-  getExtractionCount(bufferKey = "default"): number {
-    return this.peekEntry(bufferKey)?.extractionCount ?? 0;
-  }
+  getExtractionCount(bufferKey = "default"): number { return this.peekEntry(bufferKey)?.extractionCount ?? 0; }
 
   /**
    * Await any pending `BUFFER_SURPRISE` telemetry writes.

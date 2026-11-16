@@ -270,18 +270,27 @@ test("SmartBuffer preserves owner identity in deferred turns", async () => {
 
 
 test("SmartBuffer clearAfterExtraction chooses the longest queued snapshot overlap", async () => {
+  // #3444: identical turns are no longer appended by the add path (counted
+  // deduplicated instead), so seed the duplicate-bearing window through
+  // storage to keep exercising clear's snapshot-overlap matching on real
+  // duplicates — the subject of this test.
+  const seededTurns = [
+    makeTurn("thread-a", "repeat"),
+    makeTurn("thread-a", "middle"),
+    makeTurn("thread-a", "repeat"),
+    makeTurn("thread-a", "tail"),
+  ];
   const storage = new FakeStorage({
     turns: [],
     lastExtractionAt: null,
     extractionCount: 0,
+    entries: { "thread-a": { turns: structuredClone(seededTurns), lastExtractionAt: null, extractionCount: 0 } },
   });
   const buffer = new SmartBuffer(parseConfig({}), storage as any);
 
-  await buffer.addTurn("thread-a", makeTurn("thread-a", "repeat"));
-  await buffer.addTurn("thread-a", makeTurn("thread-a", "middle"));
-  await buffer.addTurn("thread-a", makeTurn("thread-a", "repeat"));
-  await buffer.addTurn("thread-a", makeTurn("thread-a", "tail"));
+  await buffer.load();
   const fullSnapshot = buffer.getTurns("thread-a");
+  assert.deepEqual(fullSnapshot.map((turn) => turn.content), ["repeat", "middle", "repeat", "tail"]);
 
   await buffer.clearAfterExtraction("thread-a", fullSnapshot.slice(0, 2));
   assert.deepEqual(

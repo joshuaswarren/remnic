@@ -84,7 +84,7 @@ test("mixed batch: accepted + deduplicated + filtered + refused equals turns off
     ]);
     assert.ok(outcomes, "batch capacity-admitted");
     assert.equal(outcomes.length, 6, "every offered turn yields an outcome entry");
-    assert.ok(outcomes.every((o) => o.decision === "keep_buffering"), "no offered turn triggers extraction here");
+    assert.ok(outcomes.every((o) => o.outcome.decision === "keep_buffering"), "no offered turn triggers extraction here");
 
     // Sequential adds: exact re-offer of a buffered turn (identity duplicate,
     // byte-identical turn value) and a fresh turn.
@@ -104,8 +104,12 @@ test("mixed batch: accepted + deduplicated + filtered + refused equals turns off
 
     let s = snap();
     assert.deepEqual(s.totals.accepted, { turns: 3, chars: charsOf([turn("alpha memory"), turn("beta memory"), turn("gamma memory")]) });
-    assert.deepEqual(s.totals.deduplicated, { turns: 3, chars: charsOf([turn("alpha memory"), turn("beta memory"), turn("gamma memory")]) });
-    assert.deepEqual(s.totals.filtered, { turns: 2, chars: 0 });
+    // Four dedups: alpha in-batch, beta across sessions in-batch, alpha re-offer, gamma re-offer vs retained.
+    assert.deepEqual(s.totals.deduplicated, {
+      turns: 4,
+      chars: 2 * charsOf([turn("alpha memory")]) + charsOf([turn("beta memory")]) + charsOf([turn("gamma memory")]),
+    });
+    assert.deepEqual(s.totals.filtered, { turns: 2, chars: "   \n\t ".length });
     assert.deepEqual(s.totals.refused, { turns: 0, chars: 0 });
     assert.equal(s.totals.accepted.turns + s.totals.deduplicated.turns + s.totals.filtered.turns + s.totals.refused.turns, offered);
     assert.equal(
@@ -120,15 +124,15 @@ test("mixed batch: accepted + deduplicated + filtered + refused equals turns off
     assert.deepEqual(snap().totals.refused, { turns: 7, chars: charsOf(overCap) });
 
     // Refusal: session-entry cap — accepted-capture entries are pinned, so a
-    // new live session beyond the cap is refused (live-admission bound).
-    const pinnedConfig = makeConfig(memoryDir, { bufferMaxSessions: 2 });
+    // new live session beyond the cap is refused (live-admission bound). The
+    // implicit "default" entry is protected too, hence cap 3 for 2 pins.
+    const pinnedConfig = makeConfig(memoryDir, { bufferMaxSessions: 3 });
     const pinnedBuffer = new SmartBuffer(pinnedConfig, new FakeStorage());
     for (const key of ["p1", "p2"]) {
       const pinnedOffer = [turn("pin", { sessionKey: key, acceptedCapture: true })];
       await pinnedBuffer.addTurnsBounded([{ bufferKey: key, turns: pinnedOffer }]);
     }
     const refusedTurn = turn("beyond the entry cap");
-    offer([refusedTurn]);
     await assert.rejects(
       () => pinnedBuffer.addTurn("p3", refusedTurn),
       /session-entry cap/,
