@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -41,6 +41,23 @@ function writeClaim(
   writeFileSync(`${body}.count`, JSON.stringify(sidecar));
 }
 
+/** Body mtime pinned to `mtimeMs` BEFORE the sidecar identity is captured: simulates a claim whose last write is old (all legacy sidecars on live hosts). */
+function writeClaimWithMtime(dir: string, n: number, pending: number, oldestTurnAt: string | undefined, mtimeMs: number): void {
+  const body = path.join(dir, bodyName(n));
+  writeFileSync(body, JSON.stringify({ key: `k${n}`, entry: { turns: [] } }));
+  utimesSync(body, mtimeMs / 1000, mtimeMs / 1000);
+  const identity = statSync(body);
+  const sidecar = {
+    key: `k${n}`,
+    size: identity.size,
+    mtimeMs: identity.mtimeMs,
+    pending,
+    drained: 0,
+    oldestTurnAt,
+  };
+  writeFileSync(`${body}.count`, JSON.stringify(sidecar));
+}
+
 test("readDrainClaimTotals: sums pending turns and the oldest turn across verified sidecars", async () => {
   const { dir, cleanup } = setup();
   try {
@@ -51,10 +68,97 @@ test("readDrainClaimTotals: sums pending turns and the oldest turn across verifi
       claimedSessions: 2,
       claimedPendingTurns: 12,
       oldestClaimedTurnAt: "2026-11-01T00:00:00.000Z",
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 2,
       unverifiedClaims: 0,
       truncated: false,
     });
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: a legacy sidecar falls back to the body mtime as a LOWER BOUND on the oldest turn", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Body last written 2026-11-01, no sidecar oldestTurnAt: its oldest turn
+    // is AT LEAST as old as the body's last write (every body mutation is a
+    // whole-file rewrite, so mtime >= newest turn >= oldest turn).
+    writeClaimWithMtime(dir, 1, 9, undefined, Date.parse("2026-11-01T00:00:00.000Z"));
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-01T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+    assert.equal(totals.claimedPendingTurns, 9);
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: an explicit oldestTurnAt beats a fresher body mtime (basis turn)", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Body freshly written (mtime ≈ now) but the sidecar knows the oldest
+    // turn: the turn time wins and the basis says so.
+    writeClaim(dir, 1, 4, "2026-11-01T00:00:00.000Z");
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-01T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: the minimum spans mtime and turn candidates, basis from the winner", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Legacy mtime (11-03) is older than the other claim's turn (11-05).
+    writeClaimWithMtime(dir, 1, 2, undefined, Date.parse("2026-11-03T00:00:00.000Z"));
+    writeClaim(dir, 2, 3, "2026-11-05T00:00:00.000Z");
+    let totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-03T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+
+    // Reversed: a turn (11-02) older than the other claim's mtime (11-03).
+    cleanup();
+    const { dir: dir2, cleanup: cleanup2 } = setup();
+    writeClaim(dir2, 1, 2, "2026-11-02T00:00:00.000Z");
+    writeClaimWithMtime(dir2, 2, 3, undefined, Date.parse("2026-11-03T00:00:00.000Z"));
+    totals = await readDrainClaimTotals(dir2);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-02T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
+    cleanup2();
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: claims with pending 0 contribute no oldest candidate", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Fully drained tombstone with an ancient mtime must not skew the age.
+    writeClaimWithMtime(dir, 1, 0, undefined, Date.parse("2020-01-01T00:00:00.000Z"));
+    writeClaim(dir, 2, 1, "2026-11-10T00:00:00.000Z");
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-10T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
+    assert.equal(totals.claimedPendingTurns, 1);
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: an unparsable sidecar oldestTurnAt falls back to the body mtime", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    const body = path.join(dir, bodyName(1));
+    writeFileSync(body, JSON.stringify({ key: "k1", entry: { turns: [] } }));
+    utimesSync(body, Date.parse("2026-11-02T00:00:00.000Z") / 1000, Date.parse("2026-11-02T00:00:00.000Z") / 1000);
+    const identity = statSync(body);
+    writeFileSync(`${body}.count`, JSON.stringify({ key: "k1", size: identity.size, mtimeMs: identity.mtimeMs, pending: 3, drained: 0, oldestTurnAt: "not-a-timestamp" }));
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.claimedPendingTurns, 3);
+    assert.equal(totals.oldestClaimedTurnAt, new Date(identity.mtimeMs).toISOString());
+    assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
   } finally {
     cleanup();
   }
@@ -69,6 +173,8 @@ test("readDrainClaimTotals: a legacy sidecar without oldestTurnAt still counts i
     const totals = await readDrainClaimTotals(dir);
     assert.equal(totals.claimedPendingTurns, 10);
     assert.equal(totals.oldestClaimedTurnAt, "2026-11-05T00:00:00.000Z");
+    // Claim 1's mtime candidate is ≈ now, so claim 2's turn wins.
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
     assert.equal(totals.verifiedSidecars, 2);
     assert.equal(totals.unverifiedClaims, 0);
   } finally {
@@ -154,6 +260,7 @@ test("readDrainClaimTotals: a missing claims directory reads as an empty backlog
       claimedSessions: 0,
       claimedPendingTurns: 0,
       oldestClaimedTurnAt: null,
+      oldestClaimedAgeBasis: null,
       verifiedSidecars: 0,
       unverifiedClaims: 0,
       truncated: false,

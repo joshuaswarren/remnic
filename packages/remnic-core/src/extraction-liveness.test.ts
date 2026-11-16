@@ -537,6 +537,7 @@ test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh
       claimedSessions: 2_328,
       claimedPendingTurns: 317_246,
       oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 2_328,
       unverifiedClaims: 422,
       truncated: false,
@@ -550,6 +551,52 @@ test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh
   assert.equal(status.claimedPendingTurnCount, 317_246);
   assert.equal(status.oldestClaimedTurnAgeMs, 10 * WINDOW);
   assert.equal(status.claimedBacklogTruncated, false);
+  assert.equal(status.oldestClaimedAgeBasis, "turn");
+});
+
+test("evaluate: a claim-mtime lower bound past the window degrades legacy sidecars (all pre-#3442 sidecars)", () => {
+  // Live legacy sidecars carry no oldestTurnAt; the reader falls back to the
+  // claim body's mtime, a TRUE lower bound on the oldest turn's age (every
+  // body mutation is a whole-file rewrite, so mtime >= newest turn >= oldest
+  // turn). The degrade rule must fire on it exactly as on a turn timestamp.
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 2_456,
+      claimedPendingTurns: 313_000,
+      oldestClaimedTurnAt: new Date(NOW - 3 * 86_400_000).toISOString(),
+      oldestClaimedAgeBasis: "claim-mtime-lower-bound",
+      verifiedSidecars: 2_456,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, true, "a >=3d-old claim write is at least 3d-old backlog");
+  assert.match(status.degradedReason ?? "", /claimed drain backlog/);
+  assert.equal(status.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+});
+
+test("evaluate: a fresh claim-mtime lower bound does NOT degrade", () => {
+  const status = evaluateExtractionLiveness({
+    config: ENABLED,
+    lastExtractionAt: freshTs,
+    snapshot: emptySnap,
+    nowMs: NOW,
+    claims: {
+      claimedSessions: 5,
+      claimedPendingTurns: 50,
+      oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "claim-mtime-lower-bound",
+      verifiedSidecars: 5,
+      unverifiedClaims: 0,
+      truncated: false,
+    },
+  });
+  assert.equal(status.degraded, false);
+  assert.equal(status.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
 });
 
 test("evaluate: claimed backlog within the window does NOT degrade but is still reported", () => {
@@ -562,6 +609,7 @@ test("evaluate: claimed backlog within the window does NOT degrade but is still 
       claimedSessions: 3,
       claimedPendingTurns: 12,
       oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 3,
       unverifiedClaims: 0,
       truncated: false,
@@ -582,6 +630,7 @@ test("evaluate: the claimed-backlog reason appends the LLM failure reason while 
       claimedSessions: 1,
       claimedPendingTurns: 9,
       oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
       truncated: false,
@@ -603,6 +652,7 @@ test("evaluate: half-open boundary applies to claimed turns too — exactly stal
       claimedSessions: 1,
       claimedPendingTurns: 9,
       oldestClaimedTurnAt: new Date(NOW - WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
       truncated: false,
@@ -619,6 +669,7 @@ test("evaluate: half-open boundary applies to claimed turns too — exactly stal
       claimedSessions: 1,
       claimedPendingTurns: 9,
       oldestClaimedTurnAt: new Date(NOW - (WINDOW - 1)).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
       truncated: false,
@@ -639,6 +690,7 @@ test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, b
       claimedSessions: 5,
       claimedPendingTurns: 50,
       oldestClaimedTurnAt: null,
+      oldestClaimedAgeBasis: null,
       verifiedSidecars: 5,
       unverifiedClaims: 0,
       truncated: false,
@@ -647,6 +699,7 @@ test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, b
   assert.equal(status.degraded, false);
   assert.equal(status.claimedSessionCount, 5);
   assert.equal(status.oldestClaimedTurnAgeMs, null);
+  assert.equal(status.oldestClaimedAgeBasis, null);
 });
 
 test("evaluate: without claims the payload is unchanged (back-compat)", () => {
@@ -661,6 +714,7 @@ test("evaluate: without claims the payload is unchanged (back-compat)", () => {
   assert.equal(status.claimedPendingTurnCount, undefined);
   assert.equal(status.oldestClaimedTurnAgeMs, undefined);
   assert.equal(status.claimedBacklogTruncated, undefined);
+  assert.equal(status.oldestClaimedAgeBasis, undefined);
 });
 
 test("evaluate: the disabled gate suppresses claimed-backlog degradation", () => {
@@ -673,6 +727,7 @@ test("evaluate: the disabled gate suppresses claimed-backlog degradation", () =>
       claimedSessions: 1,
       claimedPendingTurns: 9,
       oldestClaimedTurnAt: new Date(NOW - 10 * WINDOW).toISOString(),
+      oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
       truncated: false,
@@ -680,4 +735,5 @@ test("evaluate: the disabled gate suppresses claimed-backlog degradation", () =>
   });
   assert.equal(status.degraded, false);
   assert.equal(status.claimedPendingTurnCount, 9);
+  assert.equal(status.oldestClaimedAgeBasis, "turn");
 });

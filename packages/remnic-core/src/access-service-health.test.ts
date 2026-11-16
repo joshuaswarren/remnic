@@ -811,6 +811,7 @@ test("health reports claimed drain backlog totals and degrades when the oldest c
     assert.equal(health.extraction.claimedSessionCount, 2);
     assert.equal(health.extraction.claimedPendingTurnCount, 12);
     assert.equal(health.extraction.oldestClaimedTurnAgeMs, 10_000);
+    assert.equal(health.extraction.oldestClaimedAgeBasis, "turn");
     assert.equal(health.extraction.claimedBacklogTruncated, false);
     assert.match(health.extraction.degradedReason ?? "", /claimed drain backlog/);
     assert.match(health.extraction.degradedReason ?? "", /12 claimed turn/);
