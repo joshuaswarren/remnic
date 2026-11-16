@@ -73,7 +73,7 @@ export class SmartBuffer {
   private loadPromise: Promise<void> | null = null;
   private readonly surpriseProbe: BufferSurpriseProbe | null;
   /** Process-local add-path counters (#3444); instance-owned, no module state. Read via `ingress.snapshot()`. */
-  readonly ingress = new BufferIngressCounters();
+  readonly ingress: BufferIngressCounters;
   private mutationChain: Promise<unknown> = Promise.resolve();
   /**
    * Serialized write chain for `BUFFER_SURPRISE` telemetry events.
@@ -112,9 +112,12 @@ export class SmartBuffer {
     private readonly config: PluginConfig,
     private readonly storage: BufferStorage,
     surpriseProbe: BufferSurpriseProbe | null = null,
+    /** #3444 test seam: `false` disables the ingress counters (pure pass-through control). */
+    options: { countIngress?: boolean } = {},
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.surpriseProbe = surpriseProbe;
+    this.ingress = new BufferIngressCounters(undefined, options.countIngress !== false);
   }
 
   /** Distinct sessions admitted before backpressure; configurable (#3303, raised from 200). */
@@ -487,9 +490,8 @@ export class SmartBuffer {
       }
 
       const recorded: Array<{ bufferKey: string; turn: BufferTurn; mutation: AddTurnMutationResult }> = [];
-      const batchSeen = new Set<string>();
       for (const { bufferKey, turn } of additions) {
-        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn, batchSeen) });
+        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn) });
       }
       return recorded;
     });
@@ -539,8 +541,6 @@ export class SmartBuffer {
     turn: BufferTurn,
     mutation: AddTurnMutationResult,
   ): Promise<AddTurnOutcome> {
-    // #3444: the turn was counted filtered/deduplicated and never entered an entry — no trigger, no probe, no save.
-    if (mutation.turnCountInWindow === 0) return { decision: "keep_buffering" };
     let decision = mutation.decision;
     let extractionTurns: BufferTurn[] | undefined;
 
@@ -640,13 +640,13 @@ export class SmartBuffer {
     return extractionTurns ? { decision, extractionTurns } : { decision };
   }
 
-  private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn, batchSeen?: Set<string>): Promise<AddTurnMutationResult> {
+  private async recordTurnUnlocked(bufferKey: string, turn: BufferTurn): Promise<AddTurnMutationResult> {
     await this.loadUnlocked();
-    // #3444: classify before entryFor — filtered/duplicate offers never conjure phantom entries; counted exactly once here.
-    const droppedMutation = this.ingress.classifyAndCountUnlocked(this.peekEntry(bufferKey), turn, batchSeen);
-    if (droppedMutation !== null) return droppedMutation;
     const entry = this.entryFor(bufferKey);
     const signal = scanSignals(turn.content, this.config.highSignalPatterns);
+    // #3444: observe BEFORE the push so a lazily rebuilt digest memo cannot
+    // see the current turn (it must only flag turns already in the entry).
+    this.ingress.noteAppendedTurn(entry, turn);
     entry.turns.push(turn);
     const decision = this.evaluate(entry, signal.level);
     // Snapshots serve only extraction decisions and surprise-eligible keep_buffering turns (probe, smart mode, sub-high signal); steady-state buffering copies nothing.

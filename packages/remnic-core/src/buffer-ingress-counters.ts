@@ -1,29 +1,48 @@
 /**
- * Buffer-ingress counters (issue #3444).
+ * Buffer-ingress counters (issue #3444) — OBSERVATION ONLY.
  *
- * Every turn offered to the SmartBuffer add path is classified into exactly
- * one outcome — accepted (appended to a buffer entry), deduplicated (skipped
- * as an identity or content duplicate already buffered/observed), filtered
- * (dropped before buffering: empty or whitespace-only), refused (capacity
- * refusal) — counted in turns and characters, process-local and instance-owned
- * (one instance per SmartBuffer, no module state), with a 24-hour hourly ring
- * and ONE aggregate info log line per hour (counts only: no content, no
- * session ids).
+ * Counts what the SmartBuffer add path already does, per offered turn, in
+ * turns and characters:
+ *   - accepted: the turn was appended to a buffer entry (always the case for
+ *     non-refused offers; this layer invents no filtering),
+ *   - acceptedExactDuplicate: observational SUB-COUNT of accepted — the
+ *     appended turn's role+content exactly matches a turn already in that
+ *     session's buffer entry (live turns or deferred-retained copies). This
+ *     is the duplicate rate at ingress that #3443 needs; it changes nothing,
+ *   - filtered: reserved for turns existing code drops before/at the buffer.
+ *     The SmartBuffer add path itself drops nothing, so it is always 0 at
+ *     this layer; upstream filters (captureMode=explicit skips in
+ *     processTurn/ingestReplayBatch, the observe funnel's empty-content and
+ *     fingerprint dedup) live outside the buffer add,
+ *   - refused: capacity refusal (existing null-return and throw sites).
  *
- * The dedup memo is a WeakMap keyed by the buffer ENTRY object, valid while
- * `entry.turns` / `entry.retainedTurns` keep their array references; every
- * buffer mutation that removes or replaces turns reassigns a fresh array, so
- * the memo self-invalidates without epoch bookkeeping. Steady-state cost is
- * O(1) per turn (set membership), with an O(entry) rebuild only when a drain
- * replaced the arrays.
+ * Invariant: accepted + filtered + refused == turns offered.
+ * acceptedExactDuplicate <= accepted (it is a sub-count, not a partition).
+ *
+ * Counters are process-local and instance-owned (one instance per
+ * SmartBuffer, no module state), feed a 24-hour hourly ring with ONE
+ * aggregate info log line per hour (counts only: no content, no session
+ * ids, silent idle hours), and take an injectable clock for tests.
+ *
+ * Memory: duplicate detection hashes role+content to a sha256 digest (same
+ * scheme as the drain hand-in memo) — turn content is never retained. The
+ * per-entry digest set mirrors the entry's own turns (so it is bounded by
+ * the session turn cap) and additionally enforces a hard FIFO cap of
+ * DUPLICATE_DIGEST_CAP digests; beyond the cap the oldest digest is
+ * evicted, so very old unique contents stop being recognized as
+ * duplicates until the next rebuild (metric under-count, never a buffer
+ * change).
+ *
+ * O(1) amortized per turn: memo validity is the entry's array references,
+ * so any mutation that removes or replaces turns (all of them reassign a
+ * fresh array) self-invalidates the memo without epoch bookkeeping.
  */
 
-import { bufferTurnIdentityKey, scopeProfilePlanIdentity } from "./buffer-turn-helpers.js";
-import type { AddTurnMutationResult } from "./buffer-types.js";
+import { createHash } from "node:crypto";
 import { log } from "./logger.js";
 import type { BufferEntryState, BufferTurn } from "./types.js";
 
-export type BufferIngressOutcome = "accepted" | "deduplicated" | "filtered" | "refused";
+export type BufferIngressOutcome = "accepted" | "acceptedExactDuplicate" | "filtered" | "refused";
 
 export interface BufferIngressOutcomeCount {
   turns: number;
@@ -33,7 +52,7 @@ export interface BufferIngressOutcomeCount {
 export interface BufferIngressHour {
   hourStart: string;
   accepted: BufferIngressOutcomeCount;
-  deduplicated: BufferIngressOutcomeCount;
+  acceptedExactDuplicate: BufferIngressOutcomeCount;
   filtered: BufferIngressOutcomeCount;
   refused: BufferIngressOutcomeCount;
 }
@@ -46,7 +65,7 @@ export interface BufferIngressSnapshot {
 export const EMPTY_BUFFER_INGRESS_SNAPSHOT: BufferIngressSnapshot = {
   totals: {
     accepted: { turns: 0, chars: 0 },
-    deduplicated: { turns: 0, chars: 0 },
+    acceptedExactDuplicate: { turns: 0, chars: 0 },
     filtered: { turns: 0, chars: 0 },
     refused: { turns: 0, chars: 0 },
   },
@@ -55,16 +74,28 @@ export const EMPTY_BUFFER_INGRESS_SNAPSHOT: BufferIngressSnapshot = {
 
 const HOUR_MS = 3_600_000;
 const RING_SLOTS = 24;
+/**
+ * Hard cap on the per-entry duplicate-digest set (defense against configs
+ * with very large session caps). Beyond the cap the oldest digest is
+ * FIFO-evicted: recognition of the oldest unique contents degrades to
+ * "not a duplicate" (an under-count of acceptedExactDuplicate), never a
+ * behavioral change.
+ */
+const DUPLICATE_DIGEST_CAP = 4096;
 
-const OUTCOMES: readonly BufferIngressOutcome[] = ["accepted", "deduplicated", "filtered", "refused"];
+const OUTCOMES: readonly BufferIngressOutcome[] = ["accepted", "acceptedExactDuplicate", "filtered", "refused"];
 
 function zeroCounts(): Record<BufferIngressOutcome, BufferIngressOutcomeCount> {
   return {
     accepted: { turns: 0, chars: 0 },
-    deduplicated: { turns: 0, chars: 0 },
+    acceptedExactDuplicate: { turns: 0, chars: 0 },
     filtered: { turns: 0, chars: 0 },
     refused: { turns: 0, chars: 0 },
   };
+}
+
+function contentDigest(turn: BufferTurn): string {
+  return createHash("sha256").update(`${turn.role}\u0000${turn.content}`).digest("base64");
 }
 
 interface RingSlot {
@@ -72,107 +103,50 @@ interface RingSlot {
   counts: Record<BufferIngressOutcome, BufferIngressOutcomeCount>;
 }
 
-/**
- * The mutation result SmartBuffer's add paths return for a turn that was
- * counted as filtered or deduplicated and therefore never entered an entry:
- * nothing buffered, nothing scheduled, no extraction trigger.
- */
-const DROPPED_MUTATION: AddTurnMutationResult = {
-  decision: "keep_buffering",
-  signalLevel: "low",
-  priorTurns: [],
-  activeTurnsSnapshot: [],
-  retainedTurnsSnapshot: [],
-  turnCountInWindow: 0,
-};
-
-/**
- * Content-duplicate key (issue #3444): same message, same provenance, same
- * capture scope — but NOT the wall-clock capture fields (`timestamp`,
- * `turnFingerprint`, `persistProcessedFingerprint`, session/thread keys), so a
- * re-observed message counts as a duplicate while genuinely distinct captures
- * of identical text (different owner, namespace, pin, or bi-temporal event)
- * do not.
- */
-function contentDuplicateKey(turn: BufferTurn): string {
-  const opt = (value: string | null | undefined): string =>
-    value === undefined ? "\u0001undefined" : value === null ? "\u0001null" : JSON.stringify(value);
-  const optFlag = (value: boolean | undefined): string => (value === undefined ? "\u0001undefined" : String(value));
-  const ctx = turn.codingContext;
-  return JSON.stringify([
-    turn.role,
-    turn.content,
-    opt(turn.sessionOwnerPrincipal),
-    opt(turn.originRole),
-    opt(turn.sourceConnector),
-    opt(turn.sourceValidAt),
-    optFlag(turn.ambientCapture),
-    optFlag(turn.acceptedCapture),
-    opt(turn.writeNamespaceOverride),
-    opt(turn.principalOverride),
-    turn.scopeProfileWritePlan === undefined ? "\u0001undefined" : scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
-    opt(ctx?.projectId),
-    opt(ctx?.rootPath),
-    opt(ctx?.branch),
-    opt(ctx?.defaultBranch),
-  ]);
-}
-
-interface EntryMemo {
+interface EntryDigestMemo {
   turnsRef: BufferTurn[];
   retainedRef: BufferTurn[] | undefined;
-  identity: Set<string>;
-  content: Set<string>;
+  digests: Set<string>;
 }
 
 export class BufferIngressCounters {
   private readonly ring: (RingSlot | null)[] = Array.from({ length: RING_SLOTS }, () => null);
   private readonly totals: Record<BufferIngressOutcome, BufferIngressOutcomeCount> = zeroCounts();
-  private readonly memos = new WeakMap<BufferEntryState, EntryMemo>();
+  private readonly memos = new WeakMap<BufferEntryState, EntryDigestMemo>();
   /** Hour of the most recent record; its bucket is logged when the hour ends. */
   private lastActiveHourMs: number | null = null;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    /** Test seam: the disabled control proves counting does not touch the buffer. */
+    private readonly enabled = true,
+  ) {}
 
   /**
-   * Classify one offered turn against the entry it targets (peeked, never
-   * created — filtered offers must not conjure phantom entries) and the other
-   * turns offered in the same capacity transaction (`batchSeen`). Returns the
-   * shared DROPPED_MUTATION for filtered/deduplicated turns, or null meaning
-   * "admit: push the turn". Counts the outcome either way.
+   * Observe an appended turn (called AFTER the buffer pushed it). Counts
+   * `accepted` and, when an identical role+content digest is already tracked
+   * for this entry, the `acceptedExactDuplicate` sub-count. Returns nothing;
+   * the buffer behaves identically either way.
    */
-  classifyAndCountUnlocked(
-    peekedEntry: BufferEntryState | null,
-    turn: BufferTurn,
-    batchSeen: Set<string> | undefined
-  ): AddTurnMutationResult | null {
+  noteAppendedTurn(entry: BufferEntryState, turn: BufferTurn): void {
+    if (!this.enabled) return;
     const chars = typeof turn.content === "string" ? turn.content.length : 0;
-    if (typeof turn.content !== "string" || turn.content.trim().length === 0) {
-      this.record("filtered", chars);
-      return DROPPED_MUTATION;
-    }
-    const identityKey = bufferTurnIdentityKey(turn);
-    const contentKey = contentDuplicateKey(turn);
-    const memo = peekedEntry === null ? null : this.memoFor(peekedEntry);
-    if (
-      batchSeen?.has(identityKey) === true ||
-      batchSeen?.has(contentKey) === true ||
-      memo?.identity.has(identityKey) === true ||
-      memo?.content.has(contentKey) === true
-    ) {
-      this.record("deduplicated", chars);
-      return DROPPED_MUTATION;
-    }
-    batchSeen?.add(identityKey);
-    batchSeen?.add(contentKey);
-    memo?.identity.add(identityKey);
-    memo?.content.add(contentKey);
     this.record("accepted", chars);
-    return null;
+    const memo = this.memoFor(entry);
+    const digest = contentDigest(turn);
+    if (memo.digests.has(digest)) this.record("acceptedExactDuplicate", chars);
+    memo.digests.add(digest);
+    if (memo.digests.size > DUPLICATE_DIGEST_CAP) {
+      for (const oldest of memo.digests) {
+        memo.digests.delete(oldest);
+        break;
+      }
+    }
   }
 
   /** Count a single capacity-refused turn; returns null for `return` sites. */
   refuseOne(turn: BufferTurn): null {
+    if (!this.enabled) return null;
     this.record("refused", typeof turn.content === "string" ? turn.content.length : 0);
     return null;
   }
@@ -196,14 +170,14 @@ export class BufferIngressCounters {
       .map((slot) => ({
         hourStart: new Date(slot.hourStartMs).toISOString(),
         accepted: { ...slot.counts.accepted },
-        deduplicated: { ...slot.counts.deduplicated },
+        acceptedExactDuplicate: { ...slot.counts.acceptedExactDuplicate },
         filtered: { ...slot.counts.filtered },
         refused: { ...slot.counts.refused },
       }));
     return {
       totals: {
         accepted: { ...this.totals.accepted },
-        deduplicated: { ...this.totals.deduplicated },
+        acceptedExactDuplicate: { ...this.totals.acceptedExactDuplicate },
         filtered: { ...this.totals.filtered },
         refused: { ...this.totals.refused },
       },
@@ -248,15 +222,14 @@ export class BufferIngressCounters {
     );
   }
 
-  private memoFor(entry: BufferEntryState): EntryMemo {
+  private memoFor(entry: BufferEntryState): EntryDigestMemo {
     const retained = entry.retainedTurns;
     const memo = this.memos.get(entry);
     if (memo && memo.turnsRef === entry.turns && memo.retainedRef === retained) return memo;
-    const fresh: EntryMemo = {
+    const fresh: EntryDigestMemo = {
       turnsRef: entry.turns,
       retainedRef: retained,
-      identity: new Set([...entry.turns, ...(retained ?? [])].map(bufferTurnIdentityKey)),
-      content: new Set([...entry.turns, ...(retained ?? [])].map(contentDuplicateKey)),
+      digests: new Set([...entry.turns, ...(retained ?? [])].map(contentDigest)),
     };
     this.memos.set(entry, fresh);
     return fresh;

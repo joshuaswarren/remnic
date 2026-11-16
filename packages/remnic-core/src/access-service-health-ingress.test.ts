@@ -63,8 +63,9 @@ test("health exposes bufferIngress at the TOP LEVEL, outside extraction", async 
 
     const health = await service.health();
     assert.ok(health.bufferIngress, "bufferIngress must be present");
-    assert.deepEqual(health.bufferIngress.totals.accepted, { turns: 1, chars: "observed turn".length });
-    assert.deepEqual(health.bufferIngress.totals.deduplicated, { turns: 1, chars: "observed turn".length });
+    assert.deepEqual(health.bufferIngress.totals.accepted, { turns: 2, chars: 2 * "observed turn".length });
+    // Observational sub-count of accepted: the re-offer is appended AND counted.
+    assert.deepEqual(health.bufferIngress.totals.acceptedExactDuplicate, { turns: 1, chars: "observed turn".length });
     assert.equal(health.bufferIngress.hours.length, 1);
     assert.ok(!("bufferIngress" in (health.extraction as object)), "must NOT live inside extraction");
   } finally {
@@ -88,7 +89,7 @@ test("health reports a zeroed bufferIngress when the host has no buffer", async 
     assert.deepEqual(health.bufferIngress, {
       totals: {
         accepted: { turns: 0, chars: 0 },
-        deduplicated: { turns: 0, chars: 0 },
+        acceptedExactDuplicate: { turns: 0, chars: 0 },
         filtered: { turns: 0, chars: 0 },
         refused: { turns: 0, chars: 0 },
       },

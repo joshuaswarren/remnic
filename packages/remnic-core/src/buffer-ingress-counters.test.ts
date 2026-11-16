@@ -7,6 +7,7 @@ import {
   EMPTY_BUFFER_INGRESS_SNAPSHOT,
 } from "./buffer-ingress-counters.js";
 import { initLogger, resetLogger } from "./logger.js";
+import type { BufferEntryState, BufferTurn } from "./types.js";
 
 const HOUR_MS = 3_600_000;
 
@@ -20,30 +21,74 @@ function captureInfo(): { lines: string[]; restore: () => void } {
   return { lines, restore: resetLogger };
 }
 
-test("counters aggregate per outcome in turns and characters", () => {
+function fakeEntry(turns: BufferTurn[] = []): BufferEntryState {
+  return { turns, lastExtractionAt: null, extractionCount: 0 };
+}
+
+function turn(content: string): BufferTurn {
+  return { role: "user", content, timestamp: "2026-04-12T12:00:00.000Z", sessionKey: "kA" };
+}
+
+test("aggregates accepted, its exact-duplicate sub-count and refusals in turns and chars", () => {
   const counters = new BufferIngressCounters();
-  counters.record("accepted", 10);
-  counters.record("accepted", 5);
-  counters.record("deduplicated", 7);
-  counters.record("filtered", 0);
-  counters.record("refused", 3);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("alpha memory"));
+  counters.noteAppendedTurn(entry, turn("beta memory"));
+  counters.noteAppendedTurn(entry, turn("alpha memory")); // exact duplicate, still appended
+  counters.refuseOne(turn("refused offer"));
 
   const snapshot = counters.snapshot();
-  assert.deepEqual(snapshot.totals.accepted, { turns: 2, chars: 15 });
-  assert.deepEqual(snapshot.totals.deduplicated, { turns: 1, chars: 7 });
-  assert.deepEqual(snapshot.totals.filtered, { turns: 1, chars: 0 });
-  assert.deepEqual(snapshot.totals.refused, { turns: 1, chars: 3 });
+  assert.deepEqual(snapshot.totals.accepted, { turns: 3, chars: 35 });
+  assert.deepEqual(snapshot.totals.acceptedExactDuplicate, { turns: 1, chars: 12 });
+  assert.deepEqual(snapshot.totals.filtered, { turns: 0, chars: 0 });
+  assert.deepEqual(snapshot.totals.refused, { turns: 1, chars: 13 });
+});
+
+test("refuseThrow counts and returns the original error; refuseAll counts every turn", () => {
+  const counters = new BufferIngressCounters();
+  const original = new Error("cap");
+  const returned = counters.refuseThrow(turn("x"), original);
+  assert.equal(returned, original);
+  const batch = [turn("a"), turn("bb")];
+  assert.equal(counters.refuseAll(batch.map((t) => ({ turn: t }))), null);
+  const snapshot = counters.snapshot();
+  assert.deepEqual(snapshot.totals.refused, { turns: 3, chars: 1 + 1 + 2 });
+});
+
+test("the duplicate digest set follows the entry's turns (self-invalidating memo)", () => {
+  const counters = new BufferIngressCounters();
+  const entry = fakeEntry([turn("seeded")]);
+  counters.noteAppendedTurn(entry, turn("seeded")); // matches the seeded turn
+  assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 1);
+  // A drain reassigns the array: the old content is no longer tracked.
+  entry.turns = [turn("fresh")];
+  counters.noteAppendedTurn(entry, turn("seeded"));
+  assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 1);
+  // Retained turns participate too.
+  entry.turns = [];
+  entry.retainedTurns = [turn("kept")];
+  counters.noteAppendedTurn(entry, turn("kept"));
+  assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 2);
+});
+
+test("counters-disabled control records nothing (differential seam)", () => {
+  const counters = new BufferIngressCounters(undefined, false);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("anything"));
+  assert.equal(counters.refuseOne(turn("anything")), null);
+  assert.deepEqual(counters.snapshot(), EMPTY_BUFFER_INGRESS_SNAPSHOT);
 });
 
 test("snapshot is a fresh read-only structure and never aliases internals", () => {
   const counters = new BufferIngressCounters();
-  counters.record("accepted", 4);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("note"));
   const first = counters.snapshot();
   first.totals.accepted.turns = 99;
   first.hours.push({
     hourStart: "tampered",
     accepted: { turns: 0, chars: 0 },
-    deduplicated: { turns: 0, chars: 0 },
+    acceptedExactDuplicate: { turns: 0, chars: 0 },
     filtered: { turns: 0, chars: 0 },
     refused: { turns: 0, chars: 0 },
   });
@@ -55,35 +100,36 @@ test("snapshot is a fresh read-only structure and never aliases internals", () =
 test("hourly ring rolls with an injected clock and keeps the last 24 hours", () => {
   let nowMs = 1_700_000_000_000;
   const counters = new BufferIngressCounters(() => nowMs);
+  const entry = fakeEntry();
 
-  counters.record("accepted", 1);
+  counters.noteAppendedTurn(entry, turn("a"));
   const hourZero = Math.floor(nowMs / HOUR_MS) * HOUR_MS;
   assert.deepEqual(counters.snapshot().hours, [
     {
       hourStart: new Date(hourZero).toISOString(),
       accepted: { turns: 1, chars: 1 },
-      deduplicated: { turns: 0, chars: 0 },
+      acceptedExactDuplicate: { turns: 0, chars: 0 },
       filtered: { turns: 0, chars: 0 },
       refused: { turns: 0, chars: 0 },
     },
   ]);
 
   // Same hour: counts land in the same bucket.
-  counters.record("accepted", 2);
+  counters.noteAppendedTurn(entry, turn("b"));
   assert.equal(counters.snapshot().hours.length, 1);
 
   // Next hour: a second bucket appears, the first is preserved.
   nowMs += HOUR_MS;
-  counters.record("deduplicated", 3);
+  counters.refuseOne(turn("c"));
   const hours = counters.snapshot().hours;
   assert.equal(hours.length, 2);
   assert.equal(hours[0].accepted.turns, 2);
-  assert.equal(hours[1].deduplicated.turns, 1);
+  assert.equal(hours[1].refused.turns, 1);
 
   // Fill the ring: 24 distinct hours hold exactly 24 buckets, oldest first.
   for (let i = 2; i <= 23; i += 1) {
     nowMs += HOUR_MS;
-    counters.record("accepted", i);
+    counters.noteAppendedTurn(entry, turn(String(i)));
   }
   const full = counters.snapshot().hours;
   assert.equal(full.length, 24);
@@ -91,7 +137,7 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
 
   // One more hour evicts the oldest bucket; the ring never exceeds 24.
   nowMs += HOUR_MS;
-  counters.record("refused", 4);
+  counters.refuseOne(turn("d"));
   const rolled = counters.snapshot().hours;
   assert.equal(rolled.length, 24);
   assert.ok(!rolled.some((hour) => hour.hourStart === new Date(hourZero).toISOString()));
@@ -101,42 +147,40 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
 test("totals survive hourly eviction (process-lifetime sums, not the ring)", () => {
   let nowMs = 1_700_000_000_000;
   const counters = new BufferIngressCounters(() => nowMs);
-  counters.record("accepted", 1);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("a"));
   nowMs += 30 * HOUR_MS;
-  counters.record("accepted", 2);
+  counters.noteAppendedTurn(entry, turn("bb"));
   assert.deepEqual(counters.snapshot().totals.accepted, { turns: 2, chars: 3 });
 });
 
 test("exactly one aggregate info line per hour, counts only", () => {
   let nowMs = 1_700_000_000_000;
   const counters = new BufferIngressCounters(() => nowMs);
+  const entry = fakeEntry();
   const { lines, restore } = captureInfo();
   try {
     // First hour of the process: nothing to log yet (empty bucket).
-    counters.record("accepted", 6);
-    assert.equal(lines.length, 0);
-
-    // Same hour again: still no log.
-    counters.record("deduplicated", 6);
+    counters.noteAppendedTurn(entry, turn("a"));
     assert.equal(lines.length, 0);
 
     // Hour rolls: ONE line describing the previous hour.
     nowMs += HOUR_MS;
-    counters.record("accepted", 2);
+    counters.refuseOne(turn("b"));
     assert.equal(lines.length, 1);
     assert.match(lines[0], /buffer ingress/);
-    assert.match(lines[0], /accepted=1/);
-    assert.match(lines[0], /deduplicated=1/);
+    assert.match(lines[0], /accepted=1\//);
+    assert.match(lines[0], /refused=0\//);
 
     // No further log within the same hour, even with more records.
-    counters.record("filtered", 1);
+    counters.noteAppendedTurn(entry, turn("c"));
     assert.equal(lines.length, 1);
 
     // Empty hours produce no log line (zero-noise): jump forward 3 hours.
     nowMs += 3 * HOUR_MS;
-    counters.record("refused", 1);
+    counters.refuseOne(turn("d"));
     assert.equal(lines.length, 2);
-    assert.match(lines[1], /refused=0/);
+    assert.match(lines[1], /refused=1\//);
   } finally {
     restore();
   }
@@ -145,13 +189,14 @@ test("exactly one aggregate info line per hour, counts only", () => {
 test("log lines carry no content or session identifiers", () => {
   let nowMs = 1_700_000_000_000;
   const counters = new BufferIngressCounters(() => nowMs);
+  const entry = fakeEntry();
   const { lines, restore } = captureInfo();
   try {
-    counters.record("accepted", "session-kaze-secret".length);
+    counters.noteAppendedTurn(entry, turn("secret-session-kaze"));
     nowMs += HOUR_MS;
-    counters.record("accepted", "secret memory content".length);
+    counters.noteAppendedTurn(entry, turn("secret memory content"));
     assert.equal(lines.length, 1);
-    assert.ok(!lines[0].includes("session-kaze-secret"));
+    assert.ok(!lines[0].includes("secret-session-kaze"));
     assert.ok(!lines[0].includes("secret memory content"));
   } finally {
     restore();
@@ -162,7 +207,7 @@ test("EMPTY_BUFFER_INGRESS_SNAPSHOT is the zero snapshot for hosts without a buf
   const empty: BufferIngressSnapshot = EMPTY_BUFFER_INGRESS_SNAPSHOT;
   assert.deepEqual(empty.totals, {
     accepted: { turns: 0, chars: 0 },
-    deduplicated: { turns: 0, chars: 0 },
+    acceptedExactDuplicate: { turns: 0, chars: 0 },
     filtered: { turns: 0, chars: 0 },
     refused: { turns: 0, chars: 0 },
   });
