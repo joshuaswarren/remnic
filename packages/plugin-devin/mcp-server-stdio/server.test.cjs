@@ -22,11 +22,14 @@ function mkHome() {
 // with { code, stderr } once the process exits.
 function runProxy(url, { env = {}, releaseAfterMs = 300 } = {}) {
   const home = mkHome();
+  const childEnv = { ...process.env, HOME: home };
+  // The opt-in must not leak in from the developer's shell: the
+  // default-refusal case has to run with the variable truly unset.
+  delete childEnv.REMNIC_MCP_ALLOW_CLEARTEXT_HTTP;
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SERVER], {
       env: {
-        ...process.env,
-        HOME: home,
+        ...childEnv,
         REMNIC_PLUGIN_DAEMON_URL: url,
         REMNIC_PLUGIN_DAEMON_TOKEN: "test-token",
         ...env,
