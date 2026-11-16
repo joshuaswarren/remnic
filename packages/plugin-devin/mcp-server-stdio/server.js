@@ -137,10 +137,22 @@ if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     `unsupported URL protocol in REMNIC_PLUGIN_DAEMON_URL: ${parsed.protocol} (expected http: or https:; refuse to send bearer token over plaintext to a non-loopback target)`
   );
 }
+// Plain http to a non-loopback host sends the bearer token cleartext, so it
+// is refused by default. Trusted-LAN/Tailscale deployments (the same shape
+// the hook runner only warns about) can opt in explicitly with
+// REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1; the refusal stays the default.
+const allowCleartextHttp = envOrEmpty("REMNIC_MCP_ALLOW_CLEARTEXT_HTTP") === "1";
 if (parsed.protocol === "http:" && !isLoopbackHostname(parsed.hostname)) {
-  fatal(
-    `REMNIC_PLUGIN_DAEMON_URL uses plain http:// to a non-loopback host (${parsed.hostname}); refuse to send bearer token cleartext. Use https:// or http://localhost / http://127.0.0.x.`
-  );
+  if (allowCleartextHttp) {
+    process.stderr.write(
+      `remnic-mcp-proxy: WARNING: REMNIC_PLUGIN_DAEMON_URL uses plain http:// to a non-loopback host (${parsed.hostname}); ` +
+        "the bearer token will be sent cleartext because REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1 is set.\n"
+    );
+  } else {
+    fatal(
+      `REMNIC_PLUGIN_DAEMON_URL uses plain http:// to a non-loopback host (${parsed.hostname}); refuse to send bearer token cleartext. Use https:// or http://localhost / http://127.0.0.x, or set REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1 for a trusted network.`
+    );
+  }
 }
 const transport = parsed.protocol === "https:" ? https : http;
 
