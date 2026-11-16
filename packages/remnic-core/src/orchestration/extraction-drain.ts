@@ -207,9 +207,13 @@ export class ExtractionDrain {
     return { singleRun: chunks.length <= 1 && !resumed, chunks, resumed };
   }
 
-  /** Each representative chunk covers a contiguous span of the original window
-   *  (every duplicate sits after its representative): expand it back to that
-   *  span with the duplicates marked, so the chunk accounts for every identity. */
+  /** Each representative chunk expands to a PARTITION slice of the original window:
+   *  chunk k spans [start_k, start_k+1) where start_0 = 0 and start_k+1 is chunk
+   *  k+1's first representative's position; the last chunk runs to the window end.
+   *  A gap or trailing duplicate therefore rides with the chunk BEFORE which it
+   *  sits — whose representatives precede it (its own representative is in that
+   *  chunk or an earlier one) — so every identity is cleared or dropped exactly
+   *  once and nothing is left behind after a fully successful drain (#3443). */
   private expandedChunks(
     turns: readonly BufferTurn[],
     collapsed: CollapsedDuplicates,
@@ -217,10 +221,11 @@ export class ExtractionDrain {
   ): BufferTurn[][] {
     const chunks: BufferTurn[][] = [];
     let repIndex = 0;
-    for (const repChunk of repChunks) {
-      const start = collapsed.representativePositions[repIndex]!;
-      repIndex += repChunk.length;
-      const end = collapsed.representativePositions[repIndex - 1]! + 1;
+    for (let index = 0; index < repChunks.length; index += 1) {
+      const start = index === 0 ? 0 : collapsed.representativePositions[repIndex]!;
+      repIndex += repChunks[index]!.length;
+      const end =
+        index === repChunks.length - 1 ? turns.length : collapsed.representativePositions[repIndex]!;
       chunks.push(markDuplicateTurns(turns, collapsed, start, end));
     }
     return chunks;
