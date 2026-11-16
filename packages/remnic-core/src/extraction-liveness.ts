@@ -150,6 +150,17 @@ export interface ExtractionLivenessStatus {
    * is at least the reported one. null when no claim contributed a candidate.
    */
   oldestClaimedAgeBasis?: "turn" | "claim-mtime-lower-bound" | null;
+  /**
+   * Claims whose sidecar was missing/stale: their pending turns are NOT in
+   * `claimedPendingTurnCount` (parsing bodies on the health path is exactly
+   * what this reader avoids), so the pending sum may undercount by them.
+   */
+  claimedBacklogUnverified?: number;
+  /**
+   * Claims with a non-empty hand-in inbox: pending turns appended after the
+   * last sidecar write, also absent from `claimedPendingTurnCount`.
+   */
+  claimedBacklogPendingInbox?: number;
   /** The claims sidecar scan hit its bound; the pending sum may undercount. */
   claimedBacklogTruncated?: boolean;
 }
@@ -313,6 +324,8 @@ export function evaluateExtractionLiveness(input: {
     status.claimedPendingTurnCount = claimsPending;
     status.oldestClaimedTurnAgeMs = claimsOldestAge;
     status.oldestClaimedAgeBasis = claims.oldestClaimedAgeBasis;
+    status.claimedBacklogUnverified = claims.unverifiedClaims;
+    status.claimedBacklogPendingInbox = claims.claimsPendingInbox;
     status.claimedBacklogTruncated = claims.truncated === true;
   }
   return status;

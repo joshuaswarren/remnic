@@ -540,6 +540,7 @@ test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 2_328,
       unverifiedClaims: 422,
+      claimsPendingInbox: 7,
       truncated: false,
     },
   });
@@ -552,6 +553,8 @@ test("evaluate: claimed turns older than staleWindowMs degrade even with a fresh
   assert.equal(status.oldestClaimedTurnAgeMs, 10 * WINDOW);
   assert.equal(status.claimedBacklogTruncated, false);
   assert.equal(status.oldestClaimedAgeBasis, "turn");
+  assert.equal(status.claimedBacklogUnverified, 422);
+  assert.equal(status.claimedBacklogPendingInbox, 7);
 });
 
 test("evaluate: a claim-mtime lower bound past the window degrades legacy sidecars (all pre-#3442 sidecars)", () => {
@@ -571,6 +574,7 @@ test("evaluate: a claim-mtime lower bound past the window degrades legacy sideca
       oldestClaimedAgeBasis: "claim-mtime-lower-bound",
       verifiedSidecars: 2_456,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -592,6 +596,7 @@ test("evaluate: a fresh claim-mtime lower bound does NOT degrade", () => {
       oldestClaimedAgeBasis: "claim-mtime-lower-bound",
       verifiedSidecars: 5,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -612,6 +617,7 @@ test("evaluate: claimed backlog within the window does NOT degrade but is still 
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 3,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -633,6 +639,7 @@ test("evaluate: the claimed-backlog reason appends the LLM failure reason while 
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
     llmFailureReason: "gateway returned no models",
@@ -655,6 +662,7 @@ test("evaluate: half-open boundary applies to claimed turns too — exactly stal
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -672,6 +680,7 @@ test("evaluate: half-open boundary applies to claimed turns too — exactly stal
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -693,6 +702,7 @@ test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, b
       oldestClaimedAgeBasis: null,
       verifiedSidecars: 5,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });
@@ -715,6 +725,8 @@ test("evaluate: without claims the payload is unchanged (back-compat)", () => {
   assert.equal(status.oldestClaimedTurnAgeMs, undefined);
   assert.equal(status.claimedBacklogTruncated, undefined);
   assert.equal(status.oldestClaimedAgeBasis, undefined);
+  assert.equal(status.claimedBacklogUnverified, undefined);
+  assert.equal(status.claimedBacklogPendingInbox, undefined);
 });
 
 test("evaluate: the disabled gate suppresses claimed-backlog degradation", () => {
@@ -730,6 +742,7 @@ test("evaluate: the disabled gate suppresses claimed-backlog degradation", () =>
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 1,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     },
   });

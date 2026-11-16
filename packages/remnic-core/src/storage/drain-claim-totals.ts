@@ -42,6 +42,15 @@ export interface DrainClaimTotals {
   verifiedSidecars: number;
   /** Bodies whose sidecar is missing, unparsable, or stale — excluded from the sums, never parsed to recover. */
   unverifiedClaims: number;
+  /**
+   * Claims with a non-empty pending-hand-in inbox (`.inbox.jsonl`): their
+   * turns are pending but NOT in `claimedPendingTurns` (the sidecar counts
+   * only the body), so the pending sum UNDERCOUNTS by this many claims'
+   * worth. Each contributes its inbox mtime as a lower-bound age candidate:
+   * appends only ever add content, so every inbox turn predates the last
+   * append (mtime >= newest inbox turn >= oldest inbox turn).
+   */
+  claimsPendingInbox: number;
   /** The sidecar scan stopped at `maxClaims`; bodies past the cap are not summed. */
   truncated: boolean;
 }
@@ -89,6 +98,7 @@ export async function readDrainClaimTotals(
     oldestClaimedAgeBasis: null,
     verifiedSidecars: 0,
     unverifiedClaims: 0,
+    claimsPendingInbox: 0,
     truncated: false,
   };
   let oldest: { ms: number; iso: string; basis: DrainClaimAgeBasis } | null = null;
@@ -128,20 +138,35 @@ export async function readDrainClaimTotals(
     }
     totals.verifiedSidecars += 1;
     totals.claimedPendingTurns += sidecar.pending;
-    if (sidecar.pending > 0) {
-      // Oldest-turn candidate: the sidecar's timestamp when it parses, else
-      // the body mtime as a lower bound (see DrainClaimTotals doc). Drained
-      // tombstones (pending 0) contribute nothing.
-      const turnIso = sidecar.oldestTurnAt;
-      const turnMs = turnIso !== undefined ? Date.parse(turnIso) : Number.NaN;
-      const candidate = (turnIso !== undefined && Number.isFinite(turnMs)
-        ? { ms: turnMs, iso: turnIso, basis: "turn" }
-        : { ms: identity.mtimeMs, iso: new Date(identity.mtimeMs).toISOString(), basis: "claim-mtime-lower-bound" }) satisfies {
-        ms: number;
-        iso: string;
-        basis: DrainClaimAgeBasis;
-      };
-      if (oldest === null || candidate.ms < oldest.ms) oldest = candidate;
+    // Hand-in inbox: appended after the body counts were cached, so a non-empty
+    // inbox holds pending turns the sidecar does not know about. One extra
+    // stat per claim, no parse — the file only ever grows by appends, so its
+    // mtime is a lower bound on the oldest turn inside it.
+    const inboxStat = await stat(`${bodyPath}.inbox.jsonl`).catch(() => null);
+    const inboxPending = inboxStat !== null && inboxStat.size > 0;
+    if (inboxPending) totals.claimsPendingInbox += 1;
+    if (sidecar.pending > 0 || inboxPending) {
+      // Oldest-age candidates. The sidecar's turn timestamp (when it parses,
+      // else the body mtime as a lower bound — see DrainClaimTotals doc)
+      // describes the body's turns only while pending > 0; the inbox mtime
+      // covers the hand-ins. The per-claim minimum competes in the global
+      // minimum with its own basis.
+      const candidates: { ms: number; iso: string; basis: DrainClaimAgeBasis }[] = [];
+      if (sidecar.pending > 0) {
+        const turnIso = sidecar.oldestTurnAt;
+        if (turnIso !== undefined) {
+          const turnMs = Date.parse(turnIso);
+          if (Number.isFinite(turnMs)) candidates.push({ ms: turnMs, iso: turnIso, basis: "turn" });
+          else candidates.push({ ms: identity.mtimeMs, iso: new Date(identity.mtimeMs).toISOString(), basis: "claim-mtime-lower-bound" });
+        } else {
+          candidates.push({ ms: identity.mtimeMs, iso: new Date(identity.mtimeMs).toISOString(), basis: "claim-mtime-lower-bound" });
+        }
+      }
+      if (inboxPending && inboxStat !== null) {
+        candidates.push({ ms: inboxStat.mtimeMs, iso: new Date(inboxStat.mtimeMs).toISOString(), basis: "claim-mtime-lower-bound" });
+      }
+      const claimOldest = candidates.sort((a, b) => a.ms - b.ms)[0];
+      if (claimOldest !== undefined && (oldest === null || claimOldest.ms < oldest.ms)) oldest = claimOldest;
     }
   }
   totals.oldestClaimedTurnAt = oldest?.iso ?? null;

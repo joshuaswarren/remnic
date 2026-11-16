@@ -71,6 +71,7 @@ test("readDrainClaimTotals: sums pending turns and the oldest turn across verifi
       oldestClaimedAgeBasis: "turn",
       verifiedSidecars: 2,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     });
   } finally {
@@ -147,6 +148,73 @@ test("readDrainClaimTotals: claims with pending 0 contribute no oldest candidate
   }
 });
 
+test("readDrainClaimTotals: a pending hand-in inbox counts the claim and bounds its age even when the body sidecar says pending 0", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Body fully drained (sidecar pending 0), but a live owner handed in new
+    // turns via the inbox afterwards: those are pending and invisible to the
+    // sidecar counts (CodeRabbit round-1 major on drain-claim-totals.ts).
+    const body = path.join(dir, bodyName(1));
+    writeFileSync(body, JSON.stringify({ key: "k1", entry: { turns: [] } }));
+    const identity = statSync(body);
+    writeFileSync(`${body}.count`, JSON.stringify({ key: "k1", size: identity.size, mtimeMs: identity.mtimeMs, pending: 0, drained: 2, oldestTurnAt: "2026-01-01T00:00:00.000Z" }));
+    // Inbox appended 2026-11-01: every inbox turn predates its last append,
+    // so the inbox mtime is a lower bound on the oldest inbox turn's age.
+    const inbox = `${body}.inbox.jsonl`;
+    writeFileSync(inbox, JSON.stringify({ id: "h1", entry: { turns: [{ role: "user", content: "x", timestamp: "2026-10-30T00:00:00.000Z" }] } }) + "\n");
+    utimesSync(inbox, Date.parse("2026-11-01T00:00:00.000Z") / 1000, Date.parse("2026-11-01T00:00:00.000Z") / 1000);
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.claimsPendingInbox, 1);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-01T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+    assert.equal(totals.claimedPendingTurns, 0, "sidecar pending stays authoritative; inbox magnitudes are unknown");
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: an empty inbox does not count", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    writeClaim(dir, 1, 4, "2026-11-01T00:00:00.000Z");
+    writeFileSync(path.join(dir, `${bodyName(1)}.inbox.jsonl`), "");
+    const totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.claimsPendingInbox, 0);
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
+  } finally {
+    cleanup();
+  }
+});
+
+test("readDrainClaimTotals: the inbox mtime competes with the turn candidate and the true minimum wins", async () => {
+  const { dir, cleanup } = setup();
+  try {
+    // Turn candidate 11-01 is older than the inbox mtime 11-05: turn wins.
+    writeClaim(dir, 1, 2, "2026-11-01T00:00:00.000Z");
+    const inbox = path.join(dir, `${bodyName(1)}.inbox.jsonl`);
+    writeFileSync(inbox, '{"id":"h1"}\n');
+    utimesSync(inbox, Date.parse("2026-11-05T00:00:00.000Z") / 1000, Date.parse("2026-11-05T00:00:00.000Z") / 1000);
+    let totals = await readDrainClaimTotals(dir);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-11-01T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "turn");
+    assert.equal(totals.claimsPendingInbox, 1);
+
+    // Reversed: an ancient inbox (10-01) beats the turn candidate (11-01).
+    cleanup();
+    const { dir: dir2, cleanup: cleanup2 } = setup();
+    writeClaim(dir2, 1, 2, "2026-11-01T00:00:00.000Z");
+    const inbox2 = path.join(dir2, `${bodyName(1)}.inbox.jsonl`);
+    writeFileSync(inbox2, '{"id":"h1"}\n');
+    utimesSync(inbox2, Date.parse("2026-10-01T00:00:00.000Z") / 1000, Date.parse("2026-10-01T00:00:00.000Z") / 1000);
+    totals = await readDrainClaimTotals(dir2);
+    assert.equal(totals.oldestClaimedTurnAt, "2026-10-01T00:00:00.000Z");
+    assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+    cleanup2();
+  } finally {
+    cleanup();
+  }
+});
+
 test("readDrainClaimTotals: an unparsable sidecar oldestTurnAt falls back to the body mtime", async () => {
   const { dir, cleanup } = setup();
   try {
@@ -159,6 +227,7 @@ test("readDrainClaimTotals: an unparsable sidecar oldestTurnAt falls back to the
     assert.equal(totals.claimedPendingTurns, 3);
     assert.equal(totals.oldestClaimedTurnAt, new Date(identity.mtimeMs).toISOString());
     assert.equal(totals.oldestClaimedAgeBasis, "claim-mtime-lower-bound");
+    assert.equal(totals.claimsPendingInbox, 0);
   } finally {
     cleanup();
   }
@@ -195,8 +264,8 @@ test("readDrainClaimTotals: a stale sidecar is skipped WITHOUT parsing the body 
     const before = readFileSync(`${body}.count`, "utf8");
     const totals = await readDrainClaimTotals(dir);
     assert.deepEqual(
-      { ...totals, oldestClaimedTurnAt: totals.oldestClaimedTurnAt, oldestClaimedAgeBasis: null },
-      { claimedSessions: 1, claimedPendingTurns: 0, oldestClaimedTurnAt: null, oldestClaimedAgeBasis: null, verifiedSidecars: 0, unverifiedClaims: 1, truncated: false },
+      { ...totals, oldestClaimedTurnAt: totals.oldestClaimedTurnAt },
+      { claimedSessions: 1, claimedPendingTurns: 0, oldestClaimedTurnAt: null, oldestClaimedAgeBasis: null, verifiedSidecars: 0, unverifiedClaims: 1, claimsPendingInbox: 0, truncated: false },
     );
     assert.equal(readFileSync(`${body}.count`, "utf8"), before, "sidecar must not be rewritten by the health-path reader");
   } finally {
@@ -263,6 +332,7 @@ test("readDrainClaimTotals: a missing claims directory reads as an empty backlog
       oldestClaimedAgeBasis: null,
       verifiedSidecars: 0,
       unverifiedClaims: 0,
+      claimsPendingInbox: 0,
       truncated: false,
     });
   } finally {
