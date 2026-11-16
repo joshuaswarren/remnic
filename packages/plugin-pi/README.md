@@ -49,7 +49,7 @@ You can also load the npm package directly from Pi after configuring the daemon 
 pi -e npm:@remnic/plugin-pi
 ```
 
-That spec resolves the npm `latest` (stable) tag. Every merge to `main` publishes to `alpha`, and `latest` moves only on a maintainer promotion, so check `npm view @remnic/plugin-pi dist-tags` and match the channel your daemon runs (for example install with `npm install @remnic/plugin-pi@alpha` where you manage the package yourself). See [docs/releases.md](../../docs/releases.md).
+That spec resolves the npm `latest` (stable) tag through Pi's own temporary extension cache. A `npm install` in your project or in an omp extension directory does not change what this command loads. Every merge to `main` publishes to `alpha`, and `latest` moves only on a maintainer promotion, so check `npm view @remnic/plugin-pi dist-tags` against the channel your daemon runs. To run an `alpha` plugin on omp, use the manual install in [docs/integration/omp.md](../../docs/integration/omp.md), which manages its own copy of the package. See [docs/releases.md](../../docs/releases.md).
 
 For direct loading, provide either `REMNIC_PI_CONFIG` or the default config file at `~/.pi/agent/extensions/remnic/remnic.config.json`.
 

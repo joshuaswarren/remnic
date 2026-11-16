@@ -188,10 +188,14 @@ a while, the bare command installs a plugin many releases older than a daemon
 that runs an alpha, and it silently loses fixes (for example the
 `Remnic offline` status label that stayed stale after the daemon recovered,
 fixed in #3406). Check the tags with `npm view @remnic/plugin-pi dist-tags`,
-install the one your daemon runs, and expect a one-line
-`Version mismatch: plugin-pi X, daemon Y` warning whenever the two versions
-differ. The same applies to updates: use `npm install @remnic/plugin-pi@<tag>`,
-never `@latest` unless your daemon is on stable.
+install the one your daemon runs. The plugin also logs a one-line
+`Version mismatch: plugin-pi X, daemon Y` warning at startup, but only as a
+best-effort check: it is skipped when the daemon is unreachable, ignores a
+daemon version it cannot read, and swallows errors. No warning does not
+confirm the versions match. The same applies to updates: use
+`npm install @remnic/plugin-pi@<tag>` and then rebuild the bundle (Step 2),
+because omp loads `dist-bundle/`, which the install does not regenerate. Never
+use `@latest` unless your daemon is on stable.
 
 (Keep your existing `remnic.config.json` — only `index.ts` is replaced. The
 relative lookup preserves the installer-written location instead of
