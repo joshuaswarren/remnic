@@ -722,6 +722,8 @@ export interface PluginConfig
   bufferMaxTurns: number;
   /** Distinct sessions the extraction buffer admits before backpressure (#3303). */
   bufferMaxSessions: number;
+  /** Retained turns admitted per session before live backpressure (#3415 bound). */
+  bufferMaxTurnsPerSession: number;
   bufferMaxMinutes: number;
   /** Queue depth cap; default 1 = serial queue, same-buffer tasks never overlap. Applies at daemon start. */
   extractionQueueConcurrency: number;

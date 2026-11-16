@@ -33,8 +33,9 @@ import {
   selectRetainedDeferredTurns,
   type BufferEntryCounts,
 } from "./buffer-turn-helpers.js";
-import { BufferAdmissionRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
-export { BufferAdmissionRefusedError } from "./buffer-admission.js";
+import { BufferAdmissionRefusedError, BufferSessionTurnRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
+import { refuseOverCapBatch, refuseOverCapSingle, resolveMaxTurnsPerSession, sessionTurnCapReached } from "./buffer-session-cap.js";
+export { BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer-admission.js";
 import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
 
 export type { TriggerDecision, AddTurnOutcome, RetainedTurnCleanupOptions } from "./buffer-types.js";
@@ -439,6 +440,7 @@ export class SmartBuffer {
   async addTurnBounded(bufferKey: string, turn: BufferTurn): Promise<AddTurnOutcome | null> {
     const mutation = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
+      if (refuseOverCapSingle(this.peekEntry(bufferKey), resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession), bufferKey)) return null;
       if (this.peekEntry(bufferKey) === null) {
         this.makeRoomForEntryUnlocked();
         if (Object.keys(this.state.entries ?? {}).length >= this.maxSessionEntries) {
@@ -470,6 +472,7 @@ export class SmartBuffer {
         }
       }
 
+      if (refuseOverCapBatch((key) => this.peekEntry(key), batches, resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession))) return null;
       const entries = this.state.entries ?? {};
       const newKeys = [...new Set(
         additions
@@ -525,6 +528,8 @@ export class SmartBuffer {
       ) {
         throw new BufferAdmissionRefusedError(bufferKey, this.maxSessionEntries);
       }
+      const maxTurns = resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession);
+      if (sessionTurnCapReached(this.peekEntry(bufferKey), 1, maxTurns)) throw new BufferSessionTurnRefusedError(bufferKey, maxTurns);
       return this.recordTurnUnlocked(bufferKey, turn);
     });
     return this.completeAddTurnOutcome(bufferKey, turn, mutation);

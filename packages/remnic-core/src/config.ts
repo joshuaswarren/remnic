@@ -1593,6 +1593,10 @@ export function parseConfig(
     bufferMaxTurns:
       typeof cfg.bufferMaxTurns === "number" ? cfg.bufferMaxTurns : 5,
     bufferMaxSessions: parsePositiveInteger(cfg.bufferMaxSessions, "bufferMaxSessions") ?? 1000,
+    // Per-session retained-turn cap (#3415 bound). Far above the extraction
+    // trigger, so healthy sessions never touch it; a full session refuses live
+    // capture (retryable) instead of growing without bound during an outage.
+    bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 1,
     bufferMaxMinutes:

@@ -2435,7 +2435,7 @@ export class EngramMcpServer {
         const message = mcpToolErrorMessage(err instanceof Error ? err : new Error(String(err)));
         const admissionBackpressure =
           err instanceof Error &&
-          (err.name === "ReplayAdmissionRefusedError" || err.name === "BufferAdmissionRefusedError");
+          (err.name === "ReplayAdmissionRefusedError" || err.name === "BufferAdmissionRefusedError" || err.name === "BufferSessionTurnRefusedError");
         const result: McpToolErrorResult = {
           content: [{ type: "text", text: message }],
           isError: true,

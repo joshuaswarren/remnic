@@ -1029,15 +1029,19 @@ export class ExtractionRunCoordinator {
         bufferKey,
         isLiveSession: clearBufferAfterExtraction,
       });
-      if (recordedRetryFailure) {
-        log.debug("runExtraction: retaining buffer for backoff retry after failure");
+      // Issue #3415: retention follows the actual extraction failure, not the
+      // retry bookkeeping. With retry disabled no backoff state is recorded,
+      // but the failed turns are still kept for the next attempt — clearing
+      // them is silent loss. A successful empty result still clears below.
+      if (extractionFailure) {
+        log.debug("runExtraction: retaining buffer after failed extraction", { extractionFailure });
       } else {
         await clearBuffer();
       }
       if (!shouldPersistProcessedFingerprint) {
         await commitEmptySuccessExtraction(emptySuccessCommit);
       }
-      return emptyExtractionResult(recordedRetryFailure, result.extractionFailureClass);
+      return emptyExtractionResult(Boolean(extractionFailure), result.extractionFailureClass);
     }
 
     let threadIdForExtraction: string | null = null;

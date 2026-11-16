@@ -273,6 +273,7 @@ Access-layer safety notes:
 | `triggerMode` | `smart` | `smart`, `every_n`, or `time_based` |
 | `bufferMaxTurns` | `5` | Max buffered turns before forced extraction |
 | `bufferMaxSessions` | `1000` | Distinct sessions the extraction buffer admits before backpressure; raised from 200 in #3303 so live captures survive single-worker backlog drains |
+| `bufferMaxTurnsPerSession` | `200` | Retained turns admitted per session before live backpressure (#3415 bound). A full session refuses new turns (retryable) instead of growing without bound during an outage; extraction still drains it. |
 | `extractionQueueConcurrency` | `1` | How many background extraction tasks the daemon's queue runs at once. `1` is the historical serial queue; tasks sharing a buffer/session key never run concurrently regardless of the value, and the per-process model limiter is unchanged. Must be a positive integer (0/negative/non-integer rejected at config load). Applied at daemon start. |
 | `bufferMaxMinutes` | `15` | Max minutes before forced extraction |
 | `bufferSaveDebounceMs` | `3000` | Debounce (ms) for persisting the smart buffer to `state/buffer/` (one file per session) on a trailing edge; `0` = save every turn. Extraction trigger/clear and shutdown force an immediate flush. Under sustained activity a pending save is forced after at most 5× this window so the crash-loss window stays bounded. Must be an integer in `[0, 2147483647]` (Node's 32-bit `setTimeout` limit); out-of-range / non-integer / non-numeric values are rejected at config load. |
@@ -1025,7 +1026,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `localLlmRateLimitBackoffBaseMs` | `1000` | Base delay for rate-limit backoff; the ceiling doubles per consecutive rate-limit response. |
 | `localLlmRateLimitBackoffMaxMs` | `60000` | Ceiling for rate-limit backoff. A server hint longer than this skips the retry instead of waiting. |
 | `localLlmMaxConcurrency` | `4` | Process-wide cap on concurrent local LLM HTTP attempts across all clients. Caps above `1` reserve one permit for recall-critical work; background requests share the remaining permits. `1` stays serial; `0` disables the cap. |
-| `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, restores pre-change behavior exactly: the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). |
+| `extractionRetryEnabled` | `true` | Master gate for extraction retry backoff + circuit breaker. When `false`, the extractor is called on every triggered observe with no gate (config-only rollback, no redeploy). A failed extraction still retains the buffer for the next attempt (issue #3415); only a successful empty result clears it. |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | Per-fingerprint exponential backoff schedule (1m, 5m, 30m, 2h), indexed by attempt. After a failed extraction, that fingerprint is not re-attempted until its backoff elapses. |
 | `extractionRetryMaxBackoffMs` | `21600000` | Upper bound (6h) on any single backoff interval, and the long-park interval once `parse_empty` exhausts its attempt cap. |
 | `extractionRetryJitterRatio` | `0.2` | Multiplicative jitter (±ratio) applied to each backoff interval to avoid synchronized retries. |
@@ -2294,7 +2295,7 @@ value matches the shipped default.
 | `localLlmRateLimitBackoffBaseMs` | `1000` | `1000` |
 | `localLlmRateLimitBackoffMaxMs` | `60000` | `60000` |
 | `localLlmMaxConcurrency` | `4` | `4` |
-| `extractionRetryEnabled` | `true` | `true` (set `false` to fully restore pre-change extraction behavior — the config-only rollback) |
+| `extractionRetryEnabled` | `true` | `true` (set `false` for no backoff gate; failed extractions still retain the buffer — the config-only rollback) |
 | `extractionRetryScheduleMs` | `[60000, 300000, 1800000, 7200000]` | `[60000, 300000, 1800000, 7200000]` |
 | `extractionRetryMaxBackoffMs` | `21600000` | `21600000` |
 | `extractionRetryJitterRatio` | `0.2` | `0.2` |
