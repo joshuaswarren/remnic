@@ -380,28 +380,33 @@ export class RemnicClient {
     });
   }
 
-  async lcmCompactionFlush(sessionKey: string): Promise<Record<string, unknown>> {
+  async lcmCompactionFlush(sessionKey: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {
     return this.requestWithRetry("POST", "/engram/v1/lcm/compaction/flush", {
       sessionKey,
       namespace: this.config.namespace,
-    });
+    }, options);
   }
 
-  async lcmCompactionRecord(sessionKey: string, tokensBefore: number, tokensAfter: number): Promise<Record<string, unknown>> {
+  async lcmCompactionRecord(
+    sessionKey: string,
+    tokensBefore: number,
+    tokensAfter: number,
+    options: RequestOptions = {},
+  ): Promise<Record<string, unknown>> {
     return this.requestWithRetry("POST", "/engram/v1/lcm/compaction/record", {
       sessionKey,
       namespace: this.config.namespace,
       tokensBefore,
       tokensAfter,
-    });
+    }, options);
   }
 
-  async contextCheckpoint(sessionKey: string, context: string): Promise<Record<string, unknown>> {
+  async contextCheckpoint(sessionKey: string, context: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {
     return this.mcpTool("remnic.context_checkpoint", {
       sessionKey,
       context,
       namespace: this.config.namespace,
-    });
+    }, options);
   }
 
   async mcpListTools(options: RequestOptions = {}): Promise<McpTool[]> {

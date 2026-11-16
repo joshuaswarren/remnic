@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -1627,6 +1629,132 @@ test("session_before_compact surfaces checkpoint write failures without dropping
         notification.level === "warning" &&
         notification.message.includes("Remnic context checkpoint failed"),
     ),
+  );
+});
+
+// A daemon that holds a request open forever is what the 2026-11-16 fleet saw: the LCM flush waited behind an
+// unreachable extraction LLM. omp gives a hook handler ~30s; the plugin must answer inside that, not at requestTimeoutMs.
+async function startStubDaemon(
+  handler: (pathname: string, respond: (delayMs?: number) => void, req: http.IncomingMessage, res: http.ServerResponse) => void,
+): Promise<{ url: string; hits: Map<string, number>; close: () => Promise<void> }> {
+  const hits = new Map<string, number>();
+  const server = http.createServer((req, res) => {
+    const pathname = String(req.url);
+    hits.set(pathname, (hits.get(pathname) ?? 0) + 1);
+    req.resume();
+    const respond = (delayMs = 0) => {
+      setTimeout(() => {
+        if (res.destroyed) return;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, result: { content: [] } }));
+      }, delayMs);
+    };
+    handler(pathname, respond, req, res);
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", () => listening.resolve());
+  await listening.promise;
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    hits,
+    close: () => {
+      const closed = Promise.withResolvers<void>();
+      server.closeAllConnections();
+      server.close(() => closed.resolve());
+      return closed.promise;
+    },
+  };
+}
+
+test("session_before_compact answers inside the turn budget when the daemon never answers the flush", async (t) => {
+  const daemon = await startStubDaemon((pathname, respond) => {
+    if (pathname.endsWith("/lcm/compaction/flush")) return; // held open forever
+    respond();
+  });
+  t.after(() => daemon.close());
+  const notifications: Array<{ message: string; level: string }> = [];
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      remnicDaemonUrl: daemon.url,
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      requestTimeoutMs: 8000,
+      turnRequestTimeoutMs: 400,
+    },
+  });
+  await extension(pi as any);
+
+  const startedAt = Date.now();
+  const result = await emit(
+    "session_before_compact",
+    { preparation: { tokensBefore: 100, tokensAfter: 42, messagesToSummarize: [{ role: "user", content: "compact this" }] } },
+    {
+      cwd: "/tmp/remnic-pi",
+      sessionManager: { getSessionId: () => "compact-flush-hang-test" },
+      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+    },
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  assert.ok(elapsedMs < 2000, `the hook took ${elapsedMs}ms; it must end at the 400ms turn budget, not requestTimeoutMs`);
+  assert.equal(result, undefined, "a flush that timed out leaves Pi's own compaction alone");
+  assert.equal(daemon.hits.get("/engram/v1/lcm/compaction/flush"), 1, "no retry inside the hook");
+  assert.equal(daemon.hits.get("/engram/v1/lcm/compaction/record") ?? 0, 0, "later calls are skipped once the flush failed");
+  assert.ok(
+    notifications.some((n) => n.level === "warning" && n.message.includes("Remnic LCM flush failed")),
+    "the timeout is surfaced as a warning",
+  );
+});
+
+test("session_before_compact shares one deadline across flush, record and checkpoint", async (t) => {
+  const daemon = await startStubDaemon((pathname, respond) => {
+    if (pathname === "/mcp") return; // the checkpoint never answers
+    respond(250);
+  });
+  t.after(() => daemon.close());
+  const notifications: Array<{ message: string; level: string }> = [];
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      remnicDaemonUrl: daemon.url,
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      requestTimeoutMs: 8000,
+      turnRequestTimeoutMs: 900,
+    },
+  });
+  await extension(pi as any);
+
+  const startedAt = Date.now();
+  const result = await emit(
+    "session_before_compact",
+    { preparation: { tokensBefore: 100, tokensAfter: 42, messagesToSummarize: [{ role: "user", content: "compact this" }] } },
+    {
+      cwd: "/tmp/remnic-pi",
+      sessionManager: { getSessionId: () => "compact-one-deadline-test" },
+      ui: { notify: (message: string, level: string) => notifications.push({ message, level }) },
+    },
+  );
+  const elapsedMs = Date.now() - startedAt;
+
+  // flush 250ms + record 250ms leave ~400ms for the checkpoint. Per-call budgets would let it run to 900ms or more.
+  assert.ok(elapsedMs < 1300, `the three calls took ${elapsedMs}ms; they share one 900ms deadline`);
+  assert.ok(result && typeof result === "object" && "compaction" in result, "the compaction summary is still returned");
+  assert.ok(
+    notifications.some((n) => n.level === "warning" && n.message.includes("Remnic context checkpoint failed")),
+    "the checkpoint timeout is surfaced as a warning",
   );
 });
 
