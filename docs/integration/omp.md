@@ -193,9 +193,10 @@ install the one your daemon runs. The plugin also logs a one-line
 best-effort check: it is skipped when the daemon is unreachable, ignores a
 daemon version it cannot read, and swallows errors. No warning does not
 confirm the versions match. The same applies to updates: use
-`npm install @remnic/plugin-pi@<tag>` and then rebuild the bundle (Step 2),
-because omp loads `dist-bundle/`, which the install does not regenerate. Never
-use `@latest` unless your daemon is on stable.
+`npm install @remnic/plugin-pi@<tag>`. omp loads `dist-bundle/`, which an
+install alone does not regenerate; the `postinstall` script in Step 2 rebuilds
+it, and without that script you must run the Step 2 build yourself after every
+install. Never use `@latest` unless your daemon is on stable.
 
 (Keep your existing `remnic.config.json` — only `index.ts` is replaced. The
 relative lookup preserves the installer-written location instead of
