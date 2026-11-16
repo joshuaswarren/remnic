@@ -47,4 +47,14 @@ export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, 
    * re-applied at the execution boundary.
    */
   codingContext?: import("./types.js").CodingContext;
+  /**
+   * In-flight drain marker (#3443): this turn is an exact duplicate (same
+   * role AND content) of an earlier turn in the SAME extraction window and
+   * scope, and its first occurrence represents it. The drain's chunk carries
+   * a marked COPY so buffer/claim clearing and chunk drops remove every
+   * identity together, while the extraction run keeps the duplicate text out
+   * of the model conversation. Never persisted: the marker is set only on
+   * the drain's in-memory chunk copies, never on buffered or claimed turns.
+   */
+  extractionDuplicateOf?: true;
 }

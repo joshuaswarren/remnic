@@ -6,6 +6,7 @@ import { describeError } from "../buffer-turn-helpers.js";
 import { chunkExtractionWindow, classifyDrainResult, mergeDrainResults } from "../extraction-window-drain.js";
 import { log } from "../logger.js";
 import type { BufferTurn } from "../types.js";
+import { type CollapsedDuplicates, collapseExactDuplicateTurns, markDuplicateTurns } from "./extraction-dedupe.js";
 import type { ExtractionPreemptHandle } from "./extraction-queue-coordinator.js";
 import type { ExtractionRunCoordinator, ExtractionRunResult } from "./extraction-run.js";
 
@@ -142,33 +143,87 @@ export class ExtractionDrain {
     preemptHandle?: ExtractionPreemptHandle
   ): Promise<ExtractionRunResult> {
     const budgetChars = this.deps.extractionWindowBudgetChars?.() ?? Number.POSITIVE_INFINITY;
-    const plan = this.chunkPlan(turns, runOptions, budgetChars);
+    // Exact duplicates (same role AND content, one scope) collapse to their first
+    // occurrence before chunk planning (#3443): chunks pack unique turns and the model
+    // sees each text once. Every original stays a distinct identity the chunk must
+    // account for, so chunks carry the duplicates as marked copies — clearing and
+    // drops remove representative and duplicates together.
+    const collapsed = collapseExactDuplicateTurns(turns);
+    const window = collapsed.duplicateCount > 0 ? markDuplicateTurns(turns, collapsed) : turns;
+    const plan = this.chunkPlan(turns, runOptions, budgetChars, collapsed);
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
     // chunk, so its failures still count toward the drop threshold.
-    if (plan.singleRun) return await this.deps.runExtraction(turns, runOptions);
+    if (plan.singleRun) {
+      // Without duplicates this is today's single-run path: the run judges its own
+      // thresholds on the raw window.
+      if (collapsed.duplicateCount === 0) return await this.deps.runExtraction(turns, runOptions);
+      // With duplicates, eligibility belongs to the RAW window — duplicate inflation
+      // must not change whether a window qualifies (#3443). Below the threshold,
+      // today's skip path runs on the raw window (unmarked, so skip/capture/clear
+      // judge every identity exactly as before); above it, the representative subset
+      // is never re-judged — the same rule the chunk loop applies to chunks.
+      if (this.windowBelowThreshold(turns, runOptions)) return await this.deps.runExtraction(turns, runOptions);
+      return await this.deps.runExtraction(window, {
+        ...runOptions,
+        skipCharThreshold: true,
+        skipUserTurnThreshold: true,
+      });
+    }
     // Eligibility (minimum user turns and characters) belongs to the whole
     // window: a window that never qualified keeps the single-run path, which
     // judges it exactly as before.
     if (!plan.resumed && this.windowBelowThreshold(turns, runOptions)) {
       return await this.deps.runExtraction(turns, runOptions);
     }
-    return await this.runChunked(plan.chunks, runOptions, preemptable, preemptHandle);
+    // A deduped window is never re-judged on its representative subset inside the
+    // run: eligibility above (or the caller's skip flags) already decided it.
+    const options =
+      collapsed.duplicateCount > 0
+        ? { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true }
+        : runOptions;
+    return await this.runChunked(plan.chunks, options, preemptable, preemptHandle);
   }
 
-  /** Chunking plan for one trigger-drain window. Accepted-capture groups */
+  /** Chunking plan for one trigger-drain window. Accepted-capture groups
+   *  keep their pinned head; a window with duplicates is planned on its
+   *  representatives and each chunk is then expanded back to its contiguous
+   *  original span with the duplicates marked. */
   private chunkPlan(
     turns: readonly BufferTurn[],
     runOptions: DrainRunOptions,
-    budgetChars: number
+    budgetChars: number,
+    collapsed?: CollapsedDuplicates
   ): ChunkPlan {
-    const chunks = this.chunkable(runOptions, turns, budgetChars)
+    const deduped = collapsed !== undefined && collapsed.duplicateCount > 0;
+    const planning = deduped ? collapsed.representatives : turns;
+    const repChunks = this.chunkable(runOptions, turns, budgetChars)
       ? this.deps.measureRenderedTurns !== undefined
-        ? this.chunkByRenderedSize(turns, budgetChars)
-        : chunkExtractionWindow(turns, budgetChars)
+        ? this.chunkByRenderedSize(planning, budgetChars)
+        : chunkExtractionWindow(planning, budgetChars)
       : [];
     const resumed =
-      chunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(chunks[0].slice(0, 1));
+      repChunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(repChunks[0].slice(0, 1));
+    const chunks = deduped ? this.expandedChunks(turns, collapsed, repChunks) : repChunks;
     return { singleRun: chunks.length <= 1 && !resumed, chunks, resumed };
+  }
+
+  /** Each representative chunk covers a contiguous span of the original window
+   *  (every duplicate sits after its representative): expand it back to that
+   *  span with the duplicates marked, so the chunk accounts for every identity. */
+  private expandedChunks(
+    turns: readonly BufferTurn[],
+    collapsed: CollapsedDuplicates,
+    repChunks: readonly BufferTurn[][]
+  ): BufferTurn[][] {
+    const chunks: BufferTurn[][] = [];
+    let repIndex = 0;
+    for (const repChunk of repChunks) {
+      const start = collapsed.representativePositions[repIndex]!;
+      repIndex += repChunk.length;
+      const end = collapsed.representativePositions[repIndex - 1]! + 1;
+      chunks.push(markDuplicateTurns(turns, collapsed, start, end));
+    }
+    return chunks;
   }
 
   /** Automatic chunking needs a clearable window, no fail-closed/forced
