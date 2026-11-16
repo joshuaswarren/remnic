@@ -144,6 +144,7 @@
     "packages/remnic-core/src/storage.ts",
     "packages/remnic-core/src/storage/**",
     "packages/remnic-core/src/storage/buffer-drain-claims.ts",
+    "packages/remnic-core/src/storage/drain-claim-totals.ts",
     "packages/remnic-core/src/storage/buffer-drain-handin-memo.ts",
     "packages/remnic-core/src/storage/buffer-session-files.ts",
     "packages/remnic-core/src/storage/cas-revision-host.ts",
@@ -299,7 +300,8 @@
     "packages/remnic-core/src/orchestration/probe-deadline.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/promotion-dedup-window.ts": "extraction-lifecycle",
     "packages/remnic-core/src/orchestration/backlog-scheduler.ts": "extraction-lifecycle",
-    "packages/remnic-core/src/orchestration/extraction-task-queueing.ts": "extraction-lifecycle"
+    "packages/remnic-core/src/orchestration/extraction-task-queueing.ts": "extraction-lifecycle",
+    "packages/remnic-core/src/storage/drain-claim-totals.ts": "extraction-lifecycle"
   },
   "grandfathered": [
     "packages/remnic-core/src/lifecycle.ts",

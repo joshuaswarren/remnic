@@ -22,6 +22,7 @@ import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { getExtractionLlmHealth } from "./extraction-llm-health.js";
 import { log } from "./logger.js";
 import type { OperatorDoctorCheck } from "./operator-doctor-types.js";
+import type { DrainClaimTotals } from "./storage/drain-claim-totals.js";
 import type { PluginConfig } from "./types.js";
 
 /** Default staleness window: 24h. A watermark older than this with a non-empty buffer is degraded. */
@@ -131,6 +132,18 @@ export interface ExtractionLivenessStatus {
   llmReachable?: boolean;
   lastFailureReason?: string | null;
   lastFailureAt?: string | null;
+  /**
+   * Claimed drain backlog (#3442): turns handed to `buffer/drain` claims are
+   * NOT in the in-memory counts above. Set (to the daemon-wide sidecar scan)
+   * only when the caller supplies a claims reader — i.e. by `/health`, not by
+   * the pure evaluators' other surfaces. `oldestClaimedTurnAgeMs` is null when
+   * no verified sidecar reports an oldest-turn timestamp (legacy sidecars).
+   */
+  claimedSessionCount?: number;
+  claimedPendingTurnCount?: number;
+  oldestClaimedTurnAgeMs?: number | null;
+  /** The claims sidecar scan hit its bound; the pending sum may undercount. */
+  claimedBacklogTruncated?: boolean;
 }
 
 interface ExtractionLivenessOrchestratorLike {
@@ -205,9 +218,11 @@ export function formatAgeMs(ms: number): string {
 /**
  * Pure liveness verdict. Degraded when the feature is enabled AND any of: the
  * last-extraction watermark could not be READ (a storage fault, §22), the buffer
- * read failed (a pipeline fault, §22), or the buffer is non-empty and the
- * watermark is absent or stale. Each cause yields a DISTINCT reason so an
- * operator can tell a meta-read failure from a buffer-read failure from a
+ * read failed (a pipeline fault, §22), claimed turns exist and the oldest has
+ * waited longer than the staleness window (#3442 — the in-memory watermark can
+ * stay fresh while claimed turns pile up invisibly), or the buffer is non-empty
+ * and the watermark is absent or stale. Each cause yields a DISTINCT reason so
+ * an operator can tell a meta-read failure from a buffer-read failure from a
  * pipeline that has genuinely never extracted.
  *
  * Staleness uses a half-open freshness window (§23): an extraction is fresh
@@ -215,7 +230,9 @@ export function formatAgeMs(ms: number): string {
  * is stale (the upper bound on "fresh" is exclusive). A null/unparsable watermark
  * means "never succeeded" and is treated as stale — as is a FUTURE watermark (a
  * clock-skewed or corrupt timestamp ahead of now must not read as a fresh
- * extraction and hide a real backlog stall).
+ * extraction and hide a real backlog stall). The claimed-turn rule shares the
+ * half-open window and stays inert when no verified sidecar reports an
+ * oldest-turn timestamp: "unknown age" is not "fresh" and not "stale".
  */
 export function evaluateExtractionLiveness(input: {
   config: ExtractionLivenessConfig;
@@ -225,6 +242,10 @@ export function evaluateExtractionLiveness(input: {
   metaReadFailed?: boolean;
   metaReadError?: string;
   watermarkPending?: boolean;
+  /** Daemon-wide claimed-drain totals (sidecar scan); absent → no claim fields. */
+  claims?: DrainClaimTotals | null;
+  /** Last extraction-LLM failure; appended to the claimed-backlog reason when present. */
+  llmFailureReason?: string | null;
 }): ExtractionLivenessStatus {
   const { config, lastExtractionAt, snapshot, nowMs } = input;
   const lastMs = lastExtractionAt !== null ? Date.parse(lastExtractionAt) : Number.NaN;
@@ -240,8 +261,12 @@ export function evaluateExtractionLiveness(input: {
   const metaReadFailed = input.metaReadFailed === true;
   const watermarkPending = input.watermarkPending === true;
   const readFailed = snapshot.readFailed === true;
+  const claims = input.claims ?? null;
+  const claimsPending = claims?.claimedPendingTurns ?? 0;
+  const claimsOldestAge = ageMsFrom(claims?.oldestClaimedTurnAt ?? null, nowMs);
+  const claimedStale = claimsPending > 0 && claimsOldestAge !== null && claimsOldestAge >= config.staleWindowMs;
   const degraded =
-    config.enabled && (metaReadFailed || readFailed || (!watermarkPending && hasBacklog && stale));
+    config.enabled && (metaReadFailed || readFailed || claimedStale || (!watermarkPending && hasBacklog && stale));
 
   let degradedReason: string | null = null;
   if (degraded) {
@@ -249,6 +274,12 @@ export function evaluateExtractionLiveness(input: {
       degradedReason = `extraction watermark unreadable: ${input.metaReadError ?? "meta read failed"}`;
     } else if (readFailed) {
       degradedReason = `extraction buffer unreadable: ${snapshot.readError ?? "buffer snapshot read failed"}`;
+    } else if (claimedStale) {
+      degradedReason =
+        `claimed drain backlog: ${claims?.claimedSessions ?? 0} claimed session(s), ` +
+        `${claimsPending} claimed turn(s) pending extraction, oldest waiting ${formatAgeMs(claimsOldestAge ?? 0)}` +
+        (claims?.truncated === true ? " (scan truncated)" : "") +
+        (input.llmFailureReason ? `; extraction LLM unavailable: ${input.llmFailureReason}` : "");
     } else {
       const watermark = hasWatermark
         ? `last succeeded ${formatAgeMs(nowMs - lastMs)} ago`
@@ -259,7 +290,7 @@ export function evaluateExtractionLiveness(input: {
     }
   }
 
-  return {
+  const status: ExtractionLivenessStatus = {
     lastExtractionAt,
     bufferedSessionCount: snapshot.bufferedSessionCount,
     pendingTurnCount: snapshot.pendingTurnCount,
@@ -269,6 +300,13 @@ export function evaluateExtractionLiveness(input: {
     ...(watermarkPending ? { watermarkPending: true } : {}),
     watermarkScope: "aggregate",
   };
+  if (claims !== null) {
+    status.claimedSessionCount = claims.claimedSessions;
+    status.claimedPendingTurnCount = claimsPending;
+    status.oldestClaimedTurnAgeMs = claimsOldestAge;
+    status.claimedBacklogTruncated = claims.truncated === true;
+  }
+  return status;
 }
 
 const EMPTY_SNAPSHOT: ExtractionBufferSnapshot = {
@@ -308,6 +346,7 @@ export async function gatherExtractionLivenessStatus(input: {
   watermark: ExtractionWatermarkOrStorage;
   buffer: ExtractionBufferSource | undefined;
   nowMs: number;
+  claims?: DrainClaimTotals | null;
 }): Promise<ExtractionLivenessStatus> {
   const { config, buffer, nowMs } = input;
   const watermarkRead = await coerceExtractionWatermark(input.watermark);
@@ -320,6 +359,10 @@ export async function gatherExtractionLivenessStatus(input: {
     metaReadFailed: watermarkRead.readFailed,
     metaReadError: watermarkRead.readError,
     watermarkPending: watermarkRead.pending,
+    claims: input.claims,
+    // #3442: the claimed-backlog reason names the last failure while the
+    // extractor is unreachable, matching the /health llm block.
+    llmFailureReason: getExtractionLlmHealth().lastFailureReason,
   });
 }
 
@@ -381,13 +424,31 @@ export async function computeExtractionLivenessStatus(
   watermark: ExtractionWatermarkOrStorage,
   throttle?: ExtractionLivenessWarnThrottle,
   nowMs: number = Date.now(),
+  /**
+   * #3442 claimed-drain totals provider (access-service: the root storage's
+   * cheap sidecar scan). Absent → no claim fields on the status. A throwing
+   * provider is logged and treated as absent rather than degrading: the scan
+   * itself already reads as an empty backlog on fs errors, and fakes/storage
+   * variants without a claims store must not flip health to degraded.
+   */
+  drainClaimTotals?: () => Promise<DrainClaimTotals | null>,
 ): Promise<ExtractionLivenessStatus> {
   const config = resolveExtractionLivenessConfig(orchestrator.config.extractionLiveness);
+  let claims: DrainClaimTotals | null = null;
+  if (drainClaimTotals !== undefined) {
+    try {
+      claims = await drainClaimTotals();
+    } catch (err) {
+      claims = null;
+      log.debug(`extraction liveness: claimed drain totals unavailable: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const status = await gatherExtractionLivenessStatus({
     config,
     watermark,
     buffer: orchestrator.buffer,
     nowMs,
+    claims,
   });
   throttle?.maybeWarn(status, config.staleWindowMs, nowMs);
   // Extraction-LLM availability (#3140): a silent no_models / LLM-unreachable

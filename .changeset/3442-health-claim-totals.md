@@ -1,0 +1,5 @@
+---
+"@remnic/core": patch
+---
+
+Report the claimed drain backlog in the `/engram/v1/health` extraction block (issue #3442). `extraction.pendingTurnCount` counts only the in-memory buffer, so turns handed to `<stateDir>/buffer/drain` claims were invisible: on jarvis-ml health reported 10,512 pending turns while 2,328 claims held 317,246 pending turns (30x more) with `degraded: false`. Now: claim `*.json.count` sidecars gain an `oldestTurnAt` field (back-compatible — older sidecars simply lack it), `BufferDrainClaims.claimTotals()` serves a TTL-cached (30s), bounded (4,096 bodies) sidecar-only scan that never parses a claim body, and `/health.extraction` adds `claimedSessionCount`, `claimedPendingTurnCount`, `oldestClaimedTurnAgeMs`, and `claimedBacklogTruncated`. Liveness also degrades — with a distinct `claimed drain backlog: …` reason that appends the last extraction-LLM failure — when claimed turns exist and the oldest has waited longer than `extractionLiveness.staleWindowMs` (half-open window, §23). In-memory `pendingTurnCount` semantics are unchanged.

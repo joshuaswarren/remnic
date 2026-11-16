@@ -27,10 +27,11 @@
  *                               inbox, so a kill between the two replays
  *                               nothing. A torn last line is skipped: its
  *                               owner never saw the append succeed.
- *   s-<sha256(key)>.json.count  cached { pending, drained } turn counts of the
- *                               body, valid while the body's size and mtime
- *                               match, so listings and the hand-over gate
- *                               never parse a body.
+ *   s-<sha256(key)>.json.count  cached { pending, drained, oldestTurnAt? }
+ *                               turn counts of the body (oldestTurnAt added by
+ *                               #3442; absent in older sidecars), valid while
+ *                               the body's size and mtime match, so listings
+ *                               and the hand-over gate never parse a body.
  *
  * Rolling back to a build that predates the inbox: run `foldAllInboxes()` (CLI:
  * `remnic buffer drain --fold-inboxes`) first; that build never reads an inbox.
@@ -62,6 +63,7 @@ import path from "node:path";
 
 import { bufferSessionFileName, type BufferFileIo } from "./buffer-session-files.js";
 import { HandInMemo } from "./buffer-drain-handin-memo.js";
+import { readDrainClaimTotals, type DrainClaimTotals } from "./drain-claim-totals.js";
 import { bufferTurnIdentityKey, subtractBufferTurns, type DrainedTurnSets } from "../buffer-turn-helpers.js";
 import { log } from "../logger.js";
 import { isErrnoCode } from "../utils/errno.js";
@@ -129,6 +131,13 @@ interface ClaimSummary {
   mtimeMs: number;
   pending: number;
   drained: number;
+  /**
+   * Oldest pending turn timestamp (ISO) across active + retained turns.
+   * Absent in pre-#3442 sidecars; readers must treat that as "unknown", not
+   * "fresh" (issue #3442: an invisible backlog must not hide behind a
+   * missing field).
+   */
+  oldestTurnAt?: string;
 }
 
 export type ClaimFromSessionOutcome = "claimed" | "empty" | "already_claimed";
@@ -385,12 +394,26 @@ function pendingTurns(entry: BufferEntryState): number {
   return entry.turns.length + (entry.retainedTurns?.length ?? 0);
 }
 
+/** Oldest ISO timestamp among `turns`; undefined when none parses (counts stay authoritative regardless). */
+function oldestTurnTimestamp(turns: readonly BufferTurn[]): string | undefined {
+  let oldest: string | undefined;
+  let oldestMs = Number.POSITIVE_INFINITY;
+  for (const turn of turns) {
+    const parsed = Date.parse(turn.timestamp);
+    if (!Number.isFinite(parsed) || parsed >= oldestMs) continue;
+    oldestMs = parsed;
+    oldest = turn.timestamp;
+  }
+  return oldest;
+}
+
 const summarySchema = z.object({
   key: z.string().min(1),
   size: z.number(),
   mtimeMs: z.number(),
   pending: z.number(),
   drained: z.number(),
+  oldestTurnAt: z.string().optional(),
 });
 
 const leaseSchema = z.object({
@@ -437,6 +460,9 @@ const INBOX_UNREADABLE_BYTES = 0x1fffffe8;
  *  I/O even when the directory is mostly empty tombstones. */
 const LIST_PAGE_SCAN_FACTOR = 8;
 
+/** How long `claimTotals` may serve a cached scan to the health path. */
+const CLAIM_TOTALS_TTL_MS = 30_000;
+
 export class BufferDrainClaims {
   constructor(
     private readonly stateDir: string,
@@ -444,6 +470,24 @@ export class BufferDrainClaims {
   ) {}
 
   private readonly handIns = new HandInMemo();
+
+  /** Last `claimTotals` scan; the /health path polls per request (#3442). */
+  private totalsCache: { atMs: number; totals: DrainClaimTotals } | null = null;
+
+  /**
+   * Claimed-backlog totals for liveness surfaces (#3442): sidecars only, no
+   * claim-body parse, bounded scan, cached for `ttlMs` (default 30s) so a
+   * health poll per request cannot turn into a directory storm. `ttlMs: 0`
+   * forces a rescan; `nowMs`/`maxClaims` are test/bounds seams.
+   */
+  async claimTotals(opts: { ttlMs?: number; maxClaims?: number; nowMs?: number } = {}): Promise<DrainClaimTotals> {
+    const nowMs = opts.nowMs ?? Date.now();
+    const cached = this.totalsCache;
+    if (cached !== null && nowMs - cached.atMs < (opts.ttlMs ?? CLAIM_TOTALS_TTL_MS)) return cached.totals;
+    const totals = await readDrainClaimTotals(this.dir, { maxClaims: opts.maxClaims });
+    this.totalsCache = { atMs: nowMs, totals };
+    return totals;
+  }
 
   private get dir(): string {
     return path.join(this.stateDir, "buffer", "drain");
@@ -546,6 +590,7 @@ export class BufferDrainClaims {
       mtimeMs: identity.mtimeMs,
       pending: pendingTurns(claim.entry),
       drained: (claim.drained?.length ?? 0) + (claim.drainedRetained?.length ?? 0),
+      oldestTurnAt: oldestTurnTimestamp([...claim.entry.turns, ...(claim.entry.retainedTurns ?? [])]),
     };
     try {
       await writeFile(`${bodyPath}${COUNT_SUFFIX}`, JSON.stringify(summary));

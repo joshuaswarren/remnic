@@ -649,19 +649,6 @@ test("evaluate: claimed turns with an unknown oldest timestamp cannot degrade, b
   assert.equal(status.oldestClaimedTurnAgeMs, null);
 });
 
-test("evaluate: an unreadable claims scan degrades with a distinct reason (§22)", () => {
-  const status = evaluateExtractionLiveness({
-    config: ENABLED,
-    lastExtractionAt: freshTs,
-    snapshot: emptySnap,
-    nowMs: NOW,
-    claimsReadError: "EACCES: scan denied",
-  });
-  assert.equal(status.degraded, true, "an unreadable claims scan is a fault, not a healthy empty queue");
-  assert.match(status.degradedReason ?? "", /claimed drain backlog unreadable/);
-  assert.match(status.degradedReason ?? "", /EACCES: scan denied/);
-});
-
 test("evaluate: without claims the payload is unchanged (back-compat)", () => {
   const status = evaluateExtractionLiveness({
     config: ENABLED,

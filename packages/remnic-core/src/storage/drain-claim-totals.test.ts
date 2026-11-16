@@ -11,7 +11,7 @@ function bodyName(n: number): string {
   return `s-${String(n).padStart(64, "0")}.json`;
 }
 
-function setup(): { dir: string; cleanup: () => void } {
+function setup() {
   const dir = mkdtempSync(path.join(os.tmpdir(), "remnic-drain-totals-"));
   return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
@@ -28,14 +28,16 @@ function writeClaim(
   writeFileSync(body, JSON.stringify({ key: `k${n}`, entry: { turns: [] } }));
   if (opts.sidecar === false) return;
   const identity = statSync(body);
-  const sidecar: Record<string, unknown> = {
+  // JSON.stringify drops an undefined `oldestTurnAt`, which is exactly the
+  // legacy (pre-#3442) sidecar shape the back-compat case needs.
+  const sidecar = {
     key: `k${n}`,
     size: identity.size,
     mtimeMs: identity.mtimeMs,
     pending,
     drained: 0,
+    oldestTurnAt,
   };
-  if (oldestTurnAt !== undefined) sidecar.oldestTurnAt = oldestTurnAt;
   writeFileSync(`${body}.count`, JSON.stringify(sidecar));
 }
 
@@ -131,8 +133,9 @@ test("readDrainClaimTotals: non-claim files (lease, lock, count, inbox) are not 
   const { dir, cleanup } = setup();
   try {
     writeClaim(dir, 1, 2, "2026-11-10T00:00:00.000Z");
+    // Suffix files around a name that has no body: none of them is a session.
     for (const suffix of [".lease.json", ".lock", ".count", ".inbox.jsonl"]) {
-      writeFileSync(path.join(dir, `${bodyName(1)}${suffix}`), "{}");
+      writeFileSync(path.join(dir, `${bodyName(9)}${suffix}`), "{}");
     }
     writeFileSync(path.join(dir, "not-a-claim.json"), "{}");
     const totals = await readDrainClaimTotals(dir);

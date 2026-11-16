@@ -2331,7 +2331,12 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     const extraction = await computeExtractionLivenessStatus(
       this.orchestrator,
       extractionWatermark,
-      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn
+      caps?.namespaces !== undefined ? undefined : this.extractionLivenessWarn,
+      undefined,
+      // #3442: claimed drain backlog from the root storage's sidecar scan —
+      // cheap by contract (no claim-body parse, TTL-cached). Throwing is
+      // surfaced inside the reader as a distinct degradation, not swallowed.
+      () => this.orchestrator.storage.bufferDrainClaims().claimTotals()
     );
     let scopedDegradedReason: string | null = null;
     if (extraction.degraded) {
@@ -2339,6 +2344,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
         scopedDegradedReason = "daemon extraction pipeline degraded; extraction watermark unreadable";
       } else if (extraction.degradedReason?.includes("buffer unreadable")) {
         scopedDegradedReason = "daemon extraction pipeline degraded; extraction buffer unreadable";
+      } else if (extraction.degradedReason?.includes("claimed drain backlog")) {
+        scopedDegradedReason =
+          `${extraction.claimedSessionCount ?? 0} claimed session(s), ` +
+          `${extraction.claimedPendingTurnCount ?? 0} claimed turn(s) pending extraction`;
       } else {
         scopedDegradedReason =
           `${extraction.bufferedSessionCount} buffered session(s), ` +
