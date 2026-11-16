@@ -777,6 +777,27 @@ test("per-session turn cap refuses live admission past the cap without dropping 
   ]);
   assert.equal(rep, null, "repeated batches compare against the running total, not the original count");
   assert.equal(buffer.getTurns("session-healthy").length, 2, "refused batches record nothing");
+  // New keys admit a single turn under a normal cap.
+  const fresh = await buffer.addTurnBounded("session-fresh", makeTurn("session-fresh", "first turn"));
+  assert.notEqual(fresh, null, "a new key under the cap is admitted");
+  assert.equal(buffer.getTurns("session-fresh").length, 1);
+});
+
+test("addTurnBounded checks the single turn against the per-session cap for new keys too (#3415)", async () => {
+  // A hand-built config can carry cap 0 (parseConfig itself rejects it, but
+  // direct constructions must still fail closed rather than admit one turn).
+  const storage = new FakeStorage({ turns: [], lastExtractionAt: null, extractionCount: 0 });
+  const tightConfig = { ...parseConfig({ bufferSaveDebounceMs: 0 }), bufferMaxTurnsPerSession: 0 };
+  // SAFETY: FakeStorage implements the load/save surface this test exercises;
+  // the cast only satisfies the constructor's StorageManager parameter.
+  const tight = new SmartBuffer(tightConfig, storage as any);
+  await tight.load();
+  assert.equal(await tight.addTurnBounded("brand-new", makeTurn("brand-new", "no room")), null);
+  await assert.rejects(
+    tight.addTurnWithOutcome("brand-new", makeTurn("brand-new", "no room")),
+    BufferSessionTurnRefusedError,
+  );
+  assert.deepEqual(tight.getTurns("brand-new"), [], "refused turns record nothing");
 });
 
 // ---------------------------------------------------------------------------
