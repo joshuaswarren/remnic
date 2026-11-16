@@ -11,6 +11,7 @@
 import type { ExtractionLivenessStatus } from "./extraction-liveness.js";
 import type { CorpusWatermark } from "./corpus-watermark.js";
 import type { ReplicaDivergenceStatus } from "./replica-divergence.js";
+import type { BufferIngressSnapshot } from "./buffer-ingress-counters.js";
 
 export interface EngramAccessHealthResponse {
   ok: true;
@@ -31,6 +32,13 @@ export interface EngramAccessHealthResponse {
    */
   corpusComplete: boolean;
   replica: ReplicaDivergenceStatus;
+  /**
+   * Process-local buffer add-path ingress counters (#3444). TOP LEVEL on
+   * purpose — NOT inside `extraction`, to avoid colliding with the
+   * claim-totals work in #3442. Read-only snapshot: process-lifetime totals
+   * plus the last 24 hourly buckets.
+   */
+  bufferIngress: BufferIngressSnapshot;
 }
 
 export type EngramAccessQmdCollectionState =

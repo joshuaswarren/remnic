@@ -27,6 +27,7 @@ import {
   resolveSecurityCapabilities,
 } from "./capabilities.js";
 import { CorpusWatermarkCache, computeServiceCorpusCensus } from "./corpus-watermark.js";
+import { EMPTY_BUFFER_INGRESS_SNAPSHOT } from "./buffer-ingress-counters.js";
 import { ExtractionLivenessWarnThrottle, computeExtractionLivenessStatus } from "./extraction-liveness.js";
 import { readAggregateExtractionWatermark } from "./orchestration/extraction-watermark.js";
 import { ReplicaDivergenceMonitor } from "./replica-divergence.js";
@@ -2359,13 +2360,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       cache: this.corpusWatermarkCache,
       caps,
     });
-    let projectionAvailable = false;
-    try {
-      await stat(getMemoryProjectionPath(storage.dir));
-      projectionAvailable = true;
-    } catch {
-      projectionAvailable = false;
-    }
+    const projectionAvailable = await stat(getMemoryProjectionPath(storage.dir)).then(
+      () => true,
+      () => false,
+    );
 
     return {
       ok: true,
@@ -2382,6 +2380,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
+      // #3444: process-local buffer add-path counters, TOP LEVEL (not inside `extraction`).
+      bufferIngress: this.orchestrator.buffer?.ingress?.snapshot() ?? EMPTY_BUFFER_INGRESS_SNAPSHOT,
       extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
       // Describes THIS response's array (round 8): a separate scan could report
