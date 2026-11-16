@@ -739,6 +739,7 @@ test("per-session turn cap refuses live admission past the cap without dropping 
     extractionCount: 0,
     entries: {
       "session-full": { turns: fullTurns, lastExtractionAt: at, extractionCount: 0 },
+      "session-mixed": { turns: [makeTurn("session-mixed", "live one"), makeTurn("session-mixed", "live two")], retainedTurns: [makeTurn("session-mixed", "kept one"), makeTurn("session-mixed", "kept two")], lastExtractionAt: at, extractionCount: 0 },
       "session-healthy": { turns: [makeTurn("session-healthy", "one turn")], lastExtractionAt: at, extractionCount: 0 },
     },
   });
@@ -752,11 +753,30 @@ test("per-session turn cap refuses live admission past the cap without dropping 
     "a full session refuses rather than growing without bound",
   );
   assert.equal(buffer.getTurns("session-full").length, 4, "retained turns are kept, not dropped");
+  // retainedTurns count toward the cap: 2 live + 2 kept already reach it.
+  await assert.rejects(
+    buffer.addTurnWithOutcome("session-mixed", makeTurn("session-mixed", "one too many")),
+    BufferSessionTurnRefusedError,
+    "deferred retention copies count toward the cap",
+  );
+  assert.equal(buffer.getTurns("session-mixed").length, 4, "nothing recorded on refusal");
   await buffer.addTurnWithOutcome("session-healthy", makeTurn("session-healthy", "second turn"));
   assert.equal(buffer.getTurns("session-healthy").length, 2, "a session under the cap keeps admitting");
   const batch = await buffer.addTurnsBounded([{ bufferKey: "session-full", turns: [makeTurn("session-full", "batched")] }]);
   assert.equal(batch, null, "bounded batch admission refuses atomically, recording nothing");
   assert.equal(buffer.getTurns("session-full").length, 4);
+  // A new key is capped too: 0 held + 5 incoming exceeds the cap of 4.
+  const over = await buffer.addTurnsBounded([{ bufferKey: "session-brand-new", turns: [0, 1, 2, 3, 4].map((i) => makeTurn("session-brand-new", `turn ${i}`)) }]);
+  assert.equal(over, null, "a new key cannot land more than the cap in one batch");
+  assert.deepEqual(buffer.getTurns("session-brand-new"), [], "refused batch records nothing");
+  // Repeated batches for one key sum within a call: session-healthy holds 2,
+  // and 1 + 2 more would reach 5.
+  const rep = await buffer.addTurnsBounded([
+    { bufferKey: "session-healthy", turns: [makeTurn("session-healthy", "r1")] },
+    { bufferKey: "session-healthy", turns: [makeTurn("session-healthy", "r2"), makeTurn("session-healthy", "r3")] },
+  ]);
+  assert.equal(rep, null, "repeated batches compare against the running total, not the original count");
+  assert.equal(buffer.getTurns("session-healthy").length, 2, "refused batches record nothing");
 });
 
 // ---------------------------------------------------------------------------

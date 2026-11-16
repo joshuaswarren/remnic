@@ -139,10 +139,13 @@ export class SmartBuffer {
     return this.config.bufferMaxTurnsPerSession ?? FALLBACK_MAX_TURNS_PER_SESSION;
   }
 
-  /** True when an existing entry already holds the per-session turn cap. */
+  /** True when an entry already holds the per-session turn cap. Counts live
+  turns plus deferred retention copies: retained turns occupy the same
+  session, so 200 kept copies must not admit 200 more live ones. */
   private sessionTurnCapReached(key: string): boolean {
     const entry = this.peekEntry(key);
-    return entry !== null && entry.turns.length >= this.maxTurnsPerSession;
+    if (entry === null) return false;
+    return (entry.retainedTurns?.length ?? 0) + entry.turns.length >= this.maxTurnsPerSession;
   }
 
   private enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
@@ -495,13 +498,20 @@ export class SmartBuffer {
         }
       }
 
-      // Per-session turn cap (#3415 bound): refuse the whole batch when any
-      // existing entry would overflow. Refusal records nothing and drops nothing.
+      // Per-session turn cap (#3415 bound): sum incoming turns per key across
+      // all batches, add what the entry already holds (live + retained), and
+      // refuse the whole call when any key would overflow — new keys included.
+      // Refusal records nothing and drops nothing.
+      const incomingByKey = new Map<string, number>();
       for (const batch of batches) {
-        const existing = this.peekEntry(batch.bufferKey);
-        if (existing !== null && existing.turns.length + batch.turns.length > this.maxTurnsPerSession) {
+        incomingByKey.set(batch.bufferKey, (incomingByKey.get(batch.bufferKey) ?? 0) + batch.turns.length);
+      }
+      for (const [bufferKey, incoming] of incomingByKey) {
+        const existing = this.peekEntry(bufferKey);
+        const held = existing === null ? 0 : (existing.retainedTurns?.length ?? 0) + existing.turns.length;
+        if (held + incoming > this.maxTurnsPerSession) {
           log.warn(
-            `buffer[${batch.bufferKey}]: durable capture refused at the per-session turn cap (${this.maxTurnsPerSession})`,
+            `buffer[${bufferKey}]: durable capture refused at the per-session turn cap (${this.maxTurnsPerSession})`,
           );
           return null;
         }
