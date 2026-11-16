@@ -11,6 +11,7 @@ import {
   type McpTool,
   type ObserveMessage,
   type ObserveOptions,
+  type RequestOptions,
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
 import {
@@ -335,8 +336,16 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       if (!config.compactionEnabled || !config.authToken) return;
       const preparation = event.preparation ?? {};
+      // omp aborts this hook at ~30s. One deadline covers all three calls and none retries, so a
+      // stalled daemon costs at most turnRequestTimeoutMs here instead of requestTimeoutMs per call.
+      const deadline = Date.now() + config.turnRequestTimeoutMs;
+      const budget = (): RequestOptions => ({
+        timeoutMs: Math.max(1, Math.floor(deadline - Date.now())),
+        maxRetries: 0,
+      });
+      const budgetSpent = () => Date.now() >= deadline;
       try {
-        await client.lcmCompactionFlush(session.sessionKey);
+        await client.lcmCompactionFlush(session.sessionKey, budget());
       } catch (err) {
         session.notify(`Remnic LCM flush failed: ${errorMessage(err)}`, "warning");
         return;
@@ -346,7 +355,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const tokensAfter = finiteTokenCount(preparation.tokensAfter);
       if (tokensBefore !== null && tokensAfter !== null) {
         try {
-          await client.lcmCompactionRecord(session.sessionKey, tokensBefore, tokensAfter);
+          if (budgetSpent()) throw new Error("compaction hook budget spent");
+          await client.lcmCompactionRecord(session.sessionKey, tokensBefore, tokensAfter, budget());
         } catch (err) {
           session.notify(`Remnic LCM compaction token record failed: ${errorMessage(err)}`, "warning");
         }
@@ -355,7 +365,8 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const summary = buildCompactionSummary(preparation);
       if (!summary.trim()) return;
       try {
-        await client.contextCheckpoint(session.sessionKey, summary);
+        if (budgetSpent()) throw new Error("compaction hook budget spent");
+        await client.contextCheckpoint(session.sessionKey, summary, budget());
       } catch (err) {
         session.notify(`Remnic context checkpoint failed: ${errorMessage(err)}`, "warning");
       }
