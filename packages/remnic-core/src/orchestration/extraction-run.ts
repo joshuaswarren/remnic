@@ -540,6 +540,8 @@ export class ExtractionRunCoordinator {
     }
 
     const normalizedTurns = turns
+      // #3443: marked duplicate copies ride along for clearing/drop identity only; the representative is already here.
+      .filter((t) => t.extractionDuplicateOf !== true)
       .filter((t) => (t.role === "user" || t.role === "assistant") && typeof t.content === "string")
       .map((t) => ({
         ...t,

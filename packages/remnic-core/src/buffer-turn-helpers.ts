@@ -274,6 +274,30 @@ export interface ExtractionScopeGroup {
 }
 
 /**
+ * Scope-group identity for one turn (#3251): the durable pins that decide
+ * which extraction scope a turn belongs to. Shared by
+ * `groupTurnsByExtractionScope` and the #3443 duplicate collapse so both use
+ * ONE definition of "same scope".
+ */
+export function extractionScopeGroupKey(turn: BufferTurn): string {
+  return [
+    turn.writeNamespaceOverride ?? "",
+    turn.principalOverride ?? "",
+    scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
+    // Accepted captures are deliberately accepted content: they must never
+    // share a scope group with ordinary turns, or a group-level capture
+    // policy (the explicit-mode gate, the planless-accepted null pin) is
+    // applied to ordinary conversation turns because `.some(acceptedCapture)`
+    // only looked at the merged group.
+    turn.acceptedCapture === true ? "accepted" : "",
+    turn.codingContext?.projectId ?? "",
+    turn.codingContext?.rootPath ?? "",
+    turn.codingContext?.branch ?? "",
+    turn.codingContext?.defaultBranch ?? "",
+  ].join("\u0000");
+}
+
+/**
  * Partition extraction turns by their durable scope pins (#3251). Turns
  * captured under different namespaces / principals / scope profiles /
  * project bindings must never be extracted together — each group runs its
@@ -283,21 +307,7 @@ export interface ExtractionScopeGroup {
 export function groupTurnsByExtractionScope(turns: BufferTurn[]): ExtractionScopeGroup[] {
   const groups = new Map<string, ExtractionScopeGroup>();
   for (const turn of turns) {
-    const key = [
-      turn.writeNamespaceOverride ?? "",
-      turn.principalOverride ?? "",
-      scopeProfilePlanIdentity(turn.scopeProfileWritePlan),
-      // Accepted captures are deliberately accepted content: they must never
-      // share a scope group with ordinary turns, or a group-level capture
-      // policy (the explicit-mode gate, the planless-accepted null pin) is
-      // applied to ordinary conversation turns because `.some(acceptedCapture)`
-      // only looked at the merged group.
-      turn.acceptedCapture === true ? "accepted" : "",
-      turn.codingContext?.projectId ?? "",
-      turn.codingContext?.rootPath ?? "",
-      turn.codingContext?.branch ?? "",
-      turn.codingContext?.defaultBranch ?? "",
-    ].join("\u0000");
+    const key = extractionScopeGroupKey(turn);
     const group = groups.get(key);
     if (group) {
       group.turns.push(turn);
