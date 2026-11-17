@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.136] — 2026-11-17
+
 ### Fixed
 
 - `agentAccessHttp.trustPrincipalHeader` accepts bool-like strings (`true`/`1`/`yes`/`on`) and falls back to `false` on unrecognized values; the key itself shipped in v10.0.134 via #3465 (Refs #3462).
