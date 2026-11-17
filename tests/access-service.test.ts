@@ -1329,6 +1329,7 @@ test("access service recall carries per-section timings from the snapshot", asyn
       latencyMs: 4956,
       timings,
     };
+    // SAFETY: partial service double; recall() touches only the deps stubbed below.
     const service = new EngramAccessService({
       config: {
         memoryDir,
