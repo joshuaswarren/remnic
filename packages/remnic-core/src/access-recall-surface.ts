@@ -296,6 +296,7 @@ export class AccessRecallSurface {
       budgetsApplied: snapshotForSerialization.budgetsApplied,
       storageCorpusVersionsAtRecallStart: options.storageCorpusVersionsAtRecallStart,
       latencyMs: snapshotForSerialization.latencyMs,
+      timings: snapshotForSerialization.timings,
     };
   }
 

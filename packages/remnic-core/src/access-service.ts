@@ -469,6 +469,8 @@ export interface EngramAccessRecallResponse {
   auditAnomalies?: AnomalyDetectorResult;
   budgetWarning?: BudgetWarning;
   latencyMs?: number;
+  /** Per-section timings from the recall snapshot (see `LastRecallSnapshot.timings`). */
+  timings?: Record<string, string>;
   debug?: {
     snapshot?: LastRecallSnapshot;
     intent?: IntentDebugSnapshot | null;
