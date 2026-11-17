@@ -11,11 +11,13 @@ import type { BufferEntryState, BufferTurn } from "./types.js";
 
 const HOUR_MS = 3_600_000;
 
-function captureInfo(): { lines: string[]; restore: () => void } {
+function captureInfo() {
+  // SAFETY: implements LoggerBackend for log capture; error is a no-op because these tests never log errors.
   const lines: string[] = [];
   initLogger({
     info: (msg: string) => lines.push(msg),
     warn: () => {},
+    error: () => {},
     debug: () => {},
   });
   return { lines, restore: resetLogger };
@@ -155,7 +157,9 @@ test("hourly ring rolls with an injected clock and keeps the last 24 hours", () 
   const rolled = counters.snapshot().hours;
   assert.equal(rolled.length, 24);
   assert.ok(!rolled.some((hour) => hour.hourStart === new Date(hourZero).toISOString()));
-  assert.equal(rolled.at(-1).refused.turns, 1);
+  const newest = rolled.at(-1);
+  assert.ok(newest !== undefined, "the ring keeps the newest hour after eviction");
+  assert.equal(newest.refused.turns, 1);
 });
 
 test("totals survive hourly eviction (process-lifetime sums, not the ring)", () => {

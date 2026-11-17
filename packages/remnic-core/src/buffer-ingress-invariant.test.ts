@@ -5,7 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import { SmartBuffer } from "./buffer.js";
-import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
+import { SessionObserverState } from "./session-observer-state.js";
+import { TranscriptManager } from "./transcript.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { parseConfig } from "./config.js";
 import type { BufferState, BufferTurn, PluginConfig } from "./types.js";
 import type { ReplayTurn } from "./replay/types.js";
@@ -38,7 +41,7 @@ class FakeStorage {
   }
 }
 
-function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}): PluginConfig {
+function makeConfig(memoryDir: string, overrides: Partial<PluginConfig> = {}): PluginConfig {
   return parseConfig({
     memoryDir,
     bufferSaveDebounceMs: 0,
@@ -118,15 +121,38 @@ async function runMixedSequence(memoryDir: string, countIngress: boolean): Promi
   try {
     await pinnedBuffer.addTurn("p3", turn("beyond the entry cap"));
   } catch (error) {
-    trace.refusalErrors.push(`${(error as Error).name}: ${(error as Error).message}`);
+    // `error` is `unknown`; the add path only throws Errors, so a non-Error would be a bug worth surfacing.
+    if (!(error instanceof Error)) throw error;
+    trace.refusalErrors.push(`${error.name}: ${error.message}`);
   }
 
   // Buffered replay: identity duplicate and content duplicate are appended.
-  const coordinator = new TurnIngestionCoordinator({
+  const unreachable = (name: string): never => {
+    throw new Error(`TurnIngestionDeps.${name} is unreachable in the replay-capacity fixture`);
+  };
+  const deps: TurnIngestionDeps = {
     buffer,
     config: makeConfig(memoryDir),
+    bulkImportWriteNamespace: () => unreachable("bulkImportWriteNamespace"),
+    extractionQueueCoordinator: new ExtractionQueueCoordinator(),
+    getStorage: async () => unreachable("getStorage"),
+    heartbeatObserverChains: new Map(),
+    lcmEngine: null,
+    passiveCorrectionDedup: new Set(),
+    // SAFETY: the fixture never drains or corrects, so a call here would mean the
+    // fixture itself changed shape; fail loud rather than silently stub.
+    passiveCorrectionService: () => unreachable("passiveCorrectionService"),
+    passiveCorrectionTelemetry: { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} },
     queueBufferedExtraction: async () => {},
-  } as never);
+    resolveMemoryIdOrHandle: (ref: string) => ref,
+    runExtraction: () => unreachable("runExtraction"),
+    // Disabled observer: no bands means `observe` never triggers, so the fixture's
+    // replay path never consults persisted state.
+    sessionObserver: new SessionObserverState({ memoryDir, debounceMs: 0, bands: [] }),
+    shouldQueueExtraction: () => false,
+    transcript: new TranscriptManager(makeConfig(memoryDir)),
+  };
+  const coordinator = new TurnIngestionCoordinator(deps);
   const replay = (sessionKey: string, content: string, timestamp: string): ReplayTurn => ({
     source: "openclaw",
     sessionKey,
@@ -242,8 +268,8 @@ test("duplicate digests are memory-bounded (FIFO cap) and never retain content",
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ingress-cap-"));
   try {
     // No-save storage: this test only observes counting, not persistence.
-    const storage = { loadBuffer: async () => ({ turns: [], lastExtractionAt: null, extractionCount: 0 }), saveBuffer: async () => {} };
-    const buffer = new SmartBuffer(makeConfig(memoryDir, { bufferMaxTurnsPerSession: 10_000 }), storage as never);
+    // SAFETY: FakeStorage implements BufferStorage; nothing is saved because saveBuffer writes only to memory here.
+    const buffer = new SmartBuffer(makeConfig(memoryDir, { bufferMaxTurnsPerSession: 10_000 }), new FakeStorage());
     const unique = (i: number) => turn(`unique-${i}`);
     // Fill the digest set to its 4,096 cap.
     for (let i = 0; i < 4_096; i += 1) await buffer.addTurn("kA", unique(i));

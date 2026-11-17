@@ -85,13 +85,13 @@ const DUPLICATE_DIGEST_CAP = 4096;
 
 const OUTCOMES: readonly BufferIngressOutcome[] = ["accepted", "acceptedExactDuplicate", "filtered", "refused"];
 
-function zeroCounts(): Record<BufferIngressOutcome, BufferIngressOutcomeCount> {
+function zeroCounts() {
   return {
     accepted: { turns: 0, chars: 0 },
     acceptedExactDuplicate: { turns: 0, chars: 0 },
     filtered: { turns: 0, chars: 0 },
     refused: { turns: 0, chars: 0 },
-  };
+  } satisfies Record<BufferIngressOutcome, BufferIngressOutcomeCount>;
 }
 
 function contentDigest(turn: BufferTurn): string {
@@ -130,7 +130,7 @@ export class BufferIngressCounters {
    */
   noteAppendedTurn(entry: BufferEntryState, turn: BufferTurn): void {
     if (!this.enabled) return;
-    const chars = typeof turn.content === "string" ? turn.content.length : 0;
+    const chars = turn.content.length;
     this.record("accepted", chars);
     const memo = this.memoFor(entry);
     const digest = contentDigest(turn);
@@ -147,7 +147,7 @@ export class BufferIngressCounters {
   /** Count a single capacity-refused turn; returns null for `return` sites. */
   refuseOne(turn: BufferTurn): null {
     if (!this.enabled) return null;
-    this.record("refused", typeof turn.content === "string" ? turn.content.length : 0);
+    this.record("refused", turn.content.length);
     return null;
   }
 
@@ -200,13 +200,11 @@ export class BufferIngressCounters {
     } else {
       // Slot reuse after 24h: the stale bucket was logged when its own hour
       // ended, so eviction here is silent.
-      this.ring[slotIndex] = {
-        hourStartMs,
-        counts: {
-          ...zeroCounts(),
-          [outcome]: { turns: 1, chars },
-        } as Record<BufferIngressOutcome, BufferIngressOutcomeCount>,
-      };
+      const counts = {
+        ...zeroCounts(),
+        [outcome]: { turns: 1, chars },
+      } satisfies Record<BufferIngressOutcome, BufferIngressOutcomeCount>;
+      this.ring[slotIndex] = { hourStartMs, counts };
     }
     this.totals[outcome].turns += 1;
     this.totals[outcome].chars += chars;
