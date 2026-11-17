@@ -388,6 +388,11 @@
             "default": 60000,
             "description": "Rolling window for the write rate limit, in milliseconds. Positive integer."
           },
+          "trustPrincipalHeader": {
+            "type": "boolean",
+            "default": false,
+            "description": "Trust the X-Engram-Principal request header for per-request principal resolution (issue #3462). Only enable behind the fleet's bearer-token trust boundary. The --trust-principal-header CLI flag overrides this."
+          },
           "authToken": {
             "description": "Bearer token for the local Remnic HTTP API. Literal string (${ENV_VAR} ok) or OpenClaw SecretRef resolved at startup. If omitted, uses OPENCLAW_REMNIC_ACCESS_TOKEN / OPENCLAW_ENGRAM_ACCESS_TOKEN.",
             "anyOf": [

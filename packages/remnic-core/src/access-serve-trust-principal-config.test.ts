@@ -155,7 +155,7 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
     }
     const statusLine = logs.map((line) => line.trim()).find((line) => line.startsWith("{"));
     assert.ok(statusLine, "http-serve printed its status JSON");
-    const status = JSON.parse(statusLine) as { host?: string; port?: number };
+    const status = JSON.parse(statusLine) as { running?: unknown; host?: string; port?: number };
     assert.equal(status.running, true);
     assert.equal(typeof status.port, "number");
     return { host: status.host ?? "127.0.0.1", port: status.port! };

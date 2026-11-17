@@ -1487,7 +1487,10 @@ export function parseConfig(
       60_000,
       "agentAccessHttp.writeRateLimitWindowMs",
     ),
-    trustPrincipalHeader: rawAgentAccessHttp?.trustPrincipalHeader === true,
+    trustPrincipalHeader: coerceBool(
+      rawAgentAccessHttp?.trustPrincipalHeader,
+      "agentAccessHttp.trustPrincipalHeader",
+    ) ?? false,
   };
 
   let baseUrl: string | undefined;
