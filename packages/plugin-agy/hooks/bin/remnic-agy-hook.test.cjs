@@ -296,6 +296,58 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
   }
 });
 
+test("post-tool-observe: an over-cap conversation db refuses the parse loudly", async () => {
+  // Follow-up to the #3452 review: the steps read must carry a row-count
+  // LIMIT. Past AGY_SQLITE_ROW_LIMIT the parse must fail through the
+  // existing parse-failed path — logged and retried on each hook event —
+  // rather than silently truncate the head, which would advance the cursor
+  // over turns it never observed. Synthetic fixture: cap+1 minimal rows.
+  const home = mkHome();
+  const sessionId = "fix-session-cap";
+  const { DatabaseSync } = require("node:sqlite");
+  const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, `${sessionId}.db`));
+  db.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, step_format INTEGER)",
+  );
+  const insert = db.prepare(
+    "INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?,?,0)",
+  );
+  db.exec("BEGIN");
+  for (let idx = 0; idx <= 10000; idx++) {
+    insert.run(idx, 15, 3, Buffer.from("x"));
+  }
+  db.exec("COMMIT");
+  db.close();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1" },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    // The detached worker hits the cap, logs parse failed, and never posts.
+    const logFile = path.join(home, ".remnic", "logs", "remnic-post-tool-observe.log");
+    const deadline = Date.now() + 10000;
+    let logged = "";
+    while (Date.now() < deadline) {
+      logged = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
+      if (/parse failed/.test(logged)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.match(logged, /parse failed/, "worker logged the over-cap parse failure");
+    assert.ok(
+      !calls.find((c) => c.url === "/engram/v1/observe"),
+      "no observe fired for the over-cap db",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("post-tool-observe: observes ATIF transcript delta resolved from session_id", async () => {
   const home = mkHome();
   const sessionId = "sess-atif-1";
