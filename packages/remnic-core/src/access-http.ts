@@ -273,10 +273,12 @@ const INVALID_PRINCIPAL_HEADER_CHARS = /[\s\/\\]|\.{2}/;
 function isValidPrincipalHeaderValue(value: string): boolean {
   if (value.length === 0 || Array.from(value).length > PRINCIPAL_HEADER_MAX_CHARS) return false;
   if (INVALID_PRINCIPAL_HEADER_CHARS.test(value)) return false;
-  // Control characters (incl. DEL) are refused; printable/unicode otherwise fine.
+  // Control characters are refused: C0 (<0x20) plus DEL and the C1 range
+  // (0x7f-0x9f, which \s does not cover — e.g. U+0085 NEL). Printable/unicode
+  // otherwise fine.
   for (const ch of value) {
     const code = ch.codePointAt(0) ?? 0;
-    if (code < 0x20 || code === 0x7f) return false;
+    if (code < 0x20 || (code >= 0x7f && code <= 0x9f)) return false;
   }
   return true;
 }

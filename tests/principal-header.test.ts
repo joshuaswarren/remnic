@@ -283,6 +283,9 @@ test("trustPrincipalHeader=true: invalid header values are rejected, not stored"
       "..",
       "a".repeat(300),
       "tab\tsep",
+      "nel\u0085nel",
+      "c1\u009fc1",
+      "c1\u0080c1",
     ]) {
       const status = await postWithPrincipal(base, bad);
       assert.equal(status, 400, `expected 400 for principal ${JSON.stringify(bad).slice(0, 40)}`);
