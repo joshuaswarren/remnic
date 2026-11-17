@@ -89,6 +89,15 @@ const serviceStub = {
     },
     corpus: [],
       corpusComplete: true,
+    bufferIngress: {
+      totals: {
+        accepted: { turns: 0, chars: 0 },
+        acceptedExactDuplicate: { turns: 0, chars: 0 },
+        filtered: { turns: 0, chars: 0 },
+        refused: { turns: 0, chars: 0 },
+      },
+      hours: [],
+    },
     replica: { enabled: false, pending: false, polledAt: null, peers: [] },
   }),
 } satisfies Pick<EngramAccessService, "health">;

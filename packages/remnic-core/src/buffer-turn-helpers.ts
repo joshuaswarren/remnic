@@ -1,4 +1,14 @@
 import type { BufferEntryState, BufferState, BufferTurn } from "./types.js";
+import type { BufferEvictionHooks } from "./buffer-eviction.js";
+
+/**
+ * Eviction hooks are pure functions of an entry; one shared instance serves
+ * pruneEntries, the admission probe and the batch preflight.
+ */
+export const EVICTION_HOOKS: BufferEvictionHooks = {
+  activityAt: entryActivityAt,
+  holdsAcceptedCapture: entryHoldsAcceptedCapture,
+};
 
 /** Extracted identities retain whether they came from active or retained turns. */
 export interface DrainedTurnSets {

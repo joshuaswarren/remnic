@@ -2368,13 +2368,10 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       cache: this.corpusWatermarkCache,
       caps,
     });
-    let projectionAvailable = false;
-    try {
-      await stat(getMemoryProjectionPath(storage.dir));
-      projectionAvailable = true;
-    } catch {
-      projectionAvailable = false;
-    }
+    const projectionAvailable = await stat(getMemoryProjectionPath(storage.dir)).then(
+      () => true,
+      () => false,
+    );
 
     return {
       ok: true,
@@ -2391,6 +2388,16 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
       ),
       nativeKnowledgeEnabled: this.orchestrator.config.nativeKnowledge?.enabled === true,
       projectionAvailable,
+      // #3444: process-local buffer add-path counters, TOP LEVEL (not inside `extraction`).
+      bufferIngress: this.orchestrator.buffer?.ingress?.snapshot() ?? {
+        totals: {
+          accepted: { turns: 0, chars: 0 },
+          acceptedExactDuplicate: { turns: 0, chars: 0 },
+          filtered: { turns: 0, chars: 0 },
+          refused: { turns: 0, chars: 0 },
+        },
+        hours: [],
+      },
       extraction: visibleExtraction,
       corpus: corpusCensus.watermarks,
       // Describes THIS response's array (round 8): a separate scan could report
