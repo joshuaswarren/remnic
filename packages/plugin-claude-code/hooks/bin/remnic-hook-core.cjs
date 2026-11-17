@@ -703,15 +703,17 @@ function run(config) {
   // Antigravity: AGY_PROJECT_DIR).
   // Hosts that omit cwd from the hook payload still export a project-dir
   // env var. The active host's variable (config.projectDirEnv) wins; the
-  // shared fallbacks preserve each existing host's behavior when its own
-  // variable is unset.
+  // shared fallbacks preserve the pre-existing hosts' behavior when the
+  // host's own variable is unset. AGY_PROJECT_DIR is intentionally absent
+  // from the shared fallback — agy reaches it through its own projectDirEnv,
+  // so a stray AGY variable can never reroute another host's recall.
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;
     if (PROJECT_DIR_ENV && isString(process.env[PROJECT_DIR_ENV]) && process.env[PROJECT_DIR_ENV]) {
       return process.env[PROJECT_DIR_ENV];
     }
-    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.env.AGY_PROJECT_DIR || "";
+    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
   }
 
   // ── cursor / lock state hardening (post-tool + session-end) ────────────────

@@ -438,7 +438,7 @@ test("session-start: DEVIN_PROJECT_DIR does not override AGY_PROJECT_DIR", async
     assert.equal(json.continue, true);
     const recall = calls.find((c) => c.url === "/engram/v1/recall");
     assert.ok(recall, "recall was called");
-    assert.match(recall.body.query, new RegExp(`project: ${home.split("/").pop()}`));
+    assert.ok(recall.body.query.includes(`project: ${path.basename(home)}`));
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
