@@ -291,6 +291,29 @@ export class ExtractionQueueCoordinator {
     }
   }
 
+  /** Test + force-flush observability: register a keyed preempt slot the way
+   *  `runEntry` does for a queued task, so callers can exercise the keyed
+   *  preemption path without a full queue. */
+  registerPreemptSlot(key: string): ExtractionPreemptHandle {
+    const slot: PreemptSlot = {};
+    this.preemptSlots.set(slot, { key });
+    return this.createPreemptHandle(slot);
+  }
+
+  /** Force-flush-scoped preemption: abort EVERY armed slot whose key matches
+   *  `key` and abort nothing when none does. Unlike `preemptRunning` there is
+   *  deliberately no newest-slot fallback - a keyed caller (force-flush on
+   *  session K) must never take out an unrelated background task just
+   *  because K's own extraction is not (yet) armed. */
+  preemptKeyed(key: string): void {
+    for (const state of this.preemptSlots.values()) {
+      if (state.key !== key || state.armed === undefined) continue;
+      const abort = state.armed.abort;
+      state.armed = undefined;
+      abort();
+    }
+  }
+
   private createPreemptHandle(slot: PreemptSlot): ExtractionPreemptHandle {
     return {
       arm: (abort: () => void) => {

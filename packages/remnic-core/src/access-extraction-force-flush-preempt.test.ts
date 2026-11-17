@@ -14,22 +14,25 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { forceFlushPreemptCallback } from "./access-extraction-force-flush-preempt.js";
 
-test("forwards the caller session key as the preferred preemption key", () => {
-  const seen: (string | undefined)[] = [];
+test("forwards the caller session key as keyed-only preemption", () => {
+  const keyed: string[] = [];
+  const unkeyed: number[] = [];
   const callback = forceFlushPreemptCallback("pi:session-a", {
-    preemptRunning: (key) => void seen.push(key),
+    preemptRunning: () => void unkeyed.push(1),
+    preemptKeyed: (key) => void keyed.push(key),
   });
   callback();
-  assert.deepEqual(seen, ["pi:session-a"]);
+  assert.deepEqual(keyed, ["pi:session-a"]);
+  assert.deepEqual(unkeyed, []);
 });
 
 test("falls back to newest-slot preemption when no session key is known", () => {
-  const seen: (string | undefined)[] = [];
+  const unkeyed: number[] = [];
   const callback = forceFlushPreemptCallback(undefined, {
-    preemptRunning: (key) => void seen.push(key),
+    preemptRunning: () => void unkeyed.push(1),
   });
   callback();
-  assert.deepEqual(seen, [undefined]);
+  assert.deepEqual(unkeyed, [1]);
 });
 
 test("a missing coordinator is a no-op, not a throw", () => {

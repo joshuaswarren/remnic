@@ -1,21 +1,28 @@
 /**
  * The force-flush preemption callback factory.
  *
- * `extractionQueueCoordinator.preemptRunning(preferredKey?)` prefers a
- * key-matched armed slot and only falls back to the newest armed slot when no
- * key is given. The write surface called it with no key, so every force-flush
- * aborted whichever background task armed last — typically the backlog
- * scheduler's buffer drain — instead of the caller's own queued extraction
- * (observed 2026-11-17 as repeated `extraction preempted for force-flush`
- * failures on unrelated backlog sessions while the caller's session stayed
- * blocked). Forwarding the caller's session key scopes the preemption to the
- * slot the force-flush is actually waiting on.
+ * A keyed force-flush must abort ONLY the armed slot matching the caller's
+ * session (`coordinator.preemptKeyed`) - `preemptRunning(preferredKey?)`
+ * falls back to the newest armed slot whenever no key-matched slot is armed,
+ * which killed unrelated background drains exactly when the caller's own
+ * extraction was not yet armed (the failure PR #3468 reports). The keyless
+ * call keeps `preemptRunning`'s newest-slot fallback, which the front-enqueue
+ * flush path relies on.
  */
 export function forceFlushPreemptCallback(
   sessionKey: string | undefined,
-  coordinator: { preemptRunning?: (preferredKey?: string) => void } | undefined,
+  coordinator:
+    | {
+        preemptRunning?: (preferredKey?: string) => void;
+        preemptKeyed?: (key: string) => void;
+      }
+    | undefined,
 ): () => void {
   return () => {
-    coordinator?.preemptRunning?.(sessionKey);
+    if (sessionKey !== undefined) {
+      coordinator?.preemptKeyed?.(sessionKey);
+      return;
+    }
+    coordinator?.preemptRunning?.();
   };
 }
