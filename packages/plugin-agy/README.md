@@ -14,7 +14,19 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 
     The token is stored in `~/.remnic/tokens.json` and is picked up automatically by both the hook runner and the MCP proxy — no secrets are written into plugin files.
 
-2. **Install the plugin** from this repository (Antigravity loads plugins from git
+2. **Run the install preflight.** It applies the same daemon-URL checks the
+   MCP proxy enforces at startup, so a config that would leave the
+   remember/recall tools dead fails before the install reports green:
+
+    ```bash
+    node install-preflight.cjs
+    ```
+
+    A non-loopback plain-`http://` daemon URL exits non-zero and names the
+    `REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1` opt-in; loopback and `https://`
+    addresses pass silently.
+
+3. **Install the plugin** from this repository (Antigravity loads plugins from git
    URLs or local folders):
 
     ```bash
@@ -23,7 +35,7 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 
     or from the published package / a git source per `agy plugin install --help`.
 
-3. **Optional — remote daemon.** To point hooks and MCP at a shared daemon
+4. **Optional — remote daemon.** To point hooks and MCP at a shared daemon
    instead of `localhost:4318`, export before launching Antigravity:
 
     ```bash
@@ -43,6 +55,7 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 | File / dir | Purpose |
 |---|---|
 | `plugin.json` (+ `.agy-plugin/plugin.json`) | Plugin manifest (agy reads the root one) |
+| `install-preflight.cjs` | Pre-install daemon-URL check — fails before a green install that would ship dead MCP tools |
 | `hooks.json` | `SessionStart`, `PreInvocation`, `PostToolUse`, `Stop` hook wiring |
 | `hooks/bin/remnic-agy-hook.cjs` | Thin per-host config for the shared hook runner |
 | `hooks/bin/remnic-hook-core.cjs` | Shared cross-platform hook runner (synced from `scripts/hook-runner/`) |
