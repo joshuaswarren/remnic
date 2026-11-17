@@ -796,7 +796,7 @@
     },
     {
       "flag": "trustPrincipalHeader",
-      "addedIn": "10.0.132",
+      "addedIn": "10.0.133",
       "issue": 3462,
       "graduationCriterion": "Stays default-off unless principal authenticity is enforced server-side (signed or proxy-verified principal claims) instead of trusted from the request; a graduation PR must link a 7-day soak with no open `regression` issue naming the flag."
     },
