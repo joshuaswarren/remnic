@@ -693,7 +693,17 @@ function run(config) {
     // snake_case wins when both are present so existing hosts are unchanged.
     const transcriptPath = input.transcript_path || input.transcriptPath || "";
     if (isString(transcriptPath) && transcriptPath) {
-      return transcriptPath;
+      // A payload path that exists is authoritative. A missing path falls
+      // through to the host resolver: agy sends a transcriptPath pointing
+      // at a .jsonl file that never materializes, while the real transcript
+      // lives in the host-resolved SQLite db.
+      try {
+        if (fs.existsSync(transcriptPath) && fs.statSync(transcriptPath).isFile()) {
+          return transcriptPath;
+        }
+      } catch {
+        /* fall through to host resolver */
+      }
     }
     if (config.resolveTranscriptPath instanceof Function) {
       try {
