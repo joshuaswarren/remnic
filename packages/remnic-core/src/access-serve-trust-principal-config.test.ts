@@ -35,7 +35,7 @@ class RecCmd implements CliCommand {
   readonly children = new Map<string, RecCmd>();
   readonly options: string[] = [];
   readonly args: string[] = [];
-  actionFn?: (...args: unknown[]) => unknown;
+  actionFn?: (...args: unknown[]) => Promise<void> | void;
   constructor(readonly rawName: string) {}
   description(): CliCommand {
     return this;
@@ -73,10 +73,28 @@ class RecProgram implements CliProgram {
 
 const SERVE_TOKEN = "synthetic-serve-token";
 
+/** CLI options shape commander hands the `engram access http-serve` action (flag values stay strings). */
+interface ServeCliOptions {
+  host?: string;
+  port?: string;
+  token?: string;
+  trustPrincipalHeader?: boolean;
+}
+
 interface ServeFixture {
-  serve: (options: Record<string, unknown>) => Promise<{ host: string; port: number }>;
+  serve: (options: ServeCliOptions) => Promise<{ host: string; port: number }>;
   stop: () => Promise<void>;
   cleanup: () => Promise<void>;
+}
+
+interface EntityListBody {
+  entities?: Array<{ name?: string }>;
+}
+
+/** Config input for the fixture's access server; parseConfig accepts bool-like strings for the flag. */
+interface FixtureAccessHttp {
+  principal: string;
+  trustPrincipalHeader?: boolean | string;
 }
 
 /**
@@ -88,6 +106,12 @@ interface ServeFixture {
  */
 async function createServeFixture(options: { trustPrincipalHeader?: boolean | string } = {}): Promise<ServeFixture> {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-serve-trust-"));
+  const agentAccessHttp: FixtureAccessHttp = {
+    principal: "reader",
+  };
+  if (options.trustPrincipalHeader !== undefined) {
+    agentAccessHttp.trustPrincipalHeader = options.trustPrincipalHeader;
+  }
   const config = parseConfig({
     memoryDir,
     namespacesEnabled: true,
@@ -96,12 +120,7 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
       { name: "default", readPrincipals: ["owner"], writePrincipals: ["owner"] },
       { name: "restricted", readPrincipals: ["owner", "reader"], writePrincipals: ["owner"] },
     ],
-    agentAccessHttp: {
-      principal: "reader",
-      ...(options.trustPrincipalHeader !== undefined
-        ? { trustPrincipalHeader: options.trustPrincipalHeader }
-        : {}),
-    },
+    agentAccessHttp,
   });
   const router = new NamespaceStorageRouter(config);
   for (const namespace of ["default", "restricted"]) {
@@ -120,17 +139,19 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
     ].join("\n"));
   }
 
-  const orchestrator = {
+  const dependencies: Pick<Orchestrator, "config" | "getStorage" | "initialize"> = {
     config,
     getStorage: (namespace?: string) => router.storageFor(namespace ?? config.defaultNamespace),
     initialize: async () => {},
-  } as unknown as Parameters<typeof registerCli>[1];
+  };
 
   const program = new RecProgram();
   const api: CliApi = {
     registerCli: (handler) => handler({ program }),
   };
-  registerCli(api, orchestrator);
+  // SAFETY: registerCli and the http-serve action touch only config, getStorage, and
+  // initialize on the orchestrator; each member is provided with its real shape.
+  registerCli(api, dependencies as Parameters<typeof registerCli>[1]);
   const engram = program.root.children.get("engram");
   const access = engram?.children.get("access");
   const serveCmd = access?.children.get("http-serve");
@@ -142,7 +163,7 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
     await stopCmd!.actionFn!({});
   };
 
-  const serve = async (options: Record<string, unknown>) => {
+  const serve = async (options: ServeCliOptions) => {
     const logs: string[] = [];
     const originalLog = console.log;
     console.log = (...args: unknown[]) => {
@@ -155,9 +176,11 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
     }
     const statusLine = logs.map((line) => line.trim()).find((line) => line.startsWith("{"));
     assert.ok(statusLine, "http-serve printed its status JSON");
-    const status = JSON.parse(statusLine) as { running?: unknown; host?: string; port?: number };
+    // SAFETY: http-serve prints the server.start() status JSON ({ running, host, port, ... });
+    // only running/host/port are read and each is asserted below.
+    const status = JSON.parse(statusLine) as { running?: boolean; host?: string; port?: number };
     assert.equal(status.running, true);
-    assert.equal(typeof status.port, "number");
+    assert.ok(Number.isInteger(status.port), "http-serve status carries an integer port");
     return { host: status.host ?? "127.0.0.1", port: status.port! };
   };
 
@@ -166,7 +189,7 @@ async function createServeFixture(options: { trustPrincipalHeader?: boolean | st
 
 async function readDefaultNamespaceAsOwner(
   fixture: ServeFixture,
-  serveOptions: Record<string, unknown>,
+  serveOptions: ServeCliOptions,
 ): Promise<Response> {
   const { host, port } = await fixture.serve(serveOptions);
   try {
@@ -203,7 +226,8 @@ test("absent flag falls back to agentAccessHttp.trustPrincipalHeader config (iss
       token: "synthetic-serve-token",
     });
     assert.equal(response.status, 200);
-    const body = (await response.json()) as { entities?: Array<{ name?: string }> };
+    // SAFETY: a 200 from /engram/v1/entities carries the entity-list envelope; only entity names are read.
+    const body = (await response.json()) as EntityListBody;
     assert.equal(body.entities?.[0]?.name, "Widget-default");
   } finally {
     await fixture.cleanup();
@@ -220,7 +244,8 @@ test("explicit --trust-principal-header flag wins over config", async () => {
       trustPrincipalHeader: true,
     });
     assert.equal(response.status, 200);
-    const body = (await response.json()) as { entities?: Array<{ name?: string }> };
+    // SAFETY: a 200 from /engram/v1/entities carries the entity-list envelope; only entity names are read.
+    const body = (await response.json()) as EntityListBody;
     assert.equal(body.entities?.[0]?.name, "Widget-default");
   } finally {
     await fixture.cleanup();
@@ -236,6 +261,7 @@ test("both unset: x-engram-principal header stays ignored", async () => {
       token: "synthetic-serve-token",
     });
     assert.equal(response.status, 400);
+    // SAFETY: an ACL refusal from the access server answers { error }; only the message is read.
     const body = (await response.json()) as { error?: string };
     assert.match(body.error ?? "", /not readable/);
   } finally {
