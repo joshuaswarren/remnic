@@ -31,12 +31,14 @@ function getGraphemeSegmenter(): Intl.Segmenter | null {
 export function truncateGraphemeSafe(value: string, maxChars: number): string {
   if (maxChars <= 0) return "";
   if (value.length <= maxChars) return value;
-  let truncated = "";
-  for (const unit of graphemeUnits(value)) {
-    if (truncated.length + unit.length > maxChars) break;
-    truncated += unit;
+  // Clusters are produced lazily, so the walk stops at the budget instead of
+  // segmenting the whole string first (#3427: a 180-unit budget on a long fact).
+  let end = 0;
+  for (const unit of iterateGraphemeUnits(value)) {
+    if (end + unit.length > maxChars) break;
+    end += unit.length;
   }
-  return truncated;
+  return value.slice(0, end);
 }
 
 /**
@@ -47,6 +49,16 @@ export function graphemeUnits(value: string): string[] {
   const segmenter = getGraphemeSegmenter();
   if (segmenter === null) return [...value];
   return Array.from(segmenter.segment(value), (segment) => segment.segment);
+}
+
+/** The units of graphemeUnits, produced one at a time on demand. */
+function* iterateGraphemeUnits(value: string): Generator<string> {
+  const segmenter = getGraphemeSegmenter();
+  if (segmenter === null) {
+    yield* value;
+    return;
+  }
+  for (const segment of segmenter.segment(value)) yield segment.segment;
 }
 
 const COMBINING_MARK = /\p{M}/u;
