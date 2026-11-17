@@ -451,6 +451,10 @@ async function buildExpiringHarmonicGraph(options: {
   nowMs?: number;
 }): Promise<ExpiringHarmonicGraph> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
+  const buildDelayMs = harmonicGraphBuildTestHooks?.buildDelayMs;
+  if (buildDelayMs !== undefined && buildDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, buildDelayMs));
+  }
   const nodes = await readAbstractionNodes(options);
   const sourceMemoryIds = [...new Set(nodes.flatMap((node) => node.sourceMemoryIds ?? []))];
   const sourceMemories: SourceMemoryMap = sourceMemoryIds.length > 0
@@ -562,7 +566,28 @@ async function buildUnexpiredHarmonicGraph(options: GraphReadOptions, abortSigna
   }
 }
 /** Counters for tests and diagnostics. `stale` hits also count as `hits`. */
-export const harmonicGraphCacheStats = { hits: 0, misses: 0, stale: 0, shared: 0 };
+export const harmonicGraphCacheStats = { hits: 0, misses: 0, stale: 0, shared: 0, deadlineExits: 0 };
+
+/** Default per-caller bound on waiting for a shared graph build (see `waitBudgetMs`). */
+export const HARMONIC_GRAPH_WAIT_BUDGET_MS = 5_000;
+
+const HARMONIC_GRAPH_WAIT_DEADLINE_MESSAGE = "harmonic graph wait deadline exceeded";
+
+export class HarmonicGraphWaitDeadlineError extends Error {
+  constructor() {
+    super(HARMONIC_GRAPH_WAIT_DEADLINE_MESSAGE);
+    this.name = "HarmonicGraphWaitDeadlineError";
+  }
+}
+
+interface HarmonicGraphBuildTestHooks {
+  /** Extra delay inside every build, for wait-budget tests. */
+  buildDelayMs?: number;
+}
+let harmonicGraphBuildTestHooks: HarmonicGraphBuildTestHooks | null = null;
+export function setHarmonicGraphBuildTestHooks(hooks: HarmonicGraphBuildTestHooks | null): void {
+  harmonicGraphBuildTestHooks = hooks;
+}
 
 /** Freeze records and their nested arrays/objects so a caller cannot corrupt the shared cache. */
 function deepFreeze<T extends object>(value: T): T {
@@ -623,13 +648,38 @@ function startGraphBuild(key: string, stamp: string, options: GraphReadOptions):
 /**
  * Wait for `build` on behalf of one caller. The caller's own signal ends only its own wait. When the last
  * waiting caller has left, the build is cancelled and dropped, so abandoned recalls do not leave full scans running
- * (cancelling a build that already finished does nothing).
+ * (cancelling a build that already finished does nothing). A caller that leaves on `waitBudgetMs` is the exception:
+ * the build keeps running so its completed graph warms the cache for the next caller.
  */
-function joinGraphBuild(key: string, build: GraphBuild, signal: AbortSignal | undefined): Promise<ProjectedHarmonicGraph> {
+function joinGraphBuild(
+  key: string,
+  build: GraphBuild,
+  signal: AbortSignal | undefined,
+  waitBudgetMs?: number,
+): Promise<ProjectedHarmonicGraph> {
   build.waiting++;
-  return raceAbort(build.promise, signal, "harmonic retrieval aborted").finally(() => {
+  let timedOut = false;
+  let timer: NodeJS.Timeout | undefined;
+  const waited =
+    waitBudgetMs === undefined || waitBudgetMs <= 0
+      ? raceAbort(build.promise, signal, "harmonic retrieval aborted")
+      : Promise.race([
+          raceAbort(build.promise, signal, "harmonic retrieval aborted"),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              reject(new HarmonicGraphWaitDeadlineError());
+            }, waitBudgetMs);
+          }),
+        ]);
+  return waited.finally(() => {
+    if (timer) clearTimeout(timer);
     build.waiting--;
-    if (build.waiting > 0) return;
+    // A caller that left on the wait budget does not cancel the build: it keeps
+    // running and stores the fresh graph, so the next caller gets a cache hit
+    // instead of restarting the scan a write storm keeps invalidating.
+    if (timedOut) harmonicGraphCacheStats.deadlineExits++;
+    if (build.waiting > 0 || timedOut) return;
     if (graphBuilds.get(key) === build) graphBuilds.delete(key);
     build.controller.abort();
   });
@@ -658,6 +708,10 @@ export async function readProjectedHarmonicGraph(options: {
   temporalExpiredInInjection?: boolean;
   nowMs?: number;
   useCache?: boolean;
+  /** Per-caller bound on joining a shared build, in ms. On expiry the caller
+   * leaves with a HarmonicGraphWaitDeadlineError while the build keeps running.
+   * `0` or unset waits without a bound. Applies only on the cached path. */
+  waitBudgetMs?: number;
 }): Promise<ProjectedHarmonicGraph> {
   if (options.useCache !== true || options.nowMs !== undefined) return buildProjectedHarmonicGraph(options);
   // Same cancellation contract as the builder: a cache hit must not mask an aborted signal.
@@ -696,9 +750,9 @@ export async function readProjectedHarmonicGraph(options: {
   const running = graphBuilds.get(key);
   if (running?.stamp === stamp) {
     harmonicGraphCacheStats.shared++;
-    return joinGraphBuild(key, running, options.abortSignal);
+    return joinGraphBuild(key, running, options.abortSignal, options.waitBudgetMs);
   }
-  return joinGraphBuild(key, startGraphBuild(key, stamp, options), options.abortSignal);
+  return joinGraphBuild(key, startGraphBuild(key, stamp, options), options.abortSignal, options.waitBudgetMs);
 }
 
 export async function searchHarmonicRetrieval(options: {
@@ -712,6 +766,11 @@ export async function searchHarmonicRetrieval(options: {
   temporalExpiredInInjection?: boolean;
   /** Share one projected graph between recalls until a write bumps a version sentinel (see readProjectedHarmonicGraph). */
   useGraphCache?: boolean;
+  /** Bound on waiting for a shared graph build, in ms. Past it the search
+   * rejects with a HarmonicGraphWaitDeadlineError so a recall fails open
+   * instead of blocking on a rebuild a write storm keeps invalidating.
+   * `0` waits without a bound. Defaults to HARMONIC_GRAPH_WAIT_BUDGET_MS. */
+  waitBudgetMs?: number;
 }): Promise<HarmonicRetrievalResult[]> {
   throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
   const queryTokens = new Set(normalizeRecallTokens(options.query, ["what", "which"]));
@@ -722,6 +781,8 @@ export async function searchHarmonicRetrieval(options: {
   const { nodes: eligibleNodes, anchors } = await readProjectedHarmonicGraph({
     ...options,
     useCache: options.useGraphCache === true,
+    waitBudgetMs:
+      options.waitBudgetMs === undefined ? HARMONIC_GRAPH_WAIT_BUDGET_MS : options.waitBudgetMs,
   });
   const candidates = new Map<string, HarmonicCandidate>();
 
