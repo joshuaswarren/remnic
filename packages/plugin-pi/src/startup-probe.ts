@@ -116,9 +116,9 @@ class StartupProbeChain {
               },
             },
             { initialDelayMs: this.ctx.config.daemonCooldownMs },
-          ).catch((err: unknown) => {
+          ).catch((cause: unknown) => {
             if (!this.isCurrent()) return;
-            session.notify(`Remnic offline re-probe failed: ${errorText(err)}`, "warning");
+            session.notify(`Remnic offline re-probe failed: ${errorText(cause)}`, "warning");
           });
         }
       }

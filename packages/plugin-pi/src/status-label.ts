@@ -48,7 +48,7 @@ export interface OfflineReprobeHooks {
   onRecovered: () => void;
   isLive: () => boolean;
   sleep?: (ms: number) => Promise<void>;
-  onError?: (err: unknown) => void;
+  onError?: (cause: unknown) => void;
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -58,9 +58,9 @@ function defaultSleep(ms: number): Promise<void> {
   return promise;
 }
 
-function reportReprobeError(hooks: OfflineReprobeHooks, err: unknown): void {
+function reportReprobeError(hooks: OfflineReprobeHooks, cause: unknown): void {
   try {
-    hooks.onError?.(err);
+    hooks.onError?.(cause);
   } catch {
     // a broken logger must not become the unhandled rejection this guard exists to stop
   }
