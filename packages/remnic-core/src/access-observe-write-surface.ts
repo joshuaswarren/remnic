@@ -33,7 +33,7 @@ import { buildWithBriefingLocation, reapplyCategoryCoercion, splitCanonicalWrite
 import { abortError } from "./abort-error.js";
 import { withBriefingDeadline } from "./briefing-deadline.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
-import { forceFlushPreemptCallback } from "./access-extraction-force-flush-preempt.js";
+import { forceFlushPreemptCall } from "./access-extraction-force-flush-preempt.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { createObserveStageTimer } from "./access-observe-stage-timing.js";
 import { archiveObservedTurns } from "./access-observe-lcm-archive.js";
@@ -933,20 +933,7 @@ export class AccessObserveWriteSurface {
   async extractionForceFlush(
     request: EngramAccessExtractionForceFlushRequest
   ): Promise<EngramAccessExtractionForceFlushResponse> {
-    return extractionForceFlush(
-      this.deps,
-      request,
-      (sessionKey, principal, namespace, abortSignal, registerCancellation, scopeHint) =>
-        this.pendingObserveExtractions.wait(
-          sessionKey,
-          principal,
-          namespace,
-          abortSignal,
-          registerCancellation,
-          scopeHint,
-          forceFlushPreemptCallback(sessionKey, this.deps.orchestrator.extractionQueueCoordinator),
-        )
-    );
+    return forceFlushPreemptCall(this.deps, request, this.pendingObserveExtractions);
   }
   async workTask(request: {
     action: "create" | "get" | "list" | "update" | "transition" | "delete";

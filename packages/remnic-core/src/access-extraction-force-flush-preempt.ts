@@ -9,6 +9,11 @@
  * call keeps `preemptRunning`'s newest-slot fallback, which the front-enqueue
  * flush path relies on.
  */
+import { extractionForceFlush } from "./access-extraction-force-flush.js";
+import type { AccessObserveWriteSurfaceDeps } from "./access-observe-write-surface.js";
+import { PendingObserveExtractionTracker } from "./access-observe-helpers.js";
+import type { EngramAccessExtractionForceFlushRequest, EngramAccessExtractionForceFlushResponse } from "./access-service.js";
+
 export function forceFlushPreemptCallback(
   sessionKey: string | undefined,
   coordinator:
@@ -25,4 +30,27 @@ export function forceFlushPreemptCallback(
     }
     coordinator?.preemptRunning?.();
   };
+}
+
+/** The force-flush call with the keyed preemption callback attached, so the
+ *  write surface stays under the file-size ratchet (issue #1995). */
+export function forceFlushPreemptCall(
+  deps: AccessObserveWriteSurfaceDeps,
+  request: EngramAccessExtractionForceFlushRequest,
+  pending: PendingObserveExtractionTracker,
+): Promise<EngramAccessExtractionForceFlushResponse> {
+  return extractionForceFlush(
+    deps,
+    request,
+    (sessionKey, principal, namespace, abortSignal, registerCancellation, scopeHint) =>
+      pending.wait(
+        sessionKey,
+        principal,
+        namespace,
+        abortSignal,
+        registerCancellation,
+        scopeHint,
+        forceFlushPreemptCallback(sessionKey, deps.orchestrator.extractionQueueCoordinator),
+      ),
+  );
 }
