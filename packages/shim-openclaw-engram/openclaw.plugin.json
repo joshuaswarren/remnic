@@ -388,11 +388,6 @@
             "default": 60000,
             "description": "Rolling window for the write rate limit, in milliseconds. Positive integer."
           },
-          "trustPrincipalHeader": {
-            "type": "boolean",
-            "default": false,
-            "description": "Trust the per-request X-Engram-Principal header. Only enable behind a bearer-token trust boundary."
-          },
           "authToken": {
             "description": "Bearer token for the local Remnic HTTP API. Literal string (${ENV_VAR} ok) or OpenClaw SecretRef resolved at startup. If omitted, uses OPENCLAW_REMNIC_ACCESS_TOKEN / OPENCLAW_ENGRAM_ACCESS_TOKEN.",
             "anyOf": [
@@ -5166,11 +5161,6 @@
         "default": 2048,
         "description": "Hard character budget for the standing memory block. Pinned lines that cannot fit refuse the build rather than truncate."
       },
-      "directorySidecarsEnabled": {
-        "type": "boolean",
-        "default": false,
-        "description": "Populate per-directory overview sidecars on memory writes and attach neighborhood abstracts during recall (issue #3088). Default false."
-      },
       "recallRecognitionTier": {
         "type": "boolean",
         "default": false,
@@ -7727,6 +7717,11 @@
             "description": "\"off\" (default) generates content as before. \"shadow\" requests spans and content for telemetry only and persists generated content. \"on\" persists materialized frame+span content, falling back per fact when a span fails validation. Unrecognized values are rejected."
           }
         }
+      },
+      "directorySidecarsEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Populate per-directory overview sidecars on memory writes and attach neighborhood abstracts during recall (issue #3088). Default false."
       }
     }
   },
@@ -8949,11 +8944,6 @@
       "advanced": true,
       "help": "Byte-stable pinned-memory index placed before per-turn recall to keep the LLM prefix cache warm (issue #2971)."
     },
-    "directorySidecarsEnabled": {
-      "label": "Directory Sidecars",
-      "advanced": true,
-      "help": "Write per-directory overview.md sidecars and use them in recall drill-down (issue #3088)."
-    },
     "standingBlockFreshDays": {
       "label": "Standing Block Fresh Window",
       "advanced": true,
@@ -9003,6 +8993,11 @@
       "label": "Boost Reasoning Traces on Problem-Solving Queries",
       "advanced": true,
       "help": "Promote stored reasoning_trace memories to the top of recall results when the incoming query reads like a problem-solving ask. Default off; enable after benchmarking."
+    },
+    "directorySidecarsEnabled": {
+      "label": "Directory Sidecars",
+      "advanced": true,
+      "help": "Write per-directory overview.md sidecars and use them in recall drill-down (issue #3088)."
     }
   },
   "commandAliases": [
