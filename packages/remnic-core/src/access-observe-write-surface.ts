@@ -33,6 +33,7 @@ import { buildWithBriefingLocation, reapplyCategoryCoercion, splitCanonicalWrite
 import { abortError } from "./abort-error.js";
 import { withBriefingDeadline } from "./briefing-deadline.js";
 import { extractionForceFlush } from "./access-extraction-force-flush.js";
+import { forceFlushPreemptCallback } from "./access-extraction-force-flush-preempt.js";
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { createObserveStageTimer } from "./access-observe-stage-timing.js";
 import { archiveObservedTurns } from "./access-observe-lcm-archive.js";
@@ -943,7 +944,7 @@ export class AccessObserveWriteSurface {
           abortSignal,
           registerCancellation,
           scopeHint,
-          () => this.deps.orchestrator.extractionQueueCoordinator?.preemptRunning(),
+          forceFlushPreemptCallback(sessionKey, this.deps.orchestrator.extractionQueueCoordinator),
         )
     );
   }
