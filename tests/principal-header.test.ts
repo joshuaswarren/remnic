@@ -245,3 +245,54 @@ test("trustPrincipalHeader=true: header value is trimmed", async () => {
     await server.stop();
   }
 });
+
+// Issue #3460: the trusted header is a trust boundary — a malformed value must
+// fail closed (400), never land verbatim in durable records.
+
+async function postWithPrincipal(base: string, principal: string): Promise<number> {
+  const res = await fetch(`${base}/engram/v1/memories`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${AUTH_TOKEN}`,
+      "Content-Type": "application/json",
+      "X-Engram-Principal": principal,
+    },
+    body: JSON.stringify({ content: "test memory", category: "fact" }),
+  });
+  return res.status;
+}
+
+test("trustPrincipalHeader=true: invalid header values are rejected, not stored", async () => {
+  const captured: (string | undefined)[] = [];
+  const server = new EngramAccessHttpServer({
+    service: createFakeService(captured),
+    host: "127.0.0.1",
+    port: 0,
+    authToken: AUTH_TOKEN,
+    principal: "constructor-principal",
+    trustPrincipalHeader: true,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+
+  try {
+    for (const bad of [
+      "has a space",
+      "bad/principal",
+      "bad\\principal",
+      "..",
+      "a".repeat(300),
+      "tab\tsep",
+    ]) {
+      const status = await postWithPrincipal(base, bad);
+      assert.equal(status, 400, `expected 400 for principal ${JSON.stringify(bad).slice(0, 40)}`);
+    }
+    assert.equal(captured.length, 0, "no request should reach the service with an invalid principal");
+
+    const status = await postWithPrincipal(base, "w7F:p1@omp-studio-local");
+    assert.equal(status, 201);
+    assert.equal(captured[0], "w7F:p1@omp-studio-local", "lane@host form stays valid");
+  } finally {
+    await server.stop();
+  }
+});

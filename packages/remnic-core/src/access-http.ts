@@ -263,6 +263,24 @@ function rejectBlankRelayNamespace(value: string | null | undefined): void {
   }
 }
 
+const PRINCIPAL_HEADER_MAX_CHARS = 128;
+// Principals are durable identity strings (sessionOwnerPrincipal, scope-group
+// keys, derived namespaces): no whitespace, control characters, or path
+// separators; `..` is refused so a value can never collide with traversal
+// shapes anywhere downstream.
+const INVALID_PRINCIPAL_HEADER_CHARS = /[\s\/\\]|\.{2}/;
+
+function isValidPrincipalHeaderValue(value: string): boolean {
+  if (value.length === 0 || Array.from(value).length > PRINCIPAL_HEADER_MAX_CHARS) return false;
+  if (INVALID_PRINCIPAL_HEADER_CHARS.test(value)) return false;
+  // Control characters (incl. DEL) are refused; printable/unicode otherwise fine.
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
 function codingContextFromProjectTag(projectTag: string): {
   projectId: string;
   branch: string | null;
@@ -610,6 +628,14 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       if (typeof raw === "string") {
         const trimmed = raw.trim();
         if (trimmed.length > 0) {
+          // Trust boundary (issue #3460): once the header is honored, a client
+          // could stamp any value as sessionOwnerPrincipal on durable records.
+          // Reject malformed identities instead of storing them verbatim.
+          if (!isValidPrincipalHeaderValue(trimmed)) {
+            throw new EngramAccessInputError(
+              `invalid x-engram-principal header value: must be 1-128 chars with no whitespace, control chars, or path separators`,
+            );
+          }
           principal = trimmed;
         }
       }
