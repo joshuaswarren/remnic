@@ -435,13 +435,11 @@ function isSecretRefShape(value: unknown): value is import("./types.js").SecretR
 }
 
 /**
- * Parse the `agentAccessHttp.authToken` field. Accepts:
- *   - `string` → env-expanded immediately (current behavior preserved)
- *   - `SecretRef` object (`{source, ...}`) → preserved verbatim for runtime
- *     resolution by OpenClaw's gateway secret resolver
- *   - `undefined` / empty string → fall back to env var, then `undefined`
- *   - Any other shape → throw with a clear, actionable error so operators can
- *     debug rather than chasing a generic startup failure (issue #757).
+ * Parse `agentAccessHttp.authToken`: string → env-expanded immediately (current behavior
+ * preserved); SecretRef object (`{source, ...}`) → preserved verbatim for runtime resolution
+ * by OpenClaw's gateway secret resolver; undefined/empty string → env var fallback then
+ * undefined; any other shape → throw with an actionable error, never a generic startup
+ * failure operators must chase down (issue #757).
  */
 function parseAgentAccessAuthToken(raw: unknown): import("./types.js").AgentAccessAuthToken | undefined {
   if (raw === undefined || raw === null) {
@@ -1487,10 +1485,7 @@ export function parseConfig(
       60_000,
       "agentAccessHttp.writeRateLimitWindowMs",
     ),
-    trustPrincipalHeader: coerceBool(
-      rawAgentAccessHttp?.trustPrincipalHeader,
-      "agentAccessHttp.trustPrincipalHeader",
-    ) ?? false,
+    trustPrincipalHeader: coerceBool(rawAgentAccessHttp?.trustPrincipalHeader, "agentAccessHttp.trustPrincipalHeader") ?? false,
   };
 
   let baseUrl: string | undefined;
