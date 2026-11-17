@@ -212,6 +212,32 @@ function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
   throw new Error(`Invalid recallMode value for Remnic Pi config: ${JSON.stringify(value)}`);
 }
 
+const PRINCIPAL_MAX_CHARS = 128;
+/**
+ * Client-side mirror of the daemon's trusted-header contract, tightened to
+ * printable ASCII because fetch `Headers` carries a ByteString: a value like
+ * `writer-α` would throw inside Headers.set on every request (#3461 review).
+ * No whitespace, control chars, path separators, or `..`.
+ */
+function isSendablePrincipal(value: string): boolean {
+  if (value.length === 0 || value.length > PRINCIPAL_MAX_CHARS) return false;
+  if (/[\s\/\\]|\.{2}/.test(value)) return false;
+  for (const ch of value) {
+    const code = ch.codePointAt(0) ?? 0;
+    if (code < 0x21 || code > 0x7e) return false;
+  }
+  return true;
+}
+
+function assertSendablePrincipal(value: string, fieldName: string): string {
+  if (!isSendablePrincipal(value)) {
+    throw new Error(
+      `Invalid principal for Remnic Pi config field ${fieldName}: must be 1-128 printable ASCII chars with no whitespace or path separators`,
+    );
+  }
+  return value;
+}
+
 /**
  * Last-resort writer identity when no explicit principal is configured: a
  * herdr-style pane id from the agent process env joined to this host, so a
@@ -271,10 +297,19 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     coerceOptionalString(fileConfig.authToken, "authToken") ??
     coerceOptionalString(env.REMNIC_PI_AUTH_TOKEN, "REMNIC_PI_AUTH_TOKEN");
   const namespace = coerceOptionalNonEmptyString(fileConfig.namespace, "namespace");
+  const filePrincipal = coerceOptionalNonEmptyString(fileConfig.principal, "principal");
+  const envPrincipal = coerceOptionalString(env.REMNIC_PI_PRINCIPAL, "REMNIC_PI_PRINCIPAL");
+  const explicitPrincipal = filePrincipal ?? envPrincipal;
+  const derivedPrincipal = explicitPrincipal === undefined ? deriveWriterPrincipal(env) : undefined;
+  // Validate the winner only: a bad explicit value is a config error; a bad
+  // derived value just means this process cannot self-label, so it degrades
+  // to unset rather than breaking pane startup (#3461 review).
   const principal =
-    coerceOptionalNonEmptyString(fileConfig.principal, "principal") ??
-    coerceOptionalString(env.REMNIC_PI_PRINCIPAL, "REMNIC_PI_PRINCIPAL") ??
-    deriveWriterPrincipal(env);
+    explicitPrincipal !== undefined
+      ? assertSendablePrincipal(explicitPrincipal, filePrincipal !== undefined ? "principal" : "REMNIC_PI_PRINCIPAL")
+      : derivedPrincipal !== undefined && isSendablePrincipal(derivedPrincipal)
+        ? derivedPrincipal
+        : undefined;
 
   const requestTimeoutMs = coercePositiveInt(
     fileConfig.requestTimeoutMs,

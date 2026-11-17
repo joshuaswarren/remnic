@@ -39,6 +39,12 @@ export interface RequestOptions {
   signal?: AbortSignal;
   /** Transient-retry budget for connection-level failures (socket close, ECONNRESET). */
   maxRetries?: number;
+  /**
+   * Per-request writer-principal override, used by outbox replay to preserve
+   * the queued writer's identity when a different process drains the entry.
+   * Falls back to `config.principal` when unset.
+   */
+  principal?: string;
 }
 
 export interface ObserveOptions extends RequestOptions {
@@ -325,6 +331,7 @@ export class RemnicClient {
       signal: options.signal,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
+    if (options.principal !== undefined) retryOptions.principal = options.principal;
     const chunks = chunkObservePayload(
       this.config,
       sessionKey,
@@ -503,8 +510,9 @@ export class RemnicClient {
       if (this.config.authToken) {
         headers.set("Authorization", `Bearer ${this.config.authToken}`);
       }
-      if (this.config.principal) {
-        headers.set("x-engram-principal", this.config.principal);
+      const principal = options.principal ?? this.config.principal;
+      if (principal) {
+        headers.set("x-engram-principal", principal);
       }
       const response = await fetch(`${this.config.remnicDaemonUrl}${pathname}`, {
         method,

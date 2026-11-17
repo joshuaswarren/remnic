@@ -462,3 +462,33 @@ test("loadConfig reads principal from file and REMNIC_PI_PRINCIPAL env", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("loadConfig rejects principals the transport or daemon cannot carry", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-principal-invalid-"));
+  try {
+    const emptyPath = path.join(dir, "empty.config.json");
+    fs.writeFileSync(emptyPath, JSON.stringify({}), "utf8");
+
+    const badFile = path.join(dir, "bad.config.json");
+    fs.writeFileSync(badFile, JSON.stringify({ principal: "writer-α" }), "utf8");
+    assert.throws(
+      () => loadConfig({ configPath: badFile, env: {} }),
+      /principal/i,
+      "non-ASCII principal fails at load: Headers.set would throw on every request otherwise",
+    );
+
+    assert.throws(
+      () => loadConfig({ configPath: emptyPath, env: { REMNIC_PI_PRINCIPAL: "bad principal" } }),
+      /principal/i,
+      "whitespace fails the daemon's trust-boundary contract at load",
+    );
+
+    assert.equal(
+      loadConfig({ configPath: emptyPath, env: { HERDR_PANE_ID: "bad pane" } }).principal,
+      undefined,
+      "an underivable pane id degrades to unset rather than crashing pane startup",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
