@@ -11,22 +11,25 @@
  *   node remnic-agy-hook.cjs <event>
  *
  * Events: session-start | user-prompt-recall | post-tool-observe |
- *         session-end | pre-compact | post-compaction
+ *         session-end
  *
  * Antigravity-specific surfaces enabled here:
- *   - ATIF transcript parsing (`transcriptFormat: "atif"`): Antigravity CLI (agy) writes
- *     session transcripts to `<data>/antigravity/cli/transcripts/<session_id>.json`
- *     in the ATIF schema rather than the JSONL format Claude Code/Codex use,
- *     and does not pass transcript_path in hook payloads — the resolver
- *     below locates the file from session_id.
- *   - PostCompaction → the shared pre-compact drain+flush handler: Antigravity
- *     emits the event after compaction completes; draining the observe
- *     buffer and flushing LCM at that point is the same coordination the
- *     omp plugin performs at session_before_compact.
- *   - SessionEnd → final observe flush + cursor cleanup (local CLI/Desktop
- *     sessions only; cloud sessions do not fire SessionEnd).
+ *   - Transcript parsing: agy passes `transcriptPath` in the hook payload;
+ *     when set, the shared runner parses it per `transcriptFormat`
+ *     ("atif": ATIF JSON like Devin's transcripts; otherwise JSONL like
+ *     Claude Code/Codex). When agy does not pass a path, the resolver below
+ *     derives `<session_id>.json` from AGY_TRANSCRIPT_DIR or the XDG/macOS
+ *     defaults. Observed reality (Linux 2026-11-17): conversation state lives
+ *     in per-conversation SQLite files, with no per-session JSON transcript
+ *     yet found — so ATIF parsing is provisional until a real transcriptPath
+ *     is seen on an agy session.
+ *   - SessionEnd → final observe flush + cursor cleanup (local CLI sessions;
+ *     cloud sessions may not fire SessionEnd).
  *   - Stop → post-tool-observe so each completed turn's transcript delta is
  *     observed even when no file-mutating tool ran.
+ *   - No compaction hooks: agy exposes no PreCompact/PostCompaction event, so
+ *     the shared pre-compact drain+flush never fires here. The daemon-side
+ *     extraction pipeline picks up buffered observations on its own schedule.
  *
  * Fail-open everywhere: any unexpected error degrades to `{"continue":true}`.
  */
@@ -99,19 +102,17 @@ run({
     "user-prompt-recall": "remnic-user-prompt-recall.log",
     "post-tool-observe": "remnic-post-tool-observe.log",
     "session-end": "remnic-agy-session-end.log",
-    "pre-compact": "remnic-pre-compact.log",
-    "post-compaction": "remnic-post-compaction.log",
   },
   logTags: {
     "session-start": "agy-session-start",
     "user-prompt-recall": "agy-user-prompt",
     "post-tool-observe": "agy-post-tool",
     "session-end": "agy-stop",
-    "pre-compact": "agy-pre-compact",
-    "post-compaction": "agy-post-compaction",
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
-  enablePreCompact: true,
+  // No compaction hooks on agy (no PreCompact/PostCompaction event exists),
+  // so the shared pre-compact handler is never registered here.
+  enablePreCompact: false,
   enableMaterialize: false,
 });

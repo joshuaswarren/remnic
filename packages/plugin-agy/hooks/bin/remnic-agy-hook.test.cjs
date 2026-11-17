@@ -236,9 +236,9 @@ test("post-tool-observe: observes ATIF transcript delta resolved from session_id
   }
 });
 
-// ── post-compaction ────────────────────────────────────────────────────────
+// ── no compaction hooks on agy ──────────────────────────────────────────────
 
-test("post-compaction: drains tail and flushes LCM compaction", async () => {
+test("post-compaction is not registered: agy has no compaction event", async () => {
   const home = mkHome();
   const sessionId = "sess-compact-1";
   atifTranscript(home, sessionId, [
@@ -252,19 +252,17 @@ test("post-compaction: drains tail and flushes LCM compaction", async () => {
       { session_id: sessionId, summary: "compacted", prompt_id: "p1" },
       { port, home },
     );
+    // Fail-open with no LCM flush: agy exposes no PreCompact/PostCompaction
+    // event, so the shared pre-compact handler is never registered here.
     assert.equal(json.continue, true);
-    const deadline = Date.now() + 15000;
-    let flush = null;
-    let observe = null;
-    while (Date.now() < deadline) {
+    let flush;
+    const end = Date.now() + 3000;
+    while (Date.now() < end) {
       flush = calls.find((c) => c.url === "/engram/v1/lcm/compaction/flush");
-      observe = calls.find((c) => c.url === "/engram/v1/observe");
-      if (flush && observe) break;
+      if (flush) break;
       await new Promise((r) => setTimeout(r, 100));
     }
-    assert.ok(observe, "tail drain observed the transcript");
-    assert.ok(flush, "LCM compaction flush was called");
-    assert.equal(flush.body.sessionKey, sessionId);
+    assert.equal(flush, undefined, "no LCM compaction flush without a compaction event");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });

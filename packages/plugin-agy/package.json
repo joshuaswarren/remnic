@@ -23,13 +23,15 @@
     "provenance": true
   },
   "files": [
+    "plugin.json",
+    "hooks.json",
+    "mcp_config.json",
     ".agy-plugin",
     "hooks",
     "skills",
     "agents",
     "rules",
-    "mcp-server-stdio",
-    ".mcp.json"
+    "mcp-server-stdio"
   ],
   "scripts": {
     "test": "node --test hooks/bin/remnic-agy-hook.test.cjs mcp-server-stdio/server.test.cjs"

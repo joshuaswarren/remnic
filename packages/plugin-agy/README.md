@@ -42,31 +42,31 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
 
 | File / dir | Purpose |
 |---|---|
-| `.agy-plugin/plugin.json` | Plugin manifest |
-| `hooks/hooks.json` | `SessionStart`, `UserPromptSubmit`, `PostToolUse`, `Stop`, `PostCompaction`, `SessionEnd` hook wiring |
+| `plugin.json` (+ `.agy-plugin/plugin.json`) | Plugin manifest (agy reads the root one) |
+| `hooks.json` | `SessionStart`, `PreInvocation`, `PostToolUse`, `Stop` hook wiring |
 | `hooks/bin/remnic-agy-hook.cjs` | Thin per-host config for the shared hook runner |
 | `hooks/bin/remnic-hook-core.cjs` | Shared cross-platform hook runner (synced from `scripts/hook-runner/`) |
 | `mcp-server-stdio/server.js` | stdio↔HTTP MCP proxy with token-store fallback |
-| `.mcp.json` | MCP server registration (`remnic` → stdio proxy) |
+| `mcp_config.json` | MCP server registration (`remnic` → stdio proxy) |
 | `skills/` | `remnic-recall`, `remnic-remember`, `remnic-search`, `remnic-status`, `remnic-entities`, `remnic-memory-workflow` |
 | `agents/memory-review.md` | Subagent that audits and curates project memories |
+| `rules/AGENTS.md` | Workspace rule: recall before work, store after |
 
 ## What you get at runtime
 
-- **Auto-recall** on `SessionStart` and every `UserPromptSubmit` — relevant
-  memories are injected into context before the first turn and each prompt.
-- **Auto-observe** — the hook runner tails the session transcript and posts new
-  user/agent/tool-activity deltas to `/engram/v1/observe`, so the shared
-  memory corpus learns from Antigravity work, not just file edits. Observations
-  are triggered on file-mutating tools (`write`, `edit`, `apply_patch`,
-  `run_command`), on every `Stop` (turn end), and drained at
-  `PostCompaction`/`SessionEnd`. Transcript source: the `transcriptPath` from
-  the hook payload when present (agy passes it), else `AGY_TRANSCRIPT_DIR`,
-  parsed per `transcriptFormat` (ATIF when agy writes ATIF JSON, JSONL
-  otherwise).
-- **LCM coordination** — `PostCompaction` drains any unobserved transcript
-  tail, then calls `/engram/v1/lcm/compaction/flush` so long-term memory is
-  flushed before context is lost.
+ - **Auto-recall** on `SessionStart` and every `PreInvocation` — relevant
+   memories are injected into context before the first turn and each prompt.
+ - **Auto-observe** — the hook runner tails the session transcript and posts new
+   user/agent/tool-activity deltas to `/engram/v1/observe`, so the shared
+   memory corpus learns from Antigravity work, not just file edits. Observations
+   are triggered on file-mutating tools (`write`, `edit`, `apply_patch`,
+   `run_command`), on every `Stop` (turn end), and drained at `SessionEnd`.
+   Transcript source: the `transcriptPath` from the hook payload when present
+   (agy passes it), else `AGY_TRANSCRIPT_DIR`, parsed per `transcriptFormat`
+   (ATIF when agy writes ATIF JSON, JSONL otherwise).
+ - **LCM coordination** — `SessionEnd` drains any unobserved transcript tail;
+   the shared core's pre-compact flush runs wherever the host exposes a
+   compaction event (agy exposes none — no `PreCompact`/`PostCompaction` hook).
 - **Memory skills** — `/remnic:remnic-recall`, `/remnic:remnic-search`,
   `/remnic:remnic-remember`, `/remnic:remnic-entities`,
   `/remnic:remnic-status`, `/remnic:remnic-memory-workflow`.
