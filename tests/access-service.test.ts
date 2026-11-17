@@ -1305,6 +1305,72 @@ test("access service recall forwards overrides and returns explainable metadata"
   }
 });
 
+test("access service recall carries per-section timings from the snapshot", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-recall-timings-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const timings = {
+      qmd: "4746ms",
+      entityRetrieval: "815ms",
+      harmonicRetrieval: "728ms",
+      total: "4956ms",
+    };
+    const snapshot = {
+      sessionKey: "sess-t",
+      recordedAt: "2026-03-08T00:00:00.000Z",
+      queryHash: "hash",
+      queryLen: 12,
+      memoryIds: [],
+      resultPaths: [],
+      namespace: "global",
+      plannerMode: "full",
+      fallbackUsed: false,
+      sourcesUsed: ["hot_qmd"],
+      latencyMs: 4956,
+      timings,
+    };
+    // SAFETY: partial service double; recall() touches only the deps stubbed below.
+    const service = new EngramAccessService({
+      config: {
+        memoryDir,
+        namespacesEnabled: true,
+        defaultNamespace: "global",
+        sharedNamespace: "shared",
+        principalFromSessionKeyMode: "prefix",
+        principalFromSessionKeyRules: [],
+        namespacePolicies: [{
+          name: "project-x",
+          readPrincipals: ["*"],
+          writePrincipals: ["*"],
+        }],
+        defaultRecallNamespaces: ["self"],
+        searchBackend: "qmd",
+        qmdEnabled: true,
+        nativeKnowledge: undefined,
+      },
+      recall: async () => "ctx",
+      lastRecall: { get: () => snapshot, getMostRecent: () => snapshot },
+      getStorage: async () => storage,
+      recallIntrospection: {
+        getLastIntentSnapshot: async () => null,
+        getLastGraphRecallSnapshot: async () => null,
+      },
+    } as any);
+
+    const response = await service.recall({
+      query: "hello",
+      sessionKey: "sess-t",
+      namespace: "global",
+      mode: "full",
+    });
+
+    assert.equal(response.latencyMs, 4956);
+    assert.deepEqual(response.timings, timings);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("access service recall reports the effective snapshot namespace in response and debug lookups", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-access-service-recall-effective-ns-"));
   try {

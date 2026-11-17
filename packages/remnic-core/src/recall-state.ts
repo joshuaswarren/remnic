@@ -63,6 +63,15 @@ export interface LastRecallSnapshot {
   sourcesUsed?: string[];
   budgetsApplied?: LastRecallBudgetSummary;
   latencyMs?: number;
+  /**
+   * Per-section wall-clock timings recorded during the recall pipeline
+   * (same map as the `recall timings:` log line and the timings ring
+   * buffer). Values are formatted strings — e.g. "4746ms", "skip",
+   * "12ms-cache" — so callers render them verbatim. Added so recall
+   * responses can name the slow section instead of exposing only
+   * `latencyMs`.
+   */
+  timings?: Record<string, string>;
   resultPaths?: string[];
   resultNamespaces?: Array<string | undefined>;
   policyVersion?: string;
@@ -411,6 +420,7 @@ export class LastRecallStore {
     sourcesUsed?: string[];
     budgetsApplied?: LastRecallBudgetSummary;
     latencyMs?: number;
+    timings?: Record<string, string>;
     resultPaths?: string[];
     resultNamespaces?: Array<string | undefined>;
     policyVersion?: string;
@@ -464,6 +474,7 @@ export class LastRecallStore {
       sourcesUsed: opts.sourcesUsed,
       budgetsApplied: opts.budgetsApplied,
       latencyMs: opts.latencyMs,
+      timings: opts.timings ? { ...opts.timings } : undefined,
       policyVersion: opts.policyVersion,
       identityInjectionMode: opts.identityInjection?.mode,
       identityInjectedChars: opts.identityInjection?.injectedChars,

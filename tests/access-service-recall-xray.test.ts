@@ -45,6 +45,7 @@ function stubOrchestrator(opts: {
     writePrincipals: string[];
   }>;
   snapshot?: RecallXraySnapshot | null;
+  lastRecallRecord?: { traceId?: string; timings?: Record<string, string> } | null;
   onRecall?: (
     prompt: string,
     sessionKey: string | undefined,
@@ -94,8 +95,8 @@ function stubOrchestrator(opts: {
       state.snapshot = snap;
     },
     lastRecall: {
-      get: () => null,
-      getMostRecent: () => null,
+      get: () => opts.lastRecallRecord ?? null,
+      getMostRecent: () => opts.lastRecallRecord ?? null,
     },
     getStorage: async () => ({
       dir: "/tmp/engram",
@@ -217,6 +218,56 @@ test("recallXray can return recall metadata from the same captured snapshot", as
     response.recall?.context,
     "independent recall context that must not be used",
   );
+});
+
+test("includeRecall carries the section timings of the recall that produced the snapshot", async () => {
+  const snap = fakeSnapshot({ traceId: "trace-timings", namespace: "global" });
+  const { orchestrator, state } = stubOrchestrator({
+    lastRecallRecord: {
+      traceId: "trace-timings",
+      timings: { qmd: "4746ms", entityRetrieval: "815ms", total: "4956ms" },
+    },
+  });
+  orchestrator.recall = async () => {
+    state.snapshot = snap;
+    return "ctx";
+  };
+  // SAFETY: partial orchestrator stub; recallXray touches only the members stubbed above.
+  const service = new EngramAccessService(orchestrator as any);
+  const response = await service.recallXray({
+    query: "q",
+    sessionKey: "sess-1",
+    disclosure: "chunk",
+    includeRecall: true,
+  });
+  assert.deepEqual(response.recall?.timings, {
+    qmd: "4746ms",
+    entityRetrieval: "815ms",
+    total: "4956ms",
+  });
+});
+
+test("includeRecall does not carry timings left by a different recall", async () => {
+  const snap = fakeSnapshot({ traceId: "trace-this-recall", namespace: "global" });
+  const { orchestrator, state } = stubOrchestrator({
+    lastRecallRecord: {
+      traceId: "trace-another-recall",
+      timings: { qmd: "9999ms" },
+    },
+  });
+  orchestrator.recall = async () => {
+    state.snapshot = snap;
+    return "ctx";
+  };
+  // SAFETY: partial orchestrator stub; recallXray touches only the members stubbed above.
+  const service = new EngramAccessService(orchestrator as any);
+  const response = await service.recallXray({
+    query: "q",
+    sessionKey: "sess-1",
+    disclosure: "chunk",
+    includeRecall: true,
+  });
+  assert.equal(response.recall?.timings, undefined);
 });
 
 test("recallXray releases the snapshot mutex before optional recall serialization I/O", async () => {

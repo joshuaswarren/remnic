@@ -342,6 +342,7 @@ export async function assembleRecallResponse(
       auditAnomalies,
       budgetWarning: toBudgetWarning(budgetDecision),
       latencyMs: snapshot?.latencyMs ?? (Date.now() - startedAt),
+      timings: snapshot?.timings,
       debug: safeDebug,
     },
     // Non-null when this recall reserved a cross-namespace budget event at

@@ -619,6 +619,7 @@ export class RecallInternalCoordinator {
               qmdHybridFetchLimit,
             }),
             latencyMs: Date.now() - recallStart,
+            timings: { ...timings },
             includedMemories: [],
             policyVersion,
             appendImpression: this.deps.config.recordEmptyRecallImpressions,
@@ -5240,6 +5241,7 @@ export class RecallInternalCoordinator {
           sourcesUsed,
           budgetsApplied,
           latencyMs: Date.now() - recallStart,
+          timings: { ...timings },
           includedMemories: assembledRecall.includedMemories,
           policyVersion,
           appendImpression:
