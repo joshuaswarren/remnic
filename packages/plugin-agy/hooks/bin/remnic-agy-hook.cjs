@@ -127,6 +127,43 @@ const AGY_SQLITE_MESSAGE_CAP = 8000;
 // that crosses the limit fails loudly and loses nothing. The LIMIT on the
 // SELECT itself stays as the hard bound for rows materialized in one read.
 const AGY_SQLITE_ROW_LIMIT = 10000;
+const AGY_JSONL_MESSAGE_CAP = 8000;
+
+function asPlainRecord(value) {
+  if (value === null) return null;
+  if (Array.isArray(value)) return null;
+  if (Object(value) !== value) return null;
+  return value;
+}
+
+function jsonlStringContent(value) {
+  if (value === null || value === undefined) return "";
+  if (Object.prototype.toString.call(value) === "[object String]") return value.trim();
+  return "";
+}
+
+function parseAgyJsonl(jsonlPath) {
+  const lines = fs.readFileSync(jsonlPath, "utf8").split("\n").filter(Boolean);
+  const messages = [];
+  for (const line of lines) {
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const entry = asPlainRecord(parsed);
+    if (!entry) continue;
+    const content = jsonlStringContent(entry.content);
+    if (!content) continue;
+    if (entry.type === "USER_INPUT") {
+      messages.push({ role: "user", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
+    } else if (entry.type === "PLANNER_RESPONSE") {
+      messages.push({ role: "assistant", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
+    }
+  }
+  return messages;
+}
 function parseAgySqlite(dbPath) {
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -195,10 +232,15 @@ run({
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
-  parseTranscript: (transcriptPath) =>
-    transcriptPath.endsWith(".db")
-      ? parseAgySqlite(transcriptPath)
-      : undefined, // fall through: core handles JSON per transcriptFormat
+  parseTranscript: (transcriptPath) => {
+    if (transcriptPath.endsWith(".db")) return parseAgySqlite(transcriptPath);
+    // agy native JSONL transcript (brain/<id>/.system_generated/logs/transcript.jsonl):
+    // one JSON object per line with source/type/content. USER_INPUT is the
+    // user; PLANNER_RESPONSE with content is the model. Role comes from the
+    // type field, never from text patterns.
+    if (transcriptPath.endsWith(".jsonl")) return parseAgyJsonl(transcriptPath);
+    return undefined; // fall through: core handles JSON per transcriptFormat
+  },
   projectDirEnv: "AGY_PROJECT_DIR",
   // No compaction hooks on agy (no PreCompact/PostCompaction event exists),
   // so the shared pre-compact handler is never registered here.

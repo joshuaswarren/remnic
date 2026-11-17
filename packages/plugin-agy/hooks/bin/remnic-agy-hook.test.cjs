@@ -175,6 +175,48 @@ test("post-tool-observe: missing payload transcriptPath falls back to the SQLite
   }
 });
 
+test("post-tool-observe: parses the agy native JSONL transcript by type", async () => {
+  // The pane really sends transcriptPath at brain/<id>/.../transcript.jsonl.
+  // Role comes from the type field, never text patterns.
+  const home = mkHome();
+  const sessionId = "jsonl-1";
+  const dir = path.join(home, "brain", sessionId, ".system_generated", "logs");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "transcript.jsonl"),
+    [
+      JSON.stringify({ type: "USER_INPUT", source: "USER_EXPLICIT", content: "Track the nightly backup." }),
+      JSON.stringify({ type: "PLANNER_RESPONSE", source: "MODEL", content: "Tracking it now." }),
+      JSON.stringify({ type: "GENERIC", source: "MODEL", content: "heartbeat" }),
+      "not json at all",
+    ].join("\n"),
+  );
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1", transcriptPath: path.join(dir, "transcript.jsonl") },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    const deadline = Date.now() + 10000;
+    let observe = null;
+    while (Date.now() < deadline) {
+      observe = calls.find((c) => c.url === "/engram/v1/observe");
+      if (observe) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(observe, "jsonl transcript was observed");
+    assert.equal(observe.body.messages.length, 2);
+    assert.equal(observe.body.messages[0].role, "user");
+    assert.match(observe.body.messages[0].content, /nightly backup/);
+    assert.equal(observe.body.messages[1].role, "assistant");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("session-start: injects recall context and recovers cwd from AGY_PROJECT_DIR", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer(okServer());
