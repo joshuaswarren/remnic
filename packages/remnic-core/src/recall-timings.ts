@@ -155,3 +155,18 @@ export function getRecallTimingStatus(config: PluginConfig): RecallTimingStatus 
     records,
   };
 }
+
+/**
+ * Read the section-timing map the last-recall store kept for the recall that
+ * produced `traceId`. The traceId match pins the record to that run so an
+ * interleaved same-session recall cannot lend its timings to the wrong reply.
+ */
+export function lastRecallTimingsFor(
+  store: { get(sessionKey: string): { traceId?: string; timings?: Record<string, string> } | null;
+           getMostRecent(): { traceId?: string; timings?: Record<string, string> } | null },
+  sessionKey: string | undefined,
+  traceId: string | undefined,
+): Record<string, string> | undefined {
+  const record = sessionKey ? store.get(sessionKey) : store.getMostRecent();
+  return record != null && record.traceId === traceId ? record.timings : undefined;
+}

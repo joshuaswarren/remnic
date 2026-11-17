@@ -32,6 +32,7 @@ import { coerceIncludedMemories, type LastRecallSnapshot } from "./recall-state.
 import type { RecallContextComposition } from "./recall-context-composition.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
+import { lastRecallTimingsFor } from "./recall-timings.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
 import { StorageManager } from "./index.js";
 import { DEFAULT_RECALL_DISCLOSURE, type MemoryFile, type RecallDisclosure, type RecallPlanMode, isRecallDisclosure } from "./types.js";
@@ -237,10 +238,7 @@ export class AccessRecallSurface {
       recallNamespaces: [namespace],
       traceId: options.snapshot.traceId,
       plannerMode: options.normalizedMode,
-      requestedMode:
-        options.requestedMode && options.requestedMode !== "auto"
-          ? options.requestedMode
-          : undefined,
+      requestedMode: options.requestedMode !== "auto" ? options.requestedMode : undefined,
       sourcesUsed,
       budgetsApplied: {
         appliedTopK: memoryIds.length,
@@ -249,6 +247,8 @@ export class AccessRecallSurface {
         finalContextChars: options.snapshot.budget.used,
       },
       latencyMs: Date.now() - options.startedAt,
+      // The record the capture's own recall wrote carries the section timings (traceId-pinned).
+      timings: lastRecallTimingsFor(this.deps.orchestrator.lastRecall, options.sessionKey, options.snapshot.traceId),
       includedMemories,
     };
     const results = await this.deps.serializeRecallResults(
