@@ -104,7 +104,85 @@ export function extractionWindowBudgetChars(input: {
   localExtractionActive: boolean;
   model: string;
   maxContext: number | undefined;
+  /** Configured per-call payload cap (`extractionCallMaxChars`). */
+  callMaxChars?: number;
 }): number {
-  if (!input.registry || !input.localExtractionActive) return Number.POSITIVE_INFINITY;
-  return input.registry.calculateContextSizes(input.model, input.maxContext).maxInputChars;
+  const cap =
+    typeof input.callMaxChars === "number" && Number.isFinite(input.callMaxChars) && input.callMaxChars > 0
+      ? input.callMaxChars
+      : Number.POSITIVE_INFINITY;
+  if (!input.registry || !input.localExtractionActive) return cap;
+  return Math.min(cap, input.registry.calculateContextSizes(input.model, input.maxContext).maxInputChars);
+}
+
+/**
+ * Split `content` into budget-fitting slices at sentence/paragraph
+ * boundaries; a segment longer than the budget hard-cuts at the boundary.
+ * The slices are contiguous and verbatim — join("") restores the input.
+ */
+function splitTurnContent(content: string, maxChars: number): string[] {
+  const segments = content.match(/[^.!?\n]+[.!?]?\s*|\n+/g) ?? [content];
+  const parts: string[] = [];
+  let current = "";
+  for (const segment of segments) {
+    let piece = segment;
+    while (piece.length > 0) {
+      const room = maxChars - current.length;
+      if (piece.length <= room) {
+        current += piece;
+        break;
+      }
+      if (current.length > 0) {
+        parts.push(current);
+        current = "";
+        continue;
+      }
+      parts.push(piece.slice(0, maxChars));
+      piece = piece.slice(maxChars);
+    }
+  }
+  if (current.length > 0) parts.push(current);
+  return parts;
+}
+
+/**
+ * Replace each turn over `maxChars` with in-memory part copies marked
+ * `extractionPartOf {part,of}` (payload-cap drain). Parts keep order and
+ * carry verbatim contiguous slices so joining them restores the turn —
+ * nothing is dropped by the split itself. A turn needing more than
+ * `maxParts` emits `maxParts` parts and reports `clamped` so the caller
+ * can log the bounded loss rather than hide it.
+ */
+export function splitOversizedTurns<T extends { content: string }>(
+  turns: readonly T[],
+  maxChars: number,
+  maxParts = 8,
+): { turns: T[]; partParents: Map<T, T>; clampedParents: Set<T>; clamped: boolean } {
+  const partParents = new Map<T, T>();
+  const clampedParents = new Set<T>();
+  if (!(Number.isFinite(maxChars) && maxChars > 0)) {
+    return { turns: [...turns], partParents, clampedParents, clamped: false };
+  }
+  const budget = Math.floor(maxChars);
+  const out: T[] = [];
+  let clamped = false;
+  for (const turn of turns) {
+    if (turn.content.length <= budget) {
+      out.push(turn);
+      continue;
+    }
+    const slices = splitTurnContent(turn.content, budget);
+    const emitted = slices.slice(0, maxParts);
+    if (slices.length > maxParts) {
+      clamped = true;
+      clampedParents.add(turn);
+    }
+    const of = emitted.length;
+    for (const [index, slice] of emitted.entries()) {
+      const part = { ...turn, content: slice, extractionPartOf: { part: index + 1, of } };
+      partParents.set(part, turn);
+      out.push(part);
+    }
+  }
+  return { turns: out, partParents, clampedParents, clamped };
 }

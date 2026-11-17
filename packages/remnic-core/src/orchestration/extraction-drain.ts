@@ -3,7 +3,12 @@
 import { createHash } from "node:crypto";
 import { isAbortError, preemptedExtractionError } from "../abort-error.js";
 import { describeError } from "../buffer-turn-helpers.js";
-import { chunkExtractionWindow, classifyDrainResult, mergeDrainResults } from "../extraction-window-drain.js";
+import {
+  chunkExtractionWindow,
+  classifyDrainResult,
+  mergeDrainResults,
+  splitOversizedTurns,
+} from "../extraction-window-drain.js";
 import { log } from "../logger.js";
 import type { BufferTurn } from "../types.js";
 import { type CollapsedDuplicates, collapseExactDuplicateTurns, markDuplicateTurns } from "./extraction-dedupe.js";
@@ -57,6 +62,12 @@ interface ChunkPlan {
   singleRun: boolean;
   chunks: BufferTurn[][];
   resumed: boolean;
+  /** In-flight part copy → its source turn, for `extractionPartOf` splits. */
+  partParents?: Map<BufferTurn, BufferTurn>;
+  /** How many oversized turns hit the max-parts clamp. */
+  clampedParts: number;
+  /** Parents whose unemitted tail needs a recovery copy before clearing. */
+  clampedParents?: Set<BufferTurn>;
 }
 
 /** The drain-loop action for one chunk result. */
@@ -148,9 +159,27 @@ export class ExtractionDrain {
     // sees each text once. Every original stays a distinct identity the chunk must
     // account for, so chunks carry the duplicates as marked copies — clearing and
     // drops remove representative and duplicates together.
-    const collapsed = collapseExactDuplicateTurns(turns);
+    const partBudget = Math.min(budgetChars, this.deps.config.extractionMaxTurnChars);
+    const hasOversized =
+      Number.isFinite(partBudget) &&
+      partBudget > 0 &&
+      this.chunkable(runOptions, turns, budgetChars) &&
+      turns.some((turn) => turn.content.length > partBudget);
+    const collapsed = hasOversized
+      ? {
+          representatives: turns,
+          representativePositions: turns.map((_, index) => index),
+          duplicateFlags: turns.map(() => false),
+          duplicateCount: 0,
+        }
+      : collapseExactDuplicateTurns(turns);
     const window = collapsed.duplicateCount > 0 ? markDuplicateTurns(turns, collapsed) : turns;
-    const plan = this.chunkPlan(turns, runOptions, budgetChars, collapsed);
+    const plan = this.chunkPlan(turns, runOptions, budgetChars, collapsed, partBudget);
+    if (plan.clampedParts > 0) {
+      log.warn(
+        `buffer[${runOptions.bufferKey}]: clamped ${plan.clampedParts} oversized turns at the part limit; the unemitted tail content stays buffered for the next drain`
+      );
+    }
     // The tail of a window that already qualified goes through the chunk loop even when it now fits in one
     // chunk, so its failures still count toward the drop threshold.
     if (plan.singleRun) {
@@ -181,7 +210,7 @@ export class ExtractionDrain {
       collapsed.duplicateCount > 0
         ? { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true }
         : runOptions;
-    return await this.runChunked(plan.chunks, options, preemptable, preemptHandle);
+    return await this.runChunked(plan.chunks, options, preemptable, preemptHandle, plan.partParents, plan.clampedParents);
   }
 
   /** Chunking plan for one trigger-drain window. Accepted-capture groups
@@ -192,10 +221,24 @@ export class ExtractionDrain {
     turns: readonly BufferTurn[],
     runOptions: DrainRunOptions,
     budgetChars: number,
-    collapsed?: CollapsedDuplicates
+    collapsed?: CollapsedDuplicates,
+    partBudget = Number.POSITIVE_INFINITY
   ): ChunkPlan {
     const deduped = collapsed !== undefined && collapsed.duplicateCount > 0;
-    const planning = deduped ? collapsed.representatives : turns;
+    // Long-turn split (payload-cap drain): a turn longer than the render clamp
+    // would lose its tail to the per-turn slice, so it becomes ordered verbatim
+    // part copies marked `extractionPartOf`. The parts pack like any turn; the
+    // parent clears only when its last part drains.
+    const split =
+      deduped || !this.chunkable(runOptions, turns, budgetChars)
+        ? {
+            turns: [...turns],
+            partParents: new Map<BufferTurn, BufferTurn>(),
+            clampedParents: new Set<BufferTurn>(),
+            clamped: false,
+          }
+        : splitOversizedTurns(turns, partBudget);
+    const planning = deduped ? collapsed.representatives : split.turns;
     const repChunks = this.chunkable(runOptions, turns, budgetChars)
       ? this.deps.measureRenderedTurns !== undefined
         ? this.chunkByRenderedSize(planning, budgetChars)
@@ -204,7 +247,15 @@ export class ExtractionDrain {
     const resumed =
       repChunks.length > 0 && this.qualified.get(runOptions.bufferKey) === chunkFingerprint(repChunks[0].slice(0, 1));
     const chunks = deduped ? this.expandedChunks(turns, collapsed, repChunks) : repChunks;
-    return { singleRun: chunks.length <= 1 && !resumed, chunks, resumed };
+    const partParents = split.partParents.size > 0 ? split.partParents : undefined;
+    return {
+      singleRun: chunks.length <= 1 && !resumed && partParents === undefined,
+      chunks,
+      resumed,
+      partParents,
+      clampedParts: split.clampedParents.size,
+      clampedParents: split.clampedParents.size > 0 ? split.clampedParents : undefined,
+    };
   }
 
   /** Each representative chunk expands to a PARTITION slice of the original window:
@@ -267,7 +318,9 @@ export class ExtractionDrain {
     chunks: readonly BufferTurn[][],
     runOptions: DrainRunOptions,
     preemptable: boolean,
-    preemptHandle?: ExtractionPreemptHandle
+    preemptHandle?: ExtractionPreemptHandle,
+    partParents?: Map<BufferTurn, BufferTurn>,
+    clampedParents?: Set<BufferTurn>
   ): Promise<ExtractionRunResult> {
     const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
     const bufferKey = runOptions.bufferKey;
@@ -293,11 +346,24 @@ export class ExtractionDrain {
         this.rethrowChunkAbort(err, preempt, runOptions.abortSignal?.aborted === true);
         // A successfully dropped thrown chunk does not end the drain: later
         // chunks still run this pass (live drop policy).
-        aggregate = await this.settleThrownChunk(bufferKey, chunk, failures, dropAfter, err, byIdentity, aggregate);
+        aggregate = await this.settleThrownChunk(
+          bufferKey,
+          chunk,
+          failures,
+          dropAfter,
+          err,
+          byIdentity,
+          aggregate,
+          partParents
+        );
         continue;
       }
       const settled = this.settleVerdict(bufferKey, chunk, result, aggregate);
       if (settled.action === "continue") {
+        // Every part extracted: the slice copies match no buffered turn, so the
+        // run cleared only the chunk's real turns; the parent is dropped now
+        // that its last part drained.
+        await this.clearFinishedPartParents(bufferKey, chunk, partParents, clampedParents);
         aggregate = settled.result;
         continue;
       }
@@ -310,6 +376,7 @@ export class ExtractionDrain {
         result: settled.result,
         byIdentity,
         aggregate: settled.aggregate,
+        partParents,
       });
       if (failed.action === "continue") {
         aggregate = failed.result;
@@ -371,7 +438,8 @@ export class ExtractionDrain {
     dropAfter: number,
     cause: unknown,
     byIdentity: boolean,
-    aggregate: ExtractionRunResult | null
+    aggregate: ExtractionRunResult | null,
+    partParents?: Map<BufferTurn, BufferTurn>
   ): Promise<ExtractionRunResult> {
     failures += 1;
     if (failures < dropAfter || !this.dropFailedChunks) {
@@ -384,7 +452,7 @@ export class ExtractionDrain {
       persistedCount: 0,
       durableOutputCount: 0,
     };
-    if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity))) {
+    if (!(await this.dropFailedChunk(bufferKey, chunk, dropAfter, thrown, byIdentity, partParents))) {
       this.setFailureCount(bufferKey, chunk, failures);
       throw cause;
     }
@@ -424,10 +492,20 @@ export class ExtractionDrain {
     result: ExtractionRunResult;
     byIdentity: boolean;
     aggregate: ExtractionRunResult | null;
+    partParents?: Map<BufferTurn, BufferTurn>;
   }): Promise<{ action: "continue" | "return"; result: ExtractionRunResult }> {
     const failures = args.failures + 1;
     if (failures >= args.dropAfter && this.dropFailedChunks) {
-      if (!(await this.dropFailedChunk(args.bufferKey, args.chunk, args.dropAfter, args.result, args.byIdentity))) {
+      if (
+        !(await this.dropFailedChunk(
+          args.bufferKey,
+          args.chunk,
+          args.dropAfter,
+          args.result,
+          args.byIdentity,
+          args.partParents
+        ))
+      ) {
         // No recovery copy: keep the only buffered copy and retry later.
         this.setFailureCount(args.bufferKey, args.chunk, failures);
         return { action: "return", result: mergeDrainResults(args.aggregate, args.result) };
@@ -462,16 +540,22 @@ export class ExtractionDrain {
     chunk: readonly BufferTurn[],
     dropAfter: number,
     result: ExtractionRunResult,
-    byIdentity: boolean
+    byIdentity: boolean,
+    partParents?: Map<BufferTurn, BufferTurn>
   ): Promise<boolean> {
     const reason =
       `dropped after ${dropAfter} repeated extraction failures ` +
       `(last result: status=${result.status} reason=${result.reason ?? "n/a"})`;
-    const copyPath = await this.saveRecoveryCopy(bufferKey, reason, chunk);
+    // Part copies match nothing buffered: their drop set is the parents (full
+    // content lands in the recovery copy, not slices).
+    const dropTurns = partParents === undefined ? chunk : this.dropSetForParts(chunk, partParents);
+    const copyPath = await this.saveRecoveryCopy(bufferKey, reason, dropTurns);
     if (copyPath === null) return false;
-    log.warn(`buffer[${bufferKey}]: dropping ${chunk.length} turns — ${reason}; copy saved to ${copyPath}`);
+    log.warn(`buffer[${bufferKey}]: dropping ${dropTurns.length} turns — ${reason}; copy saved to ${copyPath}`);
     try {
-      const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, chunk, { allowNonPrefix: byIdentity });
+      const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, dropTurns, {
+        allowNonPrefix: byIdentity || partParents !== undefined,
+      });
       if (dropped > 0) {
         log.warn(`buffer[${bufferKey}]: removed ${dropped} buffered turns — ${reason}`);
         return true;
@@ -504,4 +588,63 @@ export class ExtractionDrain {
       return null;
     }
   }
+
+  /** The buffered identities a part-carrying chunk actually removes on drop:
+   *  real turns themselves plus each part copy's parent, once per parent. */
+  private dropSetForParts(
+    chunk: readonly BufferTurn[],
+    partParents: Map<BufferTurn, BufferTurn>
+  ): BufferTurn[] {
+    const seen = new Set<BufferTurn>();
+    const dropTurns: BufferTurn[] = [];
+    for (const turn of chunk) {
+      const target = partParents.get(turn) ?? turn;
+      if (seen.has(target)) continue;
+      seen.add(target);
+      dropTurns.push(target);
+    }
+    return dropTurns;
+  }
+
+  /** A part's slice never equals its parent's buffered content, so no drain
+   *  clears a parent implicitly. When the LAST part of a parent drains, the
+   *  whole turn has been extracted and the parent is removed by identity —
+   *  non-prefix, since earlier chunks may leave it mid-buffer. */
+  private async clearFinishedPartParents(
+    bufferKey: string,
+    chunk: readonly BufferTurn[],
+    partParents?: Map<BufferTurn, BufferTurn>,
+    clampedParents?: Set<BufferTurn>
+  ): Promise<void> {
+    if (partParents === undefined) return;
+    for (const turn of chunk) {
+      const marker = turn.extractionPartOf;
+      if (marker === undefined || marker.part !== marker.of) continue;
+      const parent = partParents.get(turn);
+      if (parent === undefined) continue;
+      if (clampedParents?.has(parent) === true) {
+        // The emitted parts covered only the head: the tail stays out of the
+        // model, so the parent leaves the buffer through the recovery-copy
+        // path — removed, never lost. A failed copy keeps it for retry.
+        const copyPath = await this.saveRecoveryCopy(
+          bufferKey,
+          "clamped at the per-turn part limit; unemitted tail preserved",
+          [parent]
+        );
+        if (copyPath === null) continue;
+        log.warn(`buffer[${bufferKey}]: clamped turn removed after part extraction; copy saved to ${copyPath}`);
+      }
+      try {
+        const dropped = await this.deps.buffer.dropExtractionChunk(bufferKey, [parent], { allowNonPrefix: true });
+        if (dropped === 0) {
+          log.warn(`buffer[${bufferKey}]: extracted turn's parts drained but its parent no longer matches the buffer`);
+        }
+      } catch (err) {
+        log.warn(
+          `buffer[${bufferKey}]: failed to clear an extracted turn's parent (it stays buffered for retry): ${describeError(err)}`
+        );
+      }
+    }
+  }
 }
+

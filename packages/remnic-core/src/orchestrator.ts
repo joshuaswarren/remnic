@@ -3102,6 +3102,7 @@ export class Orchestrator {
         this.config.modelSource !== "gateway" && resolveLocalLlmCapabilities(this.config).localLlm,
       model: this.config.localLlmModel,
       maxContext: this.config.localLlmMaxContext,
+      callMaxChars: this.config.extractionCallMaxChars,
     });
   }
 

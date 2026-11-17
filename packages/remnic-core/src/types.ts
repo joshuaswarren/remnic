@@ -1711,6 +1711,14 @@ export interface PluginConfig
    * the buffer forever. Default: `5`.
    */
   extractionChunkDropAfterFailures: number;
+  /**
+   * Payload-cap drain: maximum rendered characters sent per extraction call.
+   * A window is chunked at min(this cap, the model's context budget), and a
+   * turn longer than the cap is split into verbatim `extractionPartOf`
+   * parts so every part is extracted — nothing is dropped by clamping.
+   * Default: `12000`.
+   */
+  extractionCallMaxChars: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;
   localLlmFastModel: string;
