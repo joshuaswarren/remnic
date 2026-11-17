@@ -795,6 +795,12 @@
       "graduationCriterion": "Default-on in the published bench recall suites (say-once, locomo, longmemeval) shows no recall-quality regression against the default path across 2 consecutive stable releases, and no open `regression` issue names the flag."
     },
     {
+      "flag": "trustPrincipalHeader",
+      "addedIn": "10.0.132",
+      "issue": 3462,
+      "graduationCriterion": "Stays default-off unless principal authenticity is enforced server-side (signed or proxy-verified principal claims) instead of trusted from the request; a graduation PR must link a 7-day soak with no open `regression` issue naming the flag."
+    },
+    {
       "flag": "trustScoreEnabled",
       "addedIn": "<=9.69.55",
       "issue": 3032,
