@@ -103,6 +103,13 @@ interface RingSlot {
   counts: Record<BufferIngressOutcome, BufferIngressOutcomeCount>;
 }
 
+/** Test-visible view of a per-entry digest memo: digest set only. The validity
+ * refs (WeakRefs over entry arrays) stay private; tests assert rebuild
+ * identity through the map plus the observable counts, never the refs. */
+export interface BufferIngressMemoView {
+  digests: Set<string>;
+}
+
 interface EntryDigestMemo {
   // WeakRefs: after clearAfterExtraction replaces the entry arrays, the old
   // arrays must not stay reachable through the memo. Deref-compare keeps the
@@ -116,7 +123,11 @@ export class BufferIngressCounters {
   private readonly ring: (RingSlot | null)[] = Array.from({ length: RING_SLOTS }, () => null);
   private readonly totals: Record<BufferIngressOutcome, BufferIngressOutcomeCount> = zeroCounts();
   private readonly memos = new WeakMap<BufferEntryState, EntryDigestMemo>();
-  /** Hour of the most recent record; its bucket is logged when the hour ends. */
+  /** Test-only: the digest set cached for an entry, or undefined when no
+   * memo was built yet. Exposes digests only — never the validity refs. */
+  memoForTest(entry: BufferEntryState): BufferIngressMemoView | undefined {
+    return this.memos.get(entry);
+  }
   private lastActiveHourMs: number | null = null;
 
   constructor(
@@ -126,7 +137,8 @@ export class BufferIngressCounters {
   ) {}
 
   /**
-   * Observe an appended turn (called AFTER the buffer pushed it). Counts
+   * Observe an offered turn (called BEFORE the buffer pushes it, so a lazily
+   * rebuilt digest memo sees only turns already in the entry). Counts
    * `accepted` and, when an identical role+content digest is already tracked
    * for this entry, the `acceptedExactDuplicate` sub-count. Returns nothing;
    * the buffer behaves identically either way.
@@ -138,6 +150,9 @@ export class BufferIngressCounters {
     const hourStartMs = Math.floor(this.now() / HOUR_MS) * HOUR_MS;
     const chars = turn.content.length;
     this.record("accepted", chars, hourStartMs);
+    // The offered turn is counted, then added to the memo: a later re-offer
+    // of identical content is recognised as a duplicate of an already-seen
+    // turn. Set semantics dedupe — no double count.
     const memo = this.memoFor(entry);
     const digest = contentDigest(turn);
     if (memo.digests.has(digest)) this.record("acceptedExactDuplicate", chars, hourStartMs);
@@ -234,7 +249,22 @@ export class BufferIngressCounters {
     // would leave the set permanently above the cap (later appends evict one
     // each). Keep the most recent turns, matching the FIFO order of the
     // steady-state path, so recognition degrades to "not a duplicate".
-    if (memo && memo.turnsRef.deref() === entry.turns && (memo.retainedRef?.deref() ?? undefined) === retained) return memo;
+    // Distinguish "built with no retained array" (retainedRef undefined) from
+    // "built with one that was since collected" (deref undefined but the entry
+    // still has none... no: if the entry has none NOW and the memo was built
+    // with one, the entry changed shape -> rebuild). Reuse only when both sides
+    // agree on presence AND identity.
+    // Reuse only when both sides agree on presence AND identity: a memo built
+    // with a retained array that the buffer later deleted (entry.retainedTurns
+    // now undefined) must rebuild, and a collected WeakRef must never read as
+    // "absent" (that would reuse a memo whose digests still include removed
+    // content). Any memo built with a retained array therefore requires a
+    // live identical array now; a memo built without one requires none now.
+    const retainedMatch =
+      memo?.retainedRef === undefined
+        ? memo !== undefined && retained === undefined
+        : memo.retainedRef.deref() !== undefined && memo.retainedRef.deref() === retained;
+    if (memo && memo.turnsRef.deref() === entry.turns && retainedMatch) return memo;
     const ordered = [...entry.turns, ...(retained ?? [])];
     const bounded = ordered.length > DUPLICATE_DIGEST_CAP ? ordered.slice(ordered.length - DUPLICATE_DIGEST_CAP) : ordered;
     const fresh: EntryDigestMemo = {

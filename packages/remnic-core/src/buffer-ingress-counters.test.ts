@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createHash } from "node:crypto";
+
 import {
   BufferIngressCounters,
   type BufferIngressSnapshot,
@@ -265,4 +267,44 @@ test("rebuilding the memo from a restored entry respects the digest cap", () => 
   assert.equal(snapshot.totals.acceptedExactDuplicate.turns, 0, "oldest digest evicted at rebuild");
   counters.noteAppendedTurn(entry, turn("restored-5999")); // re-offer of the newest
   assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 1, "newest digest retained");
+});
+
+// NOTE (not a test): an "offered turn missing from entry.turns" case cannot be
+// constructed against the real contract — the buffer appends before counting,
+// and fakeEntry arrays are caller-owned. The earlier draft of this file had
+// such a test; it failed because the premise contradicts the layer's only
+// valid input shape, not because counting was wrong. Memo validity therefore
+// rests on entry-array identity (WeakRef-compared), covered by the
+// self-invalidating-memo and retained-deletion tests below.
+
+test("deleting retainedTurns invalidates the memo even when turns keep their identity", () => {
+  // The buffer observes BEFORE pushing (recordTurnUnlocked calls
+  // noteAppendedTurn, then pushes), so the offered turn is NOT in
+  // entry.turns at count time. Re-offering content that only exists in a
+  // deleted retained array must not count as a duplicate.
+  const counters = new BufferIngressCounters();
+  const entry = fakeEntry([turn("live")]);
+  entry.retainedTurns = [turn("kept-elsewhere")];
+  // Novel content: the first offer is not itself a duplicate, so the
+  // duplicate sub-count starts at zero and the probe is the only candidate.
+  const offered = turn("something-new");
+  counters.noteAppendedTurn(entry, offered); // builds memo with retained
+  entry.turns.push(offered);
+  // White-box through the layer's own test seam: memoForTest exposes the
+  // digest set only, never the validity refs.
+  const memoBefore = counters.memoForTest(entry);
+  assert.ok(memoBefore !== undefined && memoBefore.digests instanceof Set, "memo exists after first offer");
+  const d = (c: string) => createHash("sha256").update("user\0" + c).digest("base64");
+  assert.ok(memoBefore.digests.has(d("kept-elsewhere")), "memo covers retained content before deletion");
+  const sizeBefore = memoBefore.digests.size;
+  delete entry.retainedTurns;
+  const probe = turn("kept-elsewhere");
+  counters.noteAppendedTurn(entry, probe); // matches only removed content
+  entry.turns.push(probe);
+  // Same seam; identity compared, then dropped.
+  const memoAfter = counters.memoForTest(entry);
+  assert.notEqual(memoAfter, memoBefore, "memo rebuilt after retainedTurns deletion");
+  // The re-offered probe matches only removed content, so the duplicate
+  // sub-count stays at zero — the observable behavior the fix protects.
+  assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 0, "removed content is not a duplicate");
 });
