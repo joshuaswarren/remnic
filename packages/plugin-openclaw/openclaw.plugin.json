@@ -7650,6 +7650,12 @@
         "default": 5,
         "description": "Consecutive failed extraction attempts after which a stuck buffer chunk is dropped (copy saved under state/dropped/ first)."
       },
+      "extractionCallMaxChars": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 12000,
+        "description": "Maximum rendered characters per extraction call; oversized turns split into verbatim extractionPartOf parts so every part is extracted."
+      },
       "extractionParseEmptyMaxAttempts": {
         "type": "number",
         "default": 3,

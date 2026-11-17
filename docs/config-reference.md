@@ -1035,6 +1035,7 @@ Set `modelSource` to `plugin` (or remove it) to restore the original behavior wh
 | `extractionBreakerCooldownMs` | `300000` | Breaker open cooldown (5m) for transient provider failures (429/5xx/network). A half-open probe after cooldown closes the breaker on one success. |
 | `extractionBreakerAuthCooldownMs` | `1800000` | Breaker open cooldown (30m) for auth/config failures (401/403 or "no models configured"), which open the breaker immediately instead of hot-looping. |
 | `extractionChunkDropAfterFailures` | `5` | Consecutive failed trigger-drain extraction attempts after which the failing buffer chunk is dropped (a JSON copy is saved under `state/dropped/` first) so a session whose window never extracts cannot stall its buffer forever. Only failures that are the chunk's own count: an empty or unparseable answer, and (local model) an answer that is unusable or an HTTP 400, 413 or 422. An outage never counts: provider errors, timeouts, 429, 5xx, an unreachable local endpoint, and auth or configuration failures (including 401, 403, 404, 405 and 410 from a local endpoint). The counts live in memory, so a restart starts them again from zero. |
+| `extractionCallMaxChars` | `12000` | Maximum rendered characters sent per extraction call, applied at the min(cap, model budget) seam so a call fits the model's output limit. A turn longer than the render clamp splits into ordered verbatim part copies marked `extractionPartOf` (sentence/paragraph boundaries only, at most 8 parts; a clamped parent leaves the buffer through the dropped-chunk recovery copy with its full content). The parent clears only when its last part drains — nothing is dropped. |
 | `localLlmMaxContext` | `(unset)` | Override context window size |
 | `localLlmFastEnabled` | `false` | Enable a separate fast local tier for short planner/rerank/helper calls |
 | `localLlmFastModel` | `""` | Optional model id for the fast local tier |
@@ -2304,6 +2305,7 @@ value matches the shipped default.
 | `extractionBreakerCooldownMs` | `300000` | `300000` |
 | `extractionBreakerAuthCooldownMs` | `1800000` | `1800000` |
 | `extractionChunkDropAfterFailures` | `5` | `5` |
+| `extractionCallMaxChars` | `12000` | `12000` |
 | `localLlmMaxContext` | (unset) | (unset) |
 | `localLlmFastEnabled` | `false` | `false` unless you have a separate fast local tier |
 | `localLlmFastModel` | `""` | `""` |

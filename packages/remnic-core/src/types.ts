@@ -1704,20 +1704,11 @@ export interface PluginConfig
   extractionBreakerCooldownMs: number;
   /** Breaker open cooldown (ms) for auth/config failures (longer — provider is misconfigured). */
   extractionBreakerAuthCooldownMs: number;
-  /**
-   * Consecutive failed extraction attempts after which the failing
-   * trigger-drain chunk is dropped (with a side-file copy under
-   * `state/dropped/`) so a session whose window never extracts cannot stall
-   * the buffer forever. Default: `5`.
-   */
+  /** Consecutive failed extraction attempts after which the failing
+   *  trigger-drain chunk is dropped (side-file copy under `state/dropped/`). Default: `5`. */
   extractionChunkDropAfterFailures: number;
-  /**
-   * Payload-cap drain: maximum rendered characters sent per extraction call.
-   * A window is chunked at min(this cap, the model's context budget), and a
-   * turn longer than the cap is split into verbatim `extractionPartOf`
-   * parts so every part is extracted — nothing is dropped by clamping.
-   * Default: `12000`.
-   */
+  /** Maximum rendered characters per extraction call; oversized turns split
+   *  into verbatim `extractionPartOf` parts so every part is extracted. Default: `12000`. */
   extractionCallMaxChars: number;
   // Local LLM fast tier (v9.1) — smaller model for quick ops
   localLlmFastEnabled: boolean;

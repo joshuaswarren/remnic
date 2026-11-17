@@ -120,8 +120,36 @@ export function extractionWindowBudgetChars(input: {
  * boundaries; a segment longer than the budget hard-cuts at the boundary.
  * The slices are contiguous and verbatim — join("") restores the input.
  */
+function splitSegments(content: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let index = 0;
+  while (index < content.length) {
+    const ch = content[index];
+    if (ch === "\n") {
+      let end = index;
+      while (end < content.length && content[end] === "\n") end += 1;
+      out.push(content.slice(start, end));
+      start = end;
+      index = end;
+      continue;
+    }
+    if (ch === "." || ch === "!" || ch === "?") {
+      let end = index + 1;
+      while (end < content.length && (content[end] === " " || content[end] === "\t")) end += 1;
+      out.push(content.slice(start, end));
+      start = end;
+      index = end;
+      continue;
+    }
+    index += 1;
+  }
+  if (start < content.length) out.push(content.slice(start));
+  return out;
+}
+
 function splitTurnContent(content: string, maxChars: number): string[] {
-  const segments = content.match(/[^.!?\n]+[.!?]?\s*|\n+/g) ?? [content];
+  const segments = splitSegments(content);
   const parts: string[] = [];
   let current = "";
   for (const segment of segments) {
