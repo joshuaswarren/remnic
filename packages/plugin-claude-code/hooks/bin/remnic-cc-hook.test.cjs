@@ -969,8 +969,8 @@ test("runner source: path inputs are type-validated before use (#1518 validate p
   assert.match(src, /const cwd = input\.cwd \|\| ""/, "cwd must be defaulted to empty string");
   assert.match(
     src,
-    /const transcriptPath = input\.transcript_path \|\| ""/,
-    "transcript_path must be defaulted to empty string",
+    /const transcriptPath = input\.transcript_path \|\| input\.transcriptPath \|\| ""/,
+    "transcript_path must be defaulted to empty string (camelCase fallback allowed, snake_case wins)",
   );
 });
 

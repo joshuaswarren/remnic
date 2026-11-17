@@ -58,4 +58,4 @@ Triggers:
 - [ ] No secrets, credentials, or transient state were written.
 - [ ] Canonical `remnic_*` tool names were used over legacy aliases.
 
-> Tool names: this skill uses the canonical `remnic_*` MCP tools. Legacy `engram_*` aliases remain accepted during v1.x for backward compatibility.
+> Tool names: this skill uses the canonical `remnic_*` MCP tools. Legacy `engram.*` names (for example `engram.recall`) remain accepted during v1.x for backward compatibility.

@@ -61,7 +61,9 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
    memory corpus learns from Antigravity work, not just file edits. Observations
    are triggered on file-mutating tools (`write_to_file`, `replace_file_content`,
    `multi_replace_file_content`, `run_command`) and on every `Stop` (turn end),
-   which also drains any unobserved tail. Transcript source: the `transcriptPath`
+   which also drains any unobserved tail (the shared session-end path
+   flushes the tail and marks the session done; a later `SessionStart`
+   clears the marker so the resumed session observes again). Transcript source: the `transcriptPath`
    from the hook payload when present (agy passes it), else `AGY_TRANSCRIPT_DIR`,
    parsed per `transcriptFormat` (ATIF when agy writes ATIF JSON, JSONL otherwise).
  - **LCM coordination** — no compaction hook exists on agy, so there is no
@@ -109,9 +111,12 @@ to a directory you control or leave observation to hook-payload text.
 
 - Plugin hooks are best-effort and fail open — a Remnic outage never blocks a
   Antigravity session; recall/observe simply no-op until the daemon is back.
- - `Stop` (mapped to the hook's session-end path) may not fire in Antigravity Cloud
-   sessions; the daemon-side extraction pipeline picks up buffered observations
-   on its own schedule regardless.
+ - `Stop` fires per turn (including model stops), not only at conversation
+   close; each firing drains the unobserved tail through the shared session-end
+   path, and a later `SessionStart` clears the done marker for the resumed
+   session. `Stop` may not fire in Antigravity Cloud sessions; the daemon-side
+   extraction pipeline picks up buffered observations on its own schedule
+   regardless.
 - Observation covers user prompts, agent messages, and tool calls/results
   rendered from the ATIF transcript (bounded per message). It is not a
   verbatim transcript upload.

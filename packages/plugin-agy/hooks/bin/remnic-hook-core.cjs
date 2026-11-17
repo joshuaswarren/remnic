@@ -206,6 +206,23 @@ function run(config) {
     }
   }
 
+  // Antigravity CLI documents camelCase payload fields (conversationId,
+  // transcriptPath, lastUserInput). Apply them only when the snake_case key
+  // is absent so existing host payloads are unchanged.
+  function normalizeHookInput(input) {
+    if (input.session_id === undefined || input.session_id === "") {
+      if (typeof input.conversationId === "string" && input.conversationId) {
+        input.session_id = input.conversationId;
+      }
+    }
+    if (input.prompt === undefined || input.prompt === "") {
+      if (typeof input.lastUserInput === "string" && input.lastUserInput) {
+        input.prompt = input.lastUserInput;
+      }
+    }
+    return input;
+  }
+
   function parseInput(raw) {
     try {
       const d = JSON.parse(raw);
@@ -653,7 +670,9 @@ function run(config) {
   // can supply config.resolveTranscriptPath(input) to derive it — e.g. from
   // the session id and a well-known transcript directory.
   function transcriptPathFor(input) {
-    const transcriptPath = input.transcript_path || "";
+    // Antigravity CLI documents camelCase payload fields (transcriptPath);
+    // snake_case wins when both are present so existing hosts are unchanged.
+    const transcriptPath = input.transcript_path || input.transcriptPath || "";
     if (isString(transcriptPath) && transcriptPath) {
       return transcriptPath;
     }
@@ -669,11 +688,12 @@ function run(config) {
   }
 
   // Hosts that omit cwd from the hook payload still export a project-dir
-  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR).
+  // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
+  // Antigravity: AGY_PROJECT_DIR).
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;
-    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
+    return process.env.AGY_PROJECT_DIR || process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
   }
 
   // ── cursor / lock state hardening (post-tool + session-end) ────────────────
@@ -1504,7 +1524,7 @@ function run(config) {
       const log = makeLogger("post-tool-observe");
       try {
         const raw = readStdin();
-        const input = parseInput(raw);
+        const input = normalizeHookInput(parseInput(raw));
         const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
         if (token) await observeWorker(input, token, log);
       } catch (err) {
@@ -1518,7 +1538,7 @@ function run(config) {
       const log = makeLogger("session-end");
       try {
         const raw = readStdin();
-        const input = parseInput(raw);
+        const input = normalizeHookInput(parseInput(raw));
         const token = process.env.REMNIC_HOOK_TOKEN || resolveToken();
         await handleSessionEnd(input, token, log, raw, { drainRetry: true });
       } catch (err) {
@@ -1536,7 +1556,7 @@ function run(config) {
 
     const log = makeLogger(event);
     const raw = readStdin();
-    const input = parseInput(raw);
+    const input = normalizeHookInput(parseInput(raw));
 
     const handlers = {
       "session-start": handleSessionStart,

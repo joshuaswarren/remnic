@@ -302,7 +302,13 @@ function forward(msg, isNotification) {
         // request options want the bare address.
         hostname: parsed.hostname.replace(/^\[|\]$/g, ""),
         port: parsed.port || (parsed.protocol === "https:" ? 443 : 80),
-        path: `${parsed.pathname || ""}${parsed.search || ""}` || "/mcp",
+        // A bare base URL (REMNIC_DAEMON_URL without a path) targets the
+        // daemon's /mcp endpoint; an explicit path (subpath mount or the
+        // full endpoint) is preserved as configured.
+        path:
+          (parsed.pathname === "/" || !parsed.pathname
+            ? "/mcp"
+            : parsed.pathname) + (parsed.search || ""),
         headers,
       },
       (res) => {

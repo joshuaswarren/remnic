@@ -383,6 +383,65 @@ test("session resume: done marker restores the cursor checkpoint and observation
   }
 });
 
+// ── camelCase payload fallbacks (agy native contract) ──────────────────────
+
+test("session-start: accepts conversationId when session_id is absent", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "session-start",
+      { conversationId: "camel-1", source: "startup" },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /Remnic Memory Recall/);
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+    assert.equal(recall.body.sessionKey, "camel-1");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: snake_case session_id wins over conversationId", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "snake-1", conversationId: "camel-1", source: "startup" },
+      { port, home },
+    );
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+    assert.equal(recall.body.sessionKey, "snake-1");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("user-prompt-recall: accepts lastUserInput when prompt is absent", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "user-prompt-recall",
+      { session_id: "s1", lastUserInput: "please remember the deployment runbook location" },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /remnic-memory/);
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── fail-open ──────────────────────────────────────────────────────────────
 
 test("fail-open: dead daemon still emits continue and never throws", async () => {

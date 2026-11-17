@@ -79,6 +79,60 @@ test("a non-1 opt-out value still refuses", async () => {
   }
 });
 
+test("bare base URL without a path targets the /mcp endpoint", async () => {
+  // Regression: a bare REMNIC_PLUGIN_DAEMON_URL (no path) must resolve to
+  // /mcp, not /. Spawn a mock that only answers /mcp and send it a
+  // tools/list through the proxy; a path bug surfaces as -32001.
+  const http = require("node:http");
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      if (req.url === "/mcp") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(body).id, result: { tools: [] } }));
+      } else {
+        res.writeHead(404);
+        res.end(`unexpected path ${req.url}`);
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const port = server.address().port;
+  const home = mkHome();
+  const child = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      HOME: home,
+      REMNIC_PLUGIN_DAEMON_URL: `http://127.0.0.1:${port}`,
+      REMNIC_PLUGIN_DAEMON_TOKEN: "test-token",
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (c) => (stdout += c));
+  const request = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  child.stdin.write(`${request}\n`);
+  child.stdin.end();
+  const reply = await new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(""), 5000);
+    const chunks = [];
+    child.stdout.on("data", (c) => {
+      chunks.push(c.toString());
+      const text = chunks.join("");
+      const line = text.split("\n").map((l) => l.trim()).find((l) => l.startsWith("{"));
+      if (line) {
+        clearTimeout(timer);
+        resolve(line);
+      }
+    });
+  });
+  server.close();
+  try { child.kill(); } catch { /* exited */ }
+  fs.rmSync(home, { recursive: true, force: true });
+  assert.match(reply, /"result"\s*:\s*\{\s*"tools"/, "bare base URL reached /mcp");
+});
+
 test("loopback http starts without warning or refusal", async () => {
   const { code, stderr } = await runProxy("http://127.0.0.1:4318/mcp");
   assert.equal(code, 0);
