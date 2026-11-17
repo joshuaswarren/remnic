@@ -139,6 +139,42 @@ function okServer(extra) {
 
 // ── session-start ──────────────────────────────────────────────────────────
 
+test("post-tool-observe: missing payload transcriptPath falls back to the SQLite db", async () => {
+  // The pane sends transcriptPath pointing at a .jsonl that never exists;
+  // the old code parsed it as ATIF and threw. The db holds the turn.
+  const home = mkHome();
+  const sessionId = "fix-session-1";
+  const { DatabaseSync } = require("node:sqlite");
+  const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, `${sessionId}.db`));
+  db.exec("CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, step_format INTEGER)");
+  const blob = (...ss) => Buffer.concat([Buffer.from([8, 15]), ...ss.map((s) => Buffer.from(`\0${s}`))]);
+  db.prepare("INSERT INTO steps VALUES (?,?,?,?,?)").run(0, 15, 3, blob("Payload-path fallback turn."), 0);
+  db.close();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1", transcriptPath: path.join(home, "ghost.jsonl") },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    const deadline = Date.now() + 10000;
+    let observe = null;
+    while (Date.now() < deadline) {
+      observe = calls.find((c) => c.url === "/engram/v1/observe");
+      if (observe) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(observe, "missing payload path fell back to the SQLite db");
+    assert.match(observe.body.messages[0].content, /Payload-path fallback turn/);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("session-start: injects recall context and recovers cwd from AGY_PROJECT_DIR", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer(okServer());
