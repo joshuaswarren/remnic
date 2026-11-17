@@ -4,6 +4,7 @@ import type { RemnicClient } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import type { PiApi, PiContextSnapshot, DaemonProbeResult, StateEntryData } from "./index.js";
 import type { RecallTimeoutBreaker } from "./recall-timeout-breaker.js";
+import { recheckOfflineUntilReachable, refreshOfflineStatusLabel } from "./status-label.js";
 
 // The index.ts-local helpers the startup chain depends on, threaded in as
 // callbacks: every `./index.js` import above is type-only, so there is no
@@ -92,6 +93,33 @@ class StartupProbeChain {
         // recall is paused, not that the daemon is down, and the ready label needs no refresh.
         if (statusProbe === "unreachable" && label !== recallDisabledStatus) {
           this.ctx.state.statusOffline = true;
+          // Idle sessions have no later traffic to refresh this, so re-probe in
+          // the background until the daemon answers or the session ends. The
+          // loop is guarded by isCurrent and its waits are unref'd.
+          void recheckOfflineUntilReachable(
+            {
+              probe: () => this.deps.probeHealth(this.ctx.client, this.ctx.config).then((verdict) => verdict.result),
+              onRecovered: () => {
+                if (!this.isCurrent()) return;
+                this.ctx.client.markReachable();
+                refreshOfflineStatusLabel(
+                  this.ctx.session,
+                  this.ctx.state,
+                  this.ctx.config,
+                  this.ctx.recallTimeoutBreaker.isTripped(),
+                );
+              },
+              isLive: () => this.isCurrent(),
+              onError: (err) => {
+                if (!this.isCurrent()) return;
+                session.notify(`Remnic offline re-probe failed: ${errorText(err)}`, "warning");
+              },
+            },
+            { initialDelayMs: this.ctx.config.daemonCooldownMs },
+          ).catch((cause: unknown) => {
+            if (!this.isCurrent()) return;
+            session.notify(`Remnic offline re-probe failed: ${errorText(cause)}`, "warning");
+          });
         }
       }
       if (this.isCurrent()) {
