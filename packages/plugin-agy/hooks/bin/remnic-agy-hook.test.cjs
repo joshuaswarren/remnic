@@ -220,6 +220,12 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
   db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
     1, 132, 3, blob("write_file", '{"Path":"notes.txt"}', "Saved notes.txt with the staging reminder."),
   );
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    2, 15, 3, blob("请记住每天备份数据库"),
+  );
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    3, 15, 3, blob("(bot-abc123", "Run tests"),
+  );
   db.close();
   const { server, port, calls } = await startServer(okServer());
   try {
@@ -238,7 +244,14 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
     }
     assert.ok(observe, "observe endpoint was called for the SQLite turn");
     assert.equal(observe.body.sessionKey, sessionId);
-    assert.match(observe.body.messages[0].content, /staging database resets nightly/);
+    const contents = observe.body.messages.map((m) => m.content).join("\n---\n");
+    assert.match(contents, /staging database resets nightly/);
+    assert.match(contents, /请记住每天备份数据库/);
+    assert.match(contents, /Run tests/);
+    const byContent = Object.fromEntries(observe.body.messages.map((m) => [m.content.slice(0, 20), m.role]));
+    assert.equal(byContent["Remember that the st"], "user");
+    const runRow = observe.body.messages.find((m) => /Run tests/.test(m.content));
+    assert.equal(runRow.role, "assistant");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });

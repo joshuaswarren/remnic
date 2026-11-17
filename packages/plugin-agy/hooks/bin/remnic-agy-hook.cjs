@@ -132,22 +132,26 @@ function parseAgySqlite(dbPath) {
         ? row.step_payload
         : Buffer.from(row.step_payload);
       if (!payload || payload.length === 0) continue;
+      // Preserve Unicode conversation text (mixed-language turns); drop
+      // only binary framing and control/format characters.
       const text = payload
         .toString("utf8")
-        .replace(/[^\x20-\x7e\n\r\t]/g, " ")
-        .replace(/[^\x20-\x7e\n\r\t ]{2,}/g, " ")
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\uFFFE\uFFFF]/g, " ")
         .split("\n")
         .map((l) => l.trim())
-        .filter((l) => l.length >= 12)
+        .filter((l) => l.length > 0)
         .join("\n")
         .trim();
       if (!text) continue;
-      // step_type 15 carries user/model turns; 132 carries tool calls and
-      // results; everything else is rendered as assistant context. The
-      // exact enum is undocumented, so role follows content, not the code:
-      // tool-call-shaped rows become assistant (they are agent activity).
+      // Role follows verified payload markers, not the step code: every
+      // sampled model row carries a `(bot-<id>` marker while the genuine
+      // user row has none (only `no_tool_call_check`). Tool-call rows
+      // (call_<id>, tool JSON) are agent activity. Unmarked rows default
+      // to user — a fresh prompt with no marker is the observed user shape.
+      const hasBotMarker = /\(bot-/.test(text);
+      const hasToolCall = /call_\d|\{"[A-Z][a-zA-Z]*":/.test(text);
       messages.push({
-        role: row.step_type === 15 ? "user" : "assistant",
+        role: hasBotMarker || hasToolCall ? "assistant" : "user",
         content: text.slice(0, AGY_SQLITE_MESSAGE_CAP),
       });
     }
