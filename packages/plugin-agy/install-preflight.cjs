@@ -58,8 +58,8 @@ try {
 if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
   fail(
     `daemon URL ${daemonUrl} uses unsupported protocol ${parsed.protocol} (expected http: or https:); ` +
-      "mcp-server-stdio will refuse to send the bearer token over plaintext to a non-loopback target. " +
-      "Use https:// or a loopback http:// address, or set REMNIC_MCP_ALLOW_CLEARTEXT_HTTP=1 on a trusted network."
+      "mcp-server-stdio only supports http: and https: protocols. " +
+      "Use https:// or a loopback http:// address."
   );
 }
 
