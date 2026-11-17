@@ -1,0 +1,37 @@
+{
+  "remnic": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "node ./hooks/bin/remnic-agy-hook.cjs post-tool-observe",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "^(write|edit|apply_patch|notebook_edit|run_command)$"
+      }
+    ],
+    "PreInvocation": [
+      {
+        "command": "node ./hooks/bin/remnic-agy-hook.cjs user-prompt-recall",
+        "timeout": 20,
+        "type": "command"
+      }
+    ],
+    "SessionStart": [
+      {
+        "command": "node ./hooks/bin/remnic-agy-hook.cjs session-start",
+        "timeout": 75,
+        "type": "command"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "node ./hooks/bin/remnic-agy-hook.cjs session-end",
+        "timeout": 60,
+        "type": "command"
+      }
+    ]
+  }
+}
