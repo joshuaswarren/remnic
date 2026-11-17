@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { hostname } from "node:os";
 import path from "node:path";
 
 // Leaf submodule (not the `@remnic/core` barrel) so the omp pre-bundle's
@@ -12,6 +13,13 @@ export interface RemnicPiConfig {
   remnicDaemonUrl: string;
   authToken?: string;
   namespace?: string;
+  /**
+   * Writer identity sent as the `x-engram-principal` request header, stamped on
+   * every turn as `sessionOwnerPrincipal`. Honored only when the daemon has
+   * `server.trustPrincipalHeader` enabled; unset keeps the daemon's
+   * `server.principal` default.
+   */
+  principal?: string;
   recallMode: "auto" | "minimal" | "full" | "graph_mode" | "no_recall";
   recallTopK: number;
   recallBudgetChars: number;
@@ -204,6 +212,22 @@ function coerceRecallMode(value: unknown): RemnicPiConfig["recallMode"] {
   throw new Error(`Invalid recallMode value for Remnic Pi config: ${JSON.stringify(value)}`);
 }
 
+/**
+ * Last-resort writer identity when no explicit principal is configured: a
+ * herdr-style pane id from the agent process env joined to this host, so a
+ * fleet of panes on one machine self-labels as `w7F:p1@host` with zero config.
+ */
+function deriveWriterPrincipal(env: NodeJS.ProcessEnv): string | undefined {
+  const pane = env.HERDR_PANE_ID?.trim();
+  if (!pane) return undefined;
+  try {
+    const host = hostname().trim();
+    return host ? `${pane}@${host}` : pane;
+  } catch {
+    return pane;
+  }
+}
+
 function readConfigFile(configPath: string): Record<string, unknown> {
   if (!existsSync(configPath)) return {};
   try {
@@ -247,6 +271,10 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     coerceOptionalString(fileConfig.authToken, "authToken") ??
     coerceOptionalString(env.REMNIC_PI_AUTH_TOKEN, "REMNIC_PI_AUTH_TOKEN");
   const namespace = coerceOptionalNonEmptyString(fileConfig.namespace, "namespace");
+  const principal =
+    coerceOptionalNonEmptyString(fileConfig.principal, "principal") ??
+    coerceOptionalString(env.REMNIC_PI_PRINCIPAL, "REMNIC_PI_PRINCIPAL") ??
+    deriveWriterPrincipal(env);
 
   const requestTimeoutMs = coercePositiveInt(
     fileConfig.requestTimeoutMs,
@@ -287,6 +315,7 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     remnicDaemonUrl: daemonUrl,
     authToken,
     namespace,
+    principal,
     recallMode: coerceRecallMode(fileConfig.recallMode),
     recallTopK: coercePositiveInt(fileConfig.recallTopK, DEFAULT_CONFIG.recallTopK, 50, "recallTopK"),
     recallBudgetChars: coercePositiveInt(fileConfig.recallBudgetChars, DEFAULT_CONFIG.recallBudgetChars, 64000, "recallBudgetChars"),

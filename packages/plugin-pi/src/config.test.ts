@@ -424,3 +424,41 @@ test("an empty observeOutboxPath resolves to the documented default instead of t
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("loadConfig reads principal from file and REMNIC_PI_PRINCIPAL env", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-principal-config-"));
+  try {
+    const filePath = path.join(dir, "remnic.config.json");
+    fs.writeFileSync(filePath, JSON.stringify({ principal: "lane-a@host-b" }), "utf8");
+    assert.equal(loadConfig({ configPath: filePath, env: {} }).principal, "lane-a@host-b");
+    assert.equal(
+      loadConfig({ configPath: filePath, env: { REMNIC_PI_PRINCIPAL: "env-principal" } }).principal,
+      "lane-a@host-b",
+      "file value takes precedence over env, matching authToken",
+    );
+
+    const emptyPath = path.join(dir, "empty.config.json");
+    fs.writeFileSync(emptyPath, JSON.stringify({}), "utf8");
+    assert.equal(
+      loadConfig({ configPath: emptyPath, env: { REMNIC_PI_PRINCIPAL: "env-principal" } }).principal,
+      "env-principal",
+    );
+    assert.equal(loadConfig({ configPath: emptyPath, env: {} }).principal, undefined);
+    assert.equal(
+      loadConfig({ configPath: emptyPath, env: { REMNIC_PI_PRINCIPAL: "" } }).principal,
+      undefined,
+      "empty env var means unset, matching authToken (Kilo review)",
+    );
+
+    const derived = loadConfig({ configPath: emptyPath, env: { HERDR_PANE_ID: "w7F:p1" } }).principal;
+    assert.match(derived ?? "", /^w7F:p1@.+$/, "HERDR_PANE_ID derives <pane>@<host> when unset elsewhere");
+    assert.equal(
+      loadConfig({ configPath: emptyPath, env: { HERDR_PANE_ID: "w7F:p1", REMNIC_PI_PRINCIPAL: "env-principal" } })
+        .principal,
+      "env-principal",
+      "explicit env beats derivation",
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

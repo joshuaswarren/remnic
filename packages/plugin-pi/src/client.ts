@@ -496,13 +496,19 @@ export class RemnicClient {
       controller.abort();
     }, timeoutMs);
     try {
+      const headers = new Headers({ "X-Engram-Client-Id": "pi" });
+      if (body !== undefined) {
+        headers.set("Content-Type", "application/json");
+      }
+      if (this.config.authToken) {
+        headers.set("Authorization", `Bearer ${this.config.authToken}`);
+      }
+      if (this.config.principal) {
+        headers.set("x-engram-principal", this.config.principal);
+      }
       const response = await fetch(`${this.config.remnicDaemonUrl}${pathname}`, {
         method,
-        headers: {
-          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-          ...(this.config.authToken ? { Authorization: `Bearer ${this.config.authToken}` } : {}),
-          "X-Engram-Client-Id": "pi",
-        },
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
       });
