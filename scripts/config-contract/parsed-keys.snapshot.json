@@ -117,6 +117,7 @@
     "agentAccessHttp.maxBodyBytes",
     "agentAccessHttp.port",
     "agentAccessHttp.principal",
+    "agentAccessHttp.trustPrincipalHeader",
     "agentAccessHttp.writeRateLimitMaxRequests",
     "agentAccessHttp.writeRateLimitWindowMs",
     "autoPromoteMinConfidenceTier",

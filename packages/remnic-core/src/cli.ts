@@ -6816,7 +6816,7 @@ export function registerCli(
             maxBodyBytes: Number.isFinite(maxBodyBytesRaw) ? maxBodyBytesRaw : 131072,
             writeRateLimitMaxRequests: orchestrator.config.agentAccessHttp.writeRateLimitMaxRequests,
             writeRateLimitWindowMs: orchestrator.config.agentAccessHttp.writeRateLimitWindowMs,
-            trustPrincipalHeader: options.trustPrincipalHeader === true,
+            trustPrincipalHeader: options.trustPrincipalHeader === true || orchestrator.config.agentAccessHttp.trustPrincipalHeader === true,
             citationsEnabled: resolveConversationContextCapabilities(orchestrator.config).citations,
             citationsAutoDetect: orchestrator.config.citationsAutoDetect,
             emitLegacyTools: orchestrator.config.emitLegacyTools,

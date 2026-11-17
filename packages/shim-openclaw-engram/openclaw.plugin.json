@@ -423,6 +423,11 @@
             "type": "number",
             "default": 131072,
             "description": "Maximum accepted JSON request body size for the local Remnic HTTP API."
+          },
+          "trustPrincipalHeader": {
+            "type": "boolean",
+            "default": false,
+            "description": "Trust the x-engram-principal request header for per-request principal resolution. Enable only behind a trusted proxy or when the auth token provides sufficient trust."
           }
         },
         "required": [
