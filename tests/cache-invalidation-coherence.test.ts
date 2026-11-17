@@ -183,7 +183,7 @@ async function withStorage(
   } finally {
     clearMemoryCache();
     StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 
@@ -444,7 +444,7 @@ test("#1904 rollback: scopedCacheInvalidationEnabled=false makes a create evict 
   } finally {
     clearMemoryCache();
     StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -483,7 +483,7 @@ test("cross-instance: a create on A is visible to B; a mutate evicts the QMD rec
   } finally {
     clearMemoryCache();
     StorageManager.clearAllStaticCaches();
-    await rm(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
