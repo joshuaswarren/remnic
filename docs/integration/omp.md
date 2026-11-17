@@ -177,8 +177,26 @@ const configPath = [
 
 export default createRemnicPiExtension({ configPath });
 EOF
-npm init -y >/dev/null && npm install @remnic/plugin-pi
+npm init -y >/dev/null && npm install @remnic/plugin-pi@alpha   # or @beta / @latest: match your daemon's channel
 ```
+
+**Pick the dist-tag that matches your daemon.** A bare `npm install @remnic/plugin-pi`
+resolves the `latest` (stable) tag, which moves only when a maintainer
+dispatches `release-promote.yml`; every merge to `main` publishes to `alpha`
+(see [../releases.md](../releases.md)). When `latest` has not been promoted for
+a while, the bare command installs a plugin many releases older than a daemon
+that runs an alpha, and it silently loses fixes (for example the
+`Remnic offline` status label that stayed stale after the daemon recovered,
+fixed in #3406). Check the tags with `npm view @remnic/plugin-pi dist-tags`,
+install the one your daemon runs. The plugin also logs a one-line
+`Version mismatch: plugin-pi X, daemon Y` warning at startup, but only as a
+best-effort check: it is skipped when the daemon is unreachable, ignores a
+daemon version it cannot read, and swallows errors. No warning does not
+confirm the versions match. The same applies to updates: use
+`npm install @remnic/plugin-pi@<tag>`. omp loads `dist-bundle/`, which an
+install alone does not regenerate; the `postinstall` script in Step 2 rebuilds
+it, and without that script you must run the Step 2 build yourself after every
+install. Never use `@latest` unless your daemon is on stable.
 
 (Keep your existing `remnic.config.json` — only `index.ts` is replaced. The
 relative lookup preserves the installer-written location instead of
