@@ -261,3 +261,29 @@ test("#3381: a replay stopped by rejected credentials names the credentials, not
     }
   }
 });
+
+test("replay sends the queued entry's principal, not the draining process's", async (t) => {
+  const outboxPath = tmpOutboxPath();
+  // The draining process resolves its own pane identity; the queued entry was
+  // written by a different pane and must keep its own label (#3461 review).
+  const config = { ...drainTestConfig(outboxPath), principal: "wD6:p1@drainer-host" };
+  const outbox = new ObserveOutbox(outboxPath);
+  await outbox.enqueue({ ...queuedEntry, principal: "w7P:p2@writer-host" });
+  await outbox.enqueue({ ...queuedEntry, sessionKey: "entry-no-principal", messageHashes: ["hash-no-principal"] });
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const sentPrincipals: Array<string | null> = [];
+  globalThis.fetch = async (_input, init) => {
+    sentPrincipals.push(new Headers(init?.headers).get("x-engram-principal"));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  const session = { notify: () => {} };
+  await drainObserveOutbox(session, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
+
+  assert.equal(sentPrincipals[0], "w7P:p2@writer-host", "queued writer identity survives a foreign drainer");
+  assert.equal(sentPrincipals[1], "wD6:p1@drainer-host", "entries without a principal keep the drainer's");
+});

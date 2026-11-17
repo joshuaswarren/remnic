@@ -29,6 +29,14 @@ export type ObserveOutboxEntryInput = {
   messageHashes: Array<string | null>;
   /** Replay identity of the original attempt; every replay reuses it so keys and bodies match. */
   replayNonce?: string;
+  /**
+   * Writer identity captured at enqueue. The default outbox file is shared by
+   * every pi process on a machine, so a DIFFERENT pane may drain the entry;
+   * replaying under the drainer's principal would stamp the wrong owner on
+   * the turn (#3461 review). Absent on entries written before this field
+   * existed — those replay under the drainer's principal, same as today.
+   */
+  principal?: string;
 };
 
 export type ObserveOutboxEntry = ObserveOutboxEntryInput & {

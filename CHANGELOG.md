@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.136] — 2026-11-17
+
+### Fixed
+
+- `agentAccessHttp.trustPrincipalHeader` accepts bool-like strings (`true`/`1`/`yes`/`on`) and falls back to `false` on unrecognized values; the key itself shipped in v10.0.134 via #3465 (Refs #3462).
+
+## [v10.0.134] — 2026-11-17
+
+### Fixed
+
+- An idle session that started while the daemon was unreachable now re-probes in the background and clears "Remnic offline" when the daemon answers, instead of keeping the label until the next recall or observe. A failure in that loop is logged and cannot become an unhandled rejection.
+
 ## [v10.0.94] — 2026-11-12
 
 ### Performance

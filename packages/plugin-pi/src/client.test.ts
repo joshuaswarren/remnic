@@ -292,7 +292,9 @@ test("RemnicClient reports invalid JSON clearly for successful daemon responses"
 // ---------------------------------------------------------------------------
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | undefined {
-  if (!headers || Array.isArray(headers) || headers instanceof Headers) return undefined;
+  if (!headers) return undefined;
+  if (headers instanceof Headers) return headers.get(name) ?? undefined;
+  if (Array.isArray(headers)) return headers.find((pair) => pair[0] === name)?.[1];
   return headers[name];
 }
 
@@ -813,4 +815,40 @@ test("RemnicHttpError carries the server's retry-after hint", async (t) => {
     if (!(err instanceof RemnicHttpError)) throw err;
     assert.equal(err.retryAfterMs, undefined, "no header ⇒ no hint");
   }
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3460: configured principal is sent as x-engram-principal
+// ---------------------------------------------------------------------------
+
+test("RemnicClient sends x-engram-principal when config.principal is set", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ principal: string | undefined }> = [];
+  globalThis.fetch = async (_input, init) => {
+    seen.push({ principal: headerValue(init?.headers, "x-engram-principal") });
+    return new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient({ ...baseConfig(), principal: "lane-a@host-b" });
+  await client.live({ timeoutMs: 1000 });
+  assert.deepEqual(seen, [{ principal: "lane-a@host-b" }]);
+});
+
+test("RemnicClient omits x-engram-principal when config.principal is unset", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ principal: string | undefined }> = [];
+  globalThis.fetch = async (_input, init) => {
+    seen.push({ principal: headerValue(init?.headers, "x-engram-principal") });
+    return new Response(JSON.stringify({ ok: true, ready: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  await client.live({ timeoutMs: 1000 });
+  assert.deepEqual(seen, [{ principal: undefined }]);
 });

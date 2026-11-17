@@ -291,11 +291,8 @@ export interface AgentAccessHttpConfig {
   enabled: boolean;
   host: string;
   port: number;
-  /**
-   * Bearer token. Either a literal string (env-expanded) or an unresolved
-   * SecretRef object preserved verbatim from openclaw.json — resolved at
-   * service-start time via {@link resolveAgentAccessAuthToken}.
-   */
+  /** Literal string (env-expanded) or unresolved SecretRef object, preserved verbatim and
+   * resolved at service-start time via {@link resolveAgentAccessAuthToken}. */
   authToken?: AgentAccessAuthToken;
   principal?: string;
   maxBodyBytes: number;
@@ -303,6 +300,8 @@ export interface AgentAccessHttpConfig {
   writeRateLimitMaxRequests: number;
   /** Rolling window for the write rate limit, in ms (issue #1937). */
   writeRateLimitWindowMs: number;
+  /** Trust the per-request `X-Engram-Principal` header; only behind the bearer-token trust boundary; `--trust-principal-header` overrides (issue #3462). */
+  trustPrincipalHeader: boolean;
 }
 
 export interface DreamingConfig {

@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "10.0.132",
+  "version": "10.0.136",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -423,6 +423,11 @@
             "type": "number",
             "default": 131072,
             "description": "Maximum accepted JSON request body size for the local Remnic HTTP API."
+          },
+          "trustPrincipalHeader": {
+            "type": "boolean",
+            "default": false,
+            "description": "Trust the x-engram-principal request header for per-request principal resolution. Enable only behind a trusted proxy or when the auth token provides sufficient trust."
           }
         },
         "required": [
@@ -721,7 +726,7 @@
       "bufferSurpriseTriggerEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "(D-MEM). When true, the smart buffer flushes immediately on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold, in addition to the existing turn-count / signal / time triggers. Additive only - never suppresses existing flushes. Off by default."
+        "description": "(D-MEM). When true, the smart buffer also flushes on turns whose embedding-based surprise score exceeds bufferSurpriseThreshold; additive only, it never suppresses the existing turn-count / signal / time triggers. Off by default."
       },
       "calibrationEnabled": {
         "type": "boolean",
@@ -1229,7 +1234,7 @@
       "compoundingWeeklyCronEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "When true together with compoundingEnabled, the standalone daemon runs synthesizeWeekly once per completed ISO week (including calibration when calibration is enabled). Default off. Skips a week whose report already exists and catches up one missed week after a restart."
+        "description": "When true with compoundingEnabled, the standalone daemon runs synthesizeWeekly once per completed ISO week (including calibration when enabled). Default off. Skips weeks with an existing report and catches up one missed week after a restart."
       },
       "compressionGuidelineLearningEnabled": {
         "type": "boolean",
@@ -1731,7 +1736,7 @@
       "conversationIndexFaissModelId": {
         "type": "string",
         "default": "text-embedding-3-small",
-        "description": "Embedding model identifier passed to the FAISS sidecar. By default the sidecar aliases OpenAI embedding ids to a local sentence-transformers model when REMNIC_FAISS_ENABLE_ST=1 (or legacy ENGRAM_FAISS_ENABLE_ST=1), and otherwise falls back to deterministic hash embeddings."
+        "description": "Embedding model identifier for the FAISS sidecar. Without it the sidecar uses a local sentence-transformers model when REMNIC_FAISS_ENABLE_ST=1 (legacy ENGRAM_FAISS_ENABLE_ST=1), else deterministic hash embeddings."
       },
       "conversationIndexFaissPythonBin": {
         "type": "string",
@@ -2363,7 +2368,7 @@
       "episodicContextEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Inject episode-grouped source turns for the top recalled facts. Reads structured `sources` provenance, resolves LCM archive turn ranges, and appends a compact `Source Episodes` section within the recall budget. Facts without structured provenance are skipped."
+        "description": "Inject episode-grouped source turns for the top recalled facts; reads `sources` provenance, resolves LCM archive turn ranges, and appends a compact `Source Episodes` section within the recall budget. Facts without provenance are skipped."
       },
       "evalHarnessEnabled": {
         "type": "boolean",
@@ -3052,13 +3057,13 @@
         "default": 0.2,
         "minimum": 0,
         "maximum": 1,
-        "description": "minimum edge confidence required for traversal during spreading activation. Edges below this floor are pruned and contribute neither activation nor downstream neighbors. Legacy edges without a confidence field are treated as 1.0. Range 0-1. Default 0.2."
+        "description": "Minimum edge confidence for traversal during spreading activation; edges below are pruned and contribute no activation or downstream neighbors. Edges without a confidence field count as 1.0. Range 0-1. Default 0.2."
       },
       "graphTraversalPageRankIterations": {
         "type": "number",
         "default": 8,
         "minimum": 0,
-        "description": "number of PageRank-style refinement iterations applied on top of the BFS spreading-activation scores. Each iteration redistributes a node's confidence-weighted activation along its outgoing edges. Set to 0 to disable refinement and use raw BFS scores. Default 8."
+        "description": "PageRank-style refinement iterations applied on top of the BFS spreading-activation scores; each iteration redistributes a node's confidence-weighted activation along its outgoing edges. 0 uses raw BFS scores. Default 8."
       },
       "graphWriteSessionAdjacencyEnabled": {
         "type": "boolean",
@@ -4744,7 +4749,7 @@
         "exclusiveMinimum": 0,
         "maximum": 1,
         "default": 0.6,
-        "description": "Postpone the scheduled projection rebuild when used heap divided by the V8 heap limit exceeds this ratio. Finite number in (0, 1]; default 0.6. 1 disables the guard. A postponed rebuild uses the failure backoff and does not start the full-corpus allocation."
+        "description": "Postpone the scheduled projection rebuild when used heap / V8 heap limit exceeds this ratio. Finite number in (0, 1]; default 0.6. 1 disables the guard. A postponed rebuild uses the failure backoff and skips the full-corpus allocation."
       },
       "projectionRebuildIntervalMs": {
         "type": "integer",
@@ -4995,7 +5000,7 @@
           "search"
         ],
         "default": "query",
-        "description": "Command for the QMD CLI subprocess fallback, used only when the daemon is unavailable. 'query' (default) keeps LLM query expansion + rerank; 'search' is BM25-only and faster on very large collections but loses expansion/rerank. Default preserves existing behavior."
+        "description": "Command for the QMD CLI subprocess fallback, used only when the daemon is unavailable. 'query' (default) keeps LLM query expansion + rerank; 'search' is BM25-only, faster on very large collections but loses expansion/rerank."
       },
       "qmdSupportedVersion": {
         "type": "string",
@@ -5315,7 +5320,7 @@
         "default": 5,
         "minimum": 1,
         "maximum": 1000,
-        "description": "Number of rotated recall-impression archives to keep (.1..N). Default 5. Max 1000: each retained slot costs one rename under the held impressions lock per rotation, so a larger value is rejected at config-parse time before it can stall recall recording."
+        "description": "Number of rotated recall-impression archives to keep (.1..N). Default 5, max 1000; each retained slot costs one rename under the held impressions lock per rotation, so larger values are rejected at config-parse time."
       },
       "recallMaxConcurrentPerPrincipal": {
         "type": "integer",
@@ -5522,7 +5527,7 @@
       "recallSingleFlightEnabled": {
         "type": "boolean",
         "default": true,
-        "description": "When true (default), identical concurrent recalls for the same principal share a single in-flight execution (single-flight coalescing, ); each caller still receives its own cloned response and records its own budget event. Set false to restore per-request execution."
+        "description": "When true (default), identical concurrent recalls for the same principal share a single in-flight execution (single-flight coalescing); each caller receives a cloned response and records its own budget event. Set false to restore per-request execution."
       },
       "recallTranscriptRetentionDays": {
         "type": "integer",
@@ -5615,7 +5620,7 @@
       "respectBundledActiveMemoryToggle": {
         "type": "boolean",
         "default": true,
-        "description": "Compat-only: honor the bundled active-memory session toggle when resolving Remnic recall toggles. Modern memory-slot mode + registerMemoryPromptSection is the primary path; this only matters when chaining Remnic active recall into the bundled active-memory plugin."
+        "description": "Compat-only: honor the bundled active-memory session toggle when resolving Remnic recall toggles. Only matters when chaining Remnic active recall into the bundled active-memory plugin; memory-slot mode is the primary path."
       },
       "responseGuidanceRecallEnabled": {
         "type": "boolean",

@@ -884,7 +884,7 @@ async function observeMessagesForSession(
     // queue them durably for replay on the next successful contact.
     try {
       await outbox?.enqueue(
-        { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce },
+        { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce, principal: config?.principal },
         (message, level) => session.notify(message, level),
       );
     } catch (enqueueErr) {

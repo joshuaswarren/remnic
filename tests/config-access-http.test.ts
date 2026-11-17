@@ -22,6 +22,7 @@ test("parseConfig sets local HTTP access defaults", () => {
       maxBodyBytes: 131072,
       writeRateLimitMaxRequests: 30,
       writeRateLimitWindowMs: 60000,
+      trustPrincipalHeader: false,
     });
   } finally {
     if (originalRemnic === undefined) {
@@ -81,6 +82,7 @@ test("parseConfig supports explicit local HTTP access config and env fallback", 
       maxBodyBytes: 2048,
       writeRateLimitMaxRequests: 120,
       writeRateLimitWindowMs: 30000,
+      trustPrincipalHeader: false,
     });
 
     const envCfg = parseConfig({

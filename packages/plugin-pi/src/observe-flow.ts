@@ -82,6 +82,9 @@ export async function drainObserveOutbox(
       timeoutMs: config.turnRequestTimeoutMs,
       replayNonce: entry.replayNonce ?? entry.id,
     };
+    // The entry keeps its original writer's principal; this drainer's own
+    // config.principal is only the fallback for pre-field entries.
+    if (entry.principal !== undefined) observeOptions.principal = entry.principal;
     if (bounded) {
       observeOptions.maxRetries = 0;
       // One cheap attempt: never let a hanging daemon hold session start or shutdown for a full turn budget.
