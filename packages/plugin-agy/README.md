@@ -59,14 +59,14 @@ Website: <https://remnic.ai> - Source: <https://github.com/joshuaswarren/remnic>
  - **Auto-observe** — the hook runner tails the session transcript and posts new
    user/agent/tool-activity deltas to `/engram/v1/observe`, so the shared
    memory corpus learns from Antigravity work, not just file edits. Observations
-   are triggered on file-mutating tools (`write`, `edit`, `apply_patch`,
-   `run_command`), on every `Stop` (turn end), and drained at `SessionEnd`.
-   Transcript source: the `transcriptPath` from the hook payload when present
-   (agy passes it), else `AGY_TRANSCRIPT_DIR`, parsed per `transcriptFormat`
-   (ATIF when agy writes ATIF JSON, JSONL otherwise).
- - **LCM coordination** — `SessionEnd` drains any unobserved transcript tail;
-   the shared core's pre-compact flush runs wherever the host exposes a
-   compaction event (agy exposes none — no `PreCompact`/`PostCompaction` hook).
+   are triggered on file-mutating tools (`write_to_file`, `replace_file_content`,
+   `multi_replace_file_content`, `run_command`) and on every `Stop` (turn end),
+   which also drains any unobserved tail. Transcript source: the `transcriptPath`
+   from the hook payload when present (agy passes it), else `AGY_TRANSCRIPT_DIR`,
+   parsed per `transcriptFormat` (ATIF when agy writes ATIF JSON, JSONL otherwise).
+ - **LCM coordination** — no compaction hook exists on agy, so there is no
+   pre-compact flush here; the daemon-side extraction pipeline picks up buffered
+   observations on its own schedule.
 - **Memory skills** — `/remnic:remnic-recall`, `/remnic:remnic-search`,
   `/remnic:remnic-remember`, `/remnic:remnic-entities`,
   `/remnic:remnic-status`, `/remnic:remnic-memory-workflow`.
@@ -109,9 +109,9 @@ to a directory you control or leave observation to hook-payload text.
 
 - Plugin hooks are best-effort and fail open — a Remnic outage never blocks a
   Antigravity session; recall/observe simply no-op until the daemon is back.
-- `SessionEnd` does not fire in Antigravity Cloud sessions; compaction flush still
-  runs via `PostCompaction`, and the daemon-side extraction pipeline picks up
-  buffered observations on its own schedule.
+ - `Stop` (mapped to the hook's session-end path) may not fire in Antigravity Cloud
+   sessions; the daemon-side extraction pipeline picks up buffered observations
+   on its own schedule regardless.
 - Observation covers user prompts, agent messages, and tool calls/results
   rendered from the ATIF transcript (bounded per message). It is not a
   verbatim transcript upload.

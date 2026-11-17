@@ -23,8 +23,8 @@
  *     in per-conversation SQLite files, with no per-session JSON transcript
  *     yet found — so ATIF parsing is provisional until a real transcriptPath
  *     is seen on an agy session.
- *   - SessionEnd → final observe flush + cursor cleanup (local CLI sessions;
- *     cloud sessions may not fire SessionEnd).
+ *   - Stop (wired to the shared session-end path) → final observe flush +
+ *     cursor cleanup on local CLI sessions; cloud sessions may not fire Stop.
  *   - Stop → post-tool-observe so each completed turn's transcript delta is
  *     observed even when no file-mutating tool ran.
  *   - No compaction hooks: agy exposes no PreCompact/PostCompaction event, so

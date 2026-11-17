@@ -9,7 +9,7 @@
             "type": "command"
           }
         ],
-        "matcher": "^(write|edit|apply_patch|notebook_edit|run_command)$"
+        "matcher": "^(write_to_file|replace_file_content|multi_replace_file_content|run_command)$"
       }
     ],
     "PreInvocation": [

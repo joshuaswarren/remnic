@@ -6,9 +6,8 @@
 // transcript, and asserts both the emitted hook JSON and the
 // cursor/observe side effects. Antigravity-specific coverage:
 //   - ATIF transcript parsing (steps/source/tool_calls/observation)
-//   - transcript_path derived from session_id (Antigravity sends none)
-//   - PostCompaction → drain + LCM flush
-//   - SessionEnd → final flush + cursor cleanup
+//   - transcript_path derived from session_id when the payload omits it
+//   - Stop (no SessionEnd/PreCompact/PostCompaction events on agy) → final flush
 //   - cwd recovered from AGY_PROJECT_DIR when the payload omits it
 
 const assert = require("node:assert/strict");
@@ -176,6 +175,22 @@ test("user-prompt-recall: short prompts are skipped", async () => {
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── hooks.json matcher covers agy real file-edit tools ──
+// wAN review: agy 1.5.10 surfaces write_to_file, replace_file_content and
+// multi_replace_file_content — none of the bare write/edit names.
+test("hooks.json PostToolUse matcher matches agy file-edit tools", async () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "hooks.json"), "utf8"));
+  const group = hooks.remnic.PostToolUse;
+  assert.ok(Array.isArray(group) && group.length === 1, "one PostToolUse group");
+  const re = new RegExp(group[0].matcher);
+  for (const tool of ["write_to_file", "replace_file_content", "multi_replace_file_content", "run_command"]) {
+    assert.ok(re.test(tool), `matcher matches ${tool}`);
+  }
+  for (const tool of ["write", "edit", "apply_patch", "notebook_edit"]) {
+    assert.ok(!re.test(tool), `matcher does not match legacy ${tool}`);
   }
 });
 
