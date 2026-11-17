@@ -118,13 +118,26 @@ function resolveTranscriptPath(input) {
 // strings (bounded). Steps that yield no text are skipped, so cursor
 // counting stays aligned with what was actually observed.
 const AGY_SQLITE_MESSAGE_CAP = 8000;
+// Row-count bound on the steps read (#3452 review): a pathological
+// conversation db must not load an unbounded number of rows into memory.
+// The count check refuses cheaply — a truncated head list would instead
+// advance the message-count cursor over turns that were never observed,
+// silently dropping them forever. Past the cap the parse throws and the
+// shared parse-failed path logs and retries on each hook event, so a db
+// that crosses the limit fails loudly and loses nothing. The LIMIT on the
+// SELECT itself stays as the hard bound for rows materialized in one read.
+const AGY_SQLITE_ROW_LIMIT = 10000;
 function parseAgySqlite(dbPath) {
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
+    const { n } = db.prepare("SELECT count(*) AS n FROM steps").get();
+    if (n > AGY_SQLITE_ROW_LIMIT) {
+      throw new Error(`agy conversation exceeds ${AGY_SQLITE_ROW_LIMIT} steps (${n})`);
+    }
     const rows = db
-      .prepare("SELECT step_type, step_payload FROM steps ORDER BY idx")
-      .all();
+      .prepare("SELECT step_type, step_payload FROM steps ORDER BY idx LIMIT ?")
+      .all(AGY_SQLITE_ROW_LIMIT);
     const messages = [];
     for (const row of rows) {
       // node:sqlite returns BLOBs as non-Buffer view objects; coerce.
