@@ -92,13 +92,7 @@ export type CodexCompactionFlushMode = "signal" | "heuristic" | "auto";
 export type DreamingNarrativePromptStyle = "reflective" | "diary" | "analytical";
 export type HeartbeatDetectionMode = "runtime-signal" | "heuristic" | "auto";
 export type ActiveRecallQueryMode = "message" | "recent" | "full";
-export type ActiveRecallPromptStyle =
-  | "balanced"
-  | "strict"
-  | "contextual"
-  | "recall-heavy"
-  | "precision-heavy"
-  | "preference-only";
+export type ActiveRecallPromptStyle = "balanced" | "strict" | "contextual" | "recall-heavy" | "precision-heavy" | "preference-only";
 export type ActiveRecallThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "adaptive";
 export type ActiveRecallChatType = "direct" | "group" | "channel";
 export type ActiveRecallModelFallbackPolicy = "default-remote" | "resolved-only";
@@ -303,6 +297,8 @@ export interface AgentAccessHttpConfig {
   writeRateLimitMaxRequests: number;
   /** Rolling window for the write rate limit, in ms (issue #1937). */
   writeRateLimitWindowMs: number;
+  /** Trust the `x-engram-principal` header for per-request principal resolution (default off; trusted proxies only). */
+  trustPrincipalHeader?: boolean;
 }
 
 export interface DreamingConfig {
