@@ -423,6 +423,29 @@ test("session-start: snake_case session_id wins over conversationId", async () =
   }
 });
 
+test("session-start: DEVIN_PROJECT_DIR does not override AGY_PROJECT_DIR", async () => {
+  // Cross-host isolation: the active host's variable wins even when another
+  // host's variable is set to a different directory.
+  const home = mkHome();
+  const other = mkHome();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "session-start",
+      { session_id: "s1", source: "startup" },
+      { port, home, env: { extra: { AGY_PROJECT_DIR: home, DEVIN_PROJECT_DIR: other } } },
+    );
+    assert.equal(json.continue, true);
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+    assert.match(recall.body.query, new RegExp(`project: ${home.split("/").pop()}`));
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
+  }
+});
+
 test("user-prompt-recall: accepts lastUserInput when prompt is absent", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer(okServer());

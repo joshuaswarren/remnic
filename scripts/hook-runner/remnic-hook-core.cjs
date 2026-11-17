@@ -48,6 +48,11 @@ function run(config) {
   const LOG_FILES = config.logFiles;
   const LOG_TAGS = config.logTags;
   const DEFAULT_LOG_FILE = config.defaultLogFile;
+  // Host-configured project-directory env var (e.g. "AGY_PROJECT_DIR" for
+  // agy, "DEVIN_PROJECT_DIR" for Devin). The active host's variable wins so
+  // a stray cross-host variable cannot reroute another host's recall; the
+  // shared fallbacks below only apply when the host's own variable is unset.
+  const PROJECT_DIR_ENV = config.projectDirEnv || "";
 
   const HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
 
@@ -209,14 +214,20 @@ function run(config) {
   // Antigravity CLI documents camelCase payload fields (conversationId,
   // transcriptPath, lastUserInput). Apply them only when the snake_case key
   // is absent so existing host payloads are unchanged.
+  // JSON.parse only yields plain objects, arrays, and primitives, so
+  // Object.prototype.toString is the exact string test here.
+  function isHookString(v) {
+    return Object.prototype.toString.call(v) === "[object String]";
+  }
+
   function normalizeHookInput(input) {
     if (input.session_id === undefined || input.session_id === "") {
-      if (typeof input.conversationId === "string" && input.conversationId) {
+      if (isHookString(input.conversationId) && input.conversationId) {
         input.session_id = input.conversationId;
       }
     }
     if (input.prompt === undefined || input.prompt === "") {
-      if (typeof input.lastUserInput === "string" && input.lastUserInput) {
+      if (isHookString(input.lastUserInput) && input.lastUserInput) {
         input.prompt = input.lastUserInput;
       }
     }
@@ -690,10 +701,17 @@ function run(config) {
   // Hosts that omit cwd from the hook payload still export a project-dir
   // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
   // Antigravity: AGY_PROJECT_DIR).
+  // Hosts that omit cwd from the hook payload still export a project-dir
+  // env var. The active host's variable (config.projectDirEnv) wins; the
+  // shared fallbacks preserve each existing host's behavior when its own
+  // variable is unset.
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;
-    return process.env.AGY_PROJECT_DIR || process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || "";
+    if (PROJECT_DIR_ENV && isString(process.env[PROJECT_DIR_ENV]) && process.env[PROJECT_DIR_ENV]) {
+      return process.env[PROJECT_DIR_ENV];
+    }
+    return process.env.DEVIN_PROJECT_DIR || process.env.CLAUDE_PROJECT_DIR || process.env.AGY_PROJECT_DIR || "";
   }
 
   // ── cursor / lock state hardening (post-tool + session-end) ────────────────

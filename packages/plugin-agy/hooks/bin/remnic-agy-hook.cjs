@@ -111,6 +111,7 @@ run({
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
+  projectDirEnv: "AGY_PROJECT_DIR",
   // No compaction hooks on agy (no PreCompact/PostCompaction event exists),
   // so the shared pre-compact handler is never registered here.
   enablePreCompact: false,
