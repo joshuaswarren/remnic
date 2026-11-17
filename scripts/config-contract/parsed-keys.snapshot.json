@@ -1301,6 +1301,7 @@
     "agentAccessHttp.host.trim",
     "agentAccessHttp.port.trim",
     "agentAccessHttp.principal.replace",
+    "agentAccessHttp.trustPrincipalHeader.trim",
     "agentAccessHttp.writeRateLimitMaxRequests.trim",
     "agentAccessHttp.writeRateLimitWindowMs.trim",
     "autoPromoteToSharedCategories.filter",

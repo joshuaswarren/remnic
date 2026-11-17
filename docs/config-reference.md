@@ -247,7 +247,7 @@ Backward compatibility note:
 | `agentAccessHttp.maxBodyBytes` | `131072` | Maximum accepted JSON request body size |
 | `agentAccessHttp.writeRateLimitMaxRequests` | `30` | Max write requests (memory stores, observes) per rolling window before the HTTP API returns `429 write_rate_limited`. Positive integer; invalid values are rejected at config parse time (issue #1937). |
 | `agentAccessHttp.writeRateLimitWindowMs` | `60000` | Rolling window for the write rate limit, in milliseconds. Positive integer (issue #1937). |
-| `agentAccessHttp.trustPrincipalHeader` | `false` | Trust the `x-engram-principal` request header for per-request principal resolution on the embedded access server (same contract as `--trust-principal-header` on `access http-serve` and `server.trustPrincipalHeader` on the standalone daemon). Enable only behind a trusted proxy or when the auth token provides sufficient trust — any caller that can reach the port can then claim any principal. |
+| `agentAccessHttp.trustPrincipalHeader` | `false` | Trust the `X-Engram-Principal` request header for per-request principal resolution on the local HTTP API (issue #3462), the same contract as `--trust-principal-header` on `access http-serve` and `server.trustPrincipalHeader` on the standalone daemon. Accepts booleans or bool-like strings (`true`/`1`/`yes`/`on`). Only enable behind the fleet's bearer-token trust boundary: anyone who can send the header can impersonate any principal. |
 | `supportPassport.enabled` | `false` | Enable What Helps Me owner routes, MCP tools, public helper grants, and browser assets. See [support-passport.md](support-passport.md). |
 | `supportPassport.trustedProxyAddresses` | `[]` | Exact reverse-proxy IP addresses allowed to supply `X-Forwarded-For` for public helper limits. Leave empty without a trusted proxy. |
 | `server.adminConsoleEnabled` | `false` | Standalone daemon: serve the browser admin console at `/remnic/ui/` (and `/engram/ui/`). Env: `REMNIC_ADMIN_CONSOLE_ENABLED` (legacy `ENGRAM_ADMIN_CONSOLE_ENABLED`). |
@@ -2081,7 +2081,7 @@ value matches the shipped default.
 | `nativeKnowledge.obsidianVaults[].folderRules[].privacyClass` | (unset) | (unset) |
 | `nativeKnowledge.obsidianVaults[].dailyNotePatterns` | `["YYYY-MM-DD"]` | `["YYYY-MM-DD"]` |
 | `nativeKnowledge.obsidianVaults[].materializeBacklinks` | `false` | `false` |
-| `agentAccessHttp` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000,"trustPrincipalHeader":false}` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000,"trustPrincipalHeader":false}` |
+| `agentAccessHttp` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000}` | `{"enabled":false,"host":"127.0.0.1","port":4318,"maxBodyBytes":131072,"writeRateLimitMaxRequests":30,"writeRateLimitWindowMs":60000}` |
 | `agentAccessHttp.enabled` | `false` | `false` unless you need the local HTTP bridge |
 | `agentAccessHttp.host` | `127.0.0.1` | `127.0.0.1` |
 | `agentAccessHttp.port` | `4318` | `4318` |
@@ -2089,7 +2089,6 @@ value matches the shipped default.
 | `agentAccessHttp.maxBodyBytes` | `131072` | `131072` |
 | `agentAccessHttp.writeRateLimitMaxRequests` | `30` | `30`; raise (e.g. `120`) for multi-agent deployments sharing one daemon (issue #1937) |
 | `agentAccessHttp.writeRateLimitWindowMs` | `60000` | `60000` |
-| `agentAccessHttp.trustPrincipalHeader` | `false` | `false` unless a trusted proxy or token boundary justifies honoring `x-engram-principal` |
 | `accessTrackingEnabled` | `true` | `true` |
 | `accessTrackingBufferMaxSize` | `100` | `100` |
 | `recencyWeight` | `0.2` | `0.2` |

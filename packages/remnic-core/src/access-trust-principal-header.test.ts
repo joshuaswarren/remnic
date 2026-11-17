@@ -33,16 +33,18 @@ function makeConfig(memoryDir: string, agentAccessHttp?: AgentAccessHttpRawOverr
   });
 }
 
-test("agentAccessHttp.trustPrincipalHeader defaults off and takes only explicit true", () => {
-  for (const input of [undefined, false, "yes", 1, { trust: true }]) {
+test("agentAccessHttp.trustPrincipalHeader defaults off and accepts bool-like strings", () => {
+  for (const input of [undefined, false, 1, { trust: true }, "garbage"]) {
     const parsed = makeConfig(
       "/tmp/remnic-tph-default",
       input === undefined ? {} : { trustPrincipalHeader: input },
     );
     assert.equal(parsed.agentAccessHttp.trustPrincipalHeader, false, `input ${String(input)}`);
   }
-  const trusted = makeConfig("/tmp/remnic-tph-on", { trustPrincipalHeader: true });
-  assert.equal(trusted.agentAccessHttp.trustPrincipalHeader, true);
+  for (const input of [true, "yes", "1", "on"]) {
+    const parsed = makeConfig("/tmp/remnic-tph-on", { trustPrincipalHeader: input });
+    assert.equal(parsed.agentAccessHttp.trustPrincipalHeader, true, `input ${String(input)}`);
+  }
 });
 
 /** One timings-probe server per flag value; the route 200s for the operator principal and 403s otherwise. */
