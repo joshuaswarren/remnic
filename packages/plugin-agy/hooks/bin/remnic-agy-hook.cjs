@@ -143,15 +143,16 @@ function parseAgySqlite(dbPath) {
         .join("\n")
         .trim();
       if (!text) continue;
-      // Role follows verified payload markers, not the step code: every
-      // sampled model row carries a `(bot-<id>` marker while the genuine
-      // user row has none (only `no_tool_call_check`). Tool-call rows
-      // (call_<id>, tool JSON) are agent activity. Unmarked rows default
-      // to user — a fresh prompt with no marker is the observed user shape.
-      const hasBotMarker = /\(bot-/.test(text);
-      const hasToolCall = /call_\d|\{"[A-Z][a-zA-Z]*":/.test(text);
+      // Role follows row structure, never text patterns (a user can
+      // type `(bot-`, `call_1`, or JSON — matching on text would misfile
+      // user intent as agent output). step_type 132 rows exist only as
+      // agent tool-call/result activity in every sampled db and the
+      // fixture, so they are assistant by construction. All other rows
+      // default to user: model thinking text may misfile as user (v1
+      // limitation, noted), which preserves intent attribution — the
+      // direction that matters for memory. No text-pattern matching.
       messages.push({
-        role: hasBotMarker || hasToolCall ? "assistant" : "user",
+        role: row.step_type === 132 ? "assistant" : "user",
         content: text.slice(0, AGY_SQLITE_MESSAGE_CAP),
       });
     }

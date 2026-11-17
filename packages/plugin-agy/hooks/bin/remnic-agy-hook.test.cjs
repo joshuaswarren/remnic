@@ -224,7 +224,7 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
     2, 15, 3, blob("请记住每天备份数据库"),
   );
   db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
-    3, 15, 3, blob("(bot-abc123", "Run tests"),
+    3, 15, 3, blob("Explain (bot-foo) and call_1 with {\"Config\":true} please"),
   );
   db.close();
   const { server, port, calls } = await startServer(okServer());
@@ -247,11 +247,13 @@ test("post-tool-observe: observes a turn stored in the agy SQLite conversation d
     const contents = observe.body.messages.map((m) => m.content).join("\n---\n");
     assert.match(contents, /staging database resets nightly/);
     assert.match(contents, /请记住每天备份数据库/);
-    assert.match(contents, /Run tests/);
+    assert.match(contents, /Explain \(bot-foo\)/);
     const byContent = Object.fromEntries(observe.body.messages.map((m) => [m.content.slice(0, 20), m.role]));
     assert.equal(byContent["Remember that the st"], "user");
-    const runRow = observe.body.messages.find((m) => /Run tests/.test(m.content));
-    assert.equal(runRow.role, "assistant");
+    // Adversarial user text with tool-like patterns stays user: speaker
+    // comes from row structure, never text patterns.
+    const advRow = observe.body.messages.find((m) => /Explain \(bot-foo\)/.test(m.content));
+    assert.equal(advRow.role, "user");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
