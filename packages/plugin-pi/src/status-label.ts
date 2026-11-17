@@ -6,7 +6,7 @@ type StatusSession = {
   notify: (message: string, level: "warning") => void;
   setStatus: (key: string, value: string) => void;
 };
-type OfflineStatusState = { statusOffline: boolean };
+type OfflineStatusState = { statusOffline?: boolean };
 type RecallTimeoutTripEntry = {
   level: "warning";
   code: "RECALL_TIMEOUT_TRIP";
@@ -41,6 +41,52 @@ export function refreshOfflineStatusLabel(
   if (!state.statusOffline || !config.statusEnabled) return;
   state.statusOffline = false;
   session.setStatus("remnic", recallPaused ? RECALL_DISABLED_STATUS : remnicStatusLabel("ready", config.namespace));
+}
+
+export interface OfflineReprobeHooks {
+  probe: () => Promise<DaemonProbeResult>;
+  onRecovered: () => void;
+  isLive: () => boolean;
+  sleep?: (ms: number) => Promise<unknown>;
+}
+
+function defaultSleep(ms: number): Promise<unknown> {
+  const { promise, resolve } = Promise.withResolvers<unknown>();
+  // unref: a background re-probe's backoff must not keep the host process alive.
+  setTimeout(resolve, ms).unref();
+  return promise;
+}
+
+/**
+ * Sessions that go offline at startup have no later traffic when idle, so the
+ * offline label would stick forever: nothing re-probes it. Re-probe on a
+ * bounded backoff until the daemon answers or the session goes away. Silent by
+ * design: failures just reschedule, success calls onRecovered once. The timer
+ * is unref'd so a pending wait never holds the process open.
+ */
+export async function recheckOfflineUntilReachable(
+  hooks: OfflineReprobeHooks,
+  opts?: { initialDelayMs?: number; maxDelayMs?: number },
+): Promise<void> {
+  const sleep = hooks.sleep ?? defaultSleep;
+  let delay = opts?.initialDelayMs ?? 5000;
+  const maxDelay = opts?.maxDelayMs ?? 60000;
+  for (;;) {
+    await sleep(delay);
+    if (!hooks.isLive()) return;
+    let result: DaemonProbeResult;
+    try {
+      result = await hooks.probe();
+    } catch {
+      result = "unreachable";
+    }
+    if (!hooks.isLive()) return;
+    if (result === "ready") {
+      hooks.onRecovered();
+      return;
+    }
+    delay = Math.min(delay * 2, maxDelay);
+  }
 }
 
 export function emitRecallTimeoutTrip(
