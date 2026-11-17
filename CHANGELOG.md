@@ -6,7 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
-- An idle session that started while the daemon was unreachable now re-probes in the background and clears "Remnic offline" when the daemon answers, instead of keeping the label until the next recall or observe.
+- An idle session that started while the daemon was unreachable now re-probes in the background and clears "Remnic offline" when the daemon answers, instead of keeping the label until the next recall or observe. A failure in that loop is logged and cannot become an unhandled rejection.
 
 ## [v10.0.94] — 2026-11-12
 

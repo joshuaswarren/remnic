@@ -78,3 +78,42 @@ test("'starting' keeps retrying without recovering", async () => {
   assert.equal(probes, 3);
   assert.equal(recovered, 1);
 });
+
+test("a throwing onRecovered is logged and does not reject the loop", async () => {
+  const logged: unknown[] = [];
+  await recheckOfflineUntilReachable({
+    probe: async () => "ready",
+    onRecovered: () => {
+      throw new Error("label write failed");
+    },
+    isLive: () => true,
+    sleep: async () => {},
+    onError: (err) => {
+      logged.push(err);
+    },
+  });
+  assert.equal(logged.length, 1);
+  assert.match(String(logged[0]), /label write failed/);
+});
+
+test("a rejecting sleep is logged and the loop stops", async () => {
+  const logged: unknown[] = [];
+  let probes = 0;
+  await recheckOfflineUntilReachable({
+    probe: async () => {
+      probes += 1;
+      return "ready";
+    },
+    onRecovered: () => {},
+    isLive: () => true,
+    sleep: async () => {
+      throw new Error("timer failed");
+    },
+    onError: (err) => {
+      logged.push(err);
+    },
+  });
+  assert.equal(probes, 0);
+  assert.equal(logged.length, 1);
+  assert.match(String(logged[0]), /timer failed/);
+});

@@ -110,9 +110,16 @@ class StartupProbeChain {
                 );
               },
               isLive: () => this.isCurrent(),
+              onError: (err) => {
+                if (!this.isCurrent()) return;
+                session.notify(`Remnic offline re-probe failed: ${errorText(err)}`, "warning");
+              },
             },
             { initialDelayMs: this.ctx.config.daemonCooldownMs },
-          );
+          ).catch((err: unknown) => {
+            if (!this.isCurrent()) return;
+            session.notify(`Remnic offline re-probe failed: ${errorText(err)}`, "warning");
+          });
         }
       }
       if (this.isCurrent()) {
