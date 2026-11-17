@@ -673,6 +673,14 @@ function run(config) {
   }
 
   function parseTranscript(transcriptPath) {
+    // Hosts with non-file transcripts (agy: SQLite conversation db) can
+    // supply config.parseTranscript(transcriptPath) to decode them. The
+    // override must return the same [{role, content}] shape in stable order
+    // so cursor counting works unchanged.
+    if (config.parseTranscript instanceof Function) {
+      const custom = config.parseTranscript(transcriptPath);
+      if (custom !== undefined) return custom;
+    }
     if (config.transcriptFormat === "atif") return parseAtifTranscript(transcriptPath);
     return parseJsonlTranscript(transcriptPath);
   }

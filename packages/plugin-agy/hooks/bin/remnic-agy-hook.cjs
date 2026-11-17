@@ -47,36 +47,59 @@ const { run } = require("./remnic-hook-core.cjs");
 // trajectory_meta, steps with protobuf metadata blobs), plus a JSONL prompt
 // history at ~/.gemini/antigravity-cli/history.jsonl. There is NO per-session
 // JSON transcript file yet found, so ATIF parsing below is provisional: if
-// agy never writes <session_id>.json transcripts, resolveTranscriptPath
-// returns "" and observation falls back to hook-payload text only.
-// Resolution order:
-//   1. $AGY_TRANSCRIPT_DIR/<session_id>.json  (explicit override)
-//   2. $XDG_DATA_HOME/agy/cli/transcripts/<session_id>.json
-//      (default ~/.local/share/agy/cli/transcripts on Linux)
-//   3. ~/Library/Application Support/agy/cli/transcripts/<session_id>.json
-//      (macOS app-support layout, if agy uses it there)
-// The observe worker re-checks fs.existsSync, so returning a not-yet-written
-// path is safe — it simply retries on the next hook event.
-function resolveTranscriptPath(input) {
+// Conversation storage (measured on Linux 2026-11-17): per-conversation
+// SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
+// trajectory_meta, steps with protobuf payload blobs). There is NO
+// per-session JSON transcript — 3449 shipped a JSON-only resolver, so the
+// hook fired but observed nothing. Resolution order:
+//   1. $AGY_TRANSCRIPT_DIR/<session_id>.db  (explicit override)
+//   2. ~/.gemini/antigravity-cli/conversations/<session_id>.db (default)
+//   3. $XDG_DATA_HOME/agy/cli/transcripts/<session_id>.json (legacy JSON,
+//      parsed per transcriptFormat when present)
+// A missing db is not an error — the observe worker simply retries on the
+// next hook event. WAL/SHM sidecars are read by SQLite itself; never copy
+// the db, always open read-only.
+function agyConversationDb(input) {
   const sessionId = input && input.session_id;
   if (!sessionId || /[^A-Za-z0-9._-]/.test(sessionId)) return "";
   const candidates = [];
   if (process.env.AGY_TRANSCRIPT_DIR) {
+    candidates.push(path.join(process.env.AGY_TRANSCRIPT_DIR, `${sessionId}.db`));
+  }
+  // HOME is overridden in tests; os.homedir() follows it.
+  const homedir = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  candidates.push(
+    path.join(homedir, ".gemini", "antigravity-cli", "conversations", `${sessionId}.db`),
+  );
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) return candidate;
+    } catch {
+      /* try next */
+    }
+  }
+  return "";
+}
+
+function resolveTranscriptPath(input) {
+  // SQLite first: this is where agy really keeps conversations. JSON
+  // second: explicit AGY_TRANSCRIPT_DIR overrides and the legacy XDG/macOS
+  // layouts (the test harness writes ATIF JSON there; parseTranscript
+  // handles JSON per transcriptFormat, parseAgySqlite only on .db paths).
+  const db = agyConversationDb(input);
+  if (db) return db;
+  const sessionId = input && input.session_id;
+  if (!sessionId || /[^A-Za-z0-9._-]/.test(sessionId)) return "";
+  const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
+  const xdgData = process.env.XDG_DATA_HOME || path.join(home, ".local", "share");
+  const candidates = [];
+  if (process.env.AGY_TRANSCRIPT_DIR) {
     candidates.push(path.join(process.env.AGY_TRANSCRIPT_DIR, `${sessionId}.json`));
   }
-  const xdgData = process.env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
   candidates.push(path.join(xdgData, "agy", "cli", "transcripts", `${sessionId}.json`));
   if (process.platform === "darwin") {
     candidates.push(
-      path.join(
-        os.homedir(),
-        "Library",
-        "Application Support",
-        "agy",
-        "cli",
-        "transcripts",
-        `${sessionId}.json`,
-      ),
+      path.join(home, "Library", "Application Support", "agy", "cli", "transcripts", `${sessionId}.json`),
     );
   }
   for (const candidate of candidates) {
@@ -86,9 +109,52 @@ function resolveTranscriptPath(input) {
       /* try next */
     }
   }
-  // Fall back to the XDG candidate even when absent: the transcript may be
-  // created after this hook fires (SessionStart precedes the first step).
-  return candidates[candidates.length - 1] || "";
+  return "";
+}
+
+// Decode an agy SQLite conversation db into the shared [{role, content}]
+// message shape in stable idx order. Payloads are protobuf blobs; tool
+// names, file paths, and message text are recovered as embedded printable
+// strings (bounded). Steps that yield no text are skipped, so cursor
+// counting stays aligned with what was actually observed.
+const AGY_SQLITE_MESSAGE_CAP = 8000;
+function parseAgySqlite(dbPath) {
+  const { DatabaseSync } = require("node:sqlite");
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const rows = db
+      .prepare("SELECT step_type, step_payload FROM steps ORDER BY idx")
+      .all();
+    const messages = [];
+    for (const row of rows) {
+      // node:sqlite returns BLOBs as non-Buffer view objects; coerce.
+      const payload = Buffer.isBuffer(row.step_payload)
+        ? row.step_payload
+        : Buffer.from(row.step_payload);
+      if (!payload || payload.length === 0) continue;
+      const text = payload
+        .toString("utf8")
+        .replace(/[^\x20-\x7e\n\r\t]/g, " ")
+        .replace(/[^\x20-\x7e\n\r\t ]{2,}/g, " ")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.length >= 12)
+        .join("\n")
+        .trim();
+      if (!text) continue;
+      // step_type 15 carries user/model turns; 132 carries tool calls and
+      // results; everything else is rendered as assistant context. The
+      // exact enum is undocumented, so role follows content, not the code:
+      // tool-call-shaped rows become assistant (they are agent activity).
+      messages.push({
+        role: row.step_type === 15 ? "user" : "assistant",
+        content: text.slice(0, AGY_SQLITE_MESSAGE_CAP),
+      });
+    }
+    return messages;
+  } finally {
+    db.close();
+  }
 }
 
 run({
@@ -111,6 +177,10 @@ run({
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
+  parseTranscript: (transcriptPath) =>
+    transcriptPath.endsWith(".db")
+      ? parseAgySqlite(transcriptPath)
+      : undefined, // fall through: core handles JSON per transcriptFormat
   projectDirEnv: "AGY_PROJECT_DIR",
   // No compaction hooks on agy (no PreCompact/PostCompaction event exists),
   // so the shared pre-compact handler is never registered here.
