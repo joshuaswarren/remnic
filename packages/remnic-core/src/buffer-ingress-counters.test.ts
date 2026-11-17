@@ -231,3 +231,38 @@ test("EMPTY_BUFFER_INGRESS_SNAPSHOT is the zero snapshot for hosts without a buf
   });
   assert.deepEqual(empty.hours, []);
 });
+
+test("accepted and its exact-duplicate sub-count share one bucket when the hour rolls over mid-offer", () => {
+  // Scripted clock: the first now() call (accepted) lands at the end of hour
+  // H, the second (duplicate check path) in hour H+1. Before the fix each
+  // record() read the clock itself and the two counts split across buckets.
+  const h0 = 1_700_000_000_000 - (1_700_000_000_000 % HOUR_MS);
+  // now() is read once per offer (the duplicate check itself never reads the
+  // clock): first offer at the end of hour H, second offer in hour H+1.
+  const stamps = [h0 + HOUR_MS - 1, h0 + HOUR_MS - 1, h0 + HOUR_MS, h0 + HOUR_MS];
+  let calls = 0;
+  const clock = () => stamps[Math.min(calls++, stamps.length - 1)];
+  const counters = new BufferIngressCounters(clock);
+  const entry = fakeEntry();
+  counters.noteAppendedTurn(entry, turn("once"));
+  counters.noteAppendedTurn(entry, turn("once")); // duplicate, hour has rolled
+  const hours = counters.snapshot().hours;
+  const dup = hours.find((h) => h.acceptedExactDuplicate.turns === 1);
+  assert.ok(dup, "the duplicate sub-count must be recorded");
+  assert.equal(dup.accepted.turns, 2, "both accepted turns share the duplicate's bucket");
+});
+
+test("rebuilding the memo from a restored entry respects the digest cap", () => {
+  // A restored entry can hold more unique turns than DUPLICATE_DIGEST_CAP.
+  // The rebuild must keep only the most recent 4,096, so a re-offer of the
+  // oldest content is NOT recognised as a duplicate (bounded memory).
+  const counters = new BufferIngressCounters();
+  const many = Array.from({ length: 6_000 }, (_, i) => turn(`restored-${i}`));
+  const entry = fakeEntry(many);
+  counters.noteAppendedTurn(entry, turn("restored-0")); // re-offer of the oldest
+  const snapshot = counters.snapshot();
+  assert.equal(snapshot.totals.accepted.turns, 1);
+  assert.equal(snapshot.totals.acceptedExactDuplicate.turns, 0, "oldest digest evicted at rebuild");
+  counters.noteAppendedTurn(entry, turn("restored-5999")); // re-offer of the newest
+  assert.equal(counters.snapshot().totals.acceptedExactDuplicate.turns, 1, "newest digest retained");
+});

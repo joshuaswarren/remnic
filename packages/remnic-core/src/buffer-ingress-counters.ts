@@ -104,8 +104,11 @@ interface RingSlot {
 }
 
 interface EntryDigestMemo {
-  turnsRef: BufferTurn[];
-  retainedRef: BufferTurn[] | undefined;
+  // WeakRefs: after clearAfterExtraction replaces the entry arrays, the old
+  // arrays must not stay reachable through the memo. Deref-compare keeps the
+  // validity check exact without retaining evicted turn content.
+  turnsRef: WeakRef<BufferTurn[]>;
+  retainedRef: WeakRef<BufferTurn[]> | undefined;
   digests: Set<string>;
 }
 
@@ -130,11 +133,14 @@ export class BufferIngressCounters {
    */
   noteAppendedTurn(entry: BufferEntryState, turn: BufferTurn): void {
     if (!this.enabled) return;
+    // One hour per offer: the two records below must land in the same
+    // bucket even if the clock crosses an hour between them.
+    const hourStartMs = Math.floor(this.now() / HOUR_MS) * HOUR_MS;
     const chars = turn.content.length;
-    this.record("accepted", chars);
+    this.record("accepted", chars, hourStartMs);
     const memo = this.memoFor(entry);
     const digest = contentDigest(turn);
-    if (memo.digests.has(digest)) this.record("acceptedExactDuplicate", chars);
+    if (memo.digests.has(digest)) this.record("acceptedExactDuplicate", chars, hourStartMs);
     memo.digests.add(digest);
     if (memo.digests.size > DUPLICATE_DIGEST_CAP) {
       for (const oldest of memo.digests) {
@@ -186,8 +192,7 @@ export class BufferIngressCounters {
     };
   }
 
-  private record(outcome: BufferIngressOutcome, chars: number): void {
-    const hourStartMs = Math.floor(this.now() / HOUR_MS) * HOUR_MS;
+  private record(outcome: BufferIngressOutcome, chars: number, hourStartMs = Math.floor(this.now() / HOUR_MS) * HOUR_MS): void {
     if (hourStartMs !== this.lastActiveHourMs) {
       if (this.lastActiveHourMs !== null) this.logHourBucket(this.lastActiveHourMs);
       this.lastActiveHourMs = hourStartMs;
@@ -224,11 +229,18 @@ export class BufferIngressCounters {
   private memoFor(entry: BufferEntryState): EntryDigestMemo {
     const retained = entry.retainedTurns;
     const memo = this.memos.get(entry);
-    if (memo && memo.turnsRef === entry.turns && memo.retainedRef === retained) return memo;
+    // --- Fix 3: bound the rebuild to the digest cap. A restored entry can
+    // hold more unique turns than DUPLICATE_DIGEST_CAP; inserting all of them
+    // would leave the set permanently above the cap (later appends evict one
+    // each). Keep the most recent turns, matching the FIFO order of the
+    // steady-state path, so recognition degrades to "not a duplicate".
+    if (memo && memo.turnsRef.deref() === entry.turns && (memo.retainedRef?.deref() ?? undefined) === retained) return memo;
+    const ordered = [...entry.turns, ...(retained ?? [])];
+    const bounded = ordered.length > DUPLICATE_DIGEST_CAP ? ordered.slice(ordered.length - DUPLICATE_DIGEST_CAP) : ordered;
     const fresh: EntryDigestMemo = {
-      turnsRef: entry.turns,
-      retainedRef: retained,
-      digests: new Set([...entry.turns, ...(retained ?? [])].map(contentDigest)),
+      turnsRef: new WeakRef(entry.turns),
+      retainedRef: retained ? new WeakRef(retained) : undefined,
+      digests: new Set(bounded.map(contentDigest)),
     };
     this.memos.set(entry, fresh);
     return fresh;
