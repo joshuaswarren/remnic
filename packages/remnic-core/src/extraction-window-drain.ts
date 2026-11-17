@@ -107,10 +107,8 @@ export function extractionWindowBudgetChars(input: {
   /** Configured per-call payload cap (`extractionCallMaxChars`). */
   callMaxChars?: number;
 }): number {
-  const cap =
-    typeof input.callMaxChars === "number" && Number.isFinite(input.callMaxChars) && input.callMaxChars > 0
-      ? input.callMaxChars
-      : Number.POSITIVE_INFINITY;
+  const callMax = input.callMaxChars ?? Number.POSITIVE_INFINITY;
+  const cap = Number.isFinite(callMax) && callMax > 0 ? callMax : Number.POSITIVE_INFINITY;
   if (!input.registry || !input.localExtractionActive) return cap;
   return Math.min(cap, input.registry.calculateContextSizes(input.model, input.maxContext).maxInputChars);
 }
@@ -181,11 +179,18 @@ function splitTurnContent(content: string, maxChars: number): string[] {
  * `maxParts` emits `maxParts` parts and reports `clamped` so the caller
  * can log the bounded loss rather than hide it.
  */
+export interface OversizedTurnSplit<T extends { content: string }> {
+  turns: T[];
+  partParents: Map<T, T>;
+  clampedParents: Set<T>;
+  clamped: boolean;
+}
+
 export function splitOversizedTurns<T extends { content: string }>(
   turns: readonly T[],
   maxChars: number,
   maxParts = 8,
-): { turns: T[]; partParents: Map<T, T>; clampedParents: Set<T>; clamped: boolean } {
+): OversizedTurnSplit<T> {
   const partParents = new Map<T, T>();
   const clampedParents = new Set<T>();
   if (!(Number.isFinite(maxChars) && maxChars > 0)) {

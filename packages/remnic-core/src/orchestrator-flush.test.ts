@@ -369,6 +369,7 @@ test("flushSession skips scoped ownership enforcement when namespaces are disabl
 
 test("flushSession waits for queued extraction task completion", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
+  orchestrator.config = parseConfig({});
   let releaseExtraction!: () => void;
   let extractionStarted = false;
   let flushSettled = false;
@@ -477,7 +478,9 @@ test("queued extraction settles immediately when its caller aborts while waiting
   const queue = new ExtractionQueueCoordinator();
   let extractionStarted = false;
   let releaseExtraction!: () => void;
+  // SAFETY: fixture deps stub — only the queued-extraction path fields are exercised.
   const coordinator = new TurnIngestionCoordinator({
+    config: parseConfig({}),
     extractionQueueCoordinator: queue,
     shouldQueueExtraction: () => true,
     runExtraction: async () => {
