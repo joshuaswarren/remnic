@@ -93,7 +93,7 @@ test("bare base URL without a path targets the /mcp endpoint", async () => {
         res.end(JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(body).id, result: { tools: [] } }));
       } else {
         res.writeHead(404);
-        res.end(`unexpected path ${req.url}`);
+        res.end("unexpected path");
       }
     });
   });
