@@ -105,6 +105,7 @@ run({
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
+  projectDirEnv: "DEVIN_PROJECT_DIR",
   enablePreCompact: true,
   enableMaterialize: false,
 });

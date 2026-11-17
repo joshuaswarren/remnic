@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "remnic": {
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp-server-stdio/server.js"
+      ]
+    }
+  }
+}

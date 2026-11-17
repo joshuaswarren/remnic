@@ -105,6 +105,7 @@ test("default registry registers grok and opencode adapters in order", () => {
     "hermes",
     "replit",
     "codex",
+    "agy",
     "devin",
     "claude-code",
     "grok",
