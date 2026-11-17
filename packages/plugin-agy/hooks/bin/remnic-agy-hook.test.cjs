@@ -196,6 +196,70 @@ test("hooks.json PostToolUse matcher matches agy file-edit tools", async () => {
 
 // ── post-tool-observe with ATIF transcript ─────────────────────────────────
 
+test("post-tool-observe: observes a turn stored in the agy SQLite conversation db", async () => {
+  // 3449 shipped a hook that observed nothing: agy keeps transcripts only
+  // in SQLite (<session_id>.db), never as JSON. A turn in SQLite must reach
+  // /engram/v1/observe. Fixture: synthetic db, same schema, public-domain
+  // turns only (no private paths).
+  const home = mkHome();
+  const sessionId = "fix-session-1";
+  const { DatabaseSync } = require("node:sqlite");
+  const dir = path.join(home, ".gemini", "antigravity-cli", "conversations");
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, `${sessionId}.db`));
+  db.exec(
+    "CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT, trajectory_type TEXT, source TEXT)",
+  );
+  db.exec(
+    "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, status INTEGER, step_payload BLOB, step_format INTEGER)",
+  );
+  const blob = (...ss) => Buffer.concat([Buffer.from([8, 15]), ...ss.map((s) => Buffer.from(`\0${s}`))]);
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    0, 15, 3, blob("Remember that the staging database resets nightly."),
+  );
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    1, 132, 3, blob("write_file", '{"Path":"notes.txt"}', "Saved notes.txt with the staging reminder."),
+  );
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    2, 15, 3, blob("请记住每天备份数据库"),
+  );
+  db.prepare("INSERT INTO steps (idx, step_type, status, step_payload, step_format) VALUES (?,?,?, ?,0)").run(
+    3, 15, 3, blob("Explain (bot-foo) and call_1 with {\"Config\":true} please"),
+  );
+  db.close();
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1" },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    const deadline = Date.now() + 10000;
+    let observe = null;
+    while (Date.now() < deadline) {
+      observe = calls.find((c) => c.url === "/engram/v1/observe");
+      if (observe) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.ok(observe, "observe endpoint was called for the SQLite turn");
+    assert.equal(observe.body.sessionKey, sessionId);
+    const contents = observe.body.messages.map((m) => m.content).join("\n---\n");
+    assert.match(contents, /staging database resets nightly/);
+    assert.match(contents, /请记住每天备份数据库/);
+    assert.match(contents, /Explain \(bot-foo\)/);
+    const byContent = Object.fromEntries(observe.body.messages.map((m) => [m.content.slice(0, 20), m.role]));
+    assert.equal(byContent["Remember that the st"], "user");
+    // Adversarial user text with tool-like patterns stays user: speaker
+    // comes from row structure, never text patterns.
+    const advRow = observe.body.messages.find((m) => /Explain \(bot-foo\)/.test(m.content));
+    assert.equal(advRow.role, "user");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("post-tool-observe: observes ATIF transcript delta resolved from session_id", async () => {
   const home = mkHome();
   const sessionId = "sess-atif-1";
