@@ -3668,6 +3668,7 @@ export class Orchestrator {
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
+    searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]> {
     return this.recallSearchPipelineCoordinator.applyColdFallbackPipeline(
       options,

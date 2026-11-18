@@ -448,7 +448,6 @@ export class RecallSearchPipelineCoordinator {
         pathPolicy: this.deps.config,
       });
       const primaryDeliverableCount = primaryDeliverable.length;
-      const primaryRecallableCount = primaryResults.filter(recallable).length;
       const primaryIncludesArchivePath = primaryResults.some((result) =>
         isTopLevelArchivePath(result.path, this.deps.config, "qmd"),
       );
@@ -628,6 +627,7 @@ export class RecallSearchPipelineCoordinator {
     includeLowConfidence?: boolean;
     /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
     stateViewActive?: boolean;
+    searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]> {
     // Prefer the threaded set; fall back to a config-derived set so direct
     // callers (unit tests) behave identically to the recall pipeline (#1523).
@@ -747,7 +747,10 @@ export class RecallSearchPipelineCoordinator {
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 collection: coldCollection,
                 queryAwarePrefilter: options.queryAwarePrefilter,
-                searchOptions: this.deps.buildConfiguredQmdSearchOptions(options.prompt),
+                searchOptions: this.deps.buildConfiguredQmdSearchOptions(
+                  options.prompt,
+                  options.searchOptions,
+                ),
                 abortSignal: stepSignal,
                 onDegradation: (degradation) => {
                   if (coldQmdObserverActive) {

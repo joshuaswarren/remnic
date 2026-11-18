@@ -15,6 +15,23 @@ function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
 }
 
+/** Unit stub: only search/hybridSearch are exercised by hybrid top-up tests. */
+function makeHybridTopUpStubCoordinator(
+  qmd: Pick<RecallSearchPipelineDeps["qmd"], "search" | "hybridSearch">,
+  namespaceFromPath: (p: string) => string,
+): RecallSearchPipelineCoordinator {
+  // SAFETY: tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are unreachable.
+  return new RecallSearchPipelineCoordinator({
+    config: {
+      memoryDir: "/mem",
+      qmdSearchStrategy: "hybrid",
+      searchBackend: "qmd",
+    },
+    qmd,
+    namespaceFromPath,
+  } as unknown as RecallSearchPipelineDeps);
+}
+
 function memory(path: string, status: string): MemoryFile {
   return {
     path,
@@ -531,21 +548,16 @@ test("QMD skips hybrid top-up when namespace-deliverable page is already full", 
     resultScored("other-ns", `facts/other-${index}.md`, 2),
   );
   let hybridCalls = 0;
-  const coordinator = new RecallSearchPipelineCoordinator({
-    config: {
-      memoryDir: "/mem",
-      qmdSearchStrategy: "hybrid",
-      searchBackend: "qmd",
-    },
-    qmd: {
+  const coordinator = makeHybridTopUpStubCoordinator(
+    {
       search: async () => [...inScope, ...outOfScope],
       hybridSearch: async () => {
         hybridCalls += 1;
         return [resultScored("default", "facts/hybrid-extra.md", 0.5)];
       },
     },
-    namespaceFromPath: (p: string) => (p.includes("other") ? "other-ns" : "default"),
-  } as unknown as RecallSearchPipelineDeps);
+    (p: string) => (p.includes("other") ? "other-ns" : "default"),
+  );
 
   const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
     "namespace-saturated",

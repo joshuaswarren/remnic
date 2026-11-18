@@ -860,7 +860,6 @@ export class AccessRecallSurface {
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
-      ...(request.searchOptions ? { searchOptions: request.searchOptions } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
       // Only surface a real wait: an uncontended recall (queueWaitMs 0) omits
       // the field so recall-timings stays additive and byte-identical to the
@@ -869,6 +868,9 @@ export class AccessRecallSurface {
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
     };
+    if (request.searchOptions) {
+      recallOptions.searchOptions = request.searchOptions;
+    }
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are
     // one synchronous JS turn (no await between them), so record()'s own

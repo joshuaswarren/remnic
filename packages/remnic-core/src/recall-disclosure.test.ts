@@ -246,3 +246,19 @@ test("recallRequestSchema and MCP inputSchema carry the #1952 stateView boolean"
   const props = recallTool?.inputSchema?.properties as Record<string, { type?: string }> | undefined;
   assert.ok(props && props.stateView?.type === "boolean", "engram.recall inputSchema must declare stateView: boolean");
 });
+
+test("recallRequestSchema and MCP inputSchema carry searchOptions (parity with HTTP)", () => {
+  const ok = recallRequestSchema.safeParse({
+    query: "q",
+    searchOptions: { rerank: false, structuredSearches: [{ type: "lex", query: "q" }] },
+  });
+  assert.equal(ok.success, true);
+
+  const { service } = makeMcpRecallSpyService();
+  const server = new EngramMcpServer(service);
+  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
+  const recallTool = tools.find((t) => t.name === "engram.recall");
+  const searchOpts = (recallTool?.inputSchema?.properties as Record<string, { properties?: Record<string, unknown> }> | undefined)
+    ?.searchOptions?.properties;
+  assert.ok(searchOpts && "structuredSearches" in searchOpts, "MCP searchOptions must declare structuredSearches");
+});

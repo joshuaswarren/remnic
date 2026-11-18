@@ -4,25 +4,6 @@ import { parseConfig } from "./config.js";
 import { recallRequestSchema, validateRequest, type RecallRequest } from "./access-schema.js";
 import { mergeSearchQueryOptions } from "./search/port.js";
 import { Orchestrator } from "./orchestrator.js";
-import { EngramMcpServer } from "./access-mcp.js";
-import type { EngramAccessService } from "./access-service.js";
-
-function makeMcpRecallSpyService(): { service: EngramAccessService } {
-  const service = {
-    recall: async () => ({
-      query: "",
-      namespace: "default",
-      context: "",
-      count: 0,
-      memoryIds: [],
-      results: [],
-      fallbackUsed: false,
-      sourcesUsed: [],
-      disclosure: "chunk",
-    }),
-  } as unknown as EngramAccessService;
-  return { service };
-}
 
 test("recallRequestSchema accepts searchOptions.rerank and rejects unknown nested keys", () => {
   const ok = recallRequestSchema.safeParse({
@@ -50,9 +31,11 @@ test("validateRequest(recall) preserves searchOptions for HTTP", () => {
   }
 });
 
-test("mergeSearchQueryOptions: rerank false overrides config defaults; true is no-op", () => {
+test("mergeSearchQueryOptions: rerank false, explain false, rerank true no-op", () => {
   const merged = mergeSearchQueryOptions({ explain: true, intent: "goal:review" }, { rerank: false });
   assert.deepEqual(merged, { explain: true, intent: "goal:review", rerank: false });
+  const explainOff = mergeSearchQueryOptions({ explain: true }, { explain: false });
+  assert.deepEqual(explainOff, { explain: false });
   const noop = mergeSearchQueryOptions({ explain: true }, { rerank: true });
   assert.deepEqual(noop, { explain: true });
 });
@@ -70,13 +53,4 @@ test("buildConfiguredQmdSearchOptions threads recall searchOptions override", ()
   assert.deepEqual(off, { rerank: false });
   const none = orchestrator.buildConfiguredQmdSearchOptions("fleet status");
   assert.equal(none, undefined);
-});
-
-test("engram.recall MCP inputSchema declares searchOptions", () => {
-  const { service } = makeMcpRecallSpyService();
-  const server = new EngramMcpServer(service);
-  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
-  const recallTool = tools.find((t) => t.name === "engram.recall");
-  const props = recallTool?.inputSchema?.properties as Record<string, unknown> | undefined;
-  assert.ok(props && props.searchOptions, "searchOptions must be advertised on engram.recall");
 });

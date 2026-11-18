@@ -261,16 +261,23 @@ interface QmdCacheEntry {
 const QMD_CACHE_TTL_MS = 60_000;
 const qmdSearchCache = new Map<string, QmdCacheEntry>();
 
-/** While set, QMD search cache uses this TTL so primary + top-up share one recall cycle (R4). */
+/** While depth > 0, QMD search cache uses extended TTL (primary + top-up share one recall cycle, R4). */
+let qmdSearchCacheRecallScopeDepth = 0;
 let qmdSearchCacheRecallTtlMs: number | undefined;
 
 export function beginQmdSearchCacheRecallScope(ttlMs: number): void {
-  qmdSearchCacheRecallTtlMs =
-    Number.isFinite(ttlMs) && ttlMs > 0 ? Math.floor(ttlMs) : undefined;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
+  const next = Math.floor(ttlMs);
+  qmdSearchCacheRecallScopeDepth += 1;
+  qmdSearchCacheRecallTtlMs = Math.max(qmdSearchCacheRecallTtlMs ?? 0, next);
 }
 
 export function endQmdSearchCacheRecallScope(): void {
-  qmdSearchCacheRecallTtlMs = undefined;
+  if (qmdSearchCacheRecallScopeDepth <= 0) return;
+  qmdSearchCacheRecallScopeDepth -= 1;
+  if (qmdSearchCacheRecallScopeDepth === 0) {
+    qmdSearchCacheRecallTtlMs = undefined;
+  }
 }
 
 function effectiveQmdSearchCacheTtlMs(): number {

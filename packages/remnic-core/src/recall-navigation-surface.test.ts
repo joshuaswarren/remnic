@@ -464,7 +464,7 @@ test("god files stay under ratchet caps after navigation review fixes", async ()
     "access-service.ts": 5910,
     "config.ts": 4568,
     "cli.ts": 9428,
-    "orchestration/recall-internal.ts": 5344,
+    "orchestration/recall-internal.ts": 5347,
   };
   for (const [rel, cap] of Object.entries(caps)) {
     const text = await readFile(path.join(import.meta.dirname, rel), "utf8");

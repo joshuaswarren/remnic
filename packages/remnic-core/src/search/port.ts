@@ -22,22 +22,26 @@ export function mergeSearchQueryOptions(
   if (!request) {
     return Object.keys(out).length > 0 ? out : undefined;
   }
-  const intent = typeof request.intent === "string" ? request.intent.trim() : "";
-  if (intent.length > 0) out.intent = intent;
-  if (request.explain === true) out.explain = true;
+  if (request.intent !== undefined) {
+    const intent = request.intent.trim();
+    if (intent.length > 0) out.intent = intent;
+  }
+  if (request.explain !== undefined) {
+    out.explain = request.explain;
+  }
   // QMD wire path only honors explicit opt-out (`rerank: false`); `true` is a no-op.
   if (request.rerank === false) out.rerank = false;
   if (request.chunkStrategy === "auto" || request.chunkStrategy === "regex") {
     out.chunkStrategy = request.chunkStrategy;
   }
   if (
-    typeof request.candidateLimit === "number" &&
+    request.candidateLimit !== undefined &&
     Number.isFinite(request.candidateLimit) &&
     request.candidateLimit > 0
   ) {
     out.candidateLimit = Math.floor(request.candidateLimit);
   }
-  if (Array.isArray(request.structuredSearches) && request.structuredSearches.length > 0) {
+  if (request.structuredSearches !== undefined && request.structuredSearches.length > 0) {
     out.structuredSearches = request.structuredSearches;
   }
   return Object.keys(out).length > 0 ? out : undefined;

@@ -92,6 +92,7 @@ export interface RecallInternalDeps {
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
+    searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]>;
   applyTrustScoreToBranch(
     results: QmdSearchResult[],

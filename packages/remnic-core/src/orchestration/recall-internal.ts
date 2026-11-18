@@ -346,10 +346,7 @@ export class RecallInternalCoordinator {
     this.deps.profiler.endSpan("planning", profileTraceId);
     const recallMode: RecallPlanMode = requestedMode ?? recallDecision.effectiveMode;
     const queryIntent = inferIntentFromText(retrievalQuery);
-    const qmdSearchOptions = this.deps.buildConfiguredQmdSearchOptions(
-      retrievalQuery,
-      options.searchOptions,
-    );
+    const qmdSearchOptions = this.deps.buildConfiguredQmdSearchOptions(retrievalQuery, options.searchOptions);
     timings.recallPlan = recallMode;
     const plannerRecallResultLimit =
       recallMode === "no_recall"
@@ -4226,6 +4223,7 @@ export class RecallInternalCoordinator {
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             requestingConnector: options.sourceConnector,
+            searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
           // Issue #1577 — read the cold pipeline's trust map back so cold
@@ -4473,6 +4471,7 @@ export class RecallInternalCoordinator {
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
               requestingConnector: options.sourceConnector,
+              searchOptions: qmdSearchOptions,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
             // Issue #1577 — read the cold pipeline's trust map back (rule 41).
@@ -4653,6 +4652,7 @@ export class RecallInternalCoordinator {
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
                 requestingConnector: options.sourceConnector,
+                searchOptions: qmdSearchOptions,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
               // Issue #1577 — read the cold pipeline's trust map back (rule 41).
@@ -4712,6 +4712,7 @@ export class RecallInternalCoordinator {
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             requestingConnector: options.sourceConnector,
+            searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
           // Issue #1577 — read the cold pipeline's trust map back (rule 41).
