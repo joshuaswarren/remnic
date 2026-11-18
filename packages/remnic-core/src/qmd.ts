@@ -929,7 +929,7 @@ export class QmdClient implements SearchBackend {
   }
 
   private isDaemonCongested(): boolean {
-    return Date.now() < this.daemonCongestedUntilMs();
+    return performance.now() < this.daemonCongestedUntilMs();
   }
   private daemonSlowQueryMs = QMD_DAEMON_SLOW_QUERY_MS;
   private daemonCongestionWindowMs = QMD_DAEMON_CONGESTION_WINDOW_MS;
@@ -1503,7 +1503,7 @@ export class QmdClient implements SearchBackend {
    */
   private markDaemonCongested(durationMs: number, reason: "slow query" | "timeout"): void {
     if (this.daemonSession) {
-      DAEMON_CONGESTED_UNTIL.set(this.daemonSession, Date.now() + this.daemonCongestionWindowMs);
+      DAEMON_CONGESTED_UNTIL.set(this.daemonSession, performance.now() + this.daemonCongestionWindowMs);
     }
     log.info(
       `QMD daemon congested (${reason}, ${durationMs}ms): lex-only searches for ${this.daemonCongestionWindowMs}ms`
@@ -1987,11 +1987,11 @@ export class QmdClient implements SearchBackend {
     // stacking multi-second hybrid calls. The collection scope is preserved:
     // a global search stays global while degraded.
     if (this.isDaemonCongested()) {
-      const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal);
+      const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal, options);
       return degraded === null ? null : { results: degraded, degraded: true };
     }
 
-    const startedAtMs = Date.now();
+    const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
     try {
       let args: Record<string, unknown>;
@@ -2017,7 +2017,7 @@ export class QmdClient implements SearchBackend {
       }
 
       const result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
 
       if (this.slowLog?.enabled && durationMs >= this.slowLog.thresholdMs) {
         log.warn(
@@ -2035,8 +2035,14 @@ export class QmdClient implements SearchBackend {
       this.recordDaemonSuccess();
       return { results, degraded: false };
     } catch (err) {
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
       if (isCallerCancellation(err, signal)) {
+        // A call cancelled after the slow-query mark (e.g. a namespace leg
+        // deadline) is itself congestion evidence — the daemon really did
+        // stall. An explicit cancel of a fast call still skips the mark.
+        if (durationMs >= this.daemonSlowQueryMs) {
+          this.markDaemonCongested(durationMs, "slow query");
+        }
         log.debug(`QMD daemon search aborted/cancelled after ${durationMs}ms`);
         throw isAbortError(err) ? err : abortError("QMD daemon search aborted");
       }
@@ -2056,27 +2062,28 @@ export class QmdClient implements SearchBackend {
     query: string,
     collection: string | undefined,
     maxResults: number,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: SearchQueryOptions
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
-    const startedAtMs = Date.now();
+    const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
     try {
       let result: unknown;
       if (v2) {
         // QMD v2: no `search` tool — use `query` with lex-only sub-query.
         // No `collections` arg means a global (all-collections) search.
-        result = await this.daemonSession.callTool(
-          "query",
-          {
-            searches: [{ type: "lex", query }],
-            ...(collection ? { collections: [collection] } : {}),
-            limit: maxResults,
-          },
-          this.daemonTimeoutMs,
-          signal
-        );
+        const args: Record<string, unknown> = {
+          searches: [{ type: "lex", query }],
+          ...(collection ? { collections: [collection] } : {}),
+          limit: maxResults,
+        };
+        // Congestion plan: forward supported options (intent/explain/
+        // candidateLimit) but never pay the remote rerank leg.
+        this.addResolvedSearchOptionsToMcpArgs(args, options);
+        if (options !== undefined) args.rerank = false;
+        result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
       } else {
         // QMD v1: dedicated `search` tool for BM25
         result = await this.daemonSession.callTool(
@@ -2086,13 +2093,13 @@ export class QmdClient implements SearchBackend {
           signal
         );
       }
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
       const results = parseMcpSearchResult(result);
       log.debug(`QMD daemon bm25: ${results.length} results in ${durationMs}ms (v2=${v2})`);
       this.recordDaemonSuccess();
       return results;
     } catch (err) {
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
       if (isCallerCancellation(err, signal)) {
         log.debug(`QMD daemon bm25 aborted/cancelled after ${durationMs}ms`);
         throw isAbortError(err) ? err : abortError("QMD daemon bm25 aborted");
@@ -2121,7 +2128,7 @@ export class QmdClient implements SearchBackend {
       return this.bm25SearchViaDaemon(query, collection, maxResults, signal);
     }
 
-    const startedAtMs = Date.now();
+    const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
     try {
       let result: unknown;
@@ -2146,7 +2153,7 @@ export class QmdClient implements SearchBackend {
           signal
         );
       }
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
       const results = parseMcpSearchResult(result);
       if (durationMs >= this.daemonSlowQueryMs) {
         this.markDaemonCongested(durationMs, "slow query");
@@ -2155,8 +2162,11 @@ export class QmdClient implements SearchBackend {
       this.recordDaemonSuccess();
       return results;
     } catch (err) {
-      const durationMs = Date.now() - startedAtMs;
+      const durationMs = performance.now() - startedAtMs;
       if (isCallerCancellation(err, signal)) {
+        if (durationMs >= this.daemonSlowQueryMs) {
+          this.markDaemonCongested(durationMs, "slow query");
+        }
         log.debug(`QMD daemon vsearch aborted/cancelled after ${durationMs}ms`);
         throw isAbortError(err) ? err : abortError("QMD daemon vsearch aborted");
       }
