@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Routing tests for remnic-llm-proxy (no network)."""
+import importlib.util
+import json
+import os
+import tempfile
+import threading
+import unittest
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def load_proxy_module():
+    here = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(here, "remnic-llm-proxy.py")
+    spec = importlib.util.spec_from_file_location("remnic_llm_proxy", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class _Recorder(BaseHTTPRequestHandler):
+    hits = []
+
+    def do_POST(self):  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        kind = getattr(self.server, "pool_kind", "unknown")
+        _Recorder.hits.append((kind, json.loads(body.decode()) if body else {}))
+        payload = json.dumps({"choices": [{"message": {"role": "assistant", "content": kind}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format, *args):  # noqa: A002
+        pass
+
+
+class ProxyRoutingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.mod = load_proxy_module()
+        _Recorder.hits = []
+        cls.up_extraction = ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
+        cls.up_extraction.pool_kind = "extraction"
+        cls.up_recall = ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
+        cls.up_recall.pool_kind = "recall"
+        threading.Thread(target=cls.up_extraction.serve_forever, daemon=True).start()
+        threading.Thread(target=cls.up_recall.serve_forever, daemon=True).start()
+        cls.extraction_base = f"http://127.0.0.1:{cls.up_extraction.server_address[1]}"
+        cls.recall_base = f"http://127.0.0.1:{cls.up_recall.server_address[1]}"
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.extraction_file = os.path.join(cls.tmp.name, "extraction-pool.json")
+        cls.recall_file = os.path.join(cls.tmp.name, "recall-pool.json")
+        with open(cls.extraction_file, "w", encoding="utf-8") as fh:
+            json.dump({"enabled": True, "base": cls.extraction_base, "model": "remnic-core"}, fh)
+        with open(cls.recall_file, "w", encoding="utf-8") as fh:
+            json.dump({"enabled": True, "base": cls.recall_base, "model": "qwen3.8-27b-64k"}, fh)
+        cls.mod.POOL_FILE = cls.extraction_file
+        cls.mod.RECALL_POOL_FILE = cls.recall_file
+        cls.proxy = ThreadingHTTPServer(("127.0.0.1", 0), cls.mod.Handler)
+        threading.Thread(target=cls.proxy.serve_forever, daemon=True).start()
+        cls.proxy_url = f"http://127.0.0.1:{cls.proxy.server_address[1]}/v1/chat/completions"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.proxy.shutdown()
+        cls.up_extraction.shutdown()
+        cls.up_recall.shutdown()
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        _Recorder.hits.clear()
+
+    def _post(self, operation):
+        body = json.dumps({"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8}).encode()
+        req = urllib.request.Request(
+            self.proxy_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Remnic-Operation": operation,
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+
+    def test_recall_operation_uses_recall_pool(self):
+        self._post("recall")
+        self.assertEqual(len(_Recorder.hits), 1)
+        self.assertEqual(_Recorder.hits[0][0], "recall")
+
+    def test_extraction_operation_uses_extraction_pool(self):
+        self._post("extraction")
+        self.assertEqual(len(_Recorder.hits), 1)
+        self.assertEqual(_Recorder.hits[0][0], "extraction")
+
+    def test_should_use_recall_pool_classifier(self):
+        self.assertTrue(self.mod.should_use_recall_pool({"X-Remnic-Operation": "recall"}))
+        self.assertTrue(self.mod.should_use_recall_pool({"X-Remnic-Operation": "rerank"}))
+        self.assertFalse(self.mod.should_use_recall_pool({"X-Remnic-Operation": "extraction"}))
+        self.assertFalse(self.mod.should_use_recall_pool({}))
+
+
+    def test_recall_without_pool_fails_fast_not_extraction(self):
+        saved = self.mod.RECALL_POOL_FILE
+        self.mod.RECALL_POOL_FILE = ""
+        self.addCleanup(lambda: setattr(self.mod, "RECALL_POOL_FILE", saved))
+        body = json.dumps({"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8}).encode()
+        req = urllib.request.Request(
+            self.proxy_url,
+            data=body,
+            headers={"Content-Type": "application/json", "X-Remnic-Operation": "recall"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 503)
+        self.assertEqual(_Recorder.hits, [])
+
+    def test_health_redacts_pool_secrets(self):
+        url = f"http://127.0.0.1:{self.proxy.server_address[1]}/health"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        for field in ("pool", "recall_pool"):
+            block = payload.get(field)
+            if block:
+                self.assertNotIn("key", block)
+                self.assertNotIn("base", block)
+                self.assertIn("base_host", block)
+
+if __name__ == "__main__":
+    unittest.main()

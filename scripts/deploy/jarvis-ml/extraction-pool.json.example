@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "base": "http://REPLACE_WITH_EXTRACTION_POOL_HOST:PORT",
+  "model": "REPLACE_WITH_TRAINED_MODEL_ID",
+  "key": "REPLACE_OR_OMIT",
+  "extra": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  }
+}

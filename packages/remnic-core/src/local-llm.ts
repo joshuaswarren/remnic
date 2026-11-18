@@ -1005,9 +1005,16 @@ export class LocalLlmClient {
           }
         }
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
+        const routingHeaders: Record<string, string> = { "Content-Type": "application/json" };
+        if (operation !== "unspecified") {
+          routingHeaders["X-Remnic-Operation"] = operation;
+        }
+        if (options.priority) {
+          routingHeaders["X-Remnic-Priority"] = options.priority;
+        }
         const postAttempt = (bodyJson: string): Promise<Response> => this.chatTransport.post({
           url: chatUrl,
-          headers: this.buildRequestHeaders({ "Content-Type": "application/json" }),
+          headers: this.buildRequestHeaders(routingHeaders),
           body: bodyJson,
           signal: attemptAbort.signal,
           budgetMs: this.config.localLlmTimeoutMs,
