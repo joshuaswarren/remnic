@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 
-import { QmdClient } from "./qmd.js";
+import { daemonCongestionForTest, QmdClient } from "./qmd.js";
 
 /**
  * Regression coverage for the recall stall fixed in #3476: when the shared
@@ -43,10 +43,9 @@ type CallToolFn = (
 type CongestionInternals = {
   available: boolean;
   daemonAvailable: boolean;
-  daemonCongestedUntilMs: number;
   daemonSlowQueryMs: number;
   daemonCongestionWindowMs: number;
-  daemonSession: { isActive: () => boolean; callTool: CallToolFn } | null;
+  daemonSession: { isActive: () => boolean; callTool: CallToolFn };
   qmdCapabilities: Record<string, boolean>;
 };
 
@@ -119,7 +118,10 @@ test("daemon query timeout marks congestion without waiting for a slow success",
   });
 
   await client.search("gamma", "memories", 3);
-  assert.ok(internals.daemonCongestedUntilMs > Date.now() - 1, "timeout should open the congestion window");
+  assert.ok(
+    daemonCongestionForTest.get(internals.daemonSession) > Date.now() - 1,
+    "timeout should open the congestion window"
+  );
 
   await client.search("delta query", "memories", 3);
   assert.deepEqual(legTypes(calls[1]!), ["lex"]);
@@ -131,8 +133,75 @@ test("congestion window expiry restores the hybrid plan", async () => {
     calls.push({ name, args });
     return mcpOk([{ path: "r.md" }]);
   });
-  internals.daemonCongestedUntilMs = Date.now() - 1; // window already elapsed
+  daemonCongestionForTest.set(internals.daemonSession, Date.now() - 1); // window already elapsed
 
   await client.search("epsilon", "memories", 3);
   assert.deepEqual(legTypes(calls[0]!), ["lex", "vec", "hyde"]);
+});
+
+test("a congested global search stays global — no collection filter in the degraded call", async () => {
+  const calls: CapturedCall[] = [];
+  const { client, internals } = makeClient(async (name, args) => {
+    calls.push({ name, args });
+    return mcpOk([{ path: "r.md" }]);
+  });
+  daemonCongestionForTest.set(internals.daemonSession, Date.now() + 60_000);
+
+  await client.searchGlobal("wide query", 3);
+  assert.deepEqual(legTypes(calls[0]!), ["lex"]);
+  assert.equal(calls[0]!.args.collections, undefined);
+});
+
+test("degraded results cache under the degraded namespace only", async () => {
+  const calls: CapturedCall[] = [];
+  const { client, internals } = makeClient(async (name, args) => {
+    calls.push({ name, args });
+    return mcpOk([{ path: `r${calls.length}.md` }]);
+  });
+  daemonCongestionForTest.set(internals.daemonSession, Date.now() + 60_000);
+
+  await client.search("shared key", "memories", 3);
+  assert.deepEqual(legTypes(calls[0]!), ["lex"]);
+
+  // Same query still congested → degraded-cache hit, no new daemon call.
+  await client.search("shared key", "memories", 3);
+  assert.equal(calls.length, 1);
+
+  // After expiry the same query must run the hybrid plan — the degraded
+  // result must not have been written into the std namespace.
+  daemonCongestionForTest.set(internals.daemonSession, Date.now() - 1);
+  await client.search("shared key", "memories", 3);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(legTypes(calls[1]!), ["lex", "vec", "hyde"]);
+});
+
+test("a congestion mark from one client gates siblings sharing the daemon session", async () => {
+  const calls: CapturedCall[] = [];
+  const sessionCallTool: CallToolFn = async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) await sleep(80); // slow query → marks congestion
+    return mcpOk([{ path: `r${calls.length}.md` }]);
+  };
+  const a = makeClient(sessionCallTool);
+  const b = makeClient(sessionCallTool);
+  // Registry semantics: both clients retain the same shared session object.
+  b.internals.daemonSession = a.internals.daemonSession;
+
+  await a.client.search("slow seed", "memories", 3);
+  await b.client.search("sibling query", "memories", 3);
+  assert.equal(calls[1]!.args.searches?.[0]?.query, "sibling query");
+  assert.deepEqual(legTypes(calls[1]!), ["lex"]);
+});
+
+test("vector search serves the lex leg while the congestion window is open", async () => {
+  const calls: CapturedCall[] = [];
+  const { client, internals } = makeClient(async (name, args) => {
+    calls.push({ name, args });
+    return mcpOk([{ path: "v.md" }]);
+  });
+  daemonCongestionForTest.set(internals.daemonSession, Date.now() + 60_000);
+
+  await client.vectorSearch("vec query", "memories", 3);
+  assert.deepEqual(legTypes(calls[0]!), ["lex"]);
+  assert.deepEqual(calls[0]!.args.collections, ["memories"]);
 });

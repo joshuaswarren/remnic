@@ -13,7 +13,11 @@ test("QmdClient rechecks daemon availability before returning unavailable", asyn
     available: boolean;
     daemonAvailable: boolean;
     probeDaemon: () => Promise<boolean>;
-    searchViaDaemon: (query: string, collection: string | undefined, maxResults: number) => Promise<QmdSearchResult[]>;
+    searchViaDaemon: (
+      query: string,
+      collection: string | undefined,
+      maxResults: number
+    ) => Promise<{ results: QmdSearchResult[]; degraded: boolean } | null>;
   };
   let probeCount = 0;
   internals.available = false;
@@ -23,15 +27,18 @@ test("QmdClient rechecks daemon availability before returning unavailable", asyn
     internals.daemonAvailable = true;
     return true;
   };
-  internals.searchViaDaemon = async (query, collection, maxResults) => [
-    {
-      docid: `${collection}:${maxResults}`,
-      path: "memory.md",
-      snippet: query,
-      score: 1,
-      transport: "daemon",
-    },
-  ];
+  internals.searchViaDaemon = async (query, collection, maxResults) => ({
+    degraded: false,
+    results: [
+      {
+        docid: `${collection}:${maxResults}`,
+        path: "memory.md",
+        snippet: query,
+        score: 1,
+        transport: "daemon",
+      },
+    ],
+  });
 
   const results = await client.search("slow startup", "memories", 3);
 

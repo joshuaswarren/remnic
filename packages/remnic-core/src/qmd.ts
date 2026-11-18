@@ -843,6 +843,19 @@ export const sharedDaemonSessionCountForTest = (): number => SHARED_DAEMON_SESSI
 export { retainSharedDaemonSession as retainSharedDaemonSessionForTest };
 export { releaseSharedDaemonSession as releaseSharedDaemonSessionForTest };
 
+// Congestion deadlines keyed by the shared daemon session itself, so every
+// QmdClient retaining the same session reads one window: a slow/timeout mark
+// from any sibling gates them all (#3476).
+const DAEMON_CONGESTED_UNTIL = new WeakMap<object, number>();
+
+// Test-only seam: congestion tests drive a stub session object directly.
+export const daemonCongestionForTest = {
+  get: (session: object): number => DAEMON_CONGESTED_UNTIL.get(session) ?? 0,
+  set: (session: object, untilMs: number): void => {
+    DAEMON_CONGESTED_UNTIL.set(session, untilMs);
+  },
+};
+
 // ---------------------------------------------------------------------------
 // QmdClient
 // ---------------------------------------------------------------------------
@@ -899,7 +912,10 @@ export class QmdClient implements SearchBackend {
   // Daemon mode fields
   private daemonSession: QmdDaemonSession | null = null;
   /** Identical in-flight search() calls share one daemon query. Cancel fires only when every waiter aborts. */
-  private readonly daemonSearchJoiner = createInflightJoiner<QmdSearchResult[] | null>();
+  private readonly daemonSearchJoiner = createInflightJoiner<{
+    results: QmdSearchResult[];
+    degraded: boolean;
+  } | null>();
   private daemonAvailable = false;
   private daemonSessionPath: string | null = null;
   private lastDaemonCheckAtMs = 0;
@@ -908,7 +924,13 @@ export class QmdClient implements SearchBackend {
   /** Consecutive transient daemon failures before invalidating the session. */
   private daemonTransientFailures = 0;
   /** Epoch ms until which daemon searches run lex-only after a slow/timed-out query (#3476). */
-  private daemonCongestedUntilMs = 0;
+  private daemonCongestedUntilMs(): number {
+    return this.daemonSession ? (DAEMON_CONGESTED_UNTIL.get(this.daemonSession) ?? 0) : 0;
+  }
+
+  private isDaemonCongested(): boolean {
+    return Date.now() < this.daemonCongestedUntilMs();
+  }
   private daemonSlowQueryMs = QMD_DAEMON_SLOW_QUERY_MS;
   private daemonCongestionWindowMs = QMD_DAEMON_CONGESTION_WINDOW_MS;
   private static readonly DAEMON_MAX_TRANSIENT_FAILURES = 3;
@@ -1480,7 +1502,9 @@ export class QmdClient implements SearchBackend {
    * cannot stall every recall stage serially.
    */
   private markDaemonCongested(durationMs: number, reason: "slow query" | "timeout"): void {
-    this.daemonCongestedUntilMs = Date.now() + this.daemonCongestionWindowMs;
+    if (this.daemonSession) {
+      DAEMON_CONGESTED_UNTIL.set(this.daemonSession, Date.now() + this.daemonCongestionWindowMs);
+    }
     log.info(
       `QMD daemon congested (${reason}, ${durationMs}ms): lex-only searches for ${this.daemonCongestionWindowMs}ms`
     );
@@ -1680,11 +1704,13 @@ export class QmdClient implements SearchBackend {
     // Key must capture daemon/subprocess strategies to avoid cross-instance collisions (#1335).
     const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
     // Degraded (congested) results must not poison the normal cache namespace
-    // for the TTL (#3476).
-    const planFingerprint = Date.now() < this.daemonCongestedUntilMs ? "deg" : "std";
-    const cacheKey = createHash("sha256")
-      .update(`${strategyFingerprint}:${planFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
-      .digest("hex");
+    // for the TTL (#3476). The write key uses the plan that actually ran —
+    // the window can open between this sample and execution (#3479 review).
+    const makeCacheKey = (planFingerprint: string) =>
+      createHash("sha256")
+        .update(`${strategyFingerprint}:${planFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
+        .digest("hex");
+    const cacheKey = makeCacheKey(this.isDaemonCongested() ? "deg" : "std");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
       // No degradation on cache hit by design (#1536): only trustworthy results are cached.
@@ -1694,9 +1720,9 @@ export class QmdClient implements SearchBackend {
 
     // Try daemon first (bypasses QMD_MUTEX — daemon handles its own concurrency)
     if (this.daemonAvailable) {
-      let results: QmdSearchResult[] | null;
+      let outcome: { results: QmdSearchResult[]; degraded: boolean } | null;
       try {
-        results = await this.daemonSearchJoiner.join(cacheKey, execution?.signal, (sharedSignal) =>
+        outcome = await this.daemonSearchJoiner.join(cacheKey, execution?.signal, (sharedSignal) =>
           this.searchViaDaemon(trimmed, col, n, searchOptions, sharedSignal)
         );
       } catch (err) {
@@ -1709,14 +1735,15 @@ export class QmdClient implements SearchBackend {
       // The subprocess runs `qmd query` (BM25 + LLM expansion) which hangs at
       // 99% CPU on large collections (75K+ files) making it strictly worse than
       // the daemon for this workload. Specifically:
-      //   results !== null → daemon succeeded (even with 0 hits) → return as-is
-      //   results === null → daemon timed-out or errored → still skip subprocess
+      //   outcome !== null → daemon succeeded (even with 0 hits) → return as-is
+      //   outcome === null → daemon timed-out or errored → still skip subprocess
       //                      because subprocess will also hang or timeout
-      if (results !== null) {
+      if (outcome !== null) {
+        const { results, degraded } = outcome;
         if (results.length === 0) {
           log.debug("QMD daemon search returned 0 results; skipping subprocess");
         }
-        setCachedQmdSearch(cacheKey, results);
+        setCachedQmdSearch(makeCacheKey(degraded ? "deg" : "std"), results);
         return results;
       }
       // Daemon timed out or had a transient error — skip subprocess for large
@@ -1776,9 +1803,9 @@ export class QmdClient implements SearchBackend {
     // Try daemon first
     if (this.daemonAvailable) {
       // Global search: no collection filter
-      let results: QmdSearchResult[] | null;
+      let outcome: { results: QmdSearchResult[]; degraded: boolean } | null;
       try {
-        results = await this.searchViaDaemon(trimmed, undefined, n, searchOptions, execution?.signal);
+        outcome = await this.searchViaDaemon(trimmed, undefined, n, searchOptions, execution?.signal);
       } catch (err) {
         if (isCallerCancellation(err, execution?.signal)) {
           throw isAbortError(err) ? err : abortError("QMD daemon global search aborted");
@@ -1786,11 +1813,11 @@ export class QmdClient implements SearchBackend {
         throw err;
       }
       // Same rationale as search() — trust daemon outcome, skip subprocess.
-      if (results !== null) {
-        if (results.length === 0) {
+      if (outcome !== null) {
+        if (outcome.results.length === 0) {
           log.debug("QMD daemon global search returned 0 results; skipping subprocess");
         }
-        return results;
+        return outcome.results;
       }
       log.warn("QMD daemon global search timed out/failed; skipping subprocess (daemon-only mode)");
       this.notifyDegradation(execution?.onDegradation, "daemon_timeout");
@@ -1950,16 +1977,18 @@ export class QmdClient implements SearchBackend {
     maxResults: number,
     options?: SearchQueryOptions,
     signal?: AbortSignal
-  ): Promise<QmdSearchResult[] | null> {
+  ): Promise<{ results: QmdSearchResult[]; degraded: boolean } | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
     // Congestion degradation (#3476): the daemon embeds vec/hyde legs on one
     // shared backend; when that backend is saturated, every hybrid query
     // waits on it serially. While the congestion window is open, serve
     // lex-only FTS — no embed legs — so recall stays responsive instead of
-    // stacking multi-second hybrid calls.
-    if (Date.now() < this.daemonCongestedUntilMs) {
-      return this.bm25SearchViaDaemon(query, collection ?? this.collection, maxResults, signal);
+    // stacking multi-second hybrid calls. The collection scope is preserved:
+    // a global search stays global while degraded.
+    if (this.isDaemonCongested()) {
+      const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal);
+      return degraded === null ? null : { results: degraded, degraded: true };
     }
 
     const startedAtMs = Date.now();
@@ -2004,7 +2033,7 @@ export class QmdClient implements SearchBackend {
 
       log.debug(`QMD daemon search: ${results.length} results in ${durationMs}ms (v2=${v2})`);
       this.recordDaemonSuccess();
-      return results;
+      return { results, degraded: false };
     } catch (err) {
       const durationMs = Date.now() - startedAtMs;
       if (isCallerCancellation(err, signal)) {
@@ -2025,7 +2054,7 @@ export class QmdClient implements SearchBackend {
 
   private async bm25SearchViaDaemon(
     query: string,
-    collection: string,
+    collection: string | undefined,
     maxResults: number,
     signal?: AbortSignal
   ): Promise<QmdSearchResult[] | null> {
@@ -2036,12 +2065,13 @@ export class QmdClient implements SearchBackend {
     try {
       let result: unknown;
       if (v2) {
-        // QMD v2: no `search` tool — use `query` with lex-only sub-query
+        // QMD v2: no `search` tool — use `query` with lex-only sub-query.
+        // No `collections` arg means a global (all-collections) search.
         result = await this.daemonSession.callTool(
           "query",
           {
             searches: [{ type: "lex", query }],
-            collections: [collection],
+            ...(collection ? { collections: [collection] } : {}),
             limit: maxResults,
           },
           this.daemonTimeoutMs,
@@ -2051,7 +2081,7 @@ export class QmdClient implements SearchBackend {
         // QMD v1: dedicated `search` tool for BM25
         result = await this.daemonSession.callTool(
           "search",
-          { query, limit: maxResults, collection },
+          { query, limit: maxResults, ...(collection ? { collection } : {}) },
           this.daemonTimeoutMs,
           signal
         );
@@ -2084,6 +2114,13 @@ export class QmdClient implements SearchBackend {
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
+    // Congestion degradation (#3476): the vec leg is an embed call on the same
+    // contended backend — while the window is open, serve the lex leg instead
+    // so hybridSearch/vectorSearch callers keep working without embedding.
+    if (this.isDaemonCongested()) {
+      return this.bm25SearchViaDaemon(query, collection, maxResults, signal);
+    }
+
     const startedAtMs = Date.now();
     const v2 = this.isQmdV2();
     try {
@@ -2111,6 +2148,9 @@ export class QmdClient implements SearchBackend {
       }
       const durationMs = Date.now() - startedAtMs;
       const results = parseMcpSearchResult(result);
+      if (durationMs >= this.daemonSlowQueryMs) {
+        this.markDaemonCongested(durationMs, "slow query");
+      }
       log.debug(`QMD daemon vsearch: ${results.length} results in ${durationMs}ms (v2=${v2})`);
       this.recordDaemonSuccess();
       return results;
@@ -2121,6 +2161,7 @@ export class QmdClient implements SearchBackend {
         throw isAbortError(err) ? err : abortError("QMD daemon vsearch aborted");
       }
       if (isDaemonTimeoutError(err)) {
+        this.markDaemonCongested(durationMs, "timeout");
         log.debug(`QMD daemon vsearch timed out after ${durationMs}ms, falling back to subprocess`);
         return null;
       }
