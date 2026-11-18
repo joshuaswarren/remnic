@@ -68,10 +68,17 @@ jobs:
     # with GITHUB_SHA = the default branch (trusted code), so they need no such
     # guard. Also skip drafts, and require an associated PR for check_run /
     # a PR-scoped comment for issue_comment (cursor).
+    # check_run completions are filtered to reviewer-bot apps (plus the gate's
+    # own `ai-reviewers` verdict check): every CI job completion also emits a
+    # check_run event, and without this filter each one spun up a runner for a
+    # ledger evaluation that cannot change (CI-cost baseline, Nov 2026).
     if: >-
       (github.event.pull_request && github.event.pull_request.draft == false &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
-      (github.event_name == 'check_run' && github.event.check_run.pull_requests[0] != null) ||
+      (github.event_name == 'check_run' &&
+        github.event.check_run.pull_requests[0] != null &&
+        (contains(fromJSON('["cursor-bugbot","cursor","coderabbitai","chatgpt-codex-connector"]'), github.event.check_run.app.slug) ||
+         github.event.check_run.name == 'ai-reviewers')) ||
       (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
     runs-on: ubuntu-latest
     timeout-minutes: 10

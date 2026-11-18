@@ -63,6 +63,19 @@ test("the round-dispatch job only runs for PR-relevant events (no repo-wide no-o
   assert.match(dispatch, /github\.event\.pull_request\.draft == false/);
 });
 
+test("the round-dispatch check_run path only wakes for reviewer-bot verdicts", () => {
+  const dispatch = read(".github/workflows/review-round-dispatch.yml");
+  // Every CI job completion emits check_run; without an app/name filter each
+  // one allocates a runner for a ledger evaluation that cannot change. The
+  // filter must keep the reviewer-bot slugs the round ledger tracks AND the
+  // gate's own `ai-reviewers` verdict check (posted by github-actions).
+  assert.match(dispatch, /github\.event\.check_run\.app\.slug/);
+  assert.match(dispatch, /cursor-bugbot/);
+  assert.match(dispatch, /coderabbitai/);
+  assert.match(dispatch, /chatgpt-codex-connector/);
+  assert.match(dispatch, /github\.event\.check_run\.name == 'ai-reviewers'/);
+});
+
 test("the write-scoped gate runs PR-ref code only for trusted same-repo PRs", () => {
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   // The pull_request family is the only path that checks out PR-HEAD code, so it
