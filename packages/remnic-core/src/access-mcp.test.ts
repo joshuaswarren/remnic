@@ -1156,6 +1156,19 @@ function listToolNames(response: unknown): string[] {
 
 const TOOLS_LIST_REQUEST = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
 
+interface ToolsListSchemaProperties {
+  searchOptions?: { properties?: { structuredSearches?: unknown } };
+}
+
+interface ToolsListToolRow {
+  name: string;
+  inputSchema?: { properties?: ToolsListSchemaProperties };
+}
+
+interface ToolsListEnvelope {
+  result?: { tools?: ToolsListToolRow[] };
+}
+
 test("tools/list advertises remnic_* and engram.* by default (back-compat)", async () => {
   const server = new EngramMcpServer(makeMockService());
   const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
@@ -1168,14 +1181,13 @@ test("tools/list advertises remnic_* and engram.* by default (back-compat)", asy
 test("tools/list engram.recall searchOptions declares structuredSearches (HTTP parity)", async () => {
   const server = new EngramMcpServer(makeMockService());
   const res = await server.handleRequest(TOOLS_LIST_REQUEST);
-  const tools =
-  (res as { result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> } })
-    .result?.tools ?? [];
+  // SAFETY: tools/list JSON shape is owned by EngramMcpServer; test only reads engram.recall schema keys.
+  const tools = (res as ToolsListEnvelope).result?.tools ?? [];
   const recall = tools.find((t) => t.name === "engram.recall");
-  const props = recall?.inputSchema?.properties;
-  assert.ok(props && typeof props.searchOptions === "object" && props.searchOptions !== null);
-  const nested = props.searchOptions as { properties?: Record<string, unknown> };
-  assert.ok(nested.properties && "structuredSearches" in nested.properties);
+  assert.ok(
+    recall?.inputSchema?.properties?.searchOptions?.properties?.structuredSearches !== undefined,
+    "MCP searchOptions must declare structuredSearches",
+  );
 });
 
 test("tools/list omits engram.* aliases when emitLegacyTools is false", async () => {
