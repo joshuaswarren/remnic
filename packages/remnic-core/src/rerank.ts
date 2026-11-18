@@ -13,6 +13,15 @@ export interface RerankCacheEntry {
   rankedIds: string[];
 }
 
+/** Snippet chars sent to the local rerank model (full snippets stay in storage). */
+export const RERANK_LLM_SNIPPET_CHARS = 120;
+
+/** Output budget: ordered id list only, not per-candidate commentary. */
+export const RERANK_LLM_MAX_TOKENS = 96;
+
+/** Hard cap on candidates included in one local rerank prompt (latency). */
+export const RERANK_LLM_MAX_CANDIDATES = 8;
+
 export class RerankCache {
   private entries = new Map<string, RerankCacheEntry>();
 
@@ -39,12 +48,48 @@ export class RerankCache {
  * - Candidates missing from the response keep relative order after scored ones.
  * - Stable tie-breaker: originalIndex ascending.
  */
+function rankedFromOrder(
+  order: string[],
+  candidates: RerankCandidate[]
+): Array<RerankCandidate & { score?: number }> {
+  const byId = new Map<string, RerankCandidate>();
+  for (const c of candidates) byId.set(c.id, c);
+  const seen = new Set<string>();
+  const ranked: Array<RerankCandidate & { score?: number }> = [];
+  for (const id of order) {
+    if (typeof id !== "string" || seen.has(id)) continue;
+    const c = byId.get(id);
+    if (!c) continue;
+    seen.add(id);
+    ranked.push({ ...c });
+  }
+  for (const c of candidates) {
+    if (!seen.has(c.id)) ranked.push({ ...c });
+  }
+  return ranked;
+}
+
 export function parseRerankResponse(
   raw: string,
   candidates: RerankCandidate[]
 ): Array<RerankCandidate & { score?: number }> {
   const byId = new Map<string, RerankCandidate>();
   for (const c of candidates) byId.set(c.id, c);
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      order?: unknown;
+      scores?: Array<Partial<RerankScore>>;
+    };
+    if (Array.isArray(parsed.order)) {
+      return rankedFromOrder(
+        parsed.order.filter((id): id is string => typeof id === "string"),
+        candidates
+      );
+    }
+  } catch {
+    // fall through
+  }
 
   const scores = new Map<string, number>();
   try {
@@ -113,7 +158,8 @@ export async function rerankLocalOrNoop(opts: {
 }): Promise<string[] | null> {
   if (!opts.enabled) return null;
 
-  const ids = opts.candidates.slice(0, opts.maxCandidates).map((c) => c.id);
+  const take = Math.min(opts.maxCandidates, RERANK_LLM_MAX_CANDIDATES);
+  const ids = opts.candidates.slice(0, take).map((c) => c.id);
   if (ids.length <= 1) return ids;
 
   const key = stableKey(opts.query, ids);
@@ -122,29 +168,19 @@ export async function rerankLocalOrNoop(opts: {
     if (cached) return cached;
   }
 
-  const payload = opts.candidates.slice(0, opts.maxCandidates).map((c) => ({
+  const payload = opts.candidates.slice(0, take).map((c) => ({
     id: c.id,
-    snippet: clampSnippet(c.snippet, 400),
+    snippet: clampSnippet(c.snippet, RERANK_LLM_SNIPPET_CHARS),
   }));
 
-  const system = "You are a ranking system. Return JSON only. No markdown, no commentary.";
-  const user = JSON.stringify(
-    {
-      task: "rerank",
-      query: opts.query,
-      candidates: payload,
-      output: {
-        scores: [{ id: "string", score: "number 0-100" }],
-      },
-      rules: [
-        "Assign higher score to more relevant candidates.",
-        "Prefer durability and direct relevance to the query.",
-        "If unsure, keep scores close together.",
-      ],
-    },
-    null,
-    0
-  );
+  const system =
+    'Return JSON only: {"order":["id",...]} with ids best-first. Every id exactly once.';
+  const user = JSON.stringify({
+    q: opts.query,
+    c: payload.map((p) => [p.id, p.snippet]),
+  });
+
+  const timeoutMs = Math.min(opts.timeoutMs, 2500);
 
   const res = await opts.local.chatCompletion(
     [
@@ -152,9 +188,9 @@ export async function rerankLocalOrNoop(opts: {
       { role: "user", content: user },
     ],
     {
-      maxTokens: 800,
+      maxTokens: RERANK_LLM_MAX_TOKENS,
       temperature: 0.0,
-      timeoutMs: opts.timeoutMs,
+      timeoutMs,
       operation: "rerank",
       priority: "recall-critical",
     }
