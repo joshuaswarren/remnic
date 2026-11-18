@@ -12,6 +12,8 @@ becomes rewrite-eligible, so a burst's tail lands without another turn.
 First-ever persists, drain-claimed sessions (and backends that cannot prove a
 session is unclaimed), small sessions, extraction-trigger saves, explicit
 `buffer.save()`, and `flushPendingSave` barriers are never deferred — the added
-crash-loss window matches the sanctioned `bufferSaveDebounceMs` semantics.
+crash-loss window is independent of `bufferSaveDebounceMs`: a deferred large
+session can stay unpersisted for up to 60 seconds after its last persist,
+including when `bufferSaveDebounceMs` is `0`.
 
 Stability: stable

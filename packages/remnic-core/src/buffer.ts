@@ -68,6 +68,11 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
 
+/** Retry delay for a failed save when `bufferSaveDebounceMs` is 0: a transient
+ *  failure must still re-arm (PR 3481 review round 3); 1s bounds the dirty
+ *  window without a hot retry loop on a persistently failing backend. */
+const BUFFER_SAVE_RETRY_DELAY_MS = 1_000;
+
 export class SmartBuffer {
   private state: BufferState;
   private loaded = false;
@@ -395,8 +400,11 @@ export class SmartBuffer {
       log.warn(
         `buffer.${context}: inline save failed, keeping it pending for retry: ${describeError(err)}`,
       );
-      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
-      if (ms > 0 && !this.saveTimer) {
+      const ms = Math.min(
+        this.config.bufferSaveDebounceMs || BUFFER_SAVE_RETRY_DELAY_MS,
+        MAX_SET_TIMEOUT_MS,
+      );
+      if (!this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
           void this.flushPendingSave({ allowDeferral: opts?.allowDeferral === true });
@@ -454,10 +462,13 @@ export class SmartBuffer {
       // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
       // graceful shutdown flush and the re-armed timer both retry it — clearing
       // the flag here would drop the buffered turns permanently. Re-arm a
-      // background retry when debounced.
+      // background retry even when debounce is off (3481 review round 3).
       log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
-      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
-      if (ms > 0 && !this.saveTimer) {
+      const ms = Math.min(
+        this.config.bufferSaveDebounceMs || BUFFER_SAVE_RETRY_DELAY_MS,
+        MAX_SET_TIMEOUT_MS,
+      );
+      if (!this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
           // A steady-state retry must not escalate into a barrier write of a

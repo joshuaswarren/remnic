@@ -427,3 +427,46 @@ test("#3389 a session near the floor still defers once JSON overhead is counted"
     "a ~7.4 MB-content session serializes past 8 MiB and must defer",
   );
 });
+
+test("#3389 a debounce-off deferred retry re-arms after a transient write failure", async () => {
+  // Review round 3 (PR 3481): with bufferSaveDebounceMs 0 the catch block in
+  // flushPendingSave armed no retry — a transient failure at the deferred
+  // session's eligibility time left it dirty until another turn or barrier.
+  class FlakyStorage extends DeferStorage {
+    private writesSeen = 0;
+    async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
+      if (key === "big" && ++this.writesSeen === 2) {
+        throw new Error("transient write failure");
+      }
+      return super.saveBufferSession(key, entry);
+    }
+  }
+  const state = emptyState();
+  state.entries = { big: bigEntry() };
+  const storage = new FlakyStorage(state);
+  const persistence = new BufferSessionPersistence({
+    now: realtimeClock(),
+    deferIntervalMs: 120,
+  });
+  const buffer = new SmartBuffer(
+    parseConfig({ triggerMode: "every_n", bufferMaxTurns: 1_000, bufferSaveDebounceMs: 0 }),
+    storage,
+    null,
+    { persistence },
+  );
+
+  await buffer.addTurn("big", makeTurn("big", "more"));
+  assert.equal(storage.writeCount("big"), 1, "first write must land");
+
+  // Second turn defers; the eligibility-time write fails once. A retry armed
+  // independent of the debounce must land the session — no further turn and
+  // no barrier.
+  await buffer.addTurn("big", makeTurn("big", "more"));
+  const deadline = Date.now() + 3_000;
+  while (storage.writeCount("big") < 2 && Date.now() < deadline) await sleep(20);
+  assert.equal(
+    storage.writeCount("big"),
+    2,
+    "a failed deferred save must re-arm a retry even with debounce off",
+  );
+});
