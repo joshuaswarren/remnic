@@ -57,4 +57,12 @@ export interface BufferTurn extends SourceConnectorProvenance, BufferTurnOwner, 
    * the drain's in-memory chunk copies, never on buffered or claimed turns.
    */
   extractionDuplicateOf?: true;
+  /**
+   * In-flight drain marker (payload-cap drain): this turn is one verbatim
+   * slice of a buffered turn whose content exceeded the per-call payload
+   * cap. The marker is set only on the drain's in-memory chunk copies,
+   * never persisted and never spliced into the content (verbatim-quote
+   * requirement) — the model sees only real conversation text.
+   */
+  extractionPartOf?: { part: number; of: number };
 }

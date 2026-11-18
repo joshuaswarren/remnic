@@ -2877,6 +2877,8 @@ export function parseConfig(
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
     // Trigger-drain drop threshold: consecutive failed extraction attempts
     // before the failing buffer chunk is dropped (side-file copied first).
+    extractionCallMaxChars:
+      parsePositiveInteger(cfg.extractionCallMaxChars, "extractionCallMaxChars") ?? 12_000,
     extractionChunkDropAfterFailures: parseIntegerAtLeast(
       cfg.extractionChunkDropAfterFailures,
       5,

@@ -5,6 +5,7 @@ import {
   classifyDrainResult,
   extractionWindowBudgetChars,
   mergeDrainResults,
+  splitOversizedTurns,
 } from "./extraction-window-drain.js";
 import type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 import type { BufferTurn } from "./types.js";
@@ -120,4 +121,69 @@ test("extractionWindowBudgetChars applies the learned local window only when the
     Number.POSITIVE_INFINITY,
     "no registry (legacy host or test double): no budget",
   );
+});
+
+test("splitOversizedTurns leaves a fitting turn untouched", () => {
+  const turns = [makeTurn("short")];
+  const plan = splitOversizedTurns(turns, 100);
+  assert.deepEqual(plan.turns, turns);
+  assert.equal(plan.partParents.size, 0);
+});
+
+test("splitOversizedTurns splits an oversized turn into marked parts covering all content", () => {
+  const parent = makeTurn(
+    "First sentence here. Second sentence also here. Third sentence keeps going. Fourth is the tail.",
+  );
+  const plan = splitOversizedTurns([parent], 40);
+  assert.ok(plan.turns.length > 1, "expected several parts");
+  for (const [index, part] of plan.turns.entries()) {
+    assert.deepEqual(part.extractionPartOf, { part: index + 1, of: plan.turns.length });
+    assert.ok(part.content.length <= 40, `part ${index} over budget`);
+    assert.equal(plan.partParents.get(part), parent);
+  }
+  const joined = plan.turns.map((part) => part.content).join("");
+  assert.equal(joined, parent.content, "every part extracted — nothing dropped");
+});
+
+test("splitOversizedTurns never splices marker text into the content", () => {
+  const parent = makeTurn("Alpha part one. Beta part two. Gamma part three. Delta part four.");
+  const plan = splitOversizedTurns([parent], 30);
+  for (const part of plan.turns) {
+    assert.ok(parent.content.includes(part.content), "part text must be verbatim slices");
+  }
+});
+
+test("splitOversizedTurns clamps at the max part count and reports the clamp", () => {
+  const parent = makeTurn("one. two. three. four. five. six. seven. eight. nine. ten.");
+  const plan = splitOversizedTurns([parent], 8, 4);
+  assert.ok(plan.turns.length <= 4);
+  assert.equal(plan.clamped, true);
+});
+
+test("extractionWindowBudgetChars applies the configured call cap below the model budget", () => {
+  const registry = {
+    calculateContextSizes: () => ({ maxInputChars: 28800 }),
+  };
+  const budget = extractionWindowBudgetChars({
+    registry,
+    localExtractionActive: true,
+    model: "m",
+    maxContext: 12288,
+    callMaxChars: 12000,
+  });
+  assert.equal(budget, 12000);
+});
+
+test("extractionWindowBudgetChars keeps the smaller registry budget", () => {
+  const registry = {
+    calculateContextSizes: () => ({ maxInputChars: 8000 }),
+  };
+  const budget = extractionWindowBudgetChars({
+    registry,
+    localExtractionActive: true,
+    model: "m",
+    maxContext: 12288,
+    callMaxChars: 12000,
+  });
+  assert.equal(budget, 8000);
 });
