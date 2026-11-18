@@ -4,4 +4,4 @@
 
 Stability: stable
 
-Local rerank uses a compact order-json prompt, shorter snippets, capped candidates, and a 48-token decode budget so warm calls land around 2s on the trained Studio model (fail-open timeout unchanged).
+Local rerank uses a compact order-json prompt, shorter snippets, and capped candidates. Decode budget is `24 + 10×candidate count` (max 256). Each rerank attempt caps at 2500 ms; on timeout, empty model reply, or unparseable JSON, recall keeps the pre-rerank order (fail-open).
