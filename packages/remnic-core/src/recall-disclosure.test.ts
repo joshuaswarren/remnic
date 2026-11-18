@@ -28,6 +28,19 @@ import { lcmSearchRequestSchema, recallRequestSchema, validateRequest } from "./
 import { EngramMcpServer } from "./access-mcp.js";
 import type { EngramAccessRecallRequest, EngramAccessService } from "./access-service.js";
 
+function engramRecallInputSchemaProperties(
+  service: EngramAccessService,
+): Record<string, unknown> | undefined {
+  const server = new EngramMcpServer(service);
+  // SAFETY: tests read engram.recall JSON Schema from the private tools list; no tool execution.
+  const registered = server as unknown as {
+    tools: ReadonlyArray<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>;
+  };
+  const recall = registered.tools.find((t) => t.name === "engram.recall");
+  assert.ok(recall, "engram.recall tool should be registered");
+  return recall.inputSchema.properties;
+}
+
 test("RECALL_DISCLOSURE_LEVELS is ordered chunk -> section -> raw", () => {
   // Order matters for future escalation policy comparisons (PR 4/4).  The
   // ladder must be stable; freezing here so a refactor that flips order is
@@ -255,10 +268,9 @@ test("recallRequestSchema and MCP inputSchema carry searchOptions (parity with H
   assert.equal(ok.success, true);
 
   const { service } = makeMcpRecallSpyService();
-  const server = new EngramMcpServer(service);
-  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
-  const recallTool = tools.find((t) => t.name === "engram.recall");
-  const searchOpts = (recallTool?.inputSchema?.properties as Record<string, { properties?: Record<string, unknown> }> | undefined)
-    ?.searchOptions?.properties;
-  assert.ok(searchOpts && "structuredSearches" in searchOpts, "MCP searchOptions must declare structuredSearches");
+  const props = engramRecallInputSchemaProperties(service);
+  const searchOptionsField = props?.searchOptions;
+  assert.ok(searchOptionsField && typeof searchOptionsField === "object");
+  const searchOpts = Reflect.get(searchOptionsField, "properties");
+  assert.ok(searchOpts && typeof searchOpts === "object" && "structuredSearches" in searchOpts);
 });

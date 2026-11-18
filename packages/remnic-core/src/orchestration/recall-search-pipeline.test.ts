@@ -20,8 +20,7 @@ function makeHybridTopUpStubCoordinator(
   qmd: Pick<RecallSearchPipelineDeps["qmd"], "search" | "hybridSearch">,
   namespaceFromPath: (p: string) => string,
 ): RecallSearchPipelineCoordinator {
-  // SAFETY: tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are unreachable.
-  return new RecallSearchPipelineCoordinator({
+  const partial = {
     config: {
       memoryDir: "/mem",
       qmdSearchStrategy: "hybrid",
@@ -29,7 +28,9 @@ function makeHybridTopUpStubCoordinator(
     },
     qmd,
     namespaceFromPath,
-  } as unknown as RecallSearchPipelineDeps);
+  };
+  // SAFETY: hybrid top-up tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are never read.
+  return new RecallSearchPipelineCoordinator(partial as RecallSearchPipelineDeps);
 }
 
 function memory(path: string, status: string): MemoryFile {

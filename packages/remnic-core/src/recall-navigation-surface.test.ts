@@ -460,12 +460,12 @@ test("CLI navigate expand uses the shared service and accepts a handle", async (
 });
 
 test("god files stay under ratchet caps after navigation review fixes", async () => {
-  const caps: Record<string, number> = {
+  const caps = {
     "access-service.ts": 5910,
     "config.ts": 4568,
     "cli.ts": 9428,
     "orchestration/recall-internal.ts": 5347,
-  };
+  } satisfies Record<string, number>;
   for (const [rel, cap] of Object.entries(caps)) {
     const text = await readFile(path.join(import.meta.dirname, rel), "utf8");
     const lines = text.endsWith("\n") ? text.slice(0, -1).split("\n").length : text.split("\n").length;
