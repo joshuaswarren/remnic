@@ -71,13 +71,13 @@ import {
 // legacy archive path — replaced by skip-with-warning (Finding 2 — Urgw).
 // stripCitationForTemplate IS used for pre-tagged dedup canonicalization.
 import { findUnresolvedEntityRefs } from "./reconstruct.js";
-import type {
-  SearchBackend,
-  SearchDegradation,
-  SearchExecutionOptions,
-  SearchQueryOptions,
+import {
+  mergeSearchQueryOptions,
+  type SearchBackend,
+  type SearchDegradation,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
 } from "./search/port.js";
-import { mergeSearchQueryOptions } from "./search/port.js";
 import {
   createSearchBackend,
   createConversationIndexRuntime,
@@ -3626,53 +3626,10 @@ export class Orchestrator {
     );
   }
 
-  private async applyColdFallbackPipeline(options: {
-    prompt: string;
-    recallNamespaces: string[];
-    recallResultLimit: number;
-    recallMode: RecallPlanMode;
-    /**
-     * Recall-operation capability gates resolved once at recall entry (#1523).
-     * OPTIONAL and additive: the recall pipeline threads a resolved set, but
-     * callers that omit it (e.g. direct unit-test invocations) get an
-     * equivalent config-derived set — behavior-preserving.
-     */
-    caps?: CapabilitySet;
-    /** Graph-construction gates resolved at recall entry (#1566 Cluster A). */
-    graphCaps?: GraphConstructionCapabilitySet;
-    queryAwarePrefilter?: QueryAwarePrefilter;
-    abortSignal?: AbortSignal;
-    /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
-    onDegradation?: (degradation: SearchDegradation) => void;
-    /** Issue #680 — historical recall point in ms-since-epoch. */
-    asOfMs?: number;
-    requestingConnector?: string;
-    /**
-     * Optional out-parameter that receives the pre-MMR / pre-truncation
-     * pool size captured inside the pipeline (issue #570 PR 1).  The
-     * X-ray capture block in `recallInternal` passes a small sink so
-     * the cold-fallback branch's pre-truncation pool size can be
-     * attributed back to the branch when `recallSource === "cold_fallback"`.
-     * Unset by default so existing call sites are unaffected.
-     */
-    xrayPoolSizeSink?: { size: number };
-    resultPartitionSink?: RecallResultPartitionSink;
-    /**
-     * Issue #1577 — out-parameter that receives the TrustScore stage's
-     * per-path trust map (admitted + quarantined) when the cold path runs
-     * trust scoring. Mirrors the xrayPoolSizeSink pattern so recallInternal
-     can propagate trust data for epistemic rendering and X-ray visibility
-     without changing the cold pipeline's return type.
-     */
-    trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
-    deadlineAtMs?: number | null;
-    /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
-    includeLowConfidence?: boolean;
-    searchOptions?: SearchQueryOptions;
-  }): Promise<QmdSearchResult[]> {
-    return this.recallSearchPipelineCoordinator.applyColdFallbackPipeline(
-      options,
-    );
+  private async applyColdFallbackPipeline(
+    options: Parameters<RecallSearchPipelineCoordinator["applyColdFallbackPipeline"]>[0],
+  ): Promise<QmdSearchResult[]> {
+    return this.recallSearchPipelineCoordinator.applyColdFallbackPipeline(options);
   }
 
   // ---------------------------------------------------------------------------

@@ -280,6 +280,18 @@ export function endQmdSearchCacheRecallScope(): void {
   }
 }
 
+export async function runInQmdSearchCacheRecallScope<T>(
+  ttlMs: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  beginQmdSearchCacheRecallScope(ttlMs);
+  try {
+    return await run();
+  } finally {
+    endQmdSearchCacheRecallScope();
+  }
+}
+
 function effectiveQmdSearchCacheTtlMs(): number {
   return Math.max(QMD_CACHE_TTL_MS, qmdSearchCacheRecallTtlMs ?? 0);
 }

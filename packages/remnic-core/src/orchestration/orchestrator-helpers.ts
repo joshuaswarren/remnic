@@ -1,18 +1,4 @@
-/**
- * Orchestrator module-level helpers — relocated from orchestrator.ts
- * (issue #1526, seam 25).
- *
- * Pure functions, types, and constants that previously lived at module
- * level in orchestrator.ts: recall-mode planning, recall snapshots and
- * parsers, abort/race helpers, artifact recall limits, replay
- * source-time slicing, day-summary date utilities, and QMD startup
- * checks. orchestrator.ts re-exports the previously-public names so
- * every existing importer (coordinators, tests, root shims) keeps
- * working unchanged.
- *
- * Behavior-preserving move — no logic changes.
- */
-
+/** Orchestrator module-level helpers relocated from orchestrator.ts (#1526); behavior-preserving move. */
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -262,10 +248,7 @@ export interface RecallInvocationOptions {
    * config flag; a change-intent query is still required for any effect.
    */
   stateView?: boolean;
-  /**
-   * Per-call QMD `query` tool options (HTTP/MCP `searchOptions`). Merged on
-   * top of config-derived intent/explain before `QmdClient` resolves limits.
-   */
+  /** Per-call QMD options (HTTP/MCP `searchOptions`). */
   searchOptions?: SearchQueryOptions;
   /**
    * User-aware context scopes active for this recall. Used by X-ray

@@ -861,16 +861,12 @@ export class AccessRecallSurface {
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
-      // Only surface a real wait: an uncontended recall (queueWaitMs 0) omits
-      // the field so recall-timings stays additive and byte-identical to the
-      // pre-#1906 uncontended path (acceptance: "record queueWaitMs ~0 or omit").
+      // Omit queueWaitMs when 0 (#1906 uncontended path unchanged).
       ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
+      ...(request.searchOptions ? { searchOptions: request.searchOptions } : {}),
     };
-    if (request.searchOptions) {
-      recallOptions.searchOptions = request.searchOptions;
-    }
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are
     // one synchronous JS turn (no await between them), so record()'s own
