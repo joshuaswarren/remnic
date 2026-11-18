@@ -24,7 +24,8 @@ import {
 } from "./messages.js";
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
 import { createMcpRegistration } from "./mcp-registration.js";
-import { joinStartupProbe, runStartupProbeChain, type DaemonHealthVerdict } from "./startup-probe.js";
+import { joinStartupProbe, runStartupProbeChain, settleWithinBudget, type DaemonHealthVerdict } from "./startup-probe.js";
+import type { PiSessionState } from "./session-state.js";
 import { classifyObserveFailure, ObserveOutbox } from "./outbox.js";
 import {
   emitRecallTimeoutTrip,
@@ -109,27 +110,6 @@ function isRecallProducingToolName(serverToolName: string): boolean {
     RECALL_PRODUCING_TOOL_NAMES[serverToolName.replace(/^remnic_/, "remnic.")] === true
   );
 }
-
-type PiSessionState = {
-  observedHashes: Set<string>;
-  liveObservedReplayKeys: Map<string, number>;
-  /** Cached recall context — populated from the first context event's user prompt,
-   *  reused byte-identically across subsequent turns for KV cache prefix stability. */
-  cachedContext: string | null;
-  /** True once recall has been attempted (success or failure) for this session. */
-  recallCompleted: boolean;
-  /**
-   * In-flight startup probe chain, kicked off in the background by
-   * `session_start` (#3273 phase 1); first-turn hooks await it (bounded) for
-   * the freshest reachability verdict.
-   */
-  startupProbe: Promise<DaemonProbeResult> | null;
-  /** Set once a first-turn hook has joined the startup probe, so the bounded verdict wait runs once per session. */
-  startupProbeJoined: boolean;
-  startupEpoch: number; // bumped each session_start; a startup chain is current only while its epoch matches
-  /** True while the last status label this session wrote is the offline one; the next successful daemon call clears it. */
-  statusOffline: boolean;
-};
 
 type NotifyLevel = "info" | "success" | "warning" | "error";
 type NotifyFn = (message: string, level: NotifyLevel) => void;
@@ -257,6 +237,14 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
         if (promptText) {
           state.recallCompleted = true;
+          // Capture the epoch now: a session_start during the in-flight recall
+          // bumps startupEpoch and resets context, so a stale recall must not
+          // overwrite the new epoch's state (#3273 review).
+          const recallEpoch = state.startupEpoch;
+          // And sample the reachability generation so a recall that outlives a
+          // newer reachability success cannot stamp a stale unreachable (#3273
+          // review): markUnreachableIfGeneration no-ops once generation moved.
+          const reachabilityGeneration = client.reachabilityGenerationToken();
           const recallPromise = (async () => {
             try {
               const recalled = await executeRecallWithBreaker(
@@ -274,21 +262,22 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               client.markReachable();
               refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
               const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
-              if (context) {
+              if (
+                context &&
+                state.startupEpoch === recallEpoch &&
+                sessionStates.get(session.sessionKey) === state
+              ) {
                 state.cachedContext = context;
               }
             } catch (err) {
               if (recallTimeoutBreaker.isTripped()) return;
-              if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
+              if (isDaemonUnreachableError(err)) client.markUnreachableIfGeneration(reachabilityGeneration, config.daemonCooldownMs);
               session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
             }
           })();
           // A recall slower than the first-turn budget keeps running in the
           // background; its context is injected from the next turn on (#3273).
-          await Promise.race([
-            recallPromise,
-            new Promise<void>((resolve) => setTimeout(resolve, config.firstTurnRecallBudgetMs)),
-          ]);
+          await settleWithinBudget(recallPromise, config.firstTurnRecallBudgetMs);
         }
       }
 

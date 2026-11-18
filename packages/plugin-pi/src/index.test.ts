@@ -246,6 +246,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   });
 
   const harness = makePiHarness();
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",
@@ -253,6 +254,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   };
   await harness.emit("session_start", {}, ctx);
 
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const firstResult = await Promise.race([
     harness
       .emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx)
@@ -270,6 +272,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   await waitFor(() => recallLanded, "background recall to land");
   await flushBackgroundChains();
 
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const secondResult = (await harness.emit(
     "before_agent_start",
     { prompt: "next", systemPrompt: "" },
@@ -278,6 +281,109 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   assert.ok(
     secondResult?.systemPrompt?.includes("remembered context"),
     "later turn injects the context the background recall populated",
+  );
+});
+
+test("a recall that outlives its session_start epoch cannot overwrite the next epoch's context (#3273)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-stale-epoch-"));
+  const configPath = path.join(root, "remnic.config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    authToken: "test-token",
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: false,
+    firstTurnRecallBudgetMs: 25,
+  }));
+
+  const previousConfig = process.env.REMNIC_PI_CONFIG;
+  const originalFetch = globalThis.fetch;
+  let recallCalls = 0;
+  const recallGates: Array<Promise<void>> = [];
+  const releaseRecall: Array<() => void> = [];
+  for (const _ of [1, 2]) {
+    recallGates.push(new Promise<void>((resolve) => releaseRecall.push(resolve)));
+  }
+  process.env.REMNIC_PI_CONFIG = configPath;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/engram/v1/live")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
+    }
+    if (String(input).endsWith("/mcp")) return Response.json({ result: {} });
+    recallCalls += 1;
+    const callIndex = recallCalls;
+    // Each epoch's recall hangs until the test releases it, so landing order
+    // is fully controlled: stale must land LAST to expose an overwrite.
+    await recallGates[callIndex - 1];
+    return new Response(
+      JSON.stringify({ context: callIndex === 1 ? "stale epoch context" : "fresh epoch context" }),
+      { status: 200 },
+    );
+  };
+  t.after(() => {
+    for (const release of releaseRecall) release();
+    if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
+    else process.env.REMNIC_PI_CONFIG = previousConfig;
+    globalThis.fetch = originalFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const harness = makePiHarness();
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
+  await remnicPiExtension(harness.pi as any);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "shared-session" },
+  };
+  await harness.emit("session_start", {}, ctx);
+
+  // Epoch N first turn: recall starts, exceeds the budget, runs on in the background.
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
+  const epochNResult = (await harness.emit(
+    "before_agent_start",
+    { prompt: "hi", systemPrompt: "" },
+    ctx,
+  )) as { systemPrompt?: string };
+  assert.ok(!epochNResult?.systemPrompt?.includes("context"), "first turn does not wait for recall");
+  await waitFor(() => recallCalls === 1, "epoch N recall to be in flight");
+
+  // A reload emits session_start again: startupEpoch bumps and state resets.
+  await harness.emit("session_start", {}, ctx);
+
+  // Epoch N+1's first turn starts its own recall.
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
+  const epochN1First = (await harness.emit(
+    "before_agent_start",
+    { prompt: "hi", systemPrompt: "" },
+    ctx,
+  )) as { systemPrompt?: string };
+  assert.ok(!epochN1First?.systemPrompt?.includes("context"));
+  await waitFor(() => recallCalls === 2, "epoch N+1 recall to be in flight");
+
+  // Fresh recall lands first and populates context for the new epoch.
+  releaseRecall[1]();
+  await flushBackgroundChains();
+
+  // The stale epoch-N recall resolves AFTER — it must be dropped, not written.
+  releaseRecall[0]();
+  await flushBackgroundChains();
+
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
+  const epochN1Result = (await harness.emit(
+    "before_agent_start",
+    { prompt: "next", systemPrompt: "" },
+    ctx,
+  )) as { systemPrompt?: string };
+  assert.ok(
+    epochN1Result?.systemPrompt?.includes("fresh epoch context"),
+    "the new epoch's own recall populates context",
+  );
+  assert.ok(
+    !epochN1Result?.systemPrompt?.includes("stale epoch context"),
+    "the stale recall from the previous epoch was dropped",
   );
 });
 
