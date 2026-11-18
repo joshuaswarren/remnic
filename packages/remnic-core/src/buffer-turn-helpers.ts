@@ -1,5 +1,6 @@
-import type { BufferEntryState, BufferState, BufferTurn } from "./types.js";
+import type { BufferEntryState, BufferState, BufferTurn, PluginConfig, SignalLevel } from "./types.js";
 import type { BufferEvictionHooks } from "./buffer-eviction.js";
+import type { TriggerDecision } from "./buffer-types.js";
 
 /**
  * Eviction hooks are pure functions of an entry; one shared instance serves
@@ -458,4 +459,74 @@ export function normalizeBufferState(state: BufferState): BufferState {
     extractionCount: entries.default.extractionCount,
     entries,
   };
+}
+
+/** Trigger-mode decision for a buffer entry (extracted from SmartBuffer to
+ *  keep buffer.ts under the file-size ratchet). */
+export function evaluateTriggerDecision(
+  config: Pick<PluginConfig, "triggerMode" | "bufferMaxTurns" | "bufferMaxMinutes">,
+  entry: BufferEntryState,
+  signalLevel: SignalLevel,
+): TriggerDecision {
+  if (config.triggerMode === "smart") {
+    if (signalLevel === "high") return "extract_now";
+
+    if (entry.turns.length >= config.bufferMaxTurns) {
+      return "extract_batch";
+    }
+
+    if (entry.lastExtractionAt) {
+      const elapsed = Date.now() - new Date(entry.lastExtractionAt).getTime();
+      if (elapsed >= config.bufferMaxMinutes * 60_000) {
+        return "extract_batch";
+      }
+    }
+
+    return "keep_buffering";
+  }
+
+  if (config.triggerMode === "every_n") {
+    return entry.turns.length >= config.bufferMaxTurns
+      ? "extract_batch"
+      : "keep_buffering";
+  }
+
+  if (config.triggerMode === "time_based") {
+    if (!entry.lastExtractionAt) {
+      return entry.turns.length >= config.bufferMaxTurns
+        ? "extract_batch"
+        : "keep_buffering";
+    }
+    const elapsed = Date.now() - new Date(entry.lastExtractionAt).getTime();
+    return elapsed >= config.bufferMaxMinutes * 60_000
+      ? "extract_batch"
+      : "keep_buffering";
+  }
+
+  return "keep_buffering";
+}
+
+/** Buffer keys holding turns for `sessionKey` — the direct entry plus any
+ *  entries whose active or retained turns reference the session. */
+export function matchingSessionBufferKeys(
+  entries: Record<string, BufferEntryState>,
+  directEntry: BufferEntryState | null,
+  sessionKey: string,
+): string[] {
+  const matches: string[] = [];
+  const hasSessionTurns = (entry: BufferEntryState | null | undefined): boolean =>
+    [...(entry?.turns ?? []), ...(entry?.retainedTurns ?? [])].some(
+      (turn) => turn.sessionKey === sessionKey,
+    );
+  if (hasSessionTurns(directEntry)) {
+    matches.push(sessionKey);
+  }
+
+  for (const [bufferKey, entry] of Object.entries(entries)) {
+    if (!matches.includes(bufferKey) && hasSessionTurns(entry)) {
+      matches.push(bufferKey);
+    }
+  }
+
+  return matches;
 }

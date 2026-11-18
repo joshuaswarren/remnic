@@ -31,6 +31,12 @@ export interface BufferPersistOutcome {
   drainedTurns: Map<string, DrainedTurnSets>;
   /** Sessions whose rewrite this pass deferred (#3389); they stay dirty. */
   deferred: string[];
+  /**
+   * Milliseconds until the earliest deferred session becomes rewrite-eligible
+   * (set only when `deferred` is non-empty). The caller arms a retry for this
+   * delay so a deferred tail of a burst lands without needing another turn.
+   */
+  deferredRetryDelayMs?: number;
 }
 
 /**
@@ -62,9 +68,14 @@ export interface BufferPersistOptions {
 
 /** Approximate serialized size of one session file without stringifying it. */
 function estimateEntryBytes(entry: BufferEntryState): number {
+  // ~15% over content for JSON structure + string escaping (quotes, braces,
+  // key names, escape growth); the fixed per-turn overhead covers field names
+  // and metadata. Under-counting here biases against deferral — the exact
+  // case the floor exists for — so the estimate errs high.
   let bytes = 256;
-  for (const turn of entry.turns) bytes += turn.content.length + 128;
-  for (const turn of entry.retainedTurns ?? []) bytes += turn.content.length + 128;
+  for (const turn of entry.turns) bytes += Math.ceil(turn.content.length * 1.15) + 128;
+  for (const turn of entry.retainedTurns ?? [])
+    bytes += Math.ceil(turn.content.length * 1.15) + 128;
   return bytes;
 }
 
@@ -74,11 +85,25 @@ function estimateEntryBytes(entry: BufferEntryState): number {
  * Marks are cleared only after a durable write of that session. All calls
  * happen under SmartBuffer's serialized mutation chain: one writer.
  */
+export interface BufferSessionPersistenceOptions {
+  /** Injectable clock (monotonic ms) for tests; defaults to performance.now(). */
+  now?: () => number;
+  /** Test seam: override BUFFER_SESSION_DEFER_INTERVAL_MS. */
+  deferIntervalMs?: number;
+}
+
 export class BufferSessionPersistence {
   private readonly dirty = new Set<string>();
   private readonly deleted = new Set<string>();
   /** Last successful session-file write per key (deferral bookkeeping, #3389). */
   private readonly lastPersistedAt = new Map<string, number>();
+  private readonly clock: () => number;
+  private readonly deferIntervalMs: number;
+
+  constructor(options: BufferSessionPersistenceOptions = {}) {
+    this.clock = options.now ?? (() => performance.now());
+    this.deferIntervalMs = options.deferIntervalMs ?? BUFFER_SESSION_DEFER_INTERVAL_MS;
+  }
 
   markDirty(key: string): void {
     this.dirty.add(key);
@@ -128,9 +153,10 @@ export class BufferSessionPersistence {
       this.deleted.clear();
       return { handedOver: [], drainedTurns, deferred: [] };
     }
-    const now = opts?.now ?? (() => performance.now());
+    const now = opts?.now ?? this.clock;
     const handedOver: string[] = [];
     const deferred: string[] = [];
+    let nextEligibleAt: number | undefined;
     for (const key of [...this.deleted]) {
       await deleteSession(key);
       this.deleted.delete(key);
@@ -147,31 +173,41 @@ export class BufferSessionPersistence {
         const last = this.lastPersistedAt.get(key);
         if (
           last !== undefined &&
-          now() - last < BUFFER_SESSION_DEFER_INTERVAL_MS &&
+          now() - last < this.deferIntervalMs &&
           estimateEntryBytes(entry) >= BUFFER_SESSION_DEFER_MIN_BYTES &&
-          storage.isBufferSessionClaimed?.(key) !== true
+          // Fail closed: a backend that omits isBufferSessionClaimed cannot
+          // prove the session is unclaimed, so it never defers (PR 3481 review).
+          storage.isBufferSessionClaimed?.(key) === false
         ) {
           deferred.push(key);
+          const eligibleAt = last + this.deferIntervalMs;
+          if (nextEligibleAt === undefined || eligibleAt < nextEligibleAt) {
+            nextEligibleAt = eligibleAt;
+          }
           continue;
         }
       }
-      const outcome = await saveSession(key, entry);
+      const saveOutcome = await saveSession(key, entry);
       this.dirty.delete(key);
       this.lastPersistedAt.set(key, now());
       // "handed_over": the entry moved into a drain claim. Content is durable
       // in the claim, so this key's pending state is settled — the caller
       // evicts the in-memory entry on its side.
-      if (outcome?.status === "handed_over") handedOver.push(key);
+      if (saveOutcome?.status === "handed_over") handedOver.push(key);
       // A drain tombstone: the turns it extracted must leave this process's
       // copy too, or the owner would extract them a second time.
       if (
-        outcome?.drainedTurns &&
-        (outcome.drainedTurns.turns.length > 0 || outcome.drainedTurns.retainedTurns.length > 0)
+        saveOutcome?.drainedTurns &&
+        (saveOutcome.drainedTurns.turns.length > 0 || saveOutcome.drainedTurns.retainedTurns.length > 0)
       ) {
-        drainedTurns.set(key, outcome.drainedTurns);
+        drainedTurns.set(key, saveOutcome.drainedTurns);
       }
-      if (outcome?.status === "handed_over") this.lastPersistedAt.delete(key);
+      if (saveOutcome?.status === "handed_over") this.lastPersistedAt.delete(key);
     }
-    return { handedOver, drainedTurns, deferred };
+    const outcome: BufferPersistOutcome = { handedOver, drainedTurns, deferred };
+    if (deferred.length > 0 && nextEligibleAt !== undefined) {
+      outcome.deferredRetryDelayMs = Math.max(0, nextEligibleAt - now());
+    }
+    return outcome;
   }
 }
