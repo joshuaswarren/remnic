@@ -140,6 +140,11 @@ function resolveRelative(repoRoot, importerPath, specifier) {
     }
     return null;
   }
+  // JSON module imports ("with { type: \"json\" }") name the file exactly;
+  // they are dependency targets but are never scanned as importers.
+  if (clean.endsWith(".json") && existsSync(path.join(repoRoot, clean))) {
+    return clean;
+  }
   return existingCandidate(repoRoot, clean);
 }
 
@@ -307,9 +312,10 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
     if (shardSet.has(changed)) {
       wouldRun.add(changed);
       mark(changed, "changed-file");
-      continue;
     }
     // Reverse BFS: every importer chain that terminates at a shard test file.
+    // Test files on this shard are enqueued too, so a test importing another
+    // shard test still propagates the selection; visited blocks cycles.
     const visited = new Set([changed]);
     const queue = [changed];
     let steps = 0;
@@ -324,9 +330,8 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
         if (shardSet.has(importer)) {
           wouldRun.add(importer);
           mark(importer, `imports ${changed}`);
-        } else {
-          queue.push(importer);
         }
+        queue.push(importer);
       }
     }
   }

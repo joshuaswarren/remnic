@@ -300,3 +300,64 @@ test("selectShadowRun: string exports map resolves a bare package import", () =>
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("selectShadowRun: a shard test importing another shard test propagates selection", () => {
+  const root = makeFixture();
+  try {
+    const write = (rel, content) => {
+      const full = path.join(root, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    // a.test.ts imports b.test.ts; b.test.ts imports src/other.ts. Changing
+    // src/other.ts must reach a through b even though b is itself a shard test.
+    write("tests/a.test.ts", 'import "./b.test.js";\n');
+    write("tests/b.test.ts", 'import { o } from "../src/other.js";\n');
+    const allTests = ALL_TESTS;
+    const pkgIndex = loadPackageIndex(root);
+    const graph = buildImportGraph(root, listImportableFiles(root), pkgIndex);
+    const result = selectShadowRun({
+      shardFiles: allTests,
+      allTestFiles: allTests,
+      changedFiles: ["src/other.ts"],
+      reverseIndex: buildReverseIndex(graph),
+      knownFiles: new Set(listImportableFiles(root)),
+    });
+    assert.equal(result.mode, "selected");
+    assert.deepEqual(result.wouldRun.sort(), ["tests/a.test.ts", "tests/b.test.ts"].sort());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSpecifier resolves a JSON module import to the file", () => {
+  const root = makeFixture();
+  try {
+    const write = (rel, content) => {
+      const full = path.join(root, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    write("src/settings.json", "{}");
+    write("tests/d.test.ts", 'import cfg from "../src/settings.json" with { type: "json" };\n');
+    const pkgIndex = loadPackageIndex(root);
+    const resolved = resolveSpecifier(root, "tests/d.test.ts", "../src/settings.json", pkgIndex);
+    assert.equal(resolved, "src/settings.json");
+    const graph = buildImportGraph(root, listImportableFiles(root), pkgIndex);
+    const reverse = buildReverseIndex(graph);
+    assert.ok(reverse.get("src/settings.json")?.has("tests/d.test.ts"));
+    const allTests = [...ALL_TESTS, "tests/d.test.ts"];
+    const result = selectShadowRun({
+      shardFiles: allTests,
+      allTestFiles: allTests,
+      changedFiles: ["src/settings.json"],
+      reverseIndex: reverse,
+      knownFiles: new Set(listImportableFiles(root)),
+    });
+    assert.equal(result.mode, "selected");
+    assert.deepEqual(result.wouldRun, ["tests/d.test.ts"]);
+    assert.deepEqual(result.unmapped, ["src/settings.json"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

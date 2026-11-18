@@ -297,15 +297,6 @@ jobs:
           ls "$SHADOW_DIR"/shadow-*.json >/dev/null 2>&1 \
             || echo "::warning::test-selection-shadow produced no shadow-*.json report"
 
-      - name: Upload shadow selection
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-selection-shadow-${{ matrix.shard }}
-          path: ${{ runner.temp }}/test-selection-shadow/shadow-*.json
-          if-no-files-found: ignore
-          retention-days: 14
-
       - name: Tests
         run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
         env:
@@ -317,6 +308,16 @@ jobs:
           # provenance — #1541). A missing tool or dirty tree fails the run
           # locally instead of counting a silent skip.
           REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
+      - name: Upload shadow selection
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-shadow-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-selection-shadow/shadow-*.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   build-artifacts:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
