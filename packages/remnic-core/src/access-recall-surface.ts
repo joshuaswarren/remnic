@@ -865,8 +865,8 @@ export class AccessRecallSurface {
       ...(typeof request.queueWaitMs === "number" && request.queueWaitMs > 0
         ? { queueWaitMs: request.queueWaitMs }
         : {}),
-      ...(request.searchOptions ? { searchOptions: request.searchOptions } : {}),
     };
+    if (request.searchOptions) recallOptions.searchOptions = request.searchOptions;
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are
     // one synchronous JS turn (no await between them), so record()'s own
