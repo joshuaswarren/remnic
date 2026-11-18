@@ -249,3 +249,54 @@ test("selectShadowRun: unmapped code change forces the whole shard", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("selectShadowRun: unmapped paths are all reported even when a global change wins", () => {
+  const root = makeFixture();
+  try {
+    const reverse = fixtureGraph(root);
+    const knownFiles = new Set(listImportableFiles(root));
+    const result = selectShadowRun({
+      shardFiles: ALL_TESTS,
+      allTestFiles: ALL_TESTS,
+      changedFiles: ["package.json", "bin/helper.js"],
+      reverseIndex: reverse,
+      knownFiles,
+    });
+    assert.equal(result.mode, "all");
+    assert.match(result.why, /global change/);
+    assert.deepEqual(result.unmapped, ["package.json", "bin/helper.js"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selectShadowRun: string exports map resolves a bare package import", () => {
+  const root = makeFixture();
+  try {
+    const write = (rel, content) => {
+      const full = path.join(root, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    write(
+      "packages/remnic-bare/package.json",
+      JSON.stringify({ name: "@remnic/bare", exports: "./src/api.mjs" }),
+    );
+    write("packages/remnic-bare/src/api.mjs", "export const b = 1;\n");
+    write("tests/c.test.ts", 'import "@remnic/bare";\n');
+    const allTests = [...ALL_TESTS, "tests/c.test.ts"];
+    const pkgIndex = loadPackageIndex(root);
+    const graph = buildImportGraph(root, listImportableFiles(root), pkgIndex);
+    const result = selectShadowRun({
+      shardFiles: allTests,
+      allTestFiles: allTests,
+      changedFiles: ["packages/remnic-bare/src/api.mjs"],
+      reverseIndex: buildReverseIndex(graph),
+      knownFiles: new Set(listImportableFiles(root)),
+    });
+    assert.equal(result.mode, "selected");
+    assert.deepEqual(result.wouldRun, ["tests/c.test.ts"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

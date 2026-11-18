@@ -146,9 +146,11 @@ function resolveRelative(repoRoot, importerPath, specifier) {
 function exportTarget(manifest, subpath) {
   const exportsField = manifest.exports;
   if (exportsField === undefined || exportsField === null) return null;
-  if (isString(exportsField)) return subpath === "." ? exportsField : null;
+  // A bare "@remnic/pkg" import carries subpath "" but resolves exports["."].
+  const lookup = subpath === "" ? "." : subpath;
+  if (isString(exportsField)) return lookup === "." ? exportsField : null;
   if (!isPlainObject(exportsField)) return null;
-  const keys = subpath === "." ? [".", ""] : [`./${subpath}`, `./${subpath}.js`, `./${subpath}.ts`];
+  const keys = lookup === "." ? [".", ""] : [`./${lookup}`, `./${lookup}.js`, `./${lookup}.ts`];
   for (const key of keys) {
     const entry = exportsField[key];
     if (entry === undefined) continue;
@@ -291,13 +293,16 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
   const unmapped = [];
   const riskyUnmapped = [];
   for (const changed of normalized) {
-    if (isGlobalChange(changed, testFileSet)) {
-      forceAll = changed;
-      break;
-    }
     if (knownFiles && !knownFiles.has(changed) && !testFileSet.has(changed)) {
       unmapped.push(changed);
       if (CODE_EXTENSIONS.some((ext) => changed.endsWith(ext))) riskyUnmapped.push(changed);
+    }
+  }
+
+  for (const changed of normalized) {
+    if (isGlobalChange(changed, testFileSet)) {
+      forceAll = changed;
+      break;
     }
     if (shardSet.has(changed)) {
       wouldRun.add(changed);

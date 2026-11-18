@@ -274,23 +274,35 @@ jobs:
           : > "$CHANGED"
           set +e
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --quiet origin "$BASE_REF"
-            MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
-            [ -n "$MB" ] && git -c core.quotePath=off diff --name-only "$MB"...HEAD > "$CHANGED"
+            # The PR checkout is the synthetic merge commit: diff its first
+            # parent (the base the tested tree was built on), not a merge-base
+            # that a rewound base could move. Fall back to the fetched base.
+            if git rev-parse -q --verify 'HEAD^1^{commit}' >/dev/null 2>&1; then
+              git -c core.quotePath=off diff --no-renames --name-only 'HEAD^1..HEAD' > "$CHANGED"
+            else
+              git fetch --quiet origin "$BASE_REF"
+              MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
+              [ -n "$MB" ] && git -c core.quotePath=off diff --no-renames --name-only "$MB"...HEAD > "$CHANGED"
+            fi
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            git -c core.quotePath=off diff --name-only "$BEFORE_SHA"..HEAD > "$CHANGED"
+            git -c core.quotePath=off diff --no-renames --name-only "$BEFORE_SHA"..HEAD > "$CHANGED"
           fi
           set -e
           # Artifacts stay under RUNNER_TEMP: an untracked dir in the repo
-          # would trip the capability tests' clean-tree gate.
-          REMNIC_SHADOW_CHANGED_PATH="$CHANGED" REMNIC_SHADOW_OUT_DIR="$SHADOW_DIR" node scripts/test-selection-shadow.mjs ${{ matrix.groups }}
+          # would trip the capability tests' clean-tree gate. This step is
+          # telemetry only - a failure here (including a module-load error the
+          # script's own catch cannot reach) must never skip the Tests step.
+          REMNIC_SHADOW_CHANGED_PATH="$CHANGED" REMNIC_SHADOW_OUT_DIR="$SHADOW_DIR" node scripts/test-selection-shadow.mjs ${{ matrix.groups }} \
+            || echo "::warning::test-selection-shadow failed; continuing without a shadow report"
+          ls "$SHADOW_DIR"/shadow-*.json >/dev/null 2>&1 \
+            || echo "::warning::test-selection-shadow produced no shadow-*.json report"
 
       - name: Upload shadow selection
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-selection-shadow-${{ matrix.shard }}
-          path: ${{ runner.temp }}/test-selection-shadow/
+          path: ${{ runner.temp }}/test-selection-shadow/shadow-*.json
           if-no-files-found: ignore
           retention-days: 14
 
