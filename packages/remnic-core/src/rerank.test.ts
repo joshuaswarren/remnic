@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  RERANK_LLM_MAX_TOKENS,
+  rerankOutputTokenBudget,
   RERANK_LLM_SNIPPET_CHARS,
   RerankCache,
   parseRerankResponse,
@@ -46,11 +46,17 @@ test("rerankLocalOrNoop tags rerank requests as recall-critical", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.options?.operation, "rerank");
   assert.equal(calls[0]?.options?.priority, "recall-critical");
-  assert.equal(calls[0]?.options?.maxTokens, RERANK_LLM_MAX_TOKENS);
+  assert.equal(calls[0]?.options?.maxTokens, rerankOutputTokenBudget(2));
   assert.equal(calls[0]?.options?.timeoutMs, 1_500);
   const user = JSON.parse(calls[0]?.messages[1]?.content ?? "{}");
   assert.ok(Array.isArray(user.c));
   assert.ok(user.c[0][1].length <= RERANK_LLM_SNIPPET_CHARS);
+});
+
+test("rerankOutputTokenBudget grows with candidate count", () => {
+  assert.equal(rerankOutputTokenBudget(2), 44);
+  assert.equal(rerankOutputTokenBudget(8), 104);
+  assert.ok(rerankOutputTokenBudget(30) <= 256);
 });
 
 test("parseRerankResponse accepts compact order array", () => {

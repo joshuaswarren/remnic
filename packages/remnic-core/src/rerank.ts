@@ -16,11 +16,48 @@ export interface RerankCacheEntry {
 /** Snippet chars sent to the local rerank model (full snippets stay in storage). */
 export const RERANK_LLM_SNIPPET_CHARS = 64;
 
-/** Output budget: ordered id list only, not per-candidate commentary. */
-export const RERANK_LLM_MAX_TOKENS = 48;
-
 /** Hard cap on candidates included in one local rerank prompt (latency). */
 export const RERANK_LLM_MAX_CANDIDATES = 8;
+
+/** Decode budget scales with id count so long order lists are not truncated. */
+export function rerankOutputTokenBudget(candidateCount: number): number {
+  if (candidateCount <= 0) return 48;
+  return Math.min(256, 24 + candidateCount * 10);
+}
+
+type RerankJsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | RerankJsonValue[]
+  | { [key: string]: RerankJsonValue };
+
+type RerankOrderPayload = { order: string[] };
+
+function tryParseOrderPayload(raw: string): RerankOrderPayload | null {
+  let value: RerankJsonValue;
+  try {
+    // SAFETY: JSON.parse returns only JSON-shaped values, which match `RerankJsonValue`.
+    value = JSON.parse(raw) as RerankJsonValue;
+  } catch {
+    return null;
+  }
+  if (value === null || Array.isArray(value)) return null;
+  if (Object.getPrototypeOf(value) !== Object.prototype) return null;
+  // SAFETY: guards above established a plain object record; we only read `order` next.
+  const record = value as { order?: RerankJsonValue };
+  const orderField = record.order;
+  if (!Array.isArray(orderField)) return null;
+  const order: string[] = [];
+  for (const entry of orderField) {
+    if (entry === null || entry === undefined) continue;
+    if (!Object.is(entry, String(entry))) continue;
+    order.push(String(entry));
+  }
+  if (order.length === 0) return null;
+  return { order };
+}
 
 export class RerankCache {
   private entries = new Map<string, RerankCacheEntry>();
@@ -57,7 +94,7 @@ function rankedFromOrder(
   const seen = new Set<string>();
   const ranked: Array<RerankCandidate & { score?: number }> = [];
   for (const id of order) {
-    if (typeof id !== "string" || seen.has(id)) continue;
+    if (seen.has(id)) continue;
     const c = byId.get(id);
     if (!c) continue;
     seen.add(id);
@@ -76,20 +113,8 @@ export function parseRerankResponse(
   const byId = new Map<string, RerankCandidate>();
   for (const c of candidates) byId.set(c.id, c);
 
-  try {
-    const parsed = JSON.parse(raw) as {
-      order?: unknown;
-      scores?: Array<Partial<RerankScore>>;
-    };
-    if (Array.isArray(parsed.order)) {
-      return rankedFromOrder(
-        parsed.order.filter((id): id is string => typeof id === "string"),
-        candidates
-      );
-    }
-  } catch {
-    // fall through
-  }
+  const orderPayload = tryParseOrderPayload(raw);
+  if (orderPayload) return rankedFromOrder(orderPayload.order, candidates);
 
   const scores = new Map<string, number>();
   try {
@@ -188,7 +213,7 @@ export async function rerankLocalOrNoop(opts: {
       { role: "user", content: user },
     ],
     {
-      maxTokens: RERANK_LLM_MAX_TOKENS,
+      maxTokens: rerankOutputTokenBudget(payload.length),
       temperature: 0.0,
       timeoutMs,
       operation: "rerank",
