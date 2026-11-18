@@ -221,6 +221,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the shadow selection step can resolve a merge
+          # base for the changed-file diff (same reason as the checks job).
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -253,6 +257,34 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
+
+      # Shadow-only test selection: logs which tests WOULD run for this
+      # change while the full suite still executes. The script never fails
+      # the job; an unknown changed-file set selects everything.
+      - name: Test-selection shadow
+        run: |
+          mkdir -p .test-selection-shadow
+          CHANGED="$PWD/.test-selection-shadow/changed.txt"
+          : > "$CHANGED"
+          set +e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --quiet origin "${{ github.event.pull_request.base.ref }}"
+            MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
+            [ -n "$MB" ] && git diff --name-only "$MB"...HEAD > "$CHANGED"
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${{ github.event.before }}^{commit}" 2>/dev/null; then
+            git diff --name-only "${{ github.event.before }}"..HEAD > "$CHANGED"
+          fi
+          set -e
+          REMNIC_SHADOW_CHANGED_PATH="$CHANGED" node scripts/test-selection-shadow.mjs ${{ matrix.groups }}
+
+      - name: Upload shadow selection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-shadow-${{ matrix.shard }}
+          path: .test-selection-shadow/
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Tests
         run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
