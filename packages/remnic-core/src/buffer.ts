@@ -9,7 +9,6 @@ import type {
   BufferSurpriseEvent,
   BufferTurn,
   PluginConfig,
-  SignalLevel,
 } from "./types.js";
 import { resolvePresentationCapabilities, resolveNamespaceCapabilities } from "./capabilities.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
@@ -25,9 +24,11 @@ import {
   describeError,
   EVICTION_HOOKS,
   entryHoldsAcceptedCapture,
+  evaluateTriggerDecision,
   hasPinnedCaptureScope,
   liveTurnsFromExtractionSnapshot,
   matchingQueuedExtractionPrefixLength,
+  matchingSessionBufferKeys,
   normalizeBufferState,
   probeWithTimeout,
   selectRetainedDeferredTurns,
@@ -66,6 +67,11 @@ const BUFFER_SAVE_MAX_DEFER_MULTIPLIER = 5;
  * could still exceed it.
  */
 const MAX_SET_TIMEOUT_MS = 2_147_483_647;
+
+/** Retry delay for a failed save when `bufferSaveDebounceMs` is 0: a transient
+ *  failure must still re-arm (PR 3481 review round 3); 1s bounds the dirty
+ *  window without a hot retry loop on a persistently failing backend. */
+const BUFFER_SAVE_RETRY_DELAY_MS = 1_000;
 
 export class SmartBuffer {
   private state: BufferState;
@@ -106,17 +112,18 @@ export class SmartBuffer {
   private firstPendingAtMs: number | null = null;
 
   /** Which sessions' persisted files are stale (per-session incremental saves). */
-  private readonly persistence = new BufferSessionPersistence();
+  private readonly persistence: BufferSessionPersistence;
 
   constructor(
     private readonly config: PluginConfig,
     private readonly storage: BufferStorage,
     surpriseProbe: BufferSurpriseProbe | null = null,
-    /** #3444 test seam: `false` disables the ingress counters (pure pass-through control). */
-    options: { countIngress?: boolean } = {},
+    /** #3444 test seam: `false` disables the ingress counters; `persistence` injects a test-clocked tracker (#3389). */
+    options: { countIngress?: boolean; persistence?: BufferSessionPersistence } = {},
   ) {
     this.state = { turns: [], lastExtractionAt: null, extractionCount: 0 };
     this.surpriseProbe = surpriseProbe;
+    this.persistence = options.persistence ?? new BufferSessionPersistence();
     this.ingress = new BufferIngressCounters(undefined, options.countIngress !== false);
   }
 
@@ -239,8 +246,12 @@ export class SmartBuffer {
     this.loaded = true;
   }
 
-  private async saveUnlocked(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
-    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile);
+  private async saveUnlocked(
+    reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets },
+    opts?: { allowDeferral?: boolean },
+  ): Promise<import("./buffer-persistence.js").BufferPersistOutcome> {
+    const outcome = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile, { allowDeferral: opts?.allowDeferral === true });
+    const { handedOver, drainedTurns } = outcome;
     // A drain tombstone: the turns the drain extracted leave this copy too,
     // so a stale owner never extracts (or persists) them a second time.
     for (const [key, drained] of drainedTurns) {
@@ -253,19 +264,20 @@ export class SmartBuffer {
       }
       if (key === "default") this.state.turns = entry.turns;
     }
-    if (handedOver.length === 0) return;
+    if (handedOver.length === 0) return outcome;
     // A drain claim now owns these sessions' turns (durable in the claim
     // file): drop the in-memory entries so this process cannot resurrect
     // them. A later observe for the same key starts a fresh entry whose
     // turns flow into the claim at the next handover.
     const entries = this.state.entries;
-    if (!entries) return;
+    if (!entries) return outcome;
     for (const key of handedOver) {
       delete entries[key];
       if (key === "default") {
         this.state.turns = [];
       }
     }
+    return outcome;
   }
 
   /** Sync gate for the extraction queue: is this session claimed by a buffer drain? */
@@ -300,21 +312,29 @@ export class SmartBuffer {
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = now;
     if (now - this.firstPendingAtMs >= ms * BUFFER_SAVE_MAX_DEFER_MULTIPLIER) {
-      // Staleness cap hit: persist now rather than deferring further. Drop the
-      // armed timer, attempt the write, and only mark clean on success — a
+      // Staleness cap hit: run the persist pass inline rather than re-arming
+      // the debounce. Session-level deferral (#3389) may still rate-limit a
+      // large rewrite; when it does, armDeferredRetry keeps the save pending
+      // and retries at the session's eligibility time, so the pass's tail
+      // cannot sit in memory waiting for a turn that may never come (3481
+      // review). Drop the armed timer and only mark clean on success — a
       // failure keeps the save pending + re-arms so shutdown/the next timer
       // retries (issue #1909 review round 2), never diverging memory from disk.
       clearTimeout(this.saveTimer ?? undefined);
       this.saveTimer = null;
       try {
-        await this.saveUnlocked();
-        this.pendingSave = false;
-        this.firstPendingAtMs = null;
+        const outcome = await this.saveUnlocked(undefined, { allowDeferral: true });
+        if (outcome.deferredRetryDelayMs !== undefined) {
+          this.armDeferredRetry(outcome.deferredRetryDelayMs);
+        } else {
+          this.pendingSave = false;
+          this.firstPendingAtMs = null;
+        }
       } catch (err) {
         log.warn(`buffer.scheduleSave: staleness-cap save failed, keeping it pending: ${describeError(err)}`);
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
-          void this.flushPendingSave();
+          void this.flushPendingSave({ allowDeferral: true });
         }, ms);
         this.saveTimer.unref?.();
       }
@@ -324,8 +344,25 @@ export class SmartBuffer {
     clearTimeout(this.saveTimer ?? undefined);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void this.flushPendingSave();
+      void this.flushPendingSave({ allowDeferral: true });
     }, ms);
+    this.saveTimer.unref?.();
+  }
+
+  /**
+   * A persist pass deferred one or more large sessions (#3389): keep the save
+   * pending and arm a retry for when the earliest becomes rewrite-eligible.
+   * Without this the tail of a burst sat in memory until the next turn or a
+   * barrier — wider than the sanctioned crash-loss window (PR 3481 review).
+   */
+  private armDeferredRetry(delayMs: number): void {
+    this.pendingSave = true;
+    if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
+    clearTimeout(this.saveTimer ?? undefined);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      void this.flushPendingSave({ allowDeferral: true });
+    }, Math.min(Math.max(0, delayMs), MAX_SET_TIMEOUT_MS));
     this.saveTimer.unref?.();
   }
 
@@ -349,26 +386,33 @@ export class SmartBuffer {
    * only in the debounced pending state. The pending flag is cleared (and any
    * armed timer dropped) only after a durable write.
    */
-  private async saveNowRetainingPendingOnFailure(context: string): Promise<void> {
+  private async saveNowRetainingPendingOnFailure(context: string, opts?: { allowDeferral?: boolean }): Promise<void> {
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
     try {
-      await this.saveUnlocked();
+      const outcome = await this.saveUnlocked(undefined, opts);
+      if (outcome.deferredRetryDelayMs !== undefined) {
+        this.armDeferredRetry(outcome.deferredRetryDelayMs);
+      } else {
+        this.cancelScheduledSave();
+      }
     } catch (err) {
       log.warn(
         `buffer.${context}: inline save failed, keeping it pending for retry: ${describeError(err)}`,
       );
-      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
-      if (ms > 0 && !this.saveTimer) {
+      const ms = Math.min(
+        this.config.bufferSaveDebounceMs || BUFFER_SAVE_RETRY_DELAY_MS,
+        MAX_SET_TIMEOUT_MS,
+      );
+      if (!this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
-          void this.flushPendingSave();
+          void this.flushPendingSave({ allowDeferral: opts?.allowDeferral === true });
         }, ms);
         this.saveTimer.unref?.();
       }
       throw err;
     }
-    this.cancelScheduledSave();
   }
 
   /**
@@ -385,7 +429,7 @@ export class SmartBuffer {
    * proceeding to extract_now on a non-durable triggering turn. Default false
    * keeps the fail-open behavior for the timer/shutdown callers.
    */
-  async flushPendingSave(opts?: { throwOnFailure?: boolean }): Promise<void> {
+  async flushPendingSave(opts?: { throwOnFailure?: boolean; allowDeferral?: boolean }): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -400,30 +444,36 @@ export class SmartBuffer {
         // writes). resetToEmpty-only deletions also land here without a
         // pending-save flag.
         if (!this.pendingSave && !this.persistence.hasPending()) return;
-        await this.saveUnlocked();
+        const outcome = await this.saveUnlocked(undefined, { allowDeferral: opts?.allowDeferral === true });
         // Clear the pending flag INSIDE the same serialized mutation as the
-        // write (issue #1909 review). Clearing it after the enqueue await
-        // resolved raced an addTurn interleaving between the write and the
-        // clear: that turn's scheduleSave re-armed pendingSave + a timer, then
-        // this clear wiped it and the debounced flush was lost. Atomic
-        // write+clear means any addTurn runs wholly before (its turn is in the
-        // write) or wholly after (its pendingSave survives and its timer
-        // persists it).
-        this.pendingSave = false;
-        this.firstPendingAtMs = null;
+        // write (issue #1909 review): an addTurn interleaving between the
+        // write and the clear would lose its re-armed timer. Deferred
+        // sessions keep the flag — still dirty — and armDeferredRetry
+        // schedules their write at eligibility.
+        if (outcome.deferredRetryDelayMs !== undefined) {
+          this.armDeferredRetry(outcome.deferredRetryDelayMs);
+        } else {
+          this.pendingSave = false;
+          this.firstPendingAtMs = null;
+        }
       });
     } catch (err) {
       // The write failed: memory and disk diverge (issue #1909 review round 2).
       // Keep the save PENDING (do NOT clear pendingSave/firstPendingAtMs) so a
       // graceful shutdown flush and the re-armed timer both retry it — clearing
       // the flag here would drop the buffered turns permanently. Re-arm a
-      // background retry when debounced.
+      // background retry even when debounce is off (3481 review round 3).
       log.warn(`buffer.flushPendingSave: save failed, keeping it pending for retry: ${describeError(err)}`);
-      const ms = Math.min(this.config.bufferSaveDebounceMs, MAX_SET_TIMEOUT_MS);
-      if (ms > 0 && !this.saveTimer) {
+      const ms = Math.min(
+        this.config.bufferSaveDebounceMs || BUFFER_SAVE_RETRY_DELAY_MS,
+        MAX_SET_TIMEOUT_MS,
+      );
+      if (!this.saveTimer) {
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
-          void this.flushPendingSave();
+          // A steady-state retry must not escalate into a barrier write of a
+          // rate-limited session (3481 review).
+          void this.flushPendingSave({ allowDeferral: opts?.allowDeferral === true });
         }, ms);
         this.saveTimer.unref?.();
       }
@@ -648,7 +698,7 @@ export class SmartBuffer {
     // see the current turn (it must only flag turns already in the entry).
     this.ingress.noteAppendedTurn(entry, turn);
     entry.turns.push(turn);
-    const decision = this.evaluate(entry, signal.level);
+    const decision = evaluateTriggerDecision(this.config, entry, signal.level);
     // Snapshots serve only extraction decisions and surprise-eligible keep_buffering turns (probe, smart mode, sub-high signal); steady-state buffering copies nothing.
     const surpriseEligible = this.surpriseProbe !== null && this.config.triggerMode === "smart" && signal.level !== "high";
     const snapshotsNeeded = decision !== "keep_buffering" || surpriseEligible;
@@ -672,7 +722,12 @@ export class SmartBuffer {
       // Round 8 thread 4: the write is attempted BEFORE the pending state is
       // cleared, and a failed write leaves it pending (+ a re-armed timer) for
       // shutdown/timer retry instead of dropping the in-memory turns.
-      await this.saveNowRetainingPendingOnFailure("recordTurn");
+      // #3389: a keep_buffering turn has no extraction barrier, so this pass
+      // may defer rewriting a large session file that was just persisted —
+      // the rewrite cadence for huge sessions collapses from per-turn to
+      // once per BUFFER_SESSION_DEFER_INTERVAL_MS. A triggering turn is a
+      // durability barrier and passes allowDeferral: false.
+      await this.saveNowRetainingPendingOnFailure("recordTurn", { allowDeferral: decision === "keep_buffering" });
     }
     return {
       decision,
@@ -823,47 +878,6 @@ export class SmartBuffer {
     }
   }
 
-  private evaluate(entry: BufferEntryState, signalLevel: SignalLevel): TriggerDecision {
-    if (this.config.triggerMode === "smart") {
-      if (signalLevel === "high") return "extract_now";
-
-      if (entry.turns.length >= this.config.bufferMaxTurns) {
-        return "extract_batch";
-      }
-
-      if (entry.lastExtractionAt) {
-        const elapsed =
-          Date.now() - new Date(entry.lastExtractionAt).getTime();
-        if (elapsed >= this.config.bufferMaxMinutes * 60_000) {
-          return "extract_batch";
-        }
-      }
-
-      return "keep_buffering";
-    }
-
-    if (this.config.triggerMode === "every_n") {
-      return entry.turns.length >= this.config.bufferMaxTurns
-        ? "extract_batch"
-        : "keep_buffering";
-    }
-
-    if (this.config.triggerMode === "time_based") {
-      if (!entry.lastExtractionAt) {
-        return entry.turns.length >= this.config.bufferMaxTurns
-          ? "extract_batch"
-          : "keep_buffering";
-      }
-      const elapsed =
-        Date.now() - new Date(entry.lastExtractionAt).getTime();
-      return elapsed >= this.config.bufferMaxMinutes * 60_000
-        ? "extract_batch"
-        : "keep_buffering";
-    }
-
-    return "keep_buffering";
-  }
-
   getTurns(bufferKey = "default"): BufferTurn[] {
     const entry = this.peekEntry(bufferKey);
     if (!entry) return [];
@@ -943,7 +957,11 @@ export class SmartBuffer {
       }
       await this.loadUnlocked();
       assertLifecycle();
-      const bufferKeys = this.matchingSessionBufferKeysUnlocked(sessionKey);
+      const bufferKeys = matchingSessionBufferKeys(
+        this.state.entries ?? {},
+        this.peekEntry(sessionKey),
+        sessionKey,
+      );
       if (bufferKeys.length === 0) {
         if (hadPendingSave) {
           assertLifecycle();
@@ -1016,32 +1034,15 @@ export class SmartBuffer {
     return bufferKeys[0] ?? null;
   }
 
-  private matchingSessionBufferKeysUnlocked(sessionKey: string): string[] {
-    const matches: string[] = [];
-    const hasSessionTurns = (entry: BufferEntryState | null | undefined): boolean =>
-      [...(entry?.turns ?? []), ...(entry?.retainedTurns ?? [])].some(
-        (turn) => typeof turn.sessionKey === "string" && turn.sessionKey === sessionKey,
-      );
-    const directEntry = this.peekEntry(sessionKey);
-    if (hasSessionTurns(directEntry)) {
-      matches.push(sessionKey);
-    }
-
-    const entries = this.state.entries ?? {};
-    for (const [bufferKey, entry] of Object.entries(entries)) {
-      if (!matches.includes(bufferKey) && hasSessionTurns(entry)) {
-        matches.push(bufferKey);
-      }
-    }
-
-    return matches;
-  }
-
   async findBufferKeysForSession(sessionKey: string): Promise<string[]> {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return [];
     await this.mutationChain.catch(() => {});
     await this.load();
-    return this.matchingSessionBufferKeysUnlocked(sessionKey);
+    return matchingSessionBufferKeys(
+      this.state.entries ?? {},
+      this.peekEntry(sessionKey),
+      sessionKey,
+    );
   }
 
   async clearAfterExtraction(
