@@ -221,6 +221,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history so the shadow selection step can resolve a merge
+          # base for the changed-file diff (same reason as the checks job).
+          fetch-depth: 0
 
       - name: Install pnpm
         uses: pnpm/action-setup@v4
@@ -254,6 +258,57 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
 
+      # Shadow-only test selection: logs which tests WOULD run for this
+      # change while the full suite still executes. The script never fails
+      # the job; an unknown changed-file set selects everything.
+      - name: Test-selection shadow
+        env:
+          # Event values reach the shell through env, never template expansion
+          # (same pattern as the checks job's BASE_REF).
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          SHADOW_DIR: ${{ runner.temp }}/test-selection-shadow
+        run: |
+          mkdir -p "$SHADOW_DIR"
+          CHANGED="$SHADOW_DIR/changed.txt"
+          : > "$CHANGED"
+          # A failed diff must not leave a partial path list: write to a temp
+          # file and publish only on success, else truncate to empty (which the
+          # selector treats as unknown and selects the full shard).
+          shadow_diff() {
+            local tmp="$SHADOW_DIR/changed.tmp"
+            if git -c core.quotePath=off diff --no-renames --name-only -z "$@" > "$tmp" 2>/dev/null; then
+              mv -f "$tmp" "$CHANGED"
+            else
+              rm -f "$tmp"
+              : > "$CHANGED"
+            fi
+          }
+          set +e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            # The PR checkout is the synthetic merge commit: diff its first
+            # parent (the base the tested tree was built on), not a merge-base
+            # that a rewound base could move. Fall back to the fetched base.
+            if git rev-parse -q --verify 'HEAD^1^{commit}' >/dev/null 2>&1; then
+              shadow_diff 'HEAD^1..HEAD'
+            else
+              git fetch --quiet origin "$BASE_REF"
+              MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
+              [ -n "$MB" ] && shadow_diff "$MB"...HEAD
+            fi
+          elif [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            shadow_diff "$BEFORE_SHA"..HEAD
+          fi
+          set -e
+          # Artifacts stay under RUNNER_TEMP: an untracked dir in the repo
+          # would trip the capability tests' clean-tree gate. This step is
+          # telemetry only - a failure here (including a module-load error the
+          # script's own catch cannot reach) must never skip the Tests step.
+          REMNIC_SHADOW_CHANGED_PATH="$CHANGED" REMNIC_SHADOW_OUT_DIR="$SHADOW_DIR" node scripts/test-selection-shadow.mjs ${{ matrix.groups }} \
+            || echo "::warning::test-selection-shadow failed; continuing without a shadow report"
+          ls "$SHADOW_DIR"/shadow-*.json >/dev/null 2>&1 \
+            || echo "::warning::test-selection-shadow produced no shadow-*.json report"
+
       - name: Tests
         run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
         env:
@@ -265,6 +320,16 @@ jobs:
           # provenance — #1541). A missing tool or dirty tree fails the run
           # locally instead of counting a silent skip.
           REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
+      - name: Upload shadow selection
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-shadow-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-selection-shadow/shadow-*.json
+          if-no-files-found: ignore
+          retention-days: 14
 
   build-artifacts:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
