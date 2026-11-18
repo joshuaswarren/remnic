@@ -1156,6 +1156,19 @@ function listToolNames(response: unknown): string[] {
 
 const TOOLS_LIST_REQUEST = { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} };
 
+interface ToolsListSchemaProperties {
+  searchOptions?: { properties?: { structuredSearches?: unknown } };
+}
+
+interface ToolsListToolRow {
+  name: string;
+  inputSchema?: { properties?: ToolsListSchemaProperties };
+}
+
+interface ToolsListEnvelope {
+  result?: { tools?: ToolsListToolRow[] };
+}
+
 test("tools/list advertises remnic_* and engram.* by default (back-compat)", async () => {
   const server = new EngramMcpServer(makeMockService());
   const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
@@ -1163,6 +1176,18 @@ test("tools/list advertises remnic_* and engram.* by default (back-compat)", asy
   assert.ok(names.includes("engram.recall"), "legacy alias present by default");
   const legacyCount = names.filter((n) => n.startsWith("engram.")).length;
   assert.ok(legacyCount > 0, "legacy aliases advertised by default");
+});
+
+test("tools/list engram.recall searchOptions declares structuredSearches (HTTP parity)", async () => {
+  const server = new EngramMcpServer(makeMockService());
+  const res = await server.handleRequest(TOOLS_LIST_REQUEST);
+  // SAFETY: tools/list JSON shape is owned by EngramMcpServer; test only reads engram.recall schema keys.
+  const tools = (res as ToolsListEnvelope).result?.tools ?? [];
+  const recall = tools.find((t) => t.name === "engram.recall");
+  assert.ok(
+    recall?.inputSchema?.properties?.searchOptions?.properties?.structuredSearches !== undefined,
+    "MCP searchOptions must declare structuredSearches",
+  );
 });
 
 test("tools/list omits engram.* aliases when emitLegacyTools is false", async () => {

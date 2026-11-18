@@ -261,10 +261,52 @@ interface QmdCacheEntry {
 const QMD_CACHE_TTL_MS = 60_000;
 const qmdSearchCache = new Map<string, QmdCacheEntry>();
 
+/** While depth > 0, QMD search cache uses extended TTL (primary + top-up share one recall cycle, R4). */
+let qmdSearchCacheRecallScopeDepth = 0;
+let qmdSearchCacheRecallTtlMs: number | undefined;
+
+export function beginQmdSearchCacheRecallScope(ttlMs: number): void {
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
+  const next = Math.floor(ttlMs);
+  qmdSearchCacheRecallScopeDepth += 1;
+  qmdSearchCacheRecallTtlMs = Math.max(qmdSearchCacheRecallTtlMs ?? 0, next);
+}
+
+export function endQmdSearchCacheRecallScope(): void {
+  if (qmdSearchCacheRecallScopeDepth <= 0) return;
+  qmdSearchCacheRecallScopeDepth -= 1;
+  if (qmdSearchCacheRecallScopeDepth === 0) {
+    qmdSearchCacheRecallTtlMs = undefined;
+  }
+}
+
+export async function runInQmdSearchCacheRecallScope<T>(
+  ttlMs: number,
+  run: () => Promise<T>,
+): Promise<T> {
+  const acquired = Number.isFinite(ttlMs) && ttlMs > 0;
+  if (acquired) beginQmdSearchCacheRecallScope(ttlMs);
+  try {
+    return await run();
+  } finally {
+    if (acquired) endQmdSearchCacheRecallScope();
+  }
+}
+
+/** Observable refcount for unit tests (R4 scope guard). */
+export function peekQmdSearchCacheRecallScopeDepth(): number {
+  return qmdSearchCacheRecallScopeDepth;
+}
+
+function effectiveQmdSearchCacheTtlMs(): number {
+  return Math.max(QMD_CACHE_TTL_MS, qmdSearchCacheRecallTtlMs ?? 0);
+}
+
 export function getCachedQmdSearch(cacheKey: string): unknown[] | null {
   const entry = qmdSearchCache.get(cacheKey);
   if (!entry) return null;
-  if (Date.now() - entry.cachedAt > QMD_CACHE_TTL_MS) {
+  const ttl = effectiveQmdSearchCacheTtlMs();
+  if (Date.now() - entry.cachedAt > ttl) {
     qmdSearchCache.delete(cacheKey);
     return null;
   }
@@ -276,8 +318,9 @@ export function setCachedQmdSearch(cacheKey: string, results: unknown[]): void {
   // Evict old entries to prevent unbounded growth
   if (qmdSearchCache.size > 200) {
     const now = Date.now();
+    const ttl = effectiveQmdSearchCacheTtlMs();
     for (const [key, entry] of qmdSearchCache) {
-      if (now - entry.cachedAt > QMD_CACHE_TTL_MS) qmdSearchCache.delete(key);
+      if (now - entry.cachedAt > ttl) qmdSearchCache.delete(key);
     }
   }
 }

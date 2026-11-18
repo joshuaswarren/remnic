@@ -70,6 +70,7 @@ import {
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
 import { isActivityDigestPath } from "./orchestrator-helpers.js";
+import { runInQmdSearchCacheRecallScope } from "../memory-cache.js";
 import { isGenericRecallExcludedPath, isTopLevelArchivePath } from "./generic-recall-paths.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
@@ -108,9 +109,7 @@ export interface RecallSearchPipelineDeps {
       requestingConnector?: string;
     },
   ): Promise<QmdSearchResult[]>;
-  buildConfiguredQmdSearchOptions(
-    queryText: string,
-  ): SearchQueryOptions | undefined;
+  buildConfiguredQmdSearchOptions(queryText: string, requestOverride?: SearchQueryOptions): SearchQueryOptions | undefined;
   buildQueryAwarePrefilter(
     prompt: string,
     recallNamespaces: string[],
@@ -275,7 +274,6 @@ export class RecallSearchPipelineCoordinator {
     return buildQueryAwarePrefilterHelper(this.deps, prompt, recallNamespaces);
   }
 
-
   async fetchQmdMemoryResultsWithArtifactTopUp(
     prompt: string,
     qmdFetchLimit: number,
@@ -319,6 +317,7 @@ export class RecallSearchPipelineCoordinator {
     const qmdRecallBudgetMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     const qmdRecallBudgetEnabled = qmdRecallBudgetMs > 0;
     const startedAtMs = Date.now();
+    return runInQmdSearchCacheRecallScope(qmdRecallBudgetMs, async () => {
     let lastPrimaryResultCount = 0;
     let lastHybridResultCount = 0;
     let lastHybridTopUpUsed = false;
@@ -432,14 +431,19 @@ export class RecallSearchPipelineCoordinator {
       lastHybridTopUpUsed = false;
       lastHybridTopUpSkippedReason = undefined;
       let mergedResults = primaryResults;
-      const primaryRecallableCount = primaryResults.filter(recallable).length;
+      const primaryDeliverableCount = filterRecallCandidates(primaryResults, {
+        namespacesEnabled: options.namespacesEnabled,
+        recallNamespaces: options.recallNamespaces,
+        resolveNamespace: options.resolveNamespace,
+        limit: qmdFetchLimit,
+        pathPolicy: this.deps.config,
+      }).length;
       const primaryIncludesArchivePath = primaryResults.some((result) =>
         isTopLevelArchivePath(result.path, this.deps.config, "qmd"),
       );
-
-      // Backfill with hybrid results when the recallable primary page underfills.
-      if (
-        primaryRecallableCount < qmdFetchLimit &&
+      if (primaryDeliverableCount >= qmdFetchLimit) {
+        lastHybridTopUpSkippedReason = "primary_deliverable_sufficient";
+      } else if (
         (primaryResults.length < qmdFetchLimit || primaryIncludesArchivePath) &&
         (!qmdRecallBudgetEnabled ||
           Date.now() - startedAtMs < qmdRecallBudgetMs)
@@ -540,6 +544,7 @@ export class RecallSearchPipelineCoordinator {
     const capped = bestFiltered.slice(0, qmdFetchLimit);
     await emitDebugSnapshot(capped, fetchLimit);
     return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
+    });
   }
 
   async searchEmbeddingFallback(
@@ -561,7 +566,6 @@ export class RecallSearchPipelineCoordinator {
   ): Promise<QmdSearchResult[]> {
     return searchQueryAwareFallbackHelper(this.deps, prompt, limit, queryAwarePrefilter, abortSignal);
   }
-
 
   async applyColdFallbackPipeline(options: {
     prompt: string;
@@ -594,19 +598,12 @@ export class RecallSearchPipelineCoordinator {
      */
     xrayPoolSizeSink?: { size: number };
     resultPartitionSink?: RecallResultPartitionSink;
-    /**
-     * Issue #1577 — out-parameter that receives the TrustScore stage's
-     * per-path trust map (admitted + quarantined) when the cold path runs
-     * trust scoring. Mirrors the xrayPoolSizeSink pattern so recallInternal
-     can propagate trust data for epistemic rendering and X-ray visibility
-     without changing the cold pipeline's return type.
-     */
+    /** #1577 trust map out-param (xrayPoolSizeSink pattern). */
     trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
     deadlineAtMs?: number | null;
-    /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
-    /** #1952 state-view admission — resolved by the caller from config/override + change intent. */
     stateViewActive?: boolean;
+    searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]> {
     // Prefer the threaded set; fall back to a config-derived set so direct
     // callers (unit tests) behave identically to the recall pipeline (#1523).
@@ -726,7 +723,7 @@ export class RecallSearchPipelineCoordinator {
                 resolveNamespace: (p) => this.deps.namespaceFromPath(p),
                 collection: coldCollection,
                 queryAwarePrefilter: options.queryAwarePrefilter,
-                searchOptions: this.deps.buildConfiguredQmdSearchOptions(options.prompt),
+                searchOptions: this.deps.buildConfiguredQmdSearchOptions(options.prompt, options.searchOptions),
                 abortSignal: stepSignal,
                 onDegradation: (degradation) => {
                   if (coldQmdObserverActive) {

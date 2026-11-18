@@ -1,18 +1,4 @@
-/**
- * Orchestrator module-level helpers — relocated from orchestrator.ts
- * (issue #1526, seam 25).
- *
- * Pure functions, types, and constants that previously lived at module
- * level in orchestrator.ts: recall-mode planning, recall snapshots and
- * parsers, abort/race helpers, artifact recall limits, replay
- * source-time slicing, day-summary date utilities, and QMD startup
- * checks. orchestrator.ts re-exports the previously-public names so
- * every existing importer (coordinators, tests, root shims) keeps
- * working unchanged.
- *
- * Behavior-preserving move — no logic changes.
- */
-
+/** Orchestrator module-level helpers relocated from orchestrator.ts (#1526); behavior-preserving move. */
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +12,7 @@ import { log } from "../logger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import { parseQmdExplain } from "../qmd.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
-import type { SearchDegradation } from "../search/port.js";
+import type { SearchDegradation, SearchQueryOptions } from "../search/port.js";
 import type { RecallXrayServedBy } from "../recall-xray.js";
 import type { RecallContextComposition } from "../recall-context-composition.js";
 import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFrontmatter, type MemoryIntent, type PluginConfig, type QmdSearchResult, type RecallPlanMode, confidenceTier } from "../types.js";
@@ -262,6 +248,8 @@ export interface RecallInvocationOptions {
    * config flag; a change-intent query is still required for any effect.
    */
   stateView?: boolean;
+  /** Per-call QMD options (HTTP/MCP `searchOptions`). */
+  searchOptions?: SearchQueryOptions;
   /**
    * User-aware context scopes active for this recall. Used by X-ray
    * provenance safety checks so boundary-scoped memories are evaluated

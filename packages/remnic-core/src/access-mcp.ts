@@ -33,6 +33,7 @@ import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAcc
 import { EngramAccessForbiddenError, unknownToolError } from "./access-errors.js";
 import { log } from "./logger.js";
 import { McpFrameReader, type McpFrameForm } from "./access-mcp-frames.js";
+import { engramRecallSearchOptionsMcpProperty } from "./access-recall-mcp-search-options.js";
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
@@ -636,6 +637,7 @@ export class EngramMcpServer {
               description:
                 "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
             },
+            searchOptions: engramRecallSearchOptionsMcpProperty,
           },
           required: ["query"],
           additionalProperties: false,

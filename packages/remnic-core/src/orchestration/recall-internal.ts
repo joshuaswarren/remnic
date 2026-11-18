@@ -346,8 +346,7 @@ export class RecallInternalCoordinator {
     this.deps.profiler.endSpan("planning", profileTraceId);
     const recallMode: RecallPlanMode = requestedMode ?? recallDecision.effectiveMode;
     const queryIntent = inferIntentFromText(retrievalQuery);
-    const qmdSearchOptions =
-      this.deps.buildConfiguredQmdSearchOptions(retrievalQuery);
+    const qmdSearchOptions = this.deps.buildConfiguredQmdSearchOptions(retrievalQuery, options.searchOptions);
     timings.recallPlan = recallMode;
     const plannerRecallResultLimit =
       recallMode === "no_recall"
@@ -4224,11 +4223,10 @@ export class RecallInternalCoordinator {
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             requestingConnector: options.sourceConnector,
+            searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
-          // Issue #1577 — read the cold pipeline's trust map back so cold
-          // results feed X-ray + epistemic rendering + publisher quarantine
-          // filtering (rule 41 parity; review: the sink was never read back).
+          // #1577: read cold trust map back for X-ray/epistemic (rule 41).
           recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
@@ -4471,9 +4469,10 @@ export class RecallInternalCoordinator {
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
               requestingConnector: options.sourceConnector,
+              searchOptions: qmdSearchOptions,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
-            // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+            // #1577: cold trust map back.
             recallTrustByPath = trustByPathSink.trustByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
@@ -4651,9 +4650,10 @@ export class RecallInternalCoordinator {
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
                 requestingConnector: options.sourceConnector,
+                searchOptions: qmdSearchOptions,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
-              // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+              // #1577: cold trust map back.
               recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
@@ -4710,9 +4710,10 @@ export class RecallInternalCoordinator {
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             requestingConnector: options.sourceConnector,
+            searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
-          // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+          // #1577: cold trust map back.
           recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {

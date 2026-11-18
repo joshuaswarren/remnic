@@ -108,6 +108,28 @@ export const recallDisclosureSchema = z.enum(["chunk", "section", "raw"]);
  */
 export const tagMatchSchema = z.enum(["any", "all"]);
 
+/**
+ * Per-recall QMD `query` tool options (issue #3433 plumbing). Matches
+ * `SearchQueryOptions` in `search/port.ts`. QMD only honors `rerank: false`
+ * on the wire (`--no-rerank` / MCP `rerank: false`); `rerank: true` is a no-op
+ * when `qmdQueryRerankEnabled` is on.
+ */
+const recallStructuredSearchSchema = z.object({
+  type: z.enum(["lex", "vec", "hyde"]),
+  query: z.string().trim().min(1),
+});
+
+export const recallQmdSearchOptionsSchema = z
+  .object({
+    intent: z.string().trim().max(512).optional(),
+    explain: z.boolean().optional(),
+    candidateLimit: z.number().int().min(1).max(200).optional(),
+    rerank: z.boolean().optional(),
+    chunkStrategy: z.enum(["auto", "regex"]).optional(),
+    structuredSearches: z.array(recallStructuredSearchSchema).max(10).optional(),
+  })
+  .strict();
+
 export const recallRequestSchema = z.object({
   query: z.string().min(1, "query is required"),
   sessionKey: sessionKeySchema,
@@ -155,6 +177,8 @@ export const recallRequestSchema = z.object({
    * effect, so this can never perturb ordinary recalls.
    */
   stateView: z.boolean().optional(),
+  /** QMD search options for this recall only (`query` tool path). */
+  searchOptions: recallQmdSearchOptionsSchema.optional(),
 });
 
 export const recallExplainRequestSchema = z.object({

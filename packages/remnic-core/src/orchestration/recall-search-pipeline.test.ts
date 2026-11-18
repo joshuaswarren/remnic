@@ -15,6 +15,24 @@ function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
 }
 
+/** Unit stub: only search/hybridSearch are exercised by hybrid top-up tests. */
+function makeHybridTopUpStubCoordinator(
+  qmd: Pick<RecallSearchPipelineDeps["qmd"], "search" | "hybridSearch">,
+  namespaceFromPath: (p: string) => string,
+): RecallSearchPipelineCoordinator {
+  const partial = {
+    config: {
+      memoryDir: "/mem",
+      qmdSearchStrategy: "hybrid",
+      searchBackend: "qmd",
+    },
+    qmd,
+    namespaceFromPath,
+  };
+  // SAFETY: hybrid top-up tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are never read.
+  return new RecallSearchPipelineCoordinator(partial as RecallSearchPipelineDeps);
+}
+
 function memory(path: string, status: string): MemoryFile {
   return {
     path,
@@ -521,6 +539,53 @@ test("QMD hybrid top-up runs when primary results are archive-only", async () =>
 
   assert.ok(hybridCalls > 0, "archive-only primary pages must trigger hybrid top-up");
   assert.deepEqual(out.map((candidate) => candidate.path), ["facts/hybrid-live.md"]);
+});
+
+test("QMD skips hybrid top-up when namespace-deliverable page is already full", async () => {
+  const inScope = Array.from({ length: 4 }, (_, index) =>
+    resultScored("default", `facts/in-scope-${index}.md`, 1 - index * 0.01),
+  );
+  const outOfScope = Array.from({ length: 4 }, (_, index) =>
+    resultScored("other-ns", `facts/other-${index}.md`, 2),
+  );
+  let hybridCalls = 0;
+  const coordinator = makeHybridTopUpStubCoordinator(
+    {
+      search: async () => [...inScope, ...outOfScope],
+      hybridSearch: async () => {
+        hybridCalls += 1;
+        return [resultScored("default", "facts/hybrid-extra.md", 0.5)];
+      },
+    },
+    (p: string) => (p.includes("other") ? "other-ns" : "default"),
+  );
+
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+    "namespace-saturated",
+    4,
+    4,
+    {
+      namespacesEnabled: true,
+      recallNamespaces: ["default"],
+      resolveNamespace: (p: string) =>
+        p.includes("other") ? "other-ns" : "default",
+      collection: "openclaw-engram",
+      queryAwarePrefilter: {
+        candidatePaths: null,
+        temporalFromDate: null,
+        matchedTags: [],
+        expandedTags: [],
+        combination: "none",
+        filteredToFullSearch: false,
+      },
+    },
+  );
+
+  assert.equal(hybridCalls, 0, "raw recallable count must not force hybrid when deliverable page is full");
+  assert.deepEqual(
+    out.map((candidate) => candidate.path),
+    inScope.map((r) => r.path),
+  );
 });
 
 test("QMD stops after an underfilled archive-only page", async () => {

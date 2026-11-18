@@ -92,6 +92,7 @@ export interface RecallInternalDeps {
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
+    searchOptions?: SearchQueryOptions;
   }): Promise<QmdSearchResult[]>;
   applyTrustScoreToBranch(
     results: QmdSearchResult[],
@@ -144,6 +145,7 @@ export interface RecallInternalDeps {
   buildCompressionGuidelineRecallSection(): Promise<string | null>;
   buildConfiguredQmdSearchOptions(
     queryText: string,
+    requestOverride?: SearchQueryOptions,
   ): SearchQueryOptions | undefined;
   buildGraphRecallRankedResults(
     results: QmdSearchResult[],
