@@ -261,10 +261,27 @@ interface QmdCacheEntry {
 const QMD_CACHE_TTL_MS = 60_000;
 const qmdSearchCache = new Map<string, QmdCacheEntry>();
 
+/** While set, QMD search cache uses this TTL so primary + top-up share one recall cycle (R4). */
+let qmdSearchCacheRecallTtlMs: number | undefined;
+
+export function beginQmdSearchCacheRecallScope(ttlMs: number): void {
+  qmdSearchCacheRecallTtlMs =
+    Number.isFinite(ttlMs) && ttlMs > 0 ? Math.floor(ttlMs) : undefined;
+}
+
+export function endQmdSearchCacheRecallScope(): void {
+  qmdSearchCacheRecallTtlMs = undefined;
+}
+
+function effectiveQmdSearchCacheTtlMs(): number {
+  return Math.max(QMD_CACHE_TTL_MS, qmdSearchCacheRecallTtlMs ?? 0);
+}
+
 export function getCachedQmdSearch(cacheKey: string): unknown[] | null {
   const entry = qmdSearchCache.get(cacheKey);
   if (!entry) return null;
-  if (Date.now() - entry.cachedAt > QMD_CACHE_TTL_MS) {
+  const ttl = effectiveQmdSearchCacheTtlMs();
+  if (Date.now() - entry.cachedAt > ttl) {
     qmdSearchCache.delete(cacheKey);
     return null;
   }
@@ -276,8 +293,9 @@ export function setCachedQmdSearch(cacheKey: string, results: unknown[]): void {
   // Evict old entries to prevent unbounded growth
   if (qmdSearchCache.size > 200) {
     const now = Date.now();
+    const ttl = effectiveQmdSearchCacheTtlMs();
     for (const [key, entry] of qmdSearchCache) {
-      if (now - entry.cachedAt > QMD_CACHE_TTL_MS) qmdSearchCache.delete(key);
+      if (now - entry.cachedAt > ttl) qmdSearchCache.delete(key);
     }
   }
 }

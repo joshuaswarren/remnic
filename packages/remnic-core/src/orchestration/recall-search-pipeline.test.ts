@@ -523,6 +523,58 @@ test("QMD hybrid top-up runs when primary results are archive-only", async () =>
   assert.deepEqual(out.map((candidate) => candidate.path), ["facts/hybrid-live.md"]);
 });
 
+test("QMD skips hybrid top-up when namespace-deliverable page is already full", async () => {
+  const inScope = Array.from({ length: 4 }, (_, index) =>
+    resultScored("default", `facts/in-scope-${index}.md`, 1 - index * 0.01),
+  );
+  const outOfScope = Array.from({ length: 4 }, (_, index) =>
+    resultScored("other-ns", `facts/other-${index}.md`, 2),
+  );
+  let hybridCalls = 0;
+  const coordinator = new RecallSearchPipelineCoordinator({
+    config: {
+      memoryDir: "/mem",
+      qmdSearchStrategy: "hybrid",
+      searchBackend: "qmd",
+    },
+    qmd: {
+      search: async () => [...inScope, ...outOfScope],
+      hybridSearch: async () => {
+        hybridCalls += 1;
+        return [resultScored("default", "facts/hybrid-extra.md", 0.5)];
+      },
+    },
+    namespaceFromPath: (p: string) => (p.includes("other") ? "other-ns" : "default"),
+  } as unknown as RecallSearchPipelineDeps);
+
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+    "namespace-saturated",
+    4,
+    4,
+    {
+      namespacesEnabled: true,
+      recallNamespaces: ["default"],
+      resolveNamespace: (p: string) =>
+        p.includes("other") ? "other-ns" : "default",
+      collection: "openclaw-engram",
+      queryAwarePrefilter: {
+        candidatePaths: null,
+        temporalFromDate: null,
+        matchedTags: [],
+        expandedTags: [],
+        combination: "none",
+        filteredToFullSearch: false,
+      },
+    },
+  );
+
+  assert.equal(hybridCalls, 0, "raw recallable count must not force hybrid when deliverable page is full");
+  assert.deepEqual(
+    out.map((candidate) => candidate.path),
+    inScope.map((r) => r.path),
+  );
+});
+
 test("QMD stops after an underfilled archive-only page", async () => {
   const archived = [resultScored("default", "archive/2026-07-25/only.md", 2)];
   let searchCalls = 0;

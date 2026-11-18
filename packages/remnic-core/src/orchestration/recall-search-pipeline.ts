@@ -70,6 +70,10 @@ import {
   type QueryAwarePrefilter,
 } from "../orchestrator.js";
 import { isActivityDigestPath } from "./orchestrator-helpers.js";
+import {
+  beginQmdSearchCacheRecallScope,
+  endQmdSearchCacheRecallScope,
+} from "../memory-cache.js";
 import { isGenericRecallExcludedPath, isTopLevelArchivePath } from "./generic-recall-paths.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
@@ -319,6 +323,9 @@ export class RecallSearchPipelineCoordinator {
     const qmdRecallBudgetMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     const qmdRecallBudgetEnabled = qmdRecallBudgetMs > 0;
     const startedAtMs = Date.now();
+    // R4: extend in-process QMD search cache through this recall's enrichment budget.
+    beginQmdSearchCacheRecallScope(qmdRecallBudgetMs);
+    try {
     let lastPrimaryResultCount = 0;
     let lastHybridResultCount = 0;
     let lastHybridTopUpUsed = false;
@@ -432,6 +439,14 @@ export class RecallSearchPipelineCoordinator {
       lastHybridTopUpUsed = false;
       lastHybridTopUpSkippedReason = undefined;
       let mergedResults = primaryResults;
+      const primaryDeliverable = filterRecallCandidates(primaryResults, {
+        namespacesEnabled: options.namespacesEnabled,
+        recallNamespaces: options.recallNamespaces,
+        resolveNamespace: options.resolveNamespace,
+        limit: qmdFetchLimit,
+        pathPolicy: this.deps.config,
+      });
+      const primaryDeliverableCount = primaryDeliverable.length;
       const primaryRecallableCount = primaryResults.filter(recallable).length;
       const primaryIncludesArchivePath = primaryResults.some((result) =>
         isTopLevelArchivePath(result.path, this.deps.config, "qmd"),
@@ -439,7 +454,7 @@ export class RecallSearchPipelineCoordinator {
 
       // Backfill with hybrid results when the recallable primary page underfills.
       if (
-        primaryRecallableCount < qmdFetchLimit &&
+        primaryDeliverableCount < qmdFetchLimit &&
         (primaryResults.length < qmdFetchLimit || primaryIncludesArchivePath) &&
         (!qmdRecallBudgetEnabled ||
           Date.now() - startedAtMs < qmdRecallBudgetMs)
@@ -488,6 +503,8 @@ export class RecallSearchPipelineCoordinator {
             );
           }
         }
+      } else if (primaryDeliverableCount >= qmdFetchLimit) {
+        lastHybridTopUpSkippedReason = "primary_deliverable_sufficient";
       }
 
       if (crossScriptVectorHits.length > 0) {
@@ -540,6 +557,9 @@ export class RecallSearchPipelineCoordinator {
     const capped = bestFiltered.slice(0, qmdFetchLimit);
     await emitDebugSnapshot(capped, fetchLimit);
     return await applyDirectorySidecarDrillDown(this.deps.storage?.dir ?? "", prompt, capped, { enabled: Boolean(this.deps.storage?.dir) && isDirectorySidecarsEnabledForDir(this.deps.storage.dir), namespaces: options.namespacesEnabled ? options.recallNamespaces ?? [] : undefined });
+    } finally {
+      endQmdSearchCacheRecallScope();
+    }
   }
 
   async searchEmbeddingFallback(
