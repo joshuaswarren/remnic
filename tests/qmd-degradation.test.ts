@@ -36,7 +36,7 @@ test("daemon timeout reports daemon_timeout; genuine empty reports nothing (#153
   // The crucial contrast: an EMPTY daemon result is a real answer, not a
   // degradation (rule 34 — empty vs broken must stay distinguishable).
   const empty = collector();
-  client.searchViaDaemon = async () => [];
+  client.searchViaDaemon = async () => ({ results: [], degraded: false });
   const out2 = await client.search("degradation empty probe", undefined, 3, undefined, {
     onDegradation: empty.onDegradation,
   });

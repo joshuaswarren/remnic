@@ -14,7 +14,7 @@ test("search returns empty when daemon returns empty (no subprocess fallback)", 
   client.maybeProbeDaemon = async () => {};
 
   let subprocessCalls = 0;
-  client.searchViaDaemon = async () => [];
+  client.searchViaDaemon = async () => ({ results: [], degraded: false });
   client.searchViaSubprocess = async () => {
     subprocessCalls += 1;
     return [
@@ -41,7 +41,7 @@ test("searchGlobal returns empty when daemon returns empty (no subprocess fallba
   client.maybeProbeDaemon = async () => {};
 
   let subprocessCalls = 0;
-  client.searchViaDaemon = async () => [];
+  client.searchViaDaemon = async () => ({ results: [], degraded: false });
   client.searchGlobalViaSubprocess = async () => {
     subprocessCalls += 1;
     return [
@@ -72,7 +72,7 @@ test("hybridSearch always runs bm25+vector merge (no daemon short-circuit)", asy
   let daemonCalls = 0;
   client.searchViaDaemon = async () => {
     daemonCalls += 1;
-    return [];
+    return { results: [], degraded: false };
   };
   client.bm25Search = async () => {
     bm25Calls += 1;

@@ -285,7 +285,7 @@ type SearchInternals = {
     maxResults: number,
     options: unknown,
     signal?: AbortSignal
-  ) => Promise<QmdSearchResult[] | null>;
+  ) => Promise<{ results: QmdSearchResult[]; degraded: boolean } | null>;
 };
 
 function daemonClient(): { client: QmdClient; internals: SearchInternals } {
@@ -310,7 +310,7 @@ test("identical search() calls share one daemon query until the last waiter abor
   const { client, internals } = daemonClient();
   let calls = 0;
   let shared: AbortSignal | undefined;
-  let release: (value: QmdSearchResult[]) => void = () => {};
+  let release: (value: { results: QmdSearchResult[]; degraded: boolean } | null) => void = () => {};
   internals.searchViaDaemon = (_query, _collection, _maxResults, _options, signal) => {
     calls += 1;
     shared = signal;
@@ -333,7 +333,7 @@ test("identical search() calls share one daemon query until the last waiter abor
   await assert.rejects(leaving, (err: Error) => err.name === "AbortError");
   assert.equal(shared?.aborted, false);
 
-  release([hit("kept")]);
+  release({ results: [hit("kept")], degraded: false });
   const [a, b] = await Promise.all([first, second]);
   assert.equal(a[0]?.docid, "kept");
   assert.equal(b[0]?.docid, "kept");
