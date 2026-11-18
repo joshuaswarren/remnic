@@ -1165,6 +1165,19 @@ test("tools/list advertises remnic_* and engram.* by default (back-compat)", asy
   assert.ok(legacyCount > 0, "legacy aliases advertised by default");
 });
 
+test("tools/list engram.recall searchOptions declares structuredSearches (HTTP parity)", async () => {
+  const server = new EngramMcpServer(makeMockService());
+  const res = await server.handleRequest(TOOLS_LIST_REQUEST);
+  const tools =
+  (res as { result?: { tools?: Array<{ name: string; inputSchema?: { properties?: Record<string, unknown> } }> } })
+    .result?.tools ?? [];
+  const recall = tools.find((t) => t.name === "engram.recall");
+  const props = recall?.inputSchema?.properties;
+  assert.ok(props && typeof props.searchOptions === "object" && props.searchOptions !== null);
+  const nested = props.searchOptions as { properties?: Record<string, unknown> };
+  assert.ok(nested.properties && "structuredSearches" in nested.properties);
+});
+
 test("tools/list omits engram.* aliases when emitLegacyTools is false", async () => {
   const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
   const names = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));

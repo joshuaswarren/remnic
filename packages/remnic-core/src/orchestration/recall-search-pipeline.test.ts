@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import test from "node:test";
 
 import { parseConfig } from "../config.js";
-import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
-import type { RecallSearchPipelineDeps } from "./recall-search-pipeline.js";
-import type { MemoryFile, QmdSearchResult } from "../types.js";
 import type { StorageManager } from "../index.js";
 import type { QueryAwarePrefilter } from "../orchestrator.js";
+import type { MemoryFile, QmdSearchResult } from "../types.js";
+import { RecallSearchPipelineCoordinator } from "./recall-search-pipeline.js";
+import type { RecallSearchPipelineDeps } from "./recall-search-pipeline.js";
 
 function result(namespace: string, path: string): QmdSearchResult {
   return { docid: `${namespace}:${path}`, namespace, path, score: 1, snippet: path };
@@ -18,7 +18,7 @@ function result(namespace: string, path: string): QmdSearchResult {
 /** Unit stub: only search/hybridSearch are exercised by hybrid top-up tests. */
 function makeHybridTopUpStubCoordinator(
   qmd: Pick<RecallSearchPipelineDeps["qmd"], "search" | "hybridSearch">,
-  namespaceFromPath: (p: string) => string,
+  namespaceFromPath: (p: string) => string
 ): RecallSearchPipelineCoordinator {
   const partial = {
     config: {
@@ -48,7 +48,7 @@ function memory(path: string, status: string): MemoryFile {
 
 async function makeCoordinator(
   memoryDir: string,
-  extractionScopeClassificationEnabled = true,
+  extractionScopeClassificationEnabled = true
 ): Promise<RecallSearchPipelineCoordinator> {
   const config = parseConfig({
     openaiApiKey: "sk-test",
@@ -64,7 +64,7 @@ async function makeCoordinator(
       resultPath: string,
       _fallbackStorage: StorageManager,
       _recallNamespaces: readonly string[],
-      preferredNamespace?: string,
+      preferredNamespace?: string
     ) => memory(resultPath, preferredNamespace === "private" ? "forgotten" : "active"),
   } as unknown as RecallSearchPipelineDeps;
   return new RecallSearchPipelineCoordinator(deps);
@@ -85,7 +85,7 @@ test("recall safety keeps same relative path distinct across namespaces", async 
     assert.deepEqual(
       safe.map((candidate) => candidate.namespace),
       ["shared"],
-      "status filtering must use the memory belonging to each result namespace",
+      "status filtering must use the memory belonging to each result namespace"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -104,12 +104,23 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
     const memHas = {
       path: "facts/has.md",
       content: "facts/has.md",
-      frontmatter: { status: "active", memoryKind: "fact", created: "2026-07-19T00:00:00.000Z", updated: "2026-07-19T00:00:00.000Z", sourceConnector: "trusted-pi" } as unknown as MemoryFile["frontmatter"],
+      frontmatter: {
+        status: "active",
+        memoryKind: "fact",
+        created: "2026-07-19T00:00:00.000Z",
+        updated: "2026-07-19T00:00:00.000Z",
+        sourceConnector: "trusted-pi",
+      } as unknown as MemoryFile["frontmatter"],
     };
     const memNone = {
       path: "facts/none.md",
       content: "facts/none.md",
-      frontmatter: { status: "active", memoryKind: "fact", created: "2026-07-19T00:00:00.000Z", updated: "2026-07-19T00:00:00.000Z" } as unknown as MemoryFile["frontmatter"],
+      frontmatter: {
+        status: "active",
+        memoryKind: "fact",
+        created: "2026-07-19T00:00:00.000Z",
+        updated: "2026-07-19T00:00:00.000Z",
+      } as unknown as MemoryFile["frontmatter"],
     };
     const memoryByPath = new Map<string, MemoryFile>([
       ["default\0facts/has.md", memHas],
@@ -117,10 +128,22 @@ test("recall safety derives sourceConnector exclusively from the hydrated memory
     ]);
     const safe = coordinator.filterSearchResultsByRecallSafety([has, none], memoryByPath);
     const byPath = new Map(safe.map((r) => [r.path, r.sourceConnector]));
-    assert.equal(byPath.get("facts/has.md"), "trusted-pi", "an untrusted result-supplied value is overwritten by the memory's connector");
-    assert.equal(byPath.get("facts/none.md"), undefined, "an untrusted value is cleared when the memory is connectorless");
+    assert.equal(
+      byPath.get("facts/has.md"),
+      "trusted-pi",
+      "an untrusted result-supplied value is overwritten by the memory's connector"
+    );
+    assert.equal(
+      byPath.get("facts/none.md"),
+      undefined,
+      "an untrusted value is cleared when the memory is connectorless"
+    );
     // The shared/cached input objects are never mutated.
-    assert.equal(has.sourceConnector, "untrusted", "the input result object is not mutated (copy semantics, no cross-recall leak)");
+    assert.equal(
+      has.sourceConnector,
+      "untrusted",
+      "the input result object is not mutated (copy semantics, no cross-recall leak)"
+    );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -160,7 +183,7 @@ test("recall safety keeps support passport records out of generic recall", async
     assert.deepEqual(
       coordinator.filterSearchResultsByRecallSafety(candidates, memoryByPath, { allowDedicatedSurface: true }),
       [],
-      "a generic-recall override must not disclose owner-controlled support records",
+      "a generic-recall override must not disclose owner-controlled support records"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -202,9 +225,7 @@ test("recall safety partitions tool-scoped memories by requesting connector", as
       ...result("default", candidate.path),
       ...(index === 1 ? { sourceConnector: "chatgpt" } : {}),
     }));
-    const memoryByPath = new Map(
-      memories.map((candidate) => [`default\0${candidate.path}`, candidate]),
-    );
+    const memoryByPath = new Map(memories.map((candidate) => [`default\0${candidate.path}`, candidate]));
 
     const safe = coordinator.filterSearchResultsByRecallSafety(results, memoryByPath, {
       requestingConnector: "chatgpt",
@@ -212,42 +233,30 @@ test("recall safety partitions tool-scoped memories by requesting connector", as
 
     assert.deepEqual(
       safe.map((candidate) => candidate.path),
-      [
-        "facts/same-tool.md",
-        "facts/portable.md",
-        "facts/legacy.md",
-        "facts/unattributed-tool.md",
-      ],
+      ["facts/same-tool.md", "facts/portable.md", "facts/legacy.md", "facts/unattributed-tool.md"]
     );
     assert.equal(safe[0]?.sourceConnector, "chatgpt");
     assert.equal(results[1]?.sourceConnector, "chatgpt");
-    assert.equal(
-      coordinator.filterSearchResultsByRecallSafety(results, memoryByPath).length,
-      results.length,
-    );
+    assert.equal(coordinator.filterSearchResultsByRecallSafety(results, memoryByPath).length, results.length);
     const gateDisabled = await makeCoordinator(memoryDir, false);
     assert.equal(
       gateDisabled.filterSearchResultsByRecallSafety(results, memoryByPath, {
         requestingConnector: "chatgpt",
       }).length,
-      results.length,
+      results.length
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
 
-function scopedCandidatesStub(
-  seed: QmdSearchResult[],
-): RecallSearchPipelineDeps["searchScopedMemoryCandidates"] {
+function scopedCandidatesStub(seed: QmdSearchResult[]): RecallSearchPipelineDeps["searchScopedMemoryCandidates"] {
   // Faithful to production: return only the requested candidates, capped to limit.
   return async (candidatePaths, _query, limit) =>
     seed.filter((r) => candidatePaths.has(r.path)).slice(0, Math.max(0, limit));
 }
 
-function queryAwareFallbackCoordinator(
-  seed: QmdSearchResult[],
-): RecallSearchPipelineCoordinator {
+function queryAwareFallbackCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordinator {
   const namespaceFromPath: RecallSearchPipelineDeps["namespaceFromPath"] = () => "default";
   const deps = {
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
@@ -279,36 +288,38 @@ test("query-aware fallback filters non-recallable scoped candidates", async () =
   assert.deepEqual(
     out.map((r) => r.path),
     ["facts/a.md"],
-    "meeting records and artifacts must not leak through query-aware fallback",
+    "meeting records and artifacts must not leak through query-aware fallback"
   );
 });
 
 test("query-aware fallback filters non-recallable scoped candidates for an empty query", async () => {
   const coordinator = queryAwareFallbackCoordinator(SEED_WITH_NON_RECALLABLE);
   const out = await coordinator.searchQueryAwareFallback("", 10, PREFILTER);
-  assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"]
+  );
 });
 
 test("query-aware fallback applies the cap after filtering", async () => {
   const coordinator = queryAwareFallbackCoordinator([result("default", MEETING_RECORD)]);
   const out = await coordinator.searchQueryAwareFallback("quarterly", 1, prefilter([MEETING_RECORD]));
-  assert.deepEqual(out.map((r) => r.path), []);
+  assert.deepEqual(
+    out.map((r) => r.path),
+    []
+  );
 });
 
 test("query-aware fallback excludes root archive candidates before its cap", async () => {
   const archivePath = "archive/2026-02-23/fact-archived.md";
-  const coordinator = queryAwareFallbackCoordinator([
-    result("default", archivePath),
-    result("default", "facts/a.md"),
-  ]);
+  const coordinator = queryAwareFallbackCoordinator([result("default", archivePath), result("default", "facts/a.md")]);
 
-  const out = await coordinator.searchQueryAwareFallback(
-    "quarterly",
-    1,
-    prefilter([archivePath, "facts/a.md"]),
+  const out = await coordinator.searchQueryAwareFallback("quarterly", 1, prefilter([archivePath, "facts/a.md"]));
+
+  assert.deepEqual(
+    out.map((r) => r.path),
+    ["facts/a.md"]
   );
-
-  assert.deepEqual(out.map((r) => r.path), ["facts/a.md"]);
 });
 
 test("query-aware fallback retains non-active candidates for historical filtering", async () => {
@@ -317,7 +328,7 @@ test("query-aware fallback retains non-active candidates for historical filterin
     candidatePaths,
     _query,
     limit,
-    options,
+    options
   ) => {
     optionsSeen = options;
     return [result("default", "facts/superseded.md")]
@@ -330,13 +341,12 @@ test("query-aware fallback retains non-active candidates for historical filterin
     searchScopedMemoryCandidates,
   } as unknown as RecallSearchPipelineDeps);
 
-  const out = await coordinator.searchQueryAwareFallback(
-    "historical incident",
-    1,
-    prefilter(["facts/superseded.md"]),
-  );
+  const out = await coordinator.searchQueryAwareFallback("historical incident", 1, prefilter(["facts/superseded.md"]));
 
-  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/superseded.md"]);
+  assert.deepEqual(
+    out.map((candidate) => candidate.path),
+    ["facts/superseded.md"]
+  );
   assert.deepEqual(optionsSeen, { allowArchived: true });
 });
 
@@ -350,18 +360,13 @@ test("query-aware fallback overfetches scoped candidates before exclusion", asyn
     result("default", MEETING_RECORD),
     result("default", "facts/a.md"),
   ]);
-  const out = await coordinator.searchQueryAwareFallback(
-    "quarterly",
-    1,
-    prefilter([MEETING_RECORD, "facts/a.md"]),
-  );
+  const out = await coordinator.searchQueryAwareFallback("quarterly", 1, prefilter([MEETING_RECORD, "facts/a.md"]));
   assert.deepEqual(
     out.map((r) => r.path),
     ["facts/a.md"],
-    "an excluded-first seed must not starve the result of a recallable hit at the cap",
+    "an excluded-first seed must not starve the result of a recallable hit at the cap"
   );
 });
-
 
 function hotSeedCoordinator(seed: QmdSearchResult[]): RecallSearchPipelineCoordinator {
   const deps = {
@@ -381,10 +386,7 @@ test("finding 1 (round-4) — hot QMD seed path overfetches scoped seeds before 
   // record — filtered out, dropping facts/a.md with no refill. Overfetching the
   // full candidate set and excluding afterward must still surface the recallable
   // hit at the cap.
-  const coordinator = hotSeedCoordinator([
-    result("default", MEETING_RECORD),
-    result("default", "facts/a.md"),
-  ]);
+  const coordinator = hotSeedCoordinator([result("default", MEETING_RECORD), result("default", "facts/a.md")]);
   const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("quarterly", 1, 1, {
     namespacesEnabled: false,
     recallNamespaces: ["default"],
@@ -394,7 +396,7 @@ test("finding 1 (round-4) — hot QMD seed path overfetches scoped seeds before 
   assert.deepEqual(
     out.map((r) => r.path),
     ["facts/a.md"],
-    "an excluded-first candidate must not starve the hot seed of a recallable hit at the cap",
+    "an excluded-first candidate must not starve the hot seed of a recallable hit at the cap"
   );
 });
 
@@ -408,7 +410,7 @@ function meetingRecordPath(hash: string): string {
 
 function starvedPrimaryCoordinator(
   seed: QmdSearchResult[],
-  primary: QmdSearchResult[],
+  primary: QmdSearchResult[]
 ): RecallSearchPipelineCoordinator {
   const deps = {
     config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
@@ -431,17 +433,10 @@ test("finding 1 (round-5) — excluded seeds must not fill the merge cap and sta
   // fetchLimit growth) went to meeting records later filtered out — dropping
   // facts/a.md with no refill. Excluding non-recallable paths BEFORE the cap must
   // let the primary hit survive at qmdFetchLimit=1.
-  const meetings = [
-    "aaaaaaaa",
-    "bbbbbbbb",
-    "cccccccc",
-    "dddddddd",
-    "eeeeeeee",
-    "ffffffff",
-  ].map((h) => resultScored("default", meetingRecordPath(h), 2));
-  const coordinator = starvedPrimaryCoordinator(meetings, [
-    resultScored("default", "facts/a.md", 1),
-  ]);
+  const meetings = ["aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd", "eeeeeeee", "ffffffff"].map((h) =>
+    resultScored("default", meetingRecordPath(h), 2)
+  );
+  const coordinator = starvedPrimaryCoordinator(meetings, [resultScored("default", "facts/a.md", 1)]);
   const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("quarterly", 1, 1, {
     namespacesEnabled: false,
     recallNamespaces: ["default"],
@@ -451,13 +446,13 @@ test("finding 1 (round-5) — excluded seeds must not fill the merge cap and sta
   assert.deepEqual(
     out.map((r) => r.path),
     ["facts/a.md"],
-    "excluded seeds ranked ahead must not fill the fetchLimit cap and starve the recallable primary hit",
+    "excluded seeds ranked ahead must not fill the fetchLimit cap and starve the recallable primary hit"
   );
 });
 
 test("QMD widening continues past archive-only pages", async () => {
   const archived = Array.from({ length: 45 }, (_, index) =>
-    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2),
+    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2)
   );
   const live = resultScored("default", "facts/live.md", 1);
   const ranked = [...archived, live];
@@ -465,35 +460,32 @@ test("QMD widening continues past archive-only pages", async () => {
     config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
     qmd: {},
     namespaceFromPath: () => "default",
-    searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) =>
-      ranked.slice(0, maxResults),
+    searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) => ranked.slice(0, maxResults),
   } as unknown as RecallSearchPipelineDeps);
 
-  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
-    "archive-starved",
-    20,
-    20,
-    {
-      namespacesEnabled: false,
-      recallNamespaces: ["default"],
-      resolveNamespace: () => "default",
-      queryAwarePrefilter: {
-        candidatePaths: null,
-        temporalFromDate: null,
-        matchedTags: [],
-        expandedTags: [],
-        combination: "none",
-        filteredToFullSearch: false,
-      },
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("archive-starved", 20, 20, {
+    namespacesEnabled: false,
+    recallNamespaces: ["default"],
+    resolveNamespace: () => "default",
+    queryAwarePrefilter: {
+      candidatePaths: null,
+      temporalFromDate: null,
+      matchedTags: [],
+      expandedTags: [],
+      combination: "none",
+      filteredToFullSearch: false,
     },
-  );
+  });
 
-  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/live.md"]);
+  assert.deepEqual(
+    out.map((candidate) => candidate.path),
+    ["facts/live.md"]
+  );
 });
 
 test("QMD hybrid top-up runs when primary results are archive-only", async () => {
   const archived = Array.from({ length: 20 }, (_, index) =>
-    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2),
+    resultScored("default", `archive/2026-07-25/archive-${index}.md`, 2)
   );
   const live = resultScored("default", "facts/hybrid-live.md", 1);
   let hybridCalls = 0;
@@ -504,11 +496,7 @@ test("QMD hybrid top-up runs when primary results are archive-only", async () =>
       searchBackend: "qmd",
     },
     qmd: {
-      search: async (
-        _query: string,
-        _collection: string,
-        maxResults: number,
-      ) => archived.slice(0, maxResults),
+      search: async (_query: string, _collection: string, maxResults: number) => archived.slice(0, maxResults),
       hybridSearch: async () => {
         hybridCalls += 1;
         return [live];
@@ -517,37 +505,33 @@ test("QMD hybrid top-up runs when primary results are archive-only", async () =>
     namespaceFromPath: () => "default",
   } as unknown as RecallSearchPipelineDeps);
 
-  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
-    "archive-starved-hybrid",
-    2,
-    2,
-    {
-      namespacesEnabled: false,
-      recallNamespaces: ["default"],
-      resolveNamespace: () => "default",
-      collection: "openclaw-engram",
-      queryAwarePrefilter: {
-        candidatePaths: null,
-        temporalFromDate: null,
-        matchedTags: [],
-        expandedTags: [],
-        combination: "none",
-        filteredToFullSearch: false,
-      },
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("archive-starved-hybrid", 2, 2, {
+    namespacesEnabled: false,
+    recallNamespaces: ["default"],
+    resolveNamespace: () => "default",
+    collection: "openclaw-engram",
+    queryAwarePrefilter: {
+      candidatePaths: null,
+      temporalFromDate: null,
+      matchedTags: [],
+      expandedTags: [],
+      combination: "none",
+      filteredToFullSearch: false,
     },
-  );
+  });
 
   assert.ok(hybridCalls > 0, "archive-only primary pages must trigger hybrid top-up");
-  assert.deepEqual(out.map((candidate) => candidate.path), ["facts/hybrid-live.md"]);
+  assert.deepEqual(
+    out.map((candidate) => candidate.path),
+    ["facts/hybrid-live.md"]
+  );
 });
 
 test("QMD skips hybrid top-up when namespace-deliverable page is already full", async () => {
   const inScope = Array.from({ length: 4 }, (_, index) =>
-    resultScored("default", `facts/in-scope-${index}.md`, 1 - index * 0.01),
+    resultScored("default", `facts/in-scope-${index}.md`, 1 - index * 0.01)
   );
-  const outOfScope = Array.from({ length: 4 }, (_, index) =>
-    resultScored("other-ns", `facts/other-${index}.md`, 2),
-  );
+  const outOfScope = Array.from({ length: 4 }, (_, index) => resultScored("other-ns", `facts/other-${index}.md`, 2));
   let hybridCalls = 0;
   const coordinator = makeHybridTopUpStubCoordinator(
     {
@@ -557,34 +541,28 @@ test("QMD skips hybrid top-up when namespace-deliverable page is already full", 
         return [resultScored("default", "facts/hybrid-extra.md", 0.5)];
       },
     },
-    (p: string) => (p.includes("other") ? "other-ns" : "default"),
+    (p: string) => (p.includes("other") ? "other-ns" : "default")
   );
 
-  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
-    "namespace-saturated",
-    4,
-    4,
-    {
-      namespacesEnabled: true,
-      recallNamespaces: ["default"],
-      resolveNamespace: (p: string) =>
-        p.includes("other") ? "other-ns" : "default",
-      collection: "openclaw-engram",
-      queryAwarePrefilter: {
-        candidatePaths: null,
-        temporalFromDate: null,
-        matchedTags: [],
-        expandedTags: [],
-        combination: "none",
-        filteredToFullSearch: false,
-      },
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("namespace-saturated", 4, 4, {
+    namespacesEnabled: true,
+    recallNamespaces: ["default"],
+    resolveNamespace: (p: string) => (p.includes("other") ? "other-ns" : "default"),
+    collection: "openclaw-engram",
+    queryAwarePrefilter: {
+      candidatePaths: null,
+      temporalFromDate: null,
+      matchedTags: [],
+      expandedTags: [],
+      combination: "none",
+      filteredToFullSearch: false,
     },
-  );
+  });
 
   assert.equal(hybridCalls, 0, "raw recallable count must not force hybrid when deliverable page is full");
   assert.deepEqual(
     out.map((candidate) => candidate.path),
-    inScope.map((r) => r.path),
+    inScope.map((r) => r.path)
   );
 });
 
@@ -607,25 +585,20 @@ test("QMD stops after an underfilled archive-only page", async () => {
     namespaceFromPath: () => "default",
   } as unknown as RecallSearchPipelineDeps);
 
-  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
-    "archive-underfilled",
-    20,
-    20,
-    {
-      namespacesEnabled: false,
-      recallNamespaces: ["default"],
-      resolveNamespace: () => "default",
-      collection: "openclaw-engram",
-      queryAwarePrefilter: {
-        candidatePaths: null,
-        temporalFromDate: null,
-        matchedTags: [],
-        expandedTags: [],
-        combination: "none",
-        filteredToFullSearch: false,
-      },
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("archive-underfilled", 20, 20, {
+    namespacesEnabled: false,
+    recallNamespaces: ["default"],
+    resolveNamespace: () => "default",
+    collection: "openclaw-engram",
+    queryAwarePrefilter: {
+      candidatePaths: null,
+      temporalFromDate: null,
+      matchedTags: [],
+      expandedTags: [],
+      combination: "none",
+      filteredToFullSearch: false,
     },
-  );
+  });
 
   assert.deepEqual(out, []);
   assert.equal(searchCalls, 1, "an underfilled raw page must not trigger widening");
@@ -647,10 +620,7 @@ function ageMemory(absPath: string, frontmatter: Record<string, unknown>): Memor
   };
 }
 
-function boostCoordinator(
-  memoryDir: string,
-  recencyWeight: number,
-): RecallSearchPipelineCoordinator {
+function boostCoordinator(memoryDir: string, recencyWeight: number): RecallSearchPipelineCoordinator {
   const config = parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -659,10 +629,10 @@ function boostCoordinator(
   const deps = {
     config,
     effectiveRecencyWeight: () => recencyWeight,
-    filterSearchResultsForRecall: async (
-      results: QmdSearchResult[],
-      preloaded?: Map<string, MemoryFile>,
-    ) => ({ results, memoryByPath: preloaded ?? new Map() }),
+    filterSearchResultsForRecall: async (results: QmdSearchResult[], preloaded?: Map<string, MemoryFile>) => ({
+      results,
+      memoryByPath: preloaded ?? new Map(),
+    }),
   } as unknown as RecallSearchPipelineDeps;
   return new RecallSearchPipelineCoordinator(deps);
 }
@@ -696,14 +666,17 @@ test("#2976 content dates age a memory even when its mtime is fresh (updated bac
       [scoredResult("default", "facts/a.md", 1), scoredResult("default", "facts/b.md", 1)],
       ["default"],
       undefined,
-      memoryByPath,
+      memoryByPath
     );
 
     const [a, b] = boosted;
     const expected = 1 * 0.5 + Math.pow(0.5, 40 / 7) * 0.5;
     assert.ok(a && Number.isFinite(a.score), "a memory without created must not score NaN");
     assert.ok(b && Number.isFinite(b.score));
-    assert.ok(Math.abs(a.score - expected) < 1e-9, `ages by the 40-day-old content date (${a?.score}), not the fresh mtime (1.0)`);
+    assert.ok(
+      Math.abs(a.score - expected) < 1e-9,
+      `ages by the 40-day-old content date (${a?.score}), not the fresh mtime (1.0)`
+    );
     assert.equal(a.score, b.score, "updated and created of the same age produce the same score");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -719,9 +692,7 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
     const mtimes = [now - 10 * AGE_DAY_MS, now - 30 * AGE_DAY_MS, now - 90 * AGE_DAY_MS];
     // Undated memories: only mtime can say how old they are.
     const buildMap = () =>
-      new Map<string, MemoryFile>(
-        files.map((rel) => ["default\0" + rel, ageMemory(path.join(memoryDir, rel), {})]),
-      );
+      new Map<string, MemoryFile>(files.map((rel) => ["default\0" + rel, ageMemory(path.join(memoryDir, rel), {})]));
     for (let i = 0; i < files.length; i += 1) {
       await writeDatedFile(path.join(memoryDir, files[i]!), mtimes[i]!);
     }
@@ -732,7 +703,7 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
       results(),
       ["default"],
       undefined,
-      buildMap(),
+      buildMap()
     );
     for (const r of preTouch) {
       assert.ok(Number.isFinite(r.score), "an undated memory with a trusted mtime must not score NaN");
@@ -740,7 +711,7 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
     assert.deepEqual(
       preTouch.map((r) => r.path),
       ["facts/x.md", "facts/y.md", "facts/z.md"],
-      "pre-touch, the scattered trusted mtimes preserve the base ranking",
+      "pre-touch, the scattered trusted mtimes preserve the base ranking"
     );
 
     // Bulk touch: every mtime reset to one calendar day (cp -r / restore).
@@ -752,17 +723,17 @@ test("#2976 a bulk-touch mtime cluster never inflates freshness (ranking unchang
       results(),
       ["default"],
       undefined,
-      buildMap(),
+      buildMap()
     );
     assert.deepEqual(
       postTouch.map((r) => r.score),
       baseScores,
-      "a same-day mtime cluster is distrusted: no recency boost, scores stay at base",
+      "a same-day mtime cluster is distrusted: no recency boost, scores stay at base"
     );
     assert.deepEqual(
       postTouch.map((r) => r.path),
       ["facts/x.md", "facts/y.md", "facts/z.md"],
-      "ranking is unchanged versus the pre-touch base order",
+      "ranking is unchanged versus the pre-touch base order"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -788,7 +759,7 @@ test("#2976 an undated memory falls back to a trusted scattered mtime; a dated s
       [scoredResult("default", "facts/undated.md", 1), scoredResult("default", "facts/dated.md", 1)],
       ["default"],
       undefined,
-      memoryByPath,
+      memoryByPath
     );
 
     const [undated, dated] = boosted;
@@ -799,11 +770,11 @@ test("#2976 an undated memory falls back to a trusted scattered mtime; a dated s
     assert.ok(undated && Number.isFinite(undated.score), "the undated memory must not score NaN");
     assert.ok(
       undated && Math.abs(undated.score - expected) < 1e-6,
-      `an undated memory ages by its trusted mtime (2 days): got ${undated?.score}, want ~${expected}`,
+      `an undated memory ages by its trusted mtime (2 days): got ${undated?.score}, want ~${expected}`
     );
     assert.ok(
       undated && dated && Math.abs(undated.score - dated.score) < 1e-6,
-      "mtime fallback and a same-aged content date score identically",
+      "mtime fallback and a same-aged content date score identically"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -824,13 +795,13 @@ test("#2976 guard: a memory whose content date is older than its fresh mtime age
       [scoredResult("default", "facts/old.md", 1)],
       ["default"],
       undefined,
-      memoryByPath,
+      memoryByPath
     );
 
     const expected = 1 * 0.5 + Math.pow(0.5, 90 / 7) * 0.5;
     assert.ok(
       boosted[0] && Math.abs(boosted[0].score - expected) < 1e-9,
-      "ages by the 90-day-old created date, not the fresh mtime",
+      "ages by the 90-day-old created date, not the fresh mtime"
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

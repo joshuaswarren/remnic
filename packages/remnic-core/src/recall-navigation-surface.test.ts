@@ -16,16 +16,16 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramAccessHttpServer } from "./access-http.js";
-import { EngramAccessService } from "./access-service.js";
 import { EngramMcpServer } from "./access-mcp.js";
+import { EngramAccessService } from "./access-service.js";
 import type { CliCommand } from "./cli.js";
 import { registerRecallNavigationCommands } from "./cli/recall-navigation-commands.js";
 import { parseConfig } from "./config.js";
+import type { Orchestrator } from "./orchestrator.js";
 import { renderHandle } from "./recall-handles.js";
 import { RecallHandleHistoryStore } from "./recall-state.js";
 import { StorageManager } from "./storage.js";
 import type { PluginConfig } from "./types.js";
-import type { Orchestrator } from "./orchestrator.js";
 
 const SESSION = "project/nav-surface/1";
 
@@ -98,7 +98,7 @@ function makeStorage(dir: string): StorageManager {
 async function writeMemory(
   storage: StorageManager,
   content: string,
-  links: Array<{ targetId: string; linkType: "supports" | "contradicts" | "follows"; strength: number }> = [],
+  links: Array<{ targetId: string; linkType: "supports" | "contradicts" | "follows"; strength: number }> = []
 ): Promise<string> {
   const result = await storage.writeMemory("fact", content, links.length > 0 ? { links } : {});
   return result.id;
@@ -155,9 +155,11 @@ test("MCP three-step: expand a served id to raw, then traverse contradicts", asy
       memoryId: stranger,
       sessionKey: SESSION,
     })) as { result?: { content?: Array<{ text?: string }> } };
-    const unservedPayload = JSON.parse(
-      extractJson(unserved.result?.content?.[0]?.text ?? ""),
-    ) as { ok: boolean; error?: string; message?: string };
+    const unservedPayload = JSON.parse(extractJson(unserved.result?.content?.[0]?.text ?? "")) as {
+      ok: boolean;
+      error?: string;
+      message?: string;
+    };
     assert.equal(unservedPayload.ok, false);
     assert.equal(unservedPayload.error, "not_served");
     assert.match(unservedPayload.message ?? "", /recall snapshots/);
@@ -176,9 +178,7 @@ test("disabled config removes navigation tools from tools/list; default keeps th
       };
       const names = new Set<string>();
       for (const tool of response.result?.tools ?? []) {
-        names.add(
-          tool.name.replace(/^engram\./, "").replace(/^remnic_/, ""),
-        );
+        names.add(tool.name.replace(/^engram\./, "").replace(/^remnic_/, ""));
       }
       return names;
     };
@@ -271,11 +271,7 @@ test("namespace isolation: navigation never crosses the resolved namespace", asy
     authTokenEntriesGetter: () => [{ token: "operator-token", capabilities: { version: 1 } }],
   });
   try {
-    const aliceMemory = await writeMemory(
-      f.storages.ns_alice!,
-      "Alice-private: the merger closes on Friday.",
-      [],
-    );
+    const aliceMemory = await writeMemory(f.storages.ns_alice!, "Alice-private: the merger closes on Friday.", []);
     const bobMemory = await writeMemory(f.storages.ns_bob!, "Bob-private: the merger closes never.");
     // Alice's memory links at Bob's id (stale/foreign edge): traversal must
     // not resolve it inside alice's namespace.

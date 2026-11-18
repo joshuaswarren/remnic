@@ -19,36 +19,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  DEFAULT_RECALL_DISCLOSURE,
-  RECALL_DISCLOSURE_LEVELS,
-  isRecallDisclosure,
-} from "./types.js";
-import { lcmSearchRequestSchema, recallRequestSchema, validateRequest } from "./access-schema.js";
 import { EngramMcpServer } from "./access-mcp.js";
+import { lcmSearchRequestSchema, recallRequestSchema, validateRequest } from "./access-schema.js";
 import type { EngramAccessRecallRequest, EngramAccessService } from "./access-service.js";
-
-function engramRecallInputSchemaProperties(
-  service: EngramAccessService,
-): Record<string, unknown> | undefined {
-  const server = new EngramMcpServer(service);
-  // SAFETY: tests read engram.recall JSON Schema from the private tools list; no tool execution.
-  const registered = server as unknown as {
-    tools: ReadonlyArray<{ name: string; inputSchema: { properties?: Record<string, unknown> } }>;
-  };
-  const recall = registered.tools.find((t) => t.name === "engram.recall");
-  assert.ok(recall, "engram.recall tool should be registered");
-  return recall.inputSchema.properties;
-}
+import { DEFAULT_RECALL_DISCLOSURE, RECALL_DISCLOSURE_LEVELS, isRecallDisclosure } from "./types.js";
 
 test("RECALL_DISCLOSURE_LEVELS is ordered chunk -> section -> raw", () => {
   // Order matters for future escalation policy comparisons (PR 4/4).  The
   // ladder must be stable; freezing here so a refactor that flips order is
   // caught immediately.
-  assert.deepStrictEqual(
-    [...RECALL_DISCLOSURE_LEVELS],
-    ["chunk", "section", "raw"],
-  );
+  assert.deepStrictEqual([...RECALL_DISCLOSURE_LEVELS], ["chunk", "section", "raw"]);
 });
 
 test("DEFAULT_RECALL_DISCLOSURE is 'chunk' (preserves pre-#677 behavior)", () => {
@@ -201,7 +181,8 @@ test("MCP engram.recall rejects non-string disclosure with a structured error", 
     },
   });
   assert.strictEqual(calls.length, 0, "service.recall must not be called for invalid input");
-  const result = (response as { result?: { isError?: boolean; content?: Array<{ text?: string }> } } | undefined)?.result;
+  const result = (response as { result?: { isError?: boolean; content?: Array<{ text?: string }> } } | undefined)
+    ?.result;
   assert.strictEqual(result?.isError, true);
   const text = result?.content?.[0]?.text ?? "";
   assert.match(text, /disclosure/i);
@@ -232,7 +213,9 @@ test("MCP engram.recall inputSchema advertises the `disclosure` enum", () => {
   // can use it.
   const { service } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
-  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
+  const tools = (
+    server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }
+  ).tools;
   const recallTool = tools.find((t) => t.name === "engram.recall");
   assert.ok(recallTool, "engram.recall tool should be registered");
   const props = recallTool?.inputSchema?.properties as Record<string, { type?: string; enum?: string[] }> | undefined;
@@ -254,23 +237,11 @@ test("recallRequestSchema and MCP inputSchema carry the #1952 stateView boolean"
 
   const { service } = makeMcpRecallSpyService();
   const server = new EngramMcpServer(service);
-  const tools = (server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }).tools;
+  const tools = (
+    server as unknown as { tools: Array<{ name: string; inputSchema: { properties?: Record<string, unknown> } }> }
+  ).tools;
   const recallTool = tools.find((t) => t.name === "engram.recall");
   const props = recallTool?.inputSchema?.properties as Record<string, { type?: string }> | undefined;
   assert.ok(props && props.stateView?.type === "boolean", "engram.recall inputSchema must declare stateView: boolean");
 });
 
-test("recallRequestSchema and MCP inputSchema carry searchOptions (parity with HTTP)", () => {
-  const ok = recallRequestSchema.safeParse({
-    query: "q",
-    searchOptions: { rerank: false, structuredSearches: [{ type: "lex", query: "q" }] },
-  });
-  assert.equal(ok.success, true);
-
-  const { service } = makeMcpRecallSpyService();
-  const props = engramRecallInputSchemaProperties(service);
-  const searchOptionsField = props?.searchOptions;
-  assert.ok(searchOptionsField && typeof searchOptionsField === "object");
-  const searchOpts = Reflect.get(searchOptionsField, "properties");
-  assert.ok(searchOpts && typeof searchOpts === "object" && "structuredSearches" in searchOpts);
-});

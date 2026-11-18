@@ -5,6 +5,14 @@ import { recallRequestSchema, validateRequest, type RecallRequest } from "./acce
 import { mergeSearchQueryOptions } from "./search/port.js";
 import { Orchestrator } from "./orchestrator.js";
 
+test("recallRequestSchema accepts structuredSearches under searchOptions", () => {
+  const ok = recallRequestSchema.safeParse({
+    query: "q",
+    searchOptions: { rerank: false, structuredSearches: [{ type: "lex", query: "q" }] },
+  });
+  assert.equal(ok.success, true);
+});
+
 test("recallRequestSchema accepts searchOptions.rerank and rejects unknown nested keys", () => {
   const ok = recallRequestSchema.safeParse({
     query: "cos388",
