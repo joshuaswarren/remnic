@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -205,4 +206,15 @@ test("selectShadowRun respects shard membership", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+// The CI shadow step writes into the real repo. If the dir were not ignored,
+// the tree would count as dirty and dirty-tree-strict prechecks (SOTA
+// provenance) would crash the suite — that regression must stay impossible.
+test(".test-selection-shadow is git-ignored so shadow output never dirties the tree", () => {
+  const repoRoot = path.join(import.meta.dirname, "..");
+  const out = execFileSync("git", ["check-ignore", ".test-selection-shadow/shadow-all.json"], {
+    cwd: repoRoot,
+  }).toString();
+  assert.equal(out.trim(), ".test-selection-shadow/shadow-all.json");
 });
