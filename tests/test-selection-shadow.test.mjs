@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -208,13 +207,45 @@ test("selectShadowRun respects shard membership", () => {
   }
 });
 
-// The CI shadow step writes into the real repo. If the dir were not ignored,
-// the tree would count as dirty and dirty-tree-strict prechecks (SOTA
-// provenance) would crash the suite — that regression must stay impossible.
-test(".test-selection-shadow is git-ignored so shadow output never dirties the tree", () => {
-  const repoRoot = path.join(import.meta.dirname, "..");
-  const out = execFileSync("git", ["check-ignore", ".test-selection-shadow/shadow-all.json"], {
-    cwd: repoRoot,
-  }).toString();
-  assert.equal(out.trim(), ".test-selection-shadow/shadow-all.json");
+test("selectShadowRun: unmapped non-code change is reported but selects nothing", () => {
+  const root = makeFixture();
+  try {
+    const reverse = fixtureGraph(root);
+    const knownFiles = new Set(listImportableFiles(root));
+    const result = selectShadowRun({
+      shardFiles: ALL_TESTS,
+      allTestFiles: ALL_TESTS,
+      changedFiles: ["docs/readme.md"],
+      reverseIndex: reverse,
+      knownFiles,
+    });
+    assert.equal(result.mode, "selected");
+    assert.deepEqual(result.wouldRun, []);
+    assert.deepEqual(result.unmapped, ["docs/readme.md"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("selectShadowRun: unmapped code change forces the whole shard", () => {
+  const root = makeFixture();
+  try {
+    const reverse = fixtureGraph(root);
+    const knownFiles = new Set(listImportableFiles(root));
+    // A deleted or never-imported code file outside the graph: nothing can
+    // prove no test reads it, so the shard runs everything.
+    const result = selectShadowRun({
+      shardFiles: ALL_TESTS,
+      allTestFiles: ALL_TESTS,
+      changedFiles: ["bin/helper.js"],
+      reverseIndex: reverse,
+      knownFiles,
+    });
+    assert.equal(result.mode, "all");
+    assert.deepEqual(result.wouldRun, ALL_TESTS);
+    assert.deepEqual(result.unmapped, ["bin/helper.js"]);
+    assert.match(result.why, /unmapped code change/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

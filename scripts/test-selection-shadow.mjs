@@ -10,7 +10,9 @@
  *
  * Changed files come from REMNIC_SHADOW_CHANGED_PATH (one repo-relative
  * path per line). Missing or empty input means "unknown" and selects all.
- * Output JSON lands in .test-selection-shadow/ for artifact upload.
+ * Output JSON lands in REMNIC_SHADOW_OUT_DIR, default .test-selection-shadow/
+ * (CI points it at RUNNER_TEMP so the working tree stays clean for the
+ * capability tests' clean-tree gate).
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,7 +34,7 @@ import {
 } from "./test-selection-shadow-lib.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const OUT_DIR = join(repoRoot, ".test-selection-shadow");
+const OUT_DIR = process.env.REMNIC_SHADOW_OUT_DIR ?? join(repoRoot, ".test-selection-shadow");
 
 function safeShardName(shard) {
   return shard ? `${shard.index}-of-${shard.total}` : "all";
@@ -58,7 +60,8 @@ function main() {
   }
 
   const packageIndex = loadPackageIndex(repoRoot);
-  const graph = buildImportGraph(repoRoot, listImportableFiles(repoRoot), packageIndex);
+  const importableFiles = listImportableFiles(repoRoot);
+  const graph = buildImportGraph(repoRoot, importableFiles, packageIndex);
   const reverseIndex = buildReverseIndex(graph);
 
   const result = selectShadowRun({
@@ -66,6 +69,7 @@ function main() {
     allTestFiles: expandedFiles,
     changedFiles,
     reverseIndex,
+    knownFiles: new Set(importableFiles),
   });
 
   const payload = {
@@ -76,6 +80,7 @@ function main() {
     shardFileCount: shardFiles.length,
     wouldRunCount: result.wouldRun.length,
     changed: result.changed,
+    unmapped: result.unmapped,
     wouldRun: result.wouldRun,
     graphEdges: [...graph.values()].reduce((sum, deps) => sum + deps.size, 0),
     generatedAt: new Date().toISOString(),
@@ -89,7 +94,7 @@ function main() {
   console.log(
     `[test-selection-shadow] shard=${payload.shard ?? "all"} mode=${result.mode} ` +
       `would_run=${result.wouldRun.length}/${shardFiles.length} (${pct}%) ` +
-      `changed=${result.changed.length}${result.why ? ` why=${result.why}` : ""}`,
+      `changed=${result.changed.length} unmapped=${result.unmapped.length}${result.why ? ` why=${result.why}` : ""}`,
   );
   if (result.mode === "selected" && result.wouldRun.length > 0 && result.wouldRun.length <= 50) {
     for (const file of result.wouldRun) {

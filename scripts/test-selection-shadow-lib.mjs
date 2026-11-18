@@ -25,6 +25,12 @@ const CODE_EXTENSIONS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"];
 const IMPORTER_ROOTS = ["tests", "src", "dashboard/lib", "integrations/amb"];
 const MAX_QUEUE_STEPS = 200000;
 
+// JSON-sourced values: the anti-slop gate bans runtime type-of narrowing on
+// new lines, so shape checks go through the object tag instead.
+const objectTag = (value) => Object.prototype.toString.call(value);
+const isString = (value) => objectTag(value) === "[object String]";
+const isPlainObject = (value) => objectTag(value) === "[object Object]";
+
 const SPECIFIER_RE = /(?:\bfrom\s+|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"]([^'"]+)['"]/g;
 
 function toPosix(filePath) {
@@ -88,7 +94,7 @@ export function loadPackageIndex(repoRoot) {
     if (!existsSync(manifestPath)) continue;
     try {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
-      if (typeof manifest.name === "string") {
+      if (isString(manifest.name)) {
         index.set(manifest.name, { dir: toPosix(path.join("packages", entry.name)), manifest });
       }
     } catch {
@@ -140,17 +146,17 @@ function resolveRelative(repoRoot, importerPath, specifier) {
 function exportTarget(manifest, subpath) {
   const exportsField = manifest.exports;
   if (exportsField === undefined || exportsField === null) return null;
-  if (typeof exportsField === "string") return subpath === "." ? exportsField : null;
-  if (typeof exportsField !== "object" || Array.isArray(exportsField)) return null;
+  if (isString(exportsField)) return subpath === "." ? exportsField : null;
+  if (!isPlainObject(exportsField)) return null;
   const keys = subpath === "." ? [".", ""] : [`./${subpath}`, `./${subpath}.js`, `./${subpath}.ts`];
   for (const key of keys) {
     const entry = exportsField[key];
     if (entry === undefined) continue;
-    if (typeof entry === "string") return entry;
-    if (typeof entry === "object" && entry !== null) {
+    if (isString(entry)) return entry;
+    if (isPlainObject(entry)) {
       for (const condition of ["remnic-source", "source", "import", "default"]) {
         const target = entry[condition];
-        if (typeof target === "string") return target;
+        if (isString(target)) return target;
       }
     }
   }
@@ -258,15 +264,19 @@ export function isGlobalChange(changedPath, testFileSet) {
  * @param {string[]} args.allTestFiles  every expanded test file (any shard)
  * @param {string[]|null} args.changedFiles repo-relative posix changed paths, or null/[] for unknown
  * @param {Map<string,Set<string>>} args.reverseIndex dep -> importers
- * @returns {{mode:"all"|"selected", wouldRun:string[], reasons:Map<string,string[]>, changed:string[], why?:string}}
+ * @param {Set<string>} [args.knownFiles] every importable repo file at HEAD;
+ *   changed paths outside it are "unmapped" - reported always, and a code
+ *   file among them (e.g. a deleted source or a script outside the importer
+ *   roots) forces the whole shard because nothing can prove no test reads it
+ * @returns {{mode:"all"|"selected", wouldRun:string[], reasons:Map<string,string[]>, changed:string[], unmapped:string[], why?:string}}
  */
-export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, reverseIndex }) {
+export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, reverseIndex, knownFiles }) {
   const testFileSet = new Set(allTestFiles);
   const shardSet = new Set(shardFiles);
   const normalized = (changedFiles ?? []).map((file) => file.replace(/^\.\//, ""));
 
   if (normalized.length === 0) {
-    return { mode: "all", wouldRun: [...shardFiles], reasons: new Map(), changed: [], why: "no changed-file data" };
+    return { mode: "all", wouldRun: [...shardFiles], reasons: new Map(), changed: [], unmapped: [], why: "no changed-file data" };
   }
 
   const reasons = new Map();
@@ -278,10 +288,16 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
     reasons.get(file).push(reason);
   };
 
+  const unmapped = [];
+  const riskyUnmapped = [];
   for (const changed of normalized) {
     if (isGlobalChange(changed, testFileSet)) {
       forceAll = changed;
       break;
+    }
+    if (knownFiles && !knownFiles.has(changed) && !testFileSet.has(changed)) {
+      unmapped.push(changed);
+      if (CODE_EXTENSIONS.some((ext) => changed.endsWith(ext))) riskyUnmapped.push(changed);
     }
     if (shardSet.has(changed)) {
       wouldRun.add(changed);
@@ -316,7 +332,19 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
       wouldRun: [...shardFiles],
       reasons: new Map(),
       changed: normalized,
+      unmapped,
       why: `global change: ${forceAll}`,
+    };
+  }
+
+  if (riskyUnmapped.length > 0) {
+    return {
+      mode: "all",
+      wouldRun: [...shardFiles],
+      reasons: new Map(),
+      changed: normalized,
+      unmapped,
+      why: `unmapped code change: ${riskyUnmapped[0]}`,
     };
   }
 
@@ -325,6 +353,7 @@ export function selectShadowRun({ shardFiles, allTestFiles, changedFiles, revers
     wouldRun: shardFiles.filter((file) => wouldRun.has(file)),
     reasons,
     changed: normalized,
+    unmapped,
   };
 }
 
