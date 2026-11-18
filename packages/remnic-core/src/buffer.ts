@@ -239,8 +239,11 @@ export class SmartBuffer {
     this.loaded = true;
   }
 
-  private async saveUnlocked(reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets }): Promise<void> {
-    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile);
+  private async saveUnlocked(
+    reconcile?: { key: string; drained: import("./buffer-turn-helpers.js").DrainedTurnSets },
+    opts?: { allowDeferral?: boolean },
+  ): Promise<void> {
+    const { handedOver, drainedTurns } = await this.persistence.persist(this.storage, this.state, (key) => this.peekEntry(key) ?? undefined, reconcile, { allowDeferral: opts?.allowDeferral === true });
     // A drain tombstone: the turns the drain extracted leave this copy too,
     // so a stale owner never extracts (or persists) them a second time.
     for (const [key, drained] of drainedTurns) {
@@ -307,14 +310,14 @@ export class SmartBuffer {
       clearTimeout(this.saveTimer ?? undefined);
       this.saveTimer = null;
       try {
-        await this.saveUnlocked();
+        await this.saveUnlocked(undefined, { allowDeferral: true });
         this.pendingSave = false;
         this.firstPendingAtMs = null;
       } catch (err) {
         log.warn(`buffer.scheduleSave: staleness-cap save failed, keeping it pending: ${describeError(err)}`);
         this.saveTimer = setTimeout(() => {
           this.saveTimer = null;
-          void this.flushPendingSave();
+          void this.flushPendingSave({ allowDeferral: true });
         }, ms);
         this.saveTimer.unref?.();
       }
@@ -324,7 +327,7 @@ export class SmartBuffer {
     clearTimeout(this.saveTimer ?? undefined);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      void this.flushPendingSave();
+      void this.flushPendingSave({ allowDeferral: true });
     }, ms);
     this.saveTimer.unref?.();
   }
@@ -349,11 +352,11 @@ export class SmartBuffer {
    * only in the debounced pending state. The pending flag is cleared (and any
    * armed timer dropped) only after a durable write.
    */
-  private async saveNowRetainingPendingOnFailure(context: string): Promise<void> {
+  private async saveNowRetainingPendingOnFailure(context: string, opts?: { allowDeferral?: boolean }): Promise<void> {
     this.pendingSave = true;
     if (this.firstPendingAtMs === null) this.firstPendingAtMs = Date.now();
     try {
-      await this.saveUnlocked();
+      await this.saveUnlocked(undefined, opts);
     } catch (err) {
       log.warn(
         `buffer.${context}: inline save failed, keeping it pending for retry: ${describeError(err)}`,
@@ -385,7 +388,7 @@ export class SmartBuffer {
    * proceeding to extract_now on a non-durable triggering turn. Default false
    * keeps the fail-open behavior for the timer/shutdown callers.
    */
-  async flushPendingSave(opts?: { throwOnFailure?: boolean }): Promise<void> {
+  async flushPendingSave(opts?: { throwOnFailure?: boolean; allowDeferral?: boolean }): Promise<void> {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
@@ -400,7 +403,7 @@ export class SmartBuffer {
         // writes). resetToEmpty-only deletions also land here without a
         // pending-save flag.
         if (!this.pendingSave && !this.persistence.hasPending()) return;
-        await this.saveUnlocked();
+        await this.saveUnlocked(undefined, { allowDeferral: opts?.allowDeferral === true });
         // Clear the pending flag INSIDE the same serialized mutation as the
         // write (issue #1909 review). Clearing it after the enqueue await
         // resolved raced an addTurn interleaving between the write and the
@@ -672,7 +675,12 @@ export class SmartBuffer {
       // Round 8 thread 4: the write is attempted BEFORE the pending state is
       // cleared, and a failed write leaves it pending (+ a re-armed timer) for
       // shutdown/timer retry instead of dropping the in-memory turns.
-      await this.saveNowRetainingPendingOnFailure("recordTurn");
+      // #3389: a keep_buffering turn has no extraction barrier, so this pass
+      // may defer rewriting a large session file that was just persisted —
+      // the rewrite cadence for huge sessions collapses from per-turn to
+      // once per BUFFER_SESSION_DEFER_INTERVAL_MS. A triggering turn is a
+      // durability barrier and passes allowDeferral: false.
+      await this.saveNowRetainingPendingOnFailure("recordTurn", { allowDeferral: decision === "keep_buffering" });
     }
     return {
       decision,
