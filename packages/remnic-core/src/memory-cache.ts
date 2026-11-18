@@ -284,12 +284,18 @@ export async function runInQmdSearchCacheRecallScope<T>(
   ttlMs: number,
   run: () => Promise<T>,
 ): Promise<T> {
-  beginQmdSearchCacheRecallScope(ttlMs);
+  const acquired = Number.isFinite(ttlMs) && ttlMs > 0;
+  if (acquired) beginQmdSearchCacheRecallScope(ttlMs);
   try {
     return await run();
   } finally {
-    endQmdSearchCacheRecallScope();
+    if (acquired) endQmdSearchCacheRecallScope();
   }
+}
+
+/** Observable refcount for unit tests (R4 scope guard). */
+export function peekQmdSearchCacheRecallScopeDepth(): number {
+  return qmdSearchCacheRecallScopeDepth;
 }
 
 function effectiveQmdSearchCacheTtlMs(): number {

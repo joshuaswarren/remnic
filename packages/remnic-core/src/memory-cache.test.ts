@@ -6,6 +6,8 @@ import {
   clearMemoryCache,
   getCachedQmdSearch,
   invalidateAllForDir,
+  peekQmdSearchCacheRecallScopeDepth,
+  runInQmdSearchCacheRecallScope,
   setCachedQmdSearch,
 } from "./memory-cache.js";
 import {
@@ -46,4 +48,29 @@ test("ALL_CACHE_LAYERS registers the QMD recall layer alongside the QMD search l
   const names = ALL_CACHE_LAYERS.map((layer) => layer.name);
   assert.ok(names.includes("qmd-search"));
   assert.ok(names.includes("qmd-recall"));
+});
+
+test("runInQmdSearchCacheRecallScope refcounts nested positive TTL", async () => {
+  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
+  await runInQmdSearchCacheRecallScope(60_000, async () => {
+    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+    await runInQmdSearchCacheRecallScope(90_000, async () => {
+      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 2);
+    });
+    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+  });
+  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
+});
+
+test("non-positive TTL scope does not decrement an outer recall scope", async () => {
+  await runInQmdSearchCacheRecallScope(120_000, async () => {
+    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+    await runInQmdSearchCacheRecallScope(0, async () => {
+      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+    });
+    await runInQmdSearchCacheRecallScope(Number.NaN, async () => {
+      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+    });
+  });
+  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
 });
