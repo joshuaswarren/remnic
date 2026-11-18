@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { RerankCache, rerankLocalOrNoop } from "./rerank.js";
+import {
+  rerankOutputTokenBudget,
+  rerankModelReplyIsStructured,
+  RERANK_LLM_MAX_CANDIDATES,
+  RERANK_LLM_SNIPPET_CHARS,
+  RerankCache,
+  parseRerankResponse,
+  rerankLocalOrNoop,
+} from "./rerank.js";
 
 test("rerankLocalOrNoop tags rerank requests as recall-critical", async () => {
   const calls: Array<{
@@ -25,12 +33,7 @@ test("rerankLocalOrNoop tags rerank requests as recall-critical", async () => {
       async chatCompletion(messages, options) {
         calls.push({ messages, options });
         return {
-          content: JSON.stringify({
-            scores: [
-              { id: "a", score: 90 },
-              { id: "b", score: 10 },
-            ],
-          }),
+          content: JSON.stringify({ order: ["a", "b"] }),
         };
       },
     },
@@ -45,6 +48,153 @@ test("rerankLocalOrNoop tags rerank requests as recall-critical", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.options?.operation, "rerank");
   assert.equal(calls[0]?.options?.priority, "recall-critical");
+  assert.equal(calls[0]?.options?.maxTokens, rerankOutputTokenBudget(2));
+  assert.equal(calls[0]?.options?.timeoutMs, 1_500);
+  const user = JSON.parse(calls[0]?.messages[1]?.content ?? "{}");
+  assert.ok(Array.isArray(user.c));
+  assert.ok(user.c[0][1].length <= RERANK_LLM_SNIPPET_CHARS);
+});
+
+test("rerankLocalOrNoop caps payload at eight snippets and sixty-four chars", async () => {
+  const longSnippet = `${"z".repeat(80)} end`;
+  const calls: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const candidates = Array.from({ length: 9 }, (_, i) => ({
+    id: `id${i}`,
+    snippet: i === 0 ? longSnippet : `note ${i}`,
+  }));
+  await rerankLocalOrNoop({
+    query: "q",
+    candidates,
+    local: {
+      async chatCompletion(messages) {
+        calls.push({ messages });
+        return { content: JSON.stringify({ order: candidates.slice(0, 8).map((c) => c.id) }) };
+      },
+    },
+    enabled: true,
+    timeoutMs: 1_500,
+    maxCandidates: RERANK_LLM_MAX_CANDIDATES,
+    cacheEnabled: false,
+    cacheTtlMs: 1,
+  });
+  const user = JSON.parse(calls[0]?.messages[1]?.content ?? "{}");
+  assert.equal(user.c.length, RERANK_LLM_MAX_CANDIDATES);
+  assert.deepEqual(
+    user.c.map((row: [string, string]) => row[0]),
+    candidates.slice(0, RERANK_LLM_MAX_CANDIDATES).map((c) => c.id),
+  );
+  const normalized = longSnippet.replace(/\s+/g, " ").trim();
+  assert.equal(user.c[0][1], normalized.slice(0, RERANK_LLM_SNIPPET_CHARS));
+});
+
+test("rerankOutputTokenBudget grows with candidate count", () => {
+  assert.equal(rerankOutputTokenBudget(2), 44);
+  assert.equal(rerankOutputTokenBudget(8), 104);
+  assert.ok(rerankOutputTokenBudget(30) <= 256);
+});
+
+test("parseRerankResponse keeps every candidate when order id repeats", () => {
+  const candidates = [
+    { id: "a", originalIndex: 0 },
+    { id: "a", originalIndex: 1 },
+    { id: "b", originalIndex: 2 },
+  ];
+  const ranked = parseRerankResponse(
+    JSON.stringify({ order: ["a", "b"] }),
+    candidates
+  );
+  assert.deepEqual(
+    ranked.map((x) => x.originalIndex),
+    [0, 1, 2]
+  );
+});
+
+test("rerankLocalOrNoop does not cache fallback order from garbage model output", async () => {
+  let calls = 0;
+  const cache = new RerankCache();
+  const base = {
+    query: "q",
+    candidates: [
+      { id: "a", snippet: "x" },
+      { id: "b", snippet: "y" },
+    ],
+    local: {
+      async chatCompletion() {
+        calls += 1;
+        return { content: "not json at all" };
+      },
+    },
+    enabled: true,
+    timeoutMs: 1_500,
+    maxCandidates: 5,
+    cacheEnabled: true,
+    cacheTtlMs: 60_000,
+  };
+  assert.equal(rerankModelReplyIsStructured("not json at all"), false);
+  const first = await rerankLocalOrNoop({ ...base, cache });
+  assert.deepEqual(first, ["a", "b"]);
+  const second = await rerankLocalOrNoop({ ...base, cache });
+  assert.deepEqual(second, ["a", "b"]);
+  assert.equal(calls, 2);
+});
+
+test("parseRerankResponse accepts compact order array", () => {
+  const candidates = [
+    { id: "a", originalIndex: 0 },
+    { id: "b", originalIndex: 1 },
+    { id: "c", originalIndex: 2 },
+  ];
+  const ranked = parseRerankResponse(
+    JSON.stringify({ order: ["b", "a"] }),
+    candidates
+  );
+  assert.deepEqual(
+    ranked.map((x) => x.id),
+    ["b", "a", "c"]
+  );
+});
+
+test("parseRerankResponse ranks by scores without order field", () => {
+  const candidates = [
+    { id: "a", originalIndex: 0 },
+    { id: "b", originalIndex: 1 },
+  ];
+  const ranked = parseRerankResponse(
+    JSON.stringify({
+      scores: [
+        { id: "a", score: 0.2 },
+        { id: "b", score: 0.9 },
+      ],
+    }),
+    candidates,
+  );
+  assert.deepEqual(
+    ranked.map((x) => x.id),
+    ["b", "a"],
+  );
+});
+
+test("rerankLocalOrNoop caps timeout at 2500ms for fail-open", async () => {
+  const calls: Array<{ options?: { timeoutMs?: number } }> = [];
+  await rerankLocalOrNoop({
+    query: "q",
+    candidates: [
+      { id: "a", snippet: "x" },
+      { id: "b", snippet: "y" },
+    ],
+    local: {
+      async chatCompletion(_messages, options) {
+        calls.push({ options });
+        return { content: JSON.stringify({ order: ["a", "b"] }) };
+      },
+    },
+    enabled: true,
+    timeoutMs: 60_000,
+    maxCandidates: 5,
+    cacheEnabled: false,
+    cacheTtlMs: 1,
+  });
+  assert.equal(calls[0]?.options?.timeoutMs, 2500);
 });
 
 test("rerankLocalOrNoop cache is isolated from caller mutations", async () => {
@@ -60,12 +210,7 @@ test("rerankLocalOrNoop cache is isolated from caller mutations", async () => {
       async chatCompletion() {
         calls += 1;
         return {
-          content: JSON.stringify({
-            scores: [
-              { id: "a", score: 90 },
-              { id: "b", score: 10 },
-            ],
-          }),
+          content: JSON.stringify({ order: ["a", "b"] }),
         };
       },
     },
@@ -96,18 +241,10 @@ test("rerankLocalOrNoop cache keys distinguish candidate IDs containing commas",
       async chatCompletion() {
         calls += 1;
         return {
-          content: JSON.stringify({
-            scores:
-              calls === 1
-                ? [
-                    { id: "c", score: 90 },
-                    { id: "a,b", score: 10 },
-                  ]
-                : [
-                    { id: "b,c", score: 90 },
-                    { id: "a", score: 10 },
-                  ],
-          }),
+          content:
+            calls === 1
+              ? JSON.stringify({ order: ["c", "a,b"] })
+              : JSON.stringify({ order: ["b,c", "a"] }),
         };
       },
     },
