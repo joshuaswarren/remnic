@@ -159,6 +159,12 @@ const QMD_TIMEOUT_MS = 30_000;
 // daemon fails fast. Default only — override via `qmdDaemonTimeoutMs` (#1335/#3098).
 // 60s covers multi-GB cold indexes that 8s missed; operators can still set 8s.
 const QMD_DAEMON_TIMEOUT_MS = 60_000;
+// Congestion degradation (#3476): when the daemon's embedding backend is
+// saturated by outside work, every hybrid query waits on the same serialized
+// resource. A query slower than this threshold marks the daemon congested…
+const QMD_DAEMON_SLOW_QUERY_MS = 10_000;
+// …and subsequent queries run lex-only (no embed legs) for this long.
+const QMD_DAEMON_CONGESTION_WINDOW_MS = 60_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
 const QMD_CLI_WARN_THROTTLE_MS = 15 * 60 * 1000; // 15m
@@ -901,6 +907,10 @@ export class QmdClient implements SearchBackend {
   private readonly daemonRecheckIntervalMs: number;
   /** Consecutive transient daemon failures before invalidating the session. */
   private daemonTransientFailures = 0;
+  /** Epoch ms until which daemon searches run lex-only after a slow/timed-out query (#3476). */
+  private daemonCongestedUntilMs = 0;
+  private daemonSlowQueryMs = QMD_DAEMON_SLOW_QUERY_MS;
+  private daemonCongestionWindowMs = QMD_DAEMON_CONGESTION_WINDOW_MS;
   private static readonly DAEMON_MAX_TRANSIENT_FAILURES = 3;
 
   constructor(
@@ -1465,6 +1475,18 @@ export class QmdClient implements SearchBackend {
   }
 
   /**
+   * Open the congestion window (#3476): while set, daemon searches run the
+   * lex-only plan instead of lex+vec+hyde so a saturated embedding backend
+   * cannot stall every recall stage serially.
+   */
+  private markDaemonCongested(durationMs: number, reason: "slow query" | "timeout"): void {
+    this.daemonCongestedUntilMs = Date.now() + this.daemonCongestionWindowMs;
+    log.info(
+      `QMD daemon congested (${reason}, ${durationMs}ms): lex-only searches for ${this.daemonCongestionWindowMs}ms`
+    );
+  }
+
+  /**
    * Handle a non-timeout, non-cancellation daemon error.
    * Tolerates up to DAEMON_MAX_TRANSIENT_FAILURES consecutive failures
    * before invalidating the session. This prevents a single transient
@@ -1657,8 +1679,11 @@ export class QmdClient implements SearchBackend {
     const optionsFingerprint = searchOptions ? JSON.stringify(searchOptions) : "";
     // Key must capture daemon/subprocess strategies to avoid cross-instance collisions (#1335).
     const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
+    // Degraded (congested) results must not poison the normal cache namespace
+    // for the TTL (#3476).
+    const planFingerprint = Date.now() < this.daemonCongestedUntilMs ? "deg" : "std";
     const cacheKey = createHash("sha256")
-      .update(`${strategyFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
+      .update(`${strategyFingerprint}:${planFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
       .digest("hex");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
@@ -1928,6 +1953,15 @@ export class QmdClient implements SearchBackend {
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
+    // Congestion degradation (#3476): the daemon embeds vec/hyde legs on one
+    // shared backend; when that backend is saturated, every hybrid query
+    // waits on it serially. While the congestion window is open, serve
+    // lex-only FTS — no embed legs — so recall stays responsive instead of
+    // stacking multi-second hybrid calls.
+    if (Date.now() < this.daemonCongestedUntilMs) {
+      return this.bm25SearchViaDaemon(query, collection ?? this.collection, maxResults, signal);
+    }
+
     const startedAtMs = Date.now();
     const v2 = this.isQmdV2();
     try {
@@ -1964,6 +1998,10 @@ export class QmdClient implements SearchBackend {
 
       const results = parseMcpSearchResult(result, "daemon");
 
+      if (durationMs >= this.daemonSlowQueryMs) {
+        this.markDaemonCongested(durationMs, "slow query");
+      }
+
       log.debug(`QMD daemon search: ${results.length} results in ${durationMs}ms (v2=${v2})`);
       this.recordDaemonSuccess();
       return results;
@@ -1975,6 +2013,7 @@ export class QmdClient implements SearchBackend {
       }
       // Timeout: don't invalidate session — daemon is still running, just slow.
       if (isDaemonTimeoutError(err)) {
+        this.markDaemonCongested(durationMs, "timeout");
         log.debug(`QMD daemon search timed out after ${durationMs}ms, falling back to subprocess`);
         return null;
       }
