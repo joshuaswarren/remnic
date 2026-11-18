@@ -860,6 +860,7 @@ export class AccessRecallSurface {
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+      ...(request.searchOptions ? { searchOptions: request.searchOptions } : {}),
       ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
       // Only surface a real wait: an uncontended recall (queueWaitMs 0) omits
       // the field so recall-timings stays additive and byte-identical to the

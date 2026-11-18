@@ -77,6 +77,7 @@ import type {
   SearchExecutionOptions,
   SearchQueryOptions,
 } from "./search/port.js";
+import { mergeSearchQueryOptions } from "./search/port.js";
 import {
   createSearchBackend,
   createConversationIndexRuntime,
@@ -1315,8 +1316,9 @@ export class Orchestrator {
     return summarizeNamespaceMaintenanceHealth(this.config);
   }
 
-  private buildConfiguredQmdSearchOptions(
+  buildConfiguredQmdSearchOptions(
     queryText: string,
+    requestOverride?: SearchQueryOptions,
   ): SearchQueryOptions | undefined {
     const intentHint = resolveQmdCapabilities(this.config).qmdIntentHints
       ? buildQmdIntentHint(inferIntentFromText(queryText))
@@ -1329,7 +1331,10 @@ export class Orchestrator {
     if (explain) {
       searchOptions.explain = true;
     }
-    return Object.keys(searchOptions).length > 0 ? searchOptions : undefined;
+    return mergeSearchQueryOptions(
+      Object.keys(searchOptions).length > 0 ? searchOptions : undefined,
+      requestOverride,
+    );
   }
 
   async searchAcrossNamespaces(options: {

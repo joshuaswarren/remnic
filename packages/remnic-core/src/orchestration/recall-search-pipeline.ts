@@ -114,6 +114,7 @@ export interface RecallSearchPipelineDeps {
   ): Promise<QmdSearchResult[]>;
   buildConfiguredQmdSearchOptions(
     queryText: string,
+    requestOverride?: SearchQueryOptions,
   ): SearchQueryOptions | undefined;
   buildQueryAwarePrefilter(
     prompt: string,

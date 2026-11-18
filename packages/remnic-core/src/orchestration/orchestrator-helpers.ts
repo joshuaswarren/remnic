@@ -26,7 +26,7 @@ import { log } from "../logger.js";
 import type { GraphRecallRankedResult, GraphRecallShadowComparison } from "./graph-recall-coordinator.js";
 import { parseQmdExplain } from "../qmd.js";
 import type { GraphRecallExpandedEntry } from "../recall-state.js";
-import type { SearchDegradation } from "../search/port.js";
+import type { SearchDegradation, SearchQueryOptions } from "../search/port.js";
 import type { RecallXrayServedBy } from "../recall-xray.js";
 import type { RecallContextComposition } from "../recall-context-composition.js";
 import { type BufferTurn, type MemoryActionEvent, type MemoryFile, type MemoryFrontmatter, type MemoryIntent, type PluginConfig, type QmdSearchResult, type RecallPlanMode, confidenceTier } from "../types.js";
@@ -262,6 +262,11 @@ export interface RecallInvocationOptions {
    * config flag; a change-intent query is still required for any effect.
    */
   stateView?: boolean;
+  /**
+   * Per-call QMD `query` tool options (HTTP/MCP `searchOptions`). Merged on
+   * top of config-derived intent/explain before `QmdClient` resolves limits.
+   */
+  searchOptions?: SearchQueryOptions;
   /**
    * User-aware context scopes active for this recall. Used by X-ray
    * provenance safety checks so boundary-scoped memories are evaluated

@@ -636,6 +636,19 @@ export class EngramMcpServer {
               description:
                 "Opt in to state-aware recall views (issue #1952); ORs with the recallStateViews config flag.",
             },
+            searchOptions: {
+              type: "object",
+              description:
+                "Per-recall QMD query options. Only rerank: false is honored on the wire (--no-rerank); rerank: true is a no-op when daemon rerank is on.",
+              properties: {
+                intent: { type: "string" },
+                explain: { type: "boolean" },
+                candidateLimit: { type: "number" },
+                rerank: { type: "boolean" },
+                chunkStrategy: { type: "string", enum: ["auto", "regex"] },
+              },
+              additionalProperties: false,
+            },
           },
           required: ["query"],
           additionalProperties: false,

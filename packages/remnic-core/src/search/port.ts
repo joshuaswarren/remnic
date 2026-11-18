@@ -12,6 +12,37 @@ export interface SearchQueryOptions {
   structuredSearches?: Array<{ type: "lex" | "vec" | "hyde"; query: string }>;
 }
 
+/** Merge config-derived QMD options with an optional per-recall HTTP/MCP override. */
+export function mergeSearchQueryOptions(
+  configured: SearchQueryOptions | undefined,
+  request?: SearchQueryOptions,
+): SearchQueryOptions | undefined {
+  if (!configured && !request) return undefined;
+  const out: SearchQueryOptions = { ...(configured ?? {}) };
+  if (!request) {
+    return Object.keys(out).length > 0 ? out : undefined;
+  }
+  const intent = typeof request.intent === "string" ? request.intent.trim() : "";
+  if (intent.length > 0) out.intent = intent;
+  if (request.explain === true) out.explain = true;
+  // QMD wire path only honors explicit opt-out (`rerank: false`); `true` is a no-op.
+  if (request.rerank === false) out.rerank = false;
+  if (request.chunkStrategy === "auto" || request.chunkStrategy === "regex") {
+    out.chunkStrategy = request.chunkStrategy;
+  }
+  if (
+    typeof request.candidateLimit === "number" &&
+    Number.isFinite(request.candidateLimit) &&
+    request.candidateLimit > 0
+  ) {
+    out.candidateLimit = Math.floor(request.candidateLimit);
+  }
+  if (Array.isArray(request.structuredSearches) && request.structuredSearches.length > 0) {
+    out.structuredSearches = request.structuredSearches;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 /**
  * A search that returned empty (or partial) results because the backend was
  * unavailable, still loading, or timed out — cases that are otherwise

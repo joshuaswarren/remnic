@@ -144,6 +144,7 @@ export interface RecallInternalDeps {
   buildCompressionGuidelineRecallSection(): Promise<string | null>;
   buildConfiguredQmdSearchOptions(
     queryText: string,
+    requestOverride?: SearchQueryOptions,
   ): SearchQueryOptions | undefined;
   buildGraphRecallRankedResults(
     results: QmdSearchResult[],

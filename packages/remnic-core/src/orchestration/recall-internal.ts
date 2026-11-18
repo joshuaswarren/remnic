@@ -346,8 +346,10 @@ export class RecallInternalCoordinator {
     this.deps.profiler.endSpan("planning", profileTraceId);
     const recallMode: RecallPlanMode = requestedMode ?? recallDecision.effectiveMode;
     const queryIntent = inferIntentFromText(retrievalQuery);
-    const qmdSearchOptions =
-      this.deps.buildConfiguredQmdSearchOptions(retrievalQuery);
+    const qmdSearchOptions = this.deps.buildConfiguredQmdSearchOptions(
+      retrievalQuery,
+      options.searchOptions,
+    );
     timings.recallPlan = recallMode;
     const plannerRecallResultLimit =
       recallMode === "no_recall"
