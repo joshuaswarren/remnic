@@ -846,14 +846,27 @@ export { releaseSharedDaemonSession as releaseSharedDaemonSessionForTest };
 // Congestion deadlines keyed by the shared daemon session itself, so every
 // QmdClient retaining the same session reads one window: a slow/timeout mark
 // from any sibling gates them all (#3476).
-const DAEMON_CONGESTED_UNTIL = new WeakMap<object, number>();
+const DAEMON_CONGESTED_UNTIL = new WeakMap<QmdDaemonSession, number>();
 
 // Test-only seam: congestion tests drive a stub session object directly.
 export const daemonCongestionForTest = {
-  get: (session: object): number => DAEMON_CONGESTED_UNTIL.get(session) ?? 0,
-  set: (session: object, untilMs: number): void => {
+  get: (session: QmdDaemonSession): number => DAEMON_CONGESTED_UNTIL.get(session) ?? 0,
+  set: (session: QmdDaemonSession, untilMs: number): void => {
     DAEMON_CONGESTED_UNTIL.set(session, untilMs);
   },
+};
+
+// The `query`/`search` MCP tools take this shape; the daemon serializes it verbatim.
+type DaemonSearchToolArgs = {
+  searches?: { type: string; query: string }[];
+  query?: string;
+  collections?: string[];
+  collection?: string;
+  limit: number;
+  intent?: string;
+  explain?: boolean;
+  candidateLimit?: number;
+  rerank?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -2074,24 +2087,27 @@ export class QmdClient implements SearchBackend {
       if (v2) {
         // QMD v2: no `search` tool — use `query` with lex-only sub-query.
         // No `collections` arg means a global (all-collections) search.
-        const args: Record<string, unknown> = {
+        const args: DaemonSearchToolArgs = {
           searches: [{ type: "lex", query }],
-          ...(collection ? { collections: [collection] } : {}),
           limit: maxResults,
         };
+        if (collection) {
+          args.collections = [collection];
+        }
         // Congestion plan: forward supported options (intent/explain/
         // candidateLimit) but never pay the remote rerank leg.
         this.addResolvedSearchOptionsToMcpArgs(args, options);
-        if (options !== undefined) args.rerank = false;
+        if (options !== undefined) {
+          args.rerank = false;
+        }
         result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
       } else {
         // QMD v1: dedicated `search` tool for BM25
-        result = await this.daemonSession.callTool(
-          "search",
-          { query, limit: maxResults, ...(collection ? { collection } : {}) },
-          this.daemonTimeoutMs,
-          signal
-        );
+        const args: DaemonSearchToolArgs = { query, limit: maxResults };
+        if (collection) {
+          args.collection = collection;
+        }
+        result = await this.daemonSession.callTool("search", args, this.daemonTimeoutMs, signal);
       }
       const durationMs = performance.now() - startedAtMs;
       const results = parseMcpSearchResult(result);

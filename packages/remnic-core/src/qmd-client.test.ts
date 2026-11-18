@@ -4,21 +4,25 @@ import test from "node:test";
 import { QmdClient, parseQmdStatusOutput } from "./qmd.js";
 import type { QmdSearchResult } from "./types.js";
 
+type DaemonCheckInternals = {
+  available: boolean;
+  daemonAvailable: boolean;
+  probeDaemon: () => Promise<boolean>;
+  searchViaDaemon: (
+    query: string,
+    collection: string | undefined,
+    maxResults: number
+  ) => Promise<{ results: QmdSearchResult[]; degraded: boolean } | null>;
+};
+
 test("QmdClient rechecks daemon availability before returning unavailable", async () => {
   const client = new QmdClient("memories", 3, {
     daemonUrl: "stdio://qmd",
     daemonRecheckIntervalMs: 0,
   });
-  const internals = client as unknown as {
-    available: boolean;
-    daemonAvailable: boolean;
-    probeDaemon: () => Promise<boolean>;
-    searchViaDaemon: (
-      query: string,
-      collection: string | undefined,
-      maxResults: number
-    ) => Promise<{ results: QmdSearchResult[]; degraded: boolean } | null>;
-  };
+  // SAFETY: the stub drives private QmdClient fields by name; every member
+  // it touches is exercised below.
+  const internals: DaemonCheckInternals = client as never;
   let probeCount = 0;
   internals.available = false;
   internals.daemonAvailable = false;

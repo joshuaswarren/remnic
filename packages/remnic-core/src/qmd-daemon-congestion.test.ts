@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import test from "node:test";
 
 import { daemonCongestionForTest, QmdClient } from "./qmd.js";
+import type { QmdDaemonSession } from "./qmd-daemon-session.js";
 
 /**
  * Regression coverage for the recall stall fixed in #3476: when the shared
@@ -45,7 +46,7 @@ type CongestionInternals = {
   daemonAvailable: boolean;
   daemonSlowQueryMs: number;
   daemonCongestionWindowMs: number;
-  daemonSession: { isActive: () => boolean; callTool: CallToolFn };
+  daemonSession: QmdDaemonSession;
   qmdCapabilities: Record<string, boolean>;
 };
 
@@ -81,7 +82,9 @@ function makeClient(callTool: CallToolFn) {
     chunkStrategy: false,
     mcpIndexSelection: false,
   };
-  internals.daemonSession = { isActive: () => true, callTool };
+  // SAFETY: the fake session stands in for a real QmdDaemonSession; tests
+  // only exercise callTool and use the object as a congestion-map key.
+  internals.daemonSession = { isActive: () => true, callTool } as never;
   return { client, internals };
 }
 
