@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   rerankOutputTokenBudget,
   rerankModelReplyIsStructured,
+  RERANK_LLM_MAX_CANDIDATES,
   RERANK_LLM_SNIPPET_CHARS,
   RerankCache,
   parseRerankResponse,
@@ -52,6 +53,38 @@ test("rerankLocalOrNoop tags rerank requests as recall-critical", async () => {
   const user = JSON.parse(calls[0]?.messages[1]?.content ?? "{}");
   assert.ok(Array.isArray(user.c));
   assert.ok(user.c[0][1].length <= RERANK_LLM_SNIPPET_CHARS);
+});
+
+test("rerankLocalOrNoop caps payload at eight snippets and sixty-four chars", async () => {
+  const longSnippet = `${"z".repeat(80)} end`;
+  const calls: Array<{ messages: Array<{ role: string; content: string }> }> = [];
+  const candidates = Array.from({ length: 9 }, (_, i) => ({
+    id: `id${i}`,
+    snippet: i === 0 ? longSnippet : `note ${i}`,
+  }));
+  await rerankLocalOrNoop({
+    query: "q",
+    candidates,
+    local: {
+      async chatCompletion(messages) {
+        calls.push({ messages });
+        return { content: JSON.stringify({ order: candidates.slice(0, 8).map((c) => c.id) }) };
+      },
+    },
+    enabled: true,
+    timeoutMs: 1_500,
+    maxCandidates: RERANK_LLM_MAX_CANDIDATES,
+    cacheEnabled: false,
+    cacheTtlMs: 1,
+  });
+  const user = JSON.parse(calls[0]?.messages[1]?.content ?? "{}");
+  assert.equal(user.c.length, RERANK_LLM_MAX_CANDIDATES);
+  assert.deepEqual(
+    user.c.map((row: [string, string]) => row[0]),
+    candidates.slice(0, RERANK_LLM_MAX_CANDIDATES).map((c) => c.id),
+  );
+  const normalized = longSnippet.replace(/\s+/g, " ").trim();
+  assert.equal(user.c[0][1], normalized.slice(0, RERANK_LLM_SNIPPET_CHARS));
 });
 
 test("rerankOutputTokenBudget grows with candidate count", () => {
@@ -118,6 +151,26 @@ test("parseRerankResponse accepts compact order array", () => {
   assert.deepEqual(
     ranked.map((x) => x.id),
     ["b", "a", "c"]
+  );
+});
+
+test("parseRerankResponse ranks by scores without order field", () => {
+  const candidates = [
+    { id: "a", originalIndex: 0 },
+    { id: "b", originalIndex: 1 },
+  ];
+  const ranked = parseRerankResponse(
+    JSON.stringify({
+      scores: [
+        { id: "a", score: 0.2 },
+        { id: "b", score: 0.9 },
+      ],
+    }),
+    candidates,
+  );
+  assert.deepEqual(
+    ranked.map((x) => x.id),
+    ["b", "a"],
   );
 });
 
