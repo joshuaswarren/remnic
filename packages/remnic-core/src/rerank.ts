@@ -14,10 +14,10 @@ export interface RerankCacheEntry {
 }
 
 /** Snippet chars sent to the local rerank model (full snippets stay in storage). */
-export const RERANK_LLM_SNIPPET_CHARS = 120;
+export const RERANK_LLM_SNIPPET_CHARS = 64;
 
 /** Output budget: ordered id list only, not per-candidate commentary. */
-export const RERANK_LLM_MAX_TOKENS = 96;
+export const RERANK_LLM_MAX_TOKENS = 48;
 
 /** Hard cap on candidates included in one local rerank prompt (latency). */
 export const RERANK_LLM_MAX_CANDIDATES = 8;
