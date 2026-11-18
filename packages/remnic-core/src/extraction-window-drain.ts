@@ -193,10 +193,10 @@ export function splitOversizedTurns<T extends { content: string }>(
 ): OversizedTurnSplit<T> {
   const partParents = new Map<T, T>();
   const clampedParents = new Set<T>();
-  if (!(Number.isFinite(maxChars) && maxChars > 0)) {
+  const budget = Math.floor(maxChars);
+  if (!(Number.isFinite(budget) && budget > 0)) {
     return { turns: [...turns], partParents, clampedParents, clamped: false };
   }
-  const budget = Math.floor(maxChars);
   const out: T[] = [];
   let clamped = false;
   for (const turn of turns) {

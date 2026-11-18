@@ -50,10 +50,16 @@ export interface ExtractionDrainDeps {
   };
 }
 
-/** Identity of a chunk: its failure count must not follow a buffer key to different content. */
+/** Identity of a chunk: its failure count must not follow a buffer key to
+ *  different content. Part copies carry the part ordinal: two slices of one
+ *  oversized turn can be byte-identical, and their failure counts must not
+ *  share a slot (a success on part 1 would erase part 2's count). */
 function chunkFingerprint(chunk: readonly BufferTurn[]): string {
   const hash = createHash("sha256");
-  for (const turn of chunk) hash.update(`${turn.role}\u0000${turn.timestamp}\u0000${turn.content}\u0001`);
+  for (const turn of chunk) {
+    const part = turn.extractionPartOf ? `#${turn.extractionPartOf.part}/${turn.extractionPartOf.of}` : "";
+    hash.update(`${turn.role}\u0000${turn.timestamp}\u0000${turn.content}${part}\u0001`);
+  }
   return hash.digest("hex");
 }
 
@@ -85,7 +91,7 @@ interface ChunkExecutionOptions {
 
 export class ExtractionDrain {
   /** Consecutive failed attempts on the head chunk, per buffer key. In memory on */
-  private readonly failures = new Map<string, { fingerprint: string; count: number }>();
+  private readonly failures = new Map<string, number>();
 
   /**
    * Buffer key to the first turn of the chunk a qualified window stopped on.
@@ -116,14 +122,27 @@ export class ExtractionDrain {
     return total;
   }
 
+  /** Failure counts are keyed by buffer key AND chunk fingerprint: with one
+   *  slot per key, a sibling chunk's success (count reset to 0) would delete
+   *  a failing part's count and it would never reach the drop threshold. */
   private failureCount(bufferKey: string, chunk: readonly BufferTurn[]): number {
-    const entry = this.failures.get(bufferKey);
-    return entry && entry.fingerprint === chunkFingerprint(chunk) ? entry.count : 0;
+    return this.failures.get(this.failureSlot(bufferKey, chunk)) ?? 0;
   }
 
   private setFailureCount(bufferKey: string, chunk: readonly BufferTurn[], count: number): void {
-    if (count <= 0) this.failures.delete(bufferKey);
-    else this.failures.set(bufferKey, { fingerprint: chunkFingerprint(chunk), count });
+    const slot = this.failureSlot(bufferKey, chunk);
+    if (count <= 0) this.failures.delete(slot);
+    else this.failures.set(slot, count);
+  }
+
+  private failureSlot(bufferKey: string, chunk: readonly BufferTurn[]): string {
+    return `${bufferKey}\u0000${chunkFingerprint(chunk)}`;
+  }
+
+  private clearBufferFailures(bufferKey: string): void {
+    for (const slot of this.failures.keys()) {
+      if (slot.startsWith(`${bufferKey}\u0000`)) this.failures.delete(slot);
+    }
   }
 
   /**
@@ -385,6 +404,7 @@ export class ExtractionDrain {
       return failed.result;
     }
     this.qualified.delete(bufferKey);
+    this.clearBufferFailures(bufferKey);
     return aggregate ?? { status: "skipped", persistedCount: 0, durableOutputCount: 0 };
   }
 

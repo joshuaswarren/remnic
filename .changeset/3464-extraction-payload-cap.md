@@ -6,3 +6,5 @@ Cap each extraction call's rendered payload at `extractionCallMaxChars` (default
 
 Stability: stable
 
+The cap governs automatic drains: forced attempts (`forceExtractionAttempt`) and fail-closed flushes (`failOnExtractionFailure`) keep their one atomic call and may exceed it by design; this is stated in the config reference.
+
