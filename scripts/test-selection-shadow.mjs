@@ -8,8 +8,9 @@
  * Usage mirrors run-root-tests.mjs exactly:
  *   node scripts/test-selection-shadow.mjs [--group <name>]... [--shard i/n]
  *
- * Changed files come from REMNIC_SHADOW_CHANGED_PATH (one repo-relative
- * path per line). Missing or empty input means "unknown" and selects all.
+ * Changed files come from REMNIC_SHADOW_CHANGED_PATH as NUL-delimited
+ * repo-relative paths, e.g. `git diff --name-only -z`. Missing or empty
+ * input means "unknown" and selects all.
  * Output JSON lands in REMNIC_SHADOW_OUT_DIR, default .test-selection-shadow/
  * (CI points it at RUNNER_TEMP so the working tree stays clean for the
  * capability tests' clean-tree gate).

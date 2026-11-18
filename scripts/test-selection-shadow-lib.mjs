@@ -149,6 +149,10 @@ function resolveRelative(repoRoot, importerPath, specifier) {
   return existingCandidate(repoRoot, clean);
 }
 
+// Conditions an ESM import can satisfy; object key order is manifest order,
+// which is also the order Node evaluates conditions in.
+const IMPORT_CONDITIONS = new Set(["remnic-source", "source", "import", "node", "require", "default"]);
+
 function pickConditionTarget(node) {
   if (isString(node)) return node;
   if (Array.isArray(node)) {
@@ -159,8 +163,9 @@ function pickConditionTarget(node) {
     return null;
   }
   if (isPlainObject(node)) {
-    for (const condition of ["remnic-source", "source", "import", "node", "require", "default"]) {
-      const target = pickConditionTarget(node[condition]);
+    for (const key of Object.keys(node)) {
+      if (!IMPORT_CONDITIONS.has(key)) continue;
+      const target = pickConditionTarget(node[key]);
       if (target) return target;
     }
   }
@@ -183,13 +188,8 @@ function exportTarget(manifest, subpath) {
   for (const key of keys) {
     const entry = exportsField[key];
     if (entry === undefined) continue;
-    if (isString(entry)) return entry;
-    if (isPlainObject(entry)) {
-      for (const condition of ["remnic-source", "source", "import", "default"]) {
-        const target = entry[condition];
-        if (isString(target)) return target;
-      }
-    }
+    const target = pickConditionTarget(entry);
+    if (target) return target;
   }
   return null;
 }

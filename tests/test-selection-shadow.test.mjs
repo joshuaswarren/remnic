@@ -417,3 +417,39 @@ test("isGlobalChange treats plugin hooks.json as a full-shard trigger", () => {
   assert.equal(isGlobalChange("docs/hooks.json", new Set()), false);
   assert.equal(isGlobalChange("packages/plugin-claude-code/hooks/README.md", new Set()), false);
 });
+
+test("exportTarget resolves nested conditions in manifest order for top-level and '.' forms", () => {
+  const root = makeFixture();
+  try {
+    const nested = { node: { import: "./src/node.mjs", default: "./src/node-fallback.mjs" }, default: "./dist/api.mjs" };
+    for (const [label, exportsField] of [
+      ["top-level", nested],
+      ["dot", { ".": nested }],
+    ]) {
+      const pkgDir = path.join(root, "packages", `widget-${label}`);
+      mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+      writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({
+        name: `@remnic/widget-${label}`,
+        exports: exportsField,
+      }));
+      writeFileSync(path.join(pkgDir, "src", "node.mjs"), "export const n = 1;\n");
+      const pkgIndex = loadPackageIndex(root);
+      const resolved = resolveSpecifier(root, "tests/a.test.ts", `@remnic/widget-${label}`, pkgIndex);
+      assert.equal(resolved, `packages/widget-${label}/src/node.mjs`, label);
+    }
+    // Manifest order wins: default listed before node selects default.
+    const pkgDir = path.join(root, "packages", "widget-order");
+    mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+    writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({
+      name: "@remnic/widget-order",
+      exports: { default: "./dist/api.mjs", node: { import: "./src/node.mjs" } },
+    }));
+    mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+    writeFileSync(path.join(pkgDir, "dist", "api.mjs"), "export const d = 1;\n");
+    writeFileSync(path.join(pkgDir, "src", "node.mjs"), "export const n = 1;\n");
+    const resolved = resolveSpecifier(root, "tests/a.test.ts", "@remnic/widget-order", loadPackageIndex(root));
+    assert.equal(resolved, "packages/widget-order/dist/api.mjs");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

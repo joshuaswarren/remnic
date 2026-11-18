@@ -272,20 +272,32 @@ jobs:
           mkdir -p "$SHADOW_DIR"
           CHANGED="$SHADOW_DIR/changed.txt"
           : > "$CHANGED"
+          # A failed diff must not leave a partial path list: write to a temp
+          # file and publish only on success, else truncate to empty (which the
+          # selector treats as unknown and selects the full shard).
+          shadow_diff() {
+            local tmp="$SHADOW_DIR/changed.tmp"
+            if git -c core.quotePath=off diff --no-renames --name-only -z "$@" > "$tmp" 2>/dev/null; then
+              mv -f "$tmp" "$CHANGED"
+            else
+              rm -f "$tmp"
+              : > "$CHANGED"
+            fi
+          }
           set +e
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             # The PR checkout is the synthetic merge commit: diff its first
             # parent (the base the tested tree was built on), not a merge-base
             # that a rewound base could move. Fall back to the fetched base.
             if git rev-parse -q --verify 'HEAD^1^{commit}' >/dev/null 2>&1; then
-              git -c core.quotePath=off diff --no-renames --name-only -z 'HEAD^1..HEAD' > "$CHANGED"
+              shadow_diff 'HEAD^1..HEAD'
             else
               git fetch --quiet origin "$BASE_REF"
               MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
-              [ -n "$MB" ] && git -c core.quotePath=off diff --no-renames --name-only -z "$MB"...HEAD > "$CHANGED"
+              [ -n "$MB" ] && shadow_diff "$MB"...HEAD
             fi
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            git -c core.quotePath=off diff --no-renames --name-only -z "$BEFORE_SHA"..HEAD > "$CHANGED"
+            shadow_diff "$BEFORE_SHA"..HEAD
           fi
           set -e
           # Artifacts stay under RUNNER_TEMP: an untracked dir in the repo
