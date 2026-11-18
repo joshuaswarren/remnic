@@ -9,6 +9,10 @@ Remnic's `localLlmUrl` and `localLlmFastUrl` point here. One proxy, three rules:
    target with a free slot, a busy/failing target is skipped for
    POOL_FAIL_COOLDOWN_S, and all targets must declare the same trained model
    name or the pool is refused.
+   POST /v1/embeddings routes to EMBED_POOL_FILE (qmd embed members, same
+   target machinery): one member per request, EMBED_TIMEOUT_S per attempt,
+   and a member returning vectors with the wrong `dimensions` count is
+   cooled down like a failing one — wrong dims would corrupt the index.
    When RECALL_POOL_FILE is set and the caller sends `X-Remnic-Operation`
    matching recall-side ops (see `should_use_recall_pool`), the same request
    goes to the recall pool instead (e.g. jarvis-ml qwen 4-slot on :8091).
@@ -38,6 +42,7 @@ import functools
 import http.client
 import json
 import os
+import random
 import select
 import socket
 import sys
@@ -52,6 +57,7 @@ MINIMAX = "https://api.minimax.io"
 # POOL_FILE and RECALL_POOL_FILE must be set in the environment (see jarvis-ml deploy notes).
 POOL_FILE = os.environ.get("POOL_FILE", "")
 RECALL_POOL_FILE = os.environ.get("RECALL_POOL_FILE", "")
+EMBED_POOL_FILE = os.environ.get("EMBED_POOL_FILE", "")
 
 CANCEL_POLL = 0.1  # downstream liveness poll cadence; bounds cancel latency and watcher join
 BUSY_STATUSES = {429, 500, 502, 503}  # engine busy/unavailable: wait and retry, never fall back
@@ -61,6 +67,9 @@ TIMEOUT_STATUS = 504    # computed upstream timeout expired; the call is not ret
 MAX_POOL_INFLIGHT = int(os.environ.get("POOL_MAX_INFLIGHT", "2"))  # Studio chat requests in flight at once
 MAX_RECALL_POOL_INFLIGHT = int(os.environ.get("RECALL_MAX_POOL_INFLIGHT", "4"))
 FAIL_COOLDOWN_S = float(os.environ.get("POOL_FAIL_COOLDOWN_S", "30"))  # a failing target is skipped this long
+EMBED_TIMEOUT_S = float(os.environ.get("EMBED_TIMEOUT_S", "3"))  # per-member embed attempt; timeout fails over
+EMBED_DEADLINE_S = float(os.environ.get("EMBED_DEADLINE_S", "30"))  # total embed budget; under the daemon's ~60 s query budget
+EMBED_MEMBER_SLOTS = int(os.environ.get("EMBED_MEMBER_SLOTS", "8"))  # default concurrency per embed member
 PREFILL_TOK_S = float(os.environ.get("PREFILL_TOK_S", "129.0"))   # prompt processing rate of the pool (default: Studio)
 DECODE_TOK_S = float(os.environ.get("DECODE_TOK_S", "19.9"))     # generation rate of the pool (default: Studio; Spark under load measured about 2)
 TIMEOUT_MARGIN = 1.25   # multiplier on prefill + decode time
@@ -84,6 +93,8 @@ _health = {
     "recall_last_busy_unix": 0.0,
     "extraction_last_503_unix": 0.0,
     "recall_last_503_unix": 0.0,
+    "embed_in_flight": 0,
+    "embed_last_503_unix": 0.0,
 }
 
 DEFAULT_RECALL_OPERATIONS = frozenset({
@@ -273,7 +284,7 @@ def _cancellable_open(req, timeout, downstream):
 
 
 def _pool_file_ok(pool):
-    return bool(pool.get("enabled") and (pool.get("base") or pool.get("targets")))
+    return bool(pool.get("enabled") and (pool.get("base") or pool.get("targets") or pool.get("members")))
 
 
 def load_pool():
@@ -297,18 +308,20 @@ def pool_health_public(pool, pool_file=""):
         "model": pool.get("model"),
         "has_key": bool(pool.get("key")),
     }
-    if pool.get("targets"):
+    members = pool.get("targets") or pool.get("members")
+    if members:
         now = time.monotonic()
         out["targets"] = [
             {
-                "base_host": urllib.parse.urlparse(t.get("base", "")).hostname,
+                "name": t.get("name"),
+                "base_host": urllib.parse.urlparse(t.get("base") or t.get("url") or "").hostname,
                 "model": t.get("model", pool.get("model")),
                 "slots": t.get("slots"),
-                "in_flight": _target_in_flight.get((pool_file, t.get("base")), 0),
-                "down_for_s": round(max(0.0, _target_down_until.get((pool_file, t.get("base")), 0.0) - now), 1),
+                "in_flight": _target_in_flight.get((pool_file, t.get("base") or t.get("url")), 0),
+                "down_for_s": round(max(0.0, _target_down_until.get((pool_file, t.get("base") or t.get("url")), 0.0) - now), 1),
                 "has_key": bool(t.get("key") or pool.get("key")),
             }
-            for t in pool["targets"]
+            for t in members
             if isinstance(t, dict)
         ]
     return out
@@ -326,7 +339,7 @@ def pool_targets(pool, default_slots):
     if not pool:
         return None, "pool missing or disabled"
     required = pool.get("model")
-    raw = pool.get("targets")
+    raw = pool.get("targets") or pool.get("members")
     if not raw:
         if not pool.get("base"):
             return None, "pool has no base and no targets"
@@ -336,13 +349,16 @@ def pool_targets(pool, default_slots):
         }]
     targets = []
     for entry in raw:
-        if not isinstance(entry, dict) or not entry.get("base"):
+        base = (entry.get("base") or entry.get("url")) if isinstance(entry, dict) else None
+        if not base:
             return None, "a pool target has no base"
         targets.append({
-            "base": entry["base"],
+            "base": base,
+            "name": entry.get("name"),
             "key": entry.get("key") or pool.get("key"),
             "model": entry.get("model") or required,
             "slots": int(entry.get("slots") or default_slots),
+            "weight": int(entry.get("weight") or 1),
             "extra": entry.get("extra") or pool.get("extra") or {},
         })
     declared = {t["model"] for t in targets if t["model"]}
@@ -376,10 +392,22 @@ def _acquire_target(pool_file, targets, downstream, deadline, queue_label):
         now = time.monotonic()
         if now >= deadline:
             return None
-        for target in targets:
-            until = _target_down_until.get((pool_file, target["base"]), 0.0)
-            if until > now:
-                continue
+        # Available targets tried in weighted-random order (weight: more free
+        # capacity on a stronger box pulls proportionally more calls).
+        order = [t for t in targets
+                 if _target_down_until.get((pool_file, t["base"]), 0.0) <= now]
+        ordered = []
+        while order:
+            total = sum(max(1, t["weight"]) for t in order)
+            pick, acc, chosen = random.uniform(0, total), 0.0, order[-1]
+            for t in order:
+                acc += max(1, t["weight"])
+                if pick <= acc:
+                    chosen = t
+                    break
+            order.remove(chosen)
+            ordered.append(chosen)
+        for target in ordered:
             sem = _target_semaphore(pool_file, target)
             if sem.acquire(blocking=False):
                 return target, sem
@@ -396,6 +424,28 @@ def load_recall_pool():
     except (OSError, ValueError):
         return None
     return pool if _pool_file_ok(pool) else None
+
+
+def load_embed_pool():
+    if not EMBED_POOL_FILE:
+        return None
+    try:
+        with open(EMBED_POOL_FILE) as fh:
+            pool = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return pool if _pool_file_ok(pool) else None
+
+
+def _dimensions_ok(data, expected):
+    """True when every returned vector has the declared dimension count."""
+    if not expected:
+        return True
+    try:
+        rows = json.loads(data).get("data") or []
+    except ValueError:
+        return False
+    return all(len(row.get("embedding") or []) == expected for row in rows)
 
 
 def request_timeout_s(payload):
@@ -503,6 +553,61 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 _health[in_flight_field] -= 1
 
+    def _embed_via_pool(self, payload):
+        """POST /v1/embeddings: one member per request, short-timeout failover.
+
+        The whole input batch goes to one member (qmd batches both legs in one
+        call). A member that errors, times out (EMBED_TIMEOUT_S), or returns
+        vectors with the wrong dimension count is cooled down and the call
+        moves to the next member — a wrong-dims answer would corrupt the index.
+        """
+        pool = load_embed_pool()
+        targets, refuse_reason = pool_targets(pool, EMBED_MEMBER_SLOTS)
+        if targets is None:
+            with _lock:
+                _health["embed_last_503_unix"] = time.time()
+            return 503, json.dumps({"error": f"embed pool missing or disabled ({refuse_reason})"}).encode()
+        dimensions = pool.get("dimensions")
+        deadline = time.monotonic() + EMBED_DEADLINE_S
+        with _lock:
+            _health["embed_in_flight"] += 1
+        try:
+            while True:
+                picked = _acquire_target(EMBED_POOL_FILE, targets, self.connection, deadline, "embed pool")
+                if picked is None:
+                    with _lock:
+                        _health["embed_last_503_unix"] = time.time()
+                    return 503, json.dumps({"error": "embed pool members unavailable; no fallback"}).encode()
+                target, sem = picked
+                auth = "Bearer " + target["key"] if target.get("key") else None
+                body = {**payload,
+                        "model": target["model"] or payload.get("model"),
+                        **target["extra"]}
+                target_key = (EMBED_POOL_FILE, target["base"])
+                with _lock:
+                    _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
+                try:
+                    status, data = post(target["base"], self.path, body, auth, self.connection,
+                                        EMBED_TIMEOUT_S)
+                finally:
+                    with _lock:
+                        _target_in_flight[target_key] -= 1
+                    sem.release()
+                if status == 200 and _dimensions_ok(data, dimensions):
+                    return status, data
+                if status not in BUSY_STATUSES and status != TIMEOUT_STATUS and not (status == 200 and dimensions):
+                    return status, data  # client errors (4xx) pass through unretried
+                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
+                if time.monotonic() >= deadline:
+                    with _lock:
+                        _health["embed_last_503_unix"] = time.time()
+                    return 503, json.dumps({"error": "embed pool members unavailable; no fallback"}).encode()
+                if _caller_eof(self.connection, CANCEL_POLL):
+                    raise CallerDisconnected("downstream caller disconnected while waiting for embed pool")
+        finally:
+            with _lock:
+                _health["embed_in_flight"] -= 1
+
     def _route_chat(self, payload):
         recall_op = should_use_recall_pool(self.headers)
         recall_pool = load_recall_pool() if recall_op else None
@@ -555,6 +660,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if method == "POST" and body and self.path.endswith("/chat/completions"):
                 status, data = self._route_chat(json.loads(body))
+            elif method == "POST" and body and self.path.endswith("/embeddings"):
+                status, data = self._embed_via_pool(json.loads(body))
             else:
                 status, data = self._passthrough(method, body)
         except CallerDisconnected:
@@ -580,6 +687,7 @@ class Handler(BaseHTTPRequestHandler):
                     **_health,
                     "pool": pool_health_public(load_pool(), POOL_FILE),
                     "recall_pool": pool_health_public(load_recall_pool(), RECALL_POOL_FILE),
+                    "embed_pool": pool_health_public(load_embed_pool(), EMBED_POOL_FILE),
                 }
             return self._send(200, json.dumps(snapshot).encode())
         self._forward("GET")

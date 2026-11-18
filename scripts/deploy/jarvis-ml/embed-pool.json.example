@@ -1,0 +1,24 @@
+{
+  "enabled": true,
+  "pool": "qmd-embed",
+  "model": "REPLACE_WITH_EMBED_MODEL_ID",
+  "dimensions": 768,
+  "members": [
+    {
+      "name": "REPLACE_MEMBER_A",
+      "url": "http://REPLACE_WITH_EMBED_HOST_A:PORT",
+      "model": "REPLACE_WITH_EMBED_MODEL_ID",
+      "slots": 8,
+      "weight": 1,
+      "key": "REPLACE_OR_OMIT"
+    },
+    {
+      "name": "REPLACE_MEMBER_B",
+      "url": "http://REPLACE_WITH_EMBED_HOST_B:PORT",
+      "model": "REPLACE_WITH_EMBED_MODEL_ID",
+      "slots": 8,
+      "weight": 1,
+      "key": "REPLACE_OR_OMIT"
+    }
+  ]
+}
