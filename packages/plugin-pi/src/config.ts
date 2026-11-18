@@ -39,6 +39,13 @@ export interface RemnicPiConfig {
    */
   turnRequestTimeoutMs: number;
   /**
+   * How long the first `before_agent_start` may wait on semantic recall before
+   * the turn proceeds without context (issue #3273). The recall keeps running
+   * in the background and its context is injected on the next turn instead.
+   * A fast daemon still lands context on turn one.
+   */
+  firstTurnRecallBudgetMs: number;
+  /**
    * Soft cap on a single observe POST body in bytes. The client chunks observe
    * batches to stay under this; individual oversized messages are truncated
    * with a marker. Defaults to 100 KiB, safely under the daemon's default
@@ -95,6 +102,8 @@ export const DEFAULT_CONFIG: RemnicPiConfig = {
   startupRequestTimeoutMs: 1000,
   // Default 20 s is comfortably under the Pi/omp 30 s handler budget (#1626).
   turnRequestTimeoutMs: 20000,
+  // A slow daemon must not tax the first turn by the full recall latency (#3273).
+  firstTurnRecallBudgetMs: 1000,
   // Default 100 KiB leaves headroom under the daemon's 128 KiB default (#1600).
   observeMaxBytes: 102400,
   observeMaxRetries: 2,
@@ -368,6 +377,12 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
       "startupRequestTimeoutMs",
     ),
     turnRequestTimeoutMs,
+    firstTurnRecallBudgetMs: coercePositiveInt(
+      fileConfig.firstTurnRecallBudgetMs,
+      DEFAULT_CONFIG.firstTurnRecallBudgetMs,
+      25_000,
+      "firstTurnRecallBudgetMs",
+    ),
     observeMaxBytes: coercePositiveInt(
       fileConfig.observeMaxBytes,
       DEFAULT_CONFIG.observeMaxBytes,

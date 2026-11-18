@@ -52,8 +52,8 @@ export type PiApi = {
   appendEntry<T = unknown>(customType: string, data?: T): void;
 };
 
-export type RemnicPiConfigInput = Omit<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow"> &
-  Partial<Pick<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow">>;
+export type RemnicPiConfigInput = Omit<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow" | "firstTurnRecallBudgetMs"> &
+  Partial<Pick<RemnicPiConfig, "recallTimeoutThreshold" | "recallTimeoutWindow" | "firstTurnRecallBudgetMs">>;
 
 export interface RemnicPiExtensionOptions extends LoadConfigOptions {
   config?: RemnicPiConfigInput;
@@ -257,30 +257,38 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
         if (promptText) {
           state.recallCompleted = true;
-          try {
-            const recalled = await executeRecallWithBreaker(
-              (signal) =>
-                client.recall(promptText, session.sessionKey, session.cwd, {
-                  timeoutMs: config.turnRequestTimeoutMs,
-                  signal,
-                }),
-              recallTimeoutBreaker,
-              pi,
-              session,
-              config,
-              state,
-            );
-            client.markReachable();
-            refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
-            const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
-            if (context) {
-              state.cachedContext = context;
+          const recallPromise = (async () => {
+            try {
+              const recalled = await executeRecallWithBreaker(
+                (signal) =>
+                  client.recall(promptText, session.sessionKey, session.cwd, {
+                    timeoutMs: config.turnRequestTimeoutMs,
+                    signal,
+                  }),
+                recallTimeoutBreaker,
+                pi,
+                session,
+                config,
+                state,
+              );
+              client.markReachable();
+              refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker.isTripped());
+              const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
+              if (context) {
+                state.cachedContext = context;
+              }
+            } catch (err) {
+              if (recallTimeoutBreaker.isTripped()) return;
+              if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
+              session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
             }
-          } catch (err) {
-            if (recallTimeoutBreaker.isTripped()) return;
-            if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
-            session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
-          }
+          })();
+          // A recall slower than the first-turn budget keeps running in the
+          // background; its context is injected from the next turn on (#3273).
+          await Promise.race([
+            recallPromise,
+            new Promise<void>((resolve) => setTimeout(resolve, config.firstTurnRecallBudgetMs)),
+          ]);
         }
       }
 

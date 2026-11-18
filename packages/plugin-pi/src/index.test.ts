@@ -205,6 +205,82 @@ test("default Pi extension creates isolated state for each host invocation", asy
   assert.equal(recallBodies.length, 2);
 });
 
+test("first turn is not blocked by a slow recall; context lands on a later turn (#3273)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-first-turn-"));
+  const configPath = path.join(root, "remnic.config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    authToken: "test-token",
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: false,
+    firstTurnRecallBudgetMs: 25,
+  }));
+
+  const previousConfig = process.env.REMNIC_PI_CONFIG;
+  const originalFetch = globalThis.fetch;
+  let recallLanded = false;
+  let releaseRecall: (() => void) | undefined;
+  const recallGate = new Promise<void>((resolve) => {
+    releaseRecall = resolve;
+  });
+  process.env.REMNIC_PI_CONFIG = configPath;
+  globalThis.fetch = async (input) => {
+    if (String(input).endsWith("/engram/v1/live")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    if (String(input).includes("/engram/v1/namespace/writable")) {
+      return new Response(JSON.stringify({ ok: true, status: "ok", namespace: "default" }), { status: 200 });
+    }
+    if (String(input).endsWith("/mcp")) return Response.json({ result: {} });
+    await recallGate;
+    recallLanded = true;
+    return new Response(JSON.stringify({ context: "remembered context" }), { status: 200 });
+  };
+  t.after(() => {
+    releaseRecall?.();
+    if (previousConfig === undefined) delete process.env.REMNIC_PI_CONFIG;
+    else process.env.REMNIC_PI_CONFIG = previousConfig;
+    globalThis.fetch = originalFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const harness = makePiHarness();
+  await remnicPiExtension(harness.pi as any);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "shared-session" },
+  };
+  await harness.emit("session_start", {}, ctx);
+
+  const firstResult = await Promise.race([
+    harness
+      .emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx)
+      .then((r) => r as { systemPrompt?: string } | undefined),
+    new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 200)),
+  ]);
+  assert.notEqual(firstResult, "blocked", "first turn waited out a slow recall");
+  if (firstResult === "blocked") return;
+  assert.ok(
+    !firstResult?.systemPrompt?.includes("remembered context"),
+    "first turn returns without recall context when recall is still in flight",
+  );
+
+  releaseRecall?.();
+  await waitFor(() => recallLanded, "background recall to land");
+  await flushBackgroundChains();
+
+  const secondResult = (await harness.emit(
+    "before_agent_start",
+    { prompt: "next", systemPrompt: "" },
+    ctx,
+  )) as { systemPrompt?: string };
+  assert.ok(
+    secondResult?.systemPrompt?.includes("remembered context"),
+    "later turn injects the context the background recall populated",
+  );
+});
+
 test("default Pi extension preserves a tripped breaker across reloads", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-breaker-reload-"));
   const configPath = path.join(root, "remnic.config.json");
@@ -216,6 +292,7 @@ test("default Pi extension preserves a tripped breaker across reloads", async (t
     mcpToolsEnabled: false,
     statusEnabled: true,
     turnRequestTimeoutMs: 2,
+    firstTurnRecallBudgetMs: 1000,
     recallTimeoutThreshold: 1,
     recallTimeoutWindow: 1,
   };
@@ -823,6 +900,7 @@ test("a late failed startup probe preserves the ready status from a successful r
       statusEnabled: true,
       startupRequestTimeoutMs: 60_000,
       turnRequestTimeoutMs: 2,
+      firstTurnRecallBudgetMs: 1000,
       daemonCooldownMs: 60_000,
     },
   });
@@ -1027,6 +1105,7 @@ test("a successful observe does not overwrite the recall-paused status", async (
     mcpToolsEnabled: false,
     statusEnabled: true,
     turnRequestTimeoutMs: 2,
+    firstTurnRecallBudgetMs: 1000,
     daemonCooldownMs: 60_000,
     recallTimeoutThreshold: 1,
     recallTimeoutWindow: 1,
@@ -1093,6 +1172,7 @@ test("a successful observe in another session does not show ready while the shar
     mcpToolsEnabled: false,
     statusEnabled: true,
     turnRequestTimeoutMs: 2,
+    firstTurnRecallBudgetMs: 1000,
     daemonCooldownMs: 60_000,
     recallTimeoutThreshold: 1,
     recallTimeoutWindow: 1,
@@ -2705,6 +2785,7 @@ function baseConfig(): RemnicPiConfig {
     requestTimeoutMs: 60000,
     startupRequestTimeoutMs: 1000,
     turnRequestTimeoutMs: 20000,
+    firstTurnRecallBudgetMs: 1000,
     observeMaxBytes: 102400,
     observeMaxRetries: 2,
     daemonCooldownMs: 5000,
@@ -3132,6 +3213,7 @@ test("session_start preserves the recall-disabled status after a successful heal
       mcpToolsEnabled: false,
       statusEnabled: true,
       turnRequestTimeoutMs: 2,
+      firstTurnRecallBudgetMs: 1000,
       recallTimeoutThreshold: 1,
       recallTimeoutWindow: 1,
     },

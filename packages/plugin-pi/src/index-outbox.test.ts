@@ -34,6 +34,7 @@ function outboxTestConfig(overrides: Partial<RemnicPiConfig> = {}): RemnicPiConf
     requestTimeoutMs: 5_000,
     startupRequestTimeoutMs: 500,
     turnRequestTimeoutMs: 200,
+    firstTurnRecallBudgetMs: 1000,
     observeMaxBytes: 102400,
     observeMaxRetries: 0,
     daemonCooldownMs: 1,
