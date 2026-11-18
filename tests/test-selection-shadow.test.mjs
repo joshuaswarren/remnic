@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  resolveSpecifierAll,
   buildImportGraph,
   buildReverseIndex,
   extractSpecifiers,
@@ -449,6 +450,26 @@ test("exportTarget resolves nested conditions in manifest order for top-level an
     writeFileSync(path.join(pkgDir, "src", "node.mjs"), "export const n = 1;\n");
     const resolved = resolveSpecifier(root, "tests/a.test.ts", "@remnic/widget-order", loadPackageIndex(root));
     assert.equal(resolved, "packages/widget-order/dist/api.mjs");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveSpecifierAll records every export condition target", () => {
+  const root = makeFixture();
+  try {
+    const pkgDir = path.join(root, "packages", "widget-dual");
+    mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+    mkdirSync(path.join(pkgDir, "dist"), { recursive: true });
+    writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({
+      name: "@remnic/widget-dual",
+      exports: { ".": { require: "./dist/cjs.cjs", import: "./src/esm.mjs" } },
+    }));
+    writeFileSync(path.join(pkgDir, "src", "esm.mjs"), "export const e = 1;\n");
+    writeFileSync(path.join(pkgDir, "dist", "cjs.cjs"), "module.exports = {};\n");
+    const pkgIndex = loadPackageIndex(root);
+    const all = resolveSpecifierAll(root, "tests/a.test.ts", "@remnic/widget-dual", pkgIndex).sort();
+    assert.deepEqual(all, ["packages/widget-dual/dist/cjs.cjs", "packages/widget-dual/src/esm.mjs"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

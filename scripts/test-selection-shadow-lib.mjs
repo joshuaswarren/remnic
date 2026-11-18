@@ -149,49 +149,44 @@ function resolveRelative(repoRoot, importerPath, specifier) {
   return existingCandidate(repoRoot, clean);
 }
 
-// Conditions an ESM import can satisfy; object key order is manifest order,
-// which is also the order Node evaluates conditions in.
-const IMPORT_CONDITIONS = new Set(["remnic-source", "source", "import", "node", "require", "default"]);
-
-function pickConditionTarget(node) {
-  if (isString(node)) return node;
+// Collect every string leaf under an exports entry. Condition objects map
+// alternative targets (import/require/node/default/custom); the shadow
+// selector cannot know which condition the runtime picks, so it records all
+// of them as dependency candidates — over-selection is the safe direction.
+function collectTargets(node, out = []) {
+  if (isString(node)) {
+    out.push(node);
+    return out;
+  }
   if (Array.isArray(node)) {
-    for (const item of node) {
-      const target = pickConditionTarget(item);
-      if (target) return target;
-    }
-    return null;
+    for (const item of node) collectTargets(item, out);
+    return out;
   }
   if (isPlainObject(node)) {
-    for (const key of Object.keys(node)) {
-      if (!IMPORT_CONDITIONS.has(key)) continue;
-      const target = pickConditionTarget(node[key]);
-      if (target) return target;
-    }
+    for (const key of Object.keys(node)) collectTargets(node[key], out);
   }
-  return null;
+  return out;
 }
 
-function exportTarget(manifest, subpath) {
+function exportTargets(manifest, subpath) {
   const exportsField = manifest.exports;
-  if (exportsField === undefined || exportsField === null) return null;
+  if (exportsField === undefined || exportsField === null) return [];
   // A bare "@remnic/pkg" import carries subpath "" but resolves exports["."].
   const lookup = subpath === "" ? "." : subpath;
-  if (isString(exportsField)) return lookup === "." ? exportsField : null;
-  if (!isPlainObject(exportsField)) return null;
+  if (isString(exportsField)) return lookup === "." ? [exportsField] : [];
+  if (!isPlainObject(exportsField)) return [];
   // An exports object with no "."-keys is a condition map for the root export.
   if (lookup === "." && !Object.keys(exportsField).some((key) => key.startsWith("."))) {
-    const target = pickConditionTarget(exportsField);
-    if (target) return target;
+    return collectTargets(exportsField);
   }
   const keys = lookup === "." ? [".", ""] : [`./${lookup}`, `./${lookup}.js`, `./${lookup}.ts`];
   for (const key of keys) {
     const entry = exportsField[key];
     if (entry === undefined) continue;
-    const target = pickConditionTarget(entry);
-    if (target) return target;
+    const targets = collectTargets(entry);
+    if (targets.length > 0) return targets;
   }
-  return null;
+  return [];
 }
 
 function resolvePackageTarget(repoRoot, pkgDir, target) {
@@ -208,26 +203,40 @@ function resolvePackageTarget(repoRoot, pkgDir, target) {
  * Resolve one specifier imported by `importerPath` (repo-relative posix) to a
  * repo-relative posix file path, or null when it is external/unresolvable.
  */
-export function resolveSpecifier(repoRoot, importerPath, specifier, packageIndex) {
+export function resolveSpecifierAll(repoRoot, importerPath, specifier, packageIndex) {
+  const resolved = [];
+  const add = (candidate) => {
+    if (candidate && candidate !== importerPath && !resolved.includes(candidate)) resolved.push(candidate);
+  };
   if (specifier.startsWith(".")) {
-    return resolveRelative(repoRoot, importerPath, specifier);
+    add(resolveRelative(repoRoot, importerPath, specifier));
+    return resolved;
   }
-  if (!specifier.startsWith("@remnic/")) return null;
+  if (!specifier.startsWith("@remnic/")) return resolved;
   const rest = specifier.slice("@remnic/".length);
   const slash = rest.indexOf("/");
   const pkgKey = slash === -1 ? rest : rest.slice(0, slash);
   const subpath = slash === -1 ? "" : rest.slice(slash + 1);
   const pkg = packageIndex.get(`@remnic/${pkgKey}`);
-  if (!pkg) return null;
-  const target = exportTarget(pkg.manifest, subpath);
-  if (target) return resolvePackageTarget(repoRoot, pkg.dir, target);
+  if (!pkg) return resolved;
+  const targets = exportTargets(pkg.manifest, subpath);
+  if (targets.length > 0) {
+    for (const target of targets) add(resolvePackageTarget(repoRoot, pkg.dir, target));
+    return resolved;
+  }
   if (subpath === "") {
-    return resolvePackageTarget(repoRoot, pkg.dir, "./src/index.ts");
+    add(resolvePackageTarget(repoRoot, pkg.dir, "./src/index.ts"));
+    return resolved;
   }
   // No explicit export entry: probe package src directly.
   const stem = path.posix.normalize(path.posix.join(pkg.dir, "src", subpath));
   const stripped = stem.replace(/\.(jsx?|mjs|cjs)$/, ".ts");
-  return existingCandidate(repoRoot, stripped) ?? (existsSync(path.join(repoRoot, stem)) ? stem : null);
+  add(existingCandidate(repoRoot, stripped) ?? (existsSync(path.join(repoRoot, stem)) ? stem : null));
+  return resolved;
+}
+
+export function resolveSpecifier(repoRoot, importerPath, specifier, packageIndex) {
+  return resolveSpecifierAll(repoRoot, importerPath, specifier, packageIndex)[0] ?? null;
 }
 
 /**
@@ -245,8 +254,9 @@ export function buildImportGraph(repoRoot, importerFiles, packageIndex) {
     }
     const deps = new Set();
     for (const specifier of extractSpecifiers(source)) {
-      const resolved = resolveSpecifier(repoRoot, importer, specifier, packageIndex);
-      if (resolved && resolved !== importer) deps.add(resolved);
+      for (const resolved of resolveSpecifierAll(repoRoot, importer, specifier, packageIndex)) {
+        deps.add(resolved);
+      }
     }
     if (deps.size > 0) graph.set(importer, deps);
   }
