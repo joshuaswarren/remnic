@@ -2094,12 +2094,10 @@ export class QmdClient implements SearchBackend {
         if (collection) {
           args.collections = [collection];
         }
-        // Congestion plan: forward supported options (intent/explain/
-        // candidateLimit) but never pay the remote rerank leg.
+        // A lex-only plan never pays the remote rerank leg — congestion or
+        // dedicated bm25 alike. Forward supported options, then force it off.
         this.addResolvedSearchOptionsToMcpArgs(args, options);
-        if (options !== undefined) {
-          args.rerank = false;
-        }
+        args.rerank = false;
         result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
       } else {
         // QMD v1: dedicated `search` tool for BM25

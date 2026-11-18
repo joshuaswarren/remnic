@@ -128,6 +128,7 @@ test("daemon query timeout marks congestion without waiting for a slow success",
 
   await client.search("delta query", "memories", 3);
   assert.deepEqual(legTypes(calls[1]!), ["lex"]);
+  assert.equal(calls[1]!.args.rerank, false); // lex plan never pays the rerank leg
 });
 
 test("congestion window expiry restores the hybrid plan", async () => {
@@ -228,4 +229,5 @@ test("vector search serves the lex leg while the congestion window is open", asy
   await client.vectorSearch("vec query", "memories", 3);
   assert.deepEqual(legTypes(calls[0]!), ["lex"]);
   assert.deepEqual(calls[0]!.args.collections, ["memories"]);
+  assert.equal(calls[0]!.args.rerank, false); // no options passed — still no rerank
 });
