@@ -4,6 +4,11 @@
 Remnic's `localLlmUrl` and `localLlmFastUrl` point here. One proxy, three rules:
 
 1. Chat completion POSTs go to POOL_FILE (trained extraction pool) by default.
+   A pool file either names one upstream ({base, model, key}) or lists several
+   under "targets" (each {base, key, slots, model?}); a call takes the first
+   target with a free slot, a busy/failing target is skipped for
+   POOL_FAIL_COOLDOWN_S, and all targets must declare the same trained model
+   name or the pool is refused.
    When RECALL_POOL_FILE is set and the caller sends `X-Remnic-Operation`
    matching recall-side ops (see `should_use_recall_pool`), the same request
    goes to the recall pool instead (e.g. jarvis-ml qwen 4-slot on :8091).
@@ -55,6 +60,7 @@ CHAT_TIMEOUT_S = 600.0  # total budget per chat request including busy waits (ca
 TIMEOUT_STATUS = 504    # computed upstream timeout expired; the call is not retried
 MAX_POOL_INFLIGHT = int(os.environ.get("POOL_MAX_INFLIGHT", "2"))  # Studio chat requests in flight at once
 MAX_RECALL_POOL_INFLIGHT = int(os.environ.get("RECALL_MAX_POOL_INFLIGHT", "4"))
+FAIL_COOLDOWN_S = float(os.environ.get("POOL_FAIL_COOLDOWN_S", "30"))  # a failing target is skipped this long
 PREFILL_TOK_S = float(os.environ.get("PREFILL_TOK_S", "129.0"))   # prompt processing rate of the pool (default: Studio)
 DECODE_TOK_S = float(os.environ.get("DECODE_TOK_S", "19.9"))     # generation rate of the pool (default: Studio; Spark under load measured about 2)
 TIMEOUT_MARGIN = 1.25   # multiplier on prefill + decode time
@@ -62,9 +68,11 @@ TIMEOUT_FLOOR_S = 15.0  # seconds added on top (connect, queueing inside the eng
 QUEUE_BUDGET_S = float(os.environ.get("QUEUE_BUDGET_S", "300"))  # added to request_timeout_s (not a wall-clock queue cap; verified 322s wall under load)
 CHARS_PER_TOKEN = 3.0   # conservative: overestimates prompt tokens, lengthens the timeout
 DEFAULT_MAX_TOKENS = 4096
-_slots = threading.BoundedSemaphore(MAX_POOL_INFLIGHT)
-_recall_slots = threading.BoundedSemaphore(MAX_RECALL_POOL_INFLIGHT)
 _lock = threading.Lock()
+# Per (pool file, target base): slot semaphore and cooldown end for a failing target.
+_target_semaphores = {}
+_target_in_flight = {}
+_target_down_until = {}
 _health = {
     "extraction_in_flight": 0,
     "pool_active": 0,
@@ -264,6 +272,10 @@ def _cancellable_open(req, timeout, downstream):
                 conn.close()
 
 
+def _pool_file_ok(pool):
+    return bool(pool.get("enabled") and (pool.get("base") or pool.get("targets")))
+
+
 def load_pool():
     if not POOL_FILE:
         return None
@@ -272,20 +284,107 @@ def load_pool():
             pool = json.load(fh)
     except (OSError, ValueError):
         return None
-    return pool if pool.get("enabled") and pool.get("base") else None
+    return pool if _pool_file_ok(pool) else None
 
 
-def pool_health_public(pool):
+def pool_health_public(pool, pool_file=""):
     """Health snapshot without secrets or full upstream URLs."""
     if not pool:
         return None
-    host = urllib.parse.urlparse(pool.get("base", "")).hostname
-    return {
+    out = {
         "enabled": bool(pool.get("enabled")),
-        "base_host": host,
+        "base_host": urllib.parse.urlparse(pool.get("base", "")).hostname,
         "model": pool.get("model"),
         "has_key": bool(pool.get("key")),
     }
+    if pool.get("targets"):
+        now = time.monotonic()
+        out["targets"] = [
+            {
+                "base_host": urllib.parse.urlparse(t.get("base", "")).hostname,
+                "model": t.get("model", pool.get("model")),
+                "slots": t.get("slots"),
+                "in_flight": _target_in_flight.get((pool_file, t.get("base")), 0),
+                "down_for_s": round(max(0.0, _target_down_until.get((pool_file, t.get("base")), 0.0) - now), 1),
+                "has_key": bool(t.get("key") or pool.get("key")),
+            }
+            for t in pool["targets"]
+            if isinstance(t, dict)
+        ]
+    return out
+
+
+def pool_targets(pool, default_slots):
+    """Normalize a pool file into its target list, or a refusal reason.
+
+    Old single-target files {base, model, key, extra} become one target whose
+    slot count defaults to the pool's inflight cap. In a multi-target file
+    every target must declare the same trained model name (its own `model`
+    or the pool's) — a mixed file is refused wholesale, because it would
+    send trained-model traffic to a box serving something else.
+    """
+    if not pool:
+        return None, "pool missing or disabled"
+    required = pool.get("model")
+    raw = pool.get("targets")
+    if not raw:
+        if not pool.get("base"):
+            return None, "pool has no base and no targets"
+        raw = [{
+            "base": pool["base"], "key": pool.get("key"), "model": required,
+            "slots": pool.get("slots"), "extra": pool.get("extra"),
+        }]
+    targets = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("base"):
+            return None, "a pool target has no base"
+        targets.append({
+            "base": entry["base"],
+            "key": entry.get("key") or pool.get("key"),
+            "model": entry.get("model") or required,
+            "slots": int(entry.get("slots") or default_slots),
+            "extra": entry.get("extra") or pool.get("extra") or {},
+        })
+    declared = {t["model"] for t in targets if t["model"]}
+    if len(declared) > 1:
+        return None, "pool targets declare different models; refusing the pool"
+    if len(targets) > 1 and not declared:
+        return None, "multi-target pools must declare the trained model name"
+    for t in targets:
+        t["model"] = next(iter(declared), t["model"])
+    return targets, None
+
+
+def _target_semaphore(pool_file, target):
+    key = (pool_file, target["base"])
+    with _lock:
+        sem = _target_semaphores.get(key)
+        if sem is None:
+            sem = threading.BoundedSemaphore(target["slots"])
+            _target_semaphores[key] = sem
+        return sem
+
+
+def _acquire_target(pool_file, targets, downstream, deadline, queue_label):
+    """First target with a free slot; None once the deadline passes.
+
+    A target inside its failure cooldown is skipped. When every target is
+    busy or down the caller waits (cancel-aware) — for a down-only pool it
+    wakes no later than the earliest cooldown end.
+    """
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            return None
+        for target in targets:
+            until = _target_down_until.get((pool_file, target["base"]), 0.0)
+            if until > now:
+                continue
+            sem = _target_semaphore(pool_file, target)
+            if sem.acquire(blocking=False):
+                return target, sem
+        if _caller_eof(downstream, CANCEL_POLL):
+            raise CallerDisconnected(f"downstream caller disconnected while queued for {queue_label}")
 
 
 def load_recall_pool():
@@ -296,7 +395,7 @@ def load_recall_pool():
             pool = json.load(fh)
     except (OSError, ValueError):
         return None
-    return pool if pool.get("enabled") and pool.get("base") else None
+    return pool if _pool_file_ok(pool) else None
 
 
 def request_timeout_s(payload):
@@ -328,25 +427,6 @@ def post(base, path, payload, auth, downstream, timeout=CHAT_TIMEOUT_S):
         return status, json.dumps({"error": str(err)}).encode()
 
 
-@contextlib.contextmanager
-def _pool_slot(downstream, deadline, slots, active_field, queue_label):
-    """One upstream concurrency slot; yields False if the deadline passes first."""
-    while not slots.acquire(timeout=CANCEL_POLL):
-        if _caller_eof(downstream):
-            raise CallerDisconnected(f"downstream caller disconnected while queued for {queue_label}")
-        if time.monotonic() >= deadline:
-            yield False
-            return
-    try:
-        with _lock:
-            _health[active_field] += 1
-        yield True
-    finally:
-        with _lock:
-            _health[active_field] -= 1
-        slots.release()
-
-
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -362,7 +442,8 @@ class Handler(BaseHTTPRequestHandler):
         payload,
         pool,
         *,
-        slots,
+        pool_file,
+        default_slots,
         in_flight_field,
         active_field,
         busy_waits_field,
@@ -373,22 +454,42 @@ class Handler(BaseHTTPRequestHandler):
         busy_error,
         disconnect_label,
     ):
-        if not pool:
+        targets, refuse_reason = pool_targets(pool, default_slots)
+        if targets is None:
             with _lock:
                 _health[last_503_field] = time.time()
-            return 503, json.dumps({"error": missing_error}).encode()
-        auth = "Bearer " + pool["key"] if pool.get("key") else None
-        body = {**payload, "model": pool.get("model", payload.get("model")), **pool.get("extra", {})}
+            return 503, json.dumps({"error": f"{missing_error} ({refuse_reason})"}).encode()
         deadline = time.monotonic() + CHAT_TIMEOUT_S
         with _lock:
             _health[in_flight_field] += 1
         try:
             while True:
-                with _pool_slot(self.connection, deadline, slots, active_field, queue_label) as got:
-                    status, data = post(pool["base"], self.path, body, auth, self.connection,
-                                        request_timeout_s(payload)) if got else (503, b"")
+                picked = _acquire_target(pool_file, targets, self.connection, deadline, queue_label)
+                if picked is None:
+                    with _lock:
+                        _health[last_503_field] = time.time()
+                    return 503, json.dumps({"error": busy_error}).encode()
+                target, sem = picked
+                target_key = (pool_file, target["base"])
+                auth = "Bearer " + target["key"] if target.get("key") else None
+                body = {**payload,
+                        "model": target["model"] or payload.get("model"),
+                        **target["extra"]}
+                with _lock:
+                    _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
+                    _health[active_field] += 1
+                try:
+                    status, data = post(target["base"], self.path, body, auth, self.connection,
+                                        request_timeout_s(payload))
+                finally:
+                    with _lock:
+                        _target_in_flight[target_key] -= 1
+                        _health[active_field] -= 1
+                    sem.release()
                 if status not in BUSY_STATUSES:
                     return status, data
+                # Failing target: skip it for the cooldown, try the next one.
+                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
                 if time.monotonic() >= deadline:
                     with _lock:
                         _health[last_503_field] = time.time()
@@ -396,10 +497,8 @@ class Handler(BaseHTTPRequestHandler):
                 with _lock:
                     _health[busy_waits_field] += 1
                     _health[last_busy_field] = time.time()
-                end = time.monotonic() + BUSY_WAIT_S
-                while time.monotonic() < end:
-                    if _caller_eof(self.connection, CANCEL_POLL):
-                        raise CallerDisconnected(disconnect_label)
+                if _caller_eof(self.connection, CANCEL_POLL):
+                    raise CallerDisconnected(disconnect_label)
         finally:
             with _lock:
                 _health[in_flight_field] -= 1
@@ -422,7 +521,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._chat_via_pool(
                 payload,
                 recall_pool,
-                slots=_recall_slots,
+                pool_file=RECALL_POOL_FILE,
+                default_slots=MAX_RECALL_POOL_INFLIGHT,
                 in_flight_field="recall_in_flight",
                 active_field="recall_pool_active",
                 busy_waits_field="recall_busy_waits_total",
@@ -436,7 +536,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._chat_via_pool(
             payload,
             load_pool(),
-            slots=_slots,
+            pool_file=POOL_FILE,
+            default_slots=MAX_POOL_INFLIGHT,
             in_flight_field="extraction_in_flight",
             active_field="pool_active",
             busy_waits_field="extraction_busy_waits_total",
@@ -477,8 +578,8 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 snapshot = {
                     **_health,
-                    "pool": pool_health_public(load_pool()),
-                    "recall_pool": pool_health_public(load_recall_pool()),
+                    "pool": pool_health_public(load_pool(), POOL_FILE),
+                    "recall_pool": pool_health_public(load_recall_pool(), RECALL_POOL_FILE),
                 }
             return self._send(200, json.dumps(snapshot).encode())
         self._forward("GET")

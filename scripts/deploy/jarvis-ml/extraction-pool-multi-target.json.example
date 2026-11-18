@@ -1,0 +1,23 @@
+{
+  "enabled": true,
+  "model": "REPLACE_WITH_TRAINED_MODEL_ID",
+  "targets": [
+    {
+      "base": "http://REPLACE_WITH_SPARK_HOST:PORT",
+      "model": "REPLACE_WITH_TRAINED_MODEL_ID",
+      "slots": 4,
+      "key": "REPLACE_OR_OMIT"
+    },
+    {
+      "base": "http://REPLACE_WITH_STUDIO_HOST:PORT",
+      "model": "REPLACE_WITH_TRAINED_MODEL_ID",
+      "slots": 2,
+      "key": "REPLACE_OR_OMIT"
+    }
+  ],
+  "extra": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  }
+}
