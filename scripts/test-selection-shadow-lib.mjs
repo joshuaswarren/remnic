@@ -141,11 +141,30 @@ function resolveRelative(repoRoot, importerPath, specifier) {
     return null;
   }
   // JSON module imports ("with { type: \"json\" }") name the file exactly;
-  // they are dependency targets but are never scanned as importers.
-  if (clean.endsWith(".json") && existsSync(path.join(repoRoot, clean))) {
+  // they are dependency targets but are never scanned as importers. Keep the
+  // path even when absent so deleting the file still maps to its importer.
+  if (clean.endsWith(".json")) {
     return clean;
   }
   return existingCandidate(repoRoot, clean);
+}
+
+function pickConditionTarget(node) {
+  if (isString(node)) return node;
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      const target = pickConditionTarget(item);
+      if (target) return target;
+    }
+    return null;
+  }
+  if (isPlainObject(node)) {
+    for (const condition of ["remnic-source", "source", "import", "node", "require", "default"]) {
+      const target = pickConditionTarget(node[condition]);
+      if (target) return target;
+    }
+  }
+  return null;
 }
 
 function exportTarget(manifest, subpath) {
@@ -155,6 +174,11 @@ function exportTarget(manifest, subpath) {
   const lookup = subpath === "" ? "." : subpath;
   if (isString(exportsField)) return lookup === "." ? exportsField : null;
   if (!isPlainObject(exportsField)) return null;
+  // An exports object with no "."-keys is a condition map for the root export.
+  if (lookup === "." && !Object.keys(exportsField).some((key) => key.startsWith("."))) {
+    const target = pickConditionTarget(exportsField);
+    if (target) return target;
+  }
   const keys = lookup === "." ? [".", ""] : [`./${lookup}`, `./${lookup}.js`, `./${lookup}.ts`];
   for (const key of keys) {
     const entry = exportsField[key];
@@ -251,6 +275,8 @@ const GLOBAL_PATTERNS = [
   /^tests\//,
   /^packages\/[^/]+\/package\.json$/,
   /(^|\/)(vitest\.|jest\.|babel\.|eslint\.config|\.eslintrc)/,
+  // Plugin hook tests read hooks.json through fs, not imports.
+  /^packages\/[^/]+\/.*hooks\.json$/,
 ];
 
 /**

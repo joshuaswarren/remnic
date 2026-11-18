@@ -51,8 +51,7 @@ function main() {
   if (changedPath) {
     try {
       changedFiles = readFileSync(changedPath, "utf-8")
-        .split("\n")
-        .map((line) => line.trim())
+        .split("\0")
         .filter((line) => line.length > 0);
     } catch {
       changedFiles = null;

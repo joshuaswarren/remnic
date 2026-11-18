@@ -278,14 +278,14 @@ jobs:
             # parent (the base the tested tree was built on), not a merge-base
             # that a rewound base could move. Fall back to the fetched base.
             if git rev-parse -q --verify 'HEAD^1^{commit}' >/dev/null 2>&1; then
-              git -c core.quotePath=off diff --no-renames --name-only 'HEAD^1..HEAD' > "$CHANGED"
+              git -c core.quotePath=off diff --no-renames --name-only -z 'HEAD^1..HEAD' > "$CHANGED"
             else
               git fetch --quiet origin "$BASE_REF"
               MB="$(git merge-base FETCH_HEAD HEAD 2>/dev/null)"
-              [ -n "$MB" ] && git -c core.quotePath=off diff --no-renames --name-only "$MB"...HEAD > "$CHANGED"
+              [ -n "$MB" ] && git -c core.quotePath=off diff --no-renames --name-only -z "$MB"...HEAD > "$CHANGED"
             fi
           elif [ "${{ github.event_name }}" = "push" ] && [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
-            git -c core.quotePath=off diff --no-renames --name-only "$BEFORE_SHA"..HEAD > "$CHANGED"
+            git -c core.quotePath=off diff --no-renames --name-only -z "$BEFORE_SHA"..HEAD > "$CHANGED"
           fi
           set -e
           # Artifacts stay under RUNNER_TEMP: an untracked dir in the repo

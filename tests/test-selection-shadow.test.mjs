@@ -361,3 +361,59 @@ test("resolveSpecifier resolves a JSON module import to the file", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("resolveSpecifier keeps a missing JSON import path so deletion still selects the importer", () => {
+  const root = makeFixture();
+  try {
+    const write = (rel, content) => {
+      const full = path.join(root, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    // d.test.ts imports ../src/settings.json but the file does not exist
+    // (deleted). The edge must survive so the changed deleted path selects it.
+    write("tests/d.test.ts", 'import cfg from "../src/settings.json" with { type: "json" };\n');
+    const pkgIndex = loadPackageIndex(root);
+    const resolved = resolveSpecifier(root, "tests/d.test.ts", "../src/settings.json", pkgIndex);
+    assert.equal(resolved, "src/settings.json");
+    const graph = buildImportGraph(root, listImportableFiles(root), pkgIndex);
+    const reverse = buildReverseIndex(graph);
+    const allTests = [...ALL_TESTS, "tests/d.test.ts"];
+    const result = selectShadowRun({
+      shardFiles: allTests,
+      allTestFiles: allTests,
+      changedFiles: ["src/settings.json"],
+      reverseIndex: reverse,
+      knownFiles: new Set(listImportableFiles(root)),
+    });
+    assert.equal(result.mode, "selected");
+    assert.deepEqual(result.wouldRun, ["tests/d.test.ts"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("exportTarget resolves a top-level conditional exports object as the root export", () => {
+  const root = makeFixture();
+  try {
+    const pkgDir = path.join(root, "packages", "widget");
+    mkdirSync(path.join(pkgDir, "src"), { recursive: true });
+    writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({
+      name: "@remnic/widget",
+      exports: { "remnic-source": "./src/api.mjs", default: "./dist/api.mjs" },
+    }));
+    writeFileSync(path.join(pkgDir, "src", "api.mjs"), "export const api = 1;\n");
+    const pkgIndex = loadPackageIndex(root);
+    const resolved = resolveSpecifier(root, "tests/a.test.ts", "@remnic/widget", pkgIndex);
+    assert.equal(resolved, "packages/widget/src/api.mjs");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("isGlobalChange treats plugin hooks.json as a full-shard trigger", () => {
+  assert.equal(isGlobalChange("packages/plugin-claude-code/hooks/hooks.json", new Set()), true);
+  assert.equal(isGlobalChange("packages/plugin-agy/hooks.json", new Set()), true);
+  assert.equal(isGlobalChange("docs/hooks.json", new Set()), false);
+  assert.equal(isGlobalChange("packages/plugin-claude-code/hooks/README.md", new Set()), false);
+});
