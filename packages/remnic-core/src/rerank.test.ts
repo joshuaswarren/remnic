@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   rerankOutputTokenBudget,
+  rerankModelReplyIsStructured,
   RERANK_LLM_SNIPPET_CHARS,
   RerankCache,
   parseRerankResponse,
@@ -57,6 +58,51 @@ test("rerankOutputTokenBudget grows with candidate count", () => {
   assert.equal(rerankOutputTokenBudget(2), 44);
   assert.equal(rerankOutputTokenBudget(8), 104);
   assert.ok(rerankOutputTokenBudget(30) <= 256);
+});
+
+test("parseRerankResponse keeps every candidate when order id repeats", () => {
+  const candidates = [
+    { id: "a", originalIndex: 0 },
+    { id: "a", originalIndex: 1 },
+    { id: "b", originalIndex: 2 },
+  ];
+  const ranked = parseRerankResponse(
+    JSON.stringify({ order: ["a", "b"] }),
+    candidates
+  );
+  assert.deepEqual(
+    ranked.map((x) => x.originalIndex),
+    [0, 1, 2]
+  );
+});
+
+test("rerankLocalOrNoop does not cache fallback order from garbage model output", async () => {
+  let calls = 0;
+  const cache = new RerankCache();
+  const base = {
+    query: "q",
+    candidates: [
+      { id: "a", snippet: "x" },
+      { id: "b", snippet: "y" },
+    ],
+    local: {
+      async chatCompletion() {
+        calls += 1;
+        return { content: "not json at all" };
+      },
+    },
+    enabled: true,
+    timeoutMs: 1_500,
+    maxCandidates: 5,
+    cacheEnabled: true,
+    cacheTtlMs: 60_000,
+  };
+  assert.equal(rerankModelReplyIsStructured("not json at all"), false);
+  const first = await rerankLocalOrNoop({ ...base, cache });
+  assert.deepEqual(first, ["a", "b"]);
+  const second = await rerankLocalOrNoop({ ...base, cache });
+  assert.deepEqual(second, ["a", "b"]);
+  assert.equal(calls, 2);
 });
 
 test("parseRerankResponse accepts compact order array", () => {

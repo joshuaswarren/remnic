@@ -85,25 +85,42 @@ export class RerankCache {
  * - Candidates missing from the response keep relative order after scored ones.
  * - Stable tie-breaker: originalIndex ascending.
  */
+function candidateKey(c: RerankCandidate): string {
+  return `${c.id}\0${c.originalIndex}`;
+}
+
 function rankedFromOrder(
   order: string[],
   candidates: RerankCandidate[]
 ): Array<RerankCandidate & { score?: number }> {
-  const byId = new Map<string, RerankCandidate>();
-  for (const c of candidates) byId.set(c.id, c);
+  const byId = new Map<string, RerankCandidate[]>();
+  for (const c of candidates) {
+    const bucket = byId.get(c.id);
+    if (bucket) bucket.push(c);
+    else byId.set(c.id, [c]);
+  }
   const seen = new Set<string>();
   const ranked: Array<RerankCandidate & { score?: number }> = [];
   for (const id of order) {
-    if (seen.has(id)) continue;
-    const c = byId.get(id);
-    if (!c) continue;
-    seen.add(id);
-    ranked.push({ ...c });
+    const bucket = byId.get(id);
+    if (!bucket) continue;
+    for (const c of bucket) {
+      const key = candidateKey(c);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ranked.push({ ...c });
+    }
   }
   for (const c of candidates) {
-    if (!seen.has(c.id)) ranked.push({ ...c });
+    const key = candidateKey(c);
+    if (!seen.has(key)) ranked.push({ ...c });
   }
   return ranked;
+}
+
+/** True when the model reply carried a parseable `order` rerank we should cache. */
+export function rerankModelReplyIsStructured(raw: string): boolean {
+  return tryParseOrderPayload(raw) !== null;
 }
 
 export function parseRerankResponse(
@@ -228,7 +245,7 @@ export async function rerankLocalOrNoop(opts: {
   );
   const rankedIds = parsed.map((p) => p.id);
 
-  if (opts.cache && opts.cacheEnabled) {
+  if (opts.cache && opts.cacheEnabled && rerankModelReplyIsStructured(res.content)) {
     opts.cache.set(key, rankedIds, opts.cacheTtlMs);
   }
 
