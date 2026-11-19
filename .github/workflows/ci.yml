@@ -5,16 +5,28 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "CODE_OF_CONDUCT.md"
+      - ".cursor/**"
+      - "LICENSE"
+      - "**.svg"
+      - "**.png"
+      - "**.gif"
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: read
 
-# A superseded push should not keep burning runners: cancel in-flight runs for
-# the same PR. Pushes to main are never cancelled.
+# Cancel superseded runs on the same PR only. Main pushes use per-SHA groups so
+# concurrent main validations do not cancel each other (CodeRabbit).
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
