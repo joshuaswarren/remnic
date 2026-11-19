@@ -8,6 +8,7 @@ import { isIgnoredPath } from "../scripts/effective-diff.mjs";
 import {
   CI_MAIN_PUSH_PATHS_IGNORE,
   RELEASE_MAIN_PUSH_PATHS_IGNORE,
+  ROOT_DOC_PATHS_IGNORE,
   isShippedMarkdown,
 } from "../scripts/ci-main-push-paths-ignore.mjs";
 
@@ -31,6 +32,20 @@ assert.deepEqual(
 );
 for (const pattern of [...CI_MAIN_PUSH_PATHS_IGNORE, ...RELEASE_MAIN_PUSH_PATHS_IGNORE]) {
   assert.notEqual(pattern, "**.md");
+  assert.doesNotMatch(pattern, /^\//, `${pattern} must not use a leading slash for GitHub filters`);
+}
+
+for (const doc of ROOT_DOC_PATHS_IGNORE) {
+  assert.equal(
+    isIgnoredPath(doc, RELEASE_MAIN_PUSH_PATHS_IGNORE),
+    true,
+    `repo-root ${doc} must be ignored on main push`,
+  );
+  assert.equal(
+    isIgnoredPath(`packages/bench/${doc}`, RELEASE_MAIN_PUSH_PATHS_IGNORE),
+    false,
+    `nested ${doc} must not be ignored`,
+  );
 }
 
 const listed = spawnSync("git", ["ls-files", "-z"], { cwd: rootDir });

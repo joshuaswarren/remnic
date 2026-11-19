@@ -6,11 +6,11 @@ on:
       - main
     paths-ignore:
       - "docs/**"
-      - "/README.md"
-      - "/CHANGELOG.md"
-      - "/CONTRIBUTING.md"
-      - "/SECURITY.md"
-      - "/CODE_OF_CONDUCT.md"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "CODE_OF_CONDUCT.md"
       - ".cursor/**"
       - "LICENSE"
   workflow_dispatch:

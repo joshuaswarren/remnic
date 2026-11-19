@@ -1,13 +1,18 @@
 /**
  * paths-ignore for main-push CI and release (must stay in sync — G1 #3483).
  */
+/** Repo-root marketing docs only (no leading slash — matches GitHub paths-ignore). */
+export const ROOT_DOC_PATHS_IGNORE = [
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+];
+
 export const RELEASE_MAIN_PUSH_PATHS_IGNORE = [
   "docs/**",
-  "/README.md",
-  "/CHANGELOG.md",
-  "/CONTRIBUTING.md",
-  "/SECURITY.md",
-  "/CODE_OF_CONDUCT.md",
+  ...ROOT_DOC_PATHS_IGNORE,
   ".cursor/**",
   "LICENSE",
 ];
