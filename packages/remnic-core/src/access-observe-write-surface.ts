@@ -37,6 +37,7 @@ import { forceFlushPreemptCall } from "./access-extraction-force-flush-preempt.j
 import { ObserveTranscriptPersister, observeTranscriptSessionKey } from "./access-observe-transcript.js";
 import { createObserveStageTimer } from "./access-observe-stage-timing.js";
 import { archiveObservedTurns } from "./access-observe-lcm-archive.js";
+import { scopeObserveBufferAdmissionIdempotencyKey } from "./buffer-admission-idempotency.js";
 import { recordObserveObjectiveState } from "./access-observe-objective-state.js";
 import { FileCalendarSource, buildBriefing, parseBriefingFocus, parseBriefingWindow } from "./briefing.js";
 import {
@@ -878,6 +879,15 @@ export class AccessObserveWriteSurface {
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
         };
+        const clientIdempotencyKey = request.idempotencyKey?.trim();
+        if (clientIdempotencyKey) {
+          ingestOptions.bufferAdmissionIdempotencyKey = scopeObserveBufferAdmissionIdempotencyKey({
+            sessionKey: request.sessionKey,
+            writeNamespace,
+            principal: principalOverride,
+            clientKey: clientIdempotencyKey,
+          });
+        }
         if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
           ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
         }

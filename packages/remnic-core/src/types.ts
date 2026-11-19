@@ -2700,6 +2700,8 @@ export interface BufferState {
   lastExtractionAt: string | null;
   extractionCount: number;
   entries?: Record<string, BufferEntryState>;
+  admissionIdempotency?: Record<string, number>;
+  admissionIdempotencyOrder?: string[];
 }
 
 export interface BehaviorLoopAdjustment {

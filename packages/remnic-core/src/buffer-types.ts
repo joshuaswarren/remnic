@@ -1,6 +1,7 @@
 /** Types split out of buffer.ts (structural ratchet, issue #1995). */
 
 import type { BufferTurn, CodingContext, SignalLevel } from "./types.js";
+
 import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";

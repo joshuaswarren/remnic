@@ -42,6 +42,7 @@ import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
 
 import { groupTurnsByExtractionScope, bufferTurnsEqual } from "../buffer-turn-helpers.js";
+import { ingestReplayBatchBuffered } from "./turn-ingestion-buffered.js";
 import { ExtractionDrain } from "./extraction-drain.js";
 import { skipClaimedSession } from "./buffer-drain-gate.js";
 import { queueBufferedCaptureScopeGroups, type CaptureScopeGroupQueueOptions, type ExtractionTaskExecutionContext } from "./extraction-task-queueing.js";
@@ -281,6 +282,8 @@ export class TurnIngestionCoordinator {
       extractionMode?: "immediate" | "buffered";
       /** #3251: invoked per trigger-queued extraction promise (buffered mode). */
       onExtractionQueued?: (extraction: Promise<void>) => void;
+      /** #3368: durable observe retry — skip buffer add when key already admitted. */
+      bufferAdmissionIdempotencyKey?: string;
       /**
        * #3251: the ALREADY-resolved native coding context for this capture
        * (buffered mode). Pinned on the durable turns so drains re-resolve
@@ -322,7 +325,7 @@ export class TurnIngestionCoordinator {
     // applies to extraction, never to durable admission. The abort pre-check
     // below guards only the immediate (forced-queue) path.
     if (options.extractionMode === "buffered") {
-      return this.ingestReplayBatchBuffered(bySession, options);
+      return ingestReplayBatchBuffered(this.deps, bySession, options);
     }
 
     if (options.abortSignal?.aborted) {
@@ -400,83 +403,6 @@ export class TurnIngestionCoordinator {
       );
       if (firstRejected) {
         throw firstRejected.reason;
-      }
-    }
-  }
-
-  /** #3251 buffered capture: durable scope-pinned admission; await settles at durability. */
-  private async ingestReplayBatchBuffered(
-    bySession: Map<string, BufferTurn[]>,
-    options: {
-      deadlineMs?: number;
-      archiveLcm?: boolean;
-      abortSignal?: AbortSignal;
-      writeNamespaceOverride?: string;
-      principalOverride?: string;
-      scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
-      codingContext?: import("../types.js").CodingContext;
-      onExtractionQueued?: (extraction: Promise<void>) => void;
-    },
-  ): Promise<void> {
-    // #3251: resolve the original actual storage target ONCE at method entry,
-    // BEFORE any LCM archival or buffer admission. Explicit override is
-    // authoritative; otherwise namespaces OFF → the collapsed default store;
-    // namespaces ON → the plan's writeNamespace. Reject before any side
-    // effect if neither is available.
-    const resolvedWriteTarget =
-      options.writeNamespaceOverride ??
-      (resolveNamespaceCapabilities(this.deps.config).namespaces === true
-        ? options.scopeProfileWritePlan?.writeNamespace
-        : this.deps.config.defaultNamespace);
-    if (!resolvedWriteTarget) {
-      throw new StorageTargetRequiredError(
-        "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
-      );
-    }
-    const pin = (turn: BufferTurn): BufferTurn => {
-      const pinned: BufferTurn = { ...turn, acceptedCapture: true, writeNamespaceOverride: resolvedWriteTarget };
-      if (options.codingContext) pinned.codingContext = options.codingContext;
-      if (options.principalOverride) pinned.principalOverride = options.principalOverride;
-      if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
-      return pinned;
-    };
-    const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
-    const outcomes = await this.deps.buffer.addTurnsBounded(batches);
-    if (outcomes === null) {
-      const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
-      throw new ReplayAdmissionRefusedError(
-        `durable observe capture refused: extraction buffer at entry capacity for batch containing ${refusedKey}`,
-      );
-    }
-
-    // All requested session keys were capacity-admitted together before any
-    // turn was saved. There is no retry identity: a repeat after a crash that
-    // persisted only a prefix duplicates that prefix, as on main.
-    await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
-
-    if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
-      for (const [bufferKey, sessionTurns] of bySession) {
-        await this.deps.lcmEngine.observeMessages(
-          bufferKey,
-          sessionTurns.map((turn) => ({
-            role: turn.role,
-            content: turn.content,
-            parts: turn.parts,
-            rawContent: turn.rawContent,
-            sourceFormat: turn.sourceFormat,
-          })),
-        );
-      }
-    }
-
-    for (const { bufferKey, outcome } of outcomes) {
-      if (outcome.decision !== "keep_buffering" && outcome.extractionTurns) {
-        queueBufferedCaptureScopeGroups(
-          this.deps.queueBufferedExtraction,
-          outcome.extractionTurns,
-          bufferKey,
-          options,
-        );
       }
     }
   }

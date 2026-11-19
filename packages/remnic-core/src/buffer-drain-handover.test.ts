@@ -85,6 +85,7 @@ function makeHarness(): Harness {
     loadBuffer: () => files.load(),
     saveBuffer: (state: BufferState) => files.reconcile(state),
     saveBufferSession: (key: string, entryState: BufferEntryState) => files.save(key, entryState),
+    saveBufferAdmissionIdempotency: (state: BufferState) => files.saveAdmissionIdempotency(state),
     deleteBufferSession: (key: string) => files.remove(key),
     isBufferSessionClaimed: (key: string) => files.isClaimed(key),
   };

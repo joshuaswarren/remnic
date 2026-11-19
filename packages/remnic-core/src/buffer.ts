@@ -36,7 +36,8 @@ import {
 } from "./buffer-turn-helpers.js";
 import { BufferAdmissionRefusedError, BufferSessionTurnRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
 import { BufferIngressCounters } from "./buffer-ingress-counters.js";
-import { refuseOverCapBatch, refuseOverCapSingle, resolveMaxTurnsPerSession, sessionTurnCapReached } from "./buffer-session-cap.js";
+import { addTurnsBoundedWithAdmissionKey, type AddTurnsBoundedHost } from "./buffer-add-turns-bounded.js";
+import { refuseOverCapSingle, resolveMaxTurnsPerSession, sessionTurnCapReached } from "./buffer-session-cap.js";
 export { BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer-admission.js";
 import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
 
@@ -48,6 +49,7 @@ import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-
 // Raised from 200 in #3303: live captures were being dropped at busy hours
 // while the single extraction worker drained a backlog.
 const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
+export { BUFFER_ADMISSION_IDEMPOTENCY_CAP } from "./buffer-admission-idempotency.js";
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -510,52 +512,47 @@ export class SmartBuffer {
    * Preflight every new key under the mutation lock before persisting any
    * turn; refusal records nothing and drops nothing.
    */
+
+  private addTurnsBoundedHost(): AddTurnsBoundedHost {
+    const self = this;
+    return {
+      get config() {
+        return self.config;
+      },
+      get maxSessionEntries() {
+        return self.maxSessionEntries;
+      },
+      get state() {
+        return self.state;
+      },
+      get persistence() {
+        return self.persistence;
+      },
+      get ingress() {
+        return self.ingress;
+      },
+      enqueueMutation: (work) => self.enqueueMutation(work),
+      loadUnlocked: () => self.loadUnlocked(),
+      peekEntry: (bufferKey) => self.peekEntry(bufferKey),
+      recordTurnUnlocked: (bufferKey, turn) => self.recordTurnUnlocked(bufferKey, turn),
+      completeAddTurnOutcome: (bufferKey, turn, mutation) =>
+        self.completeAddTurnOutcome(bufferKey, turn, mutation),
+    };
+  }
+
   async addTurnsBounded(
     batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
   ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {
-    const pending = await this.enqueueMutation(async () => {
-      await this.loadUnlocked();
-      const additions: Array<{ bufferKey: string; turn: BufferTurn }> = [];
-      for (const batch of batches) {
-        for (const turn of batch.turns) {
-          additions.push({ bufferKey: batch.bufferKey, turn });
-        }
-      }
+    const result = await addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches);
+    return result === "duplicate" ? null : result;
+  }
 
-      if (refuseOverCapBatch((key) => this.peekEntry(key), batches, resolveMaxTurnsPerSession(this.config.bufferMaxTurnsPerSession))) return this.ingress.refuseAll(additions);
-      const entries = this.state.entries ?? {};
-      const newKeys = [...new Set(
-        additions
-          .map(({ bufferKey }) => bufferKey)
-          .filter((bufferKey) => this.peekEntry(bufferKey) === null),
-      )];
-      const count = Object.keys(entries).length;
-      const requiredEvictions = Math.max(0, count + newKeys.length - this.maxSessionEntries);
-      if (requiredEvictions > 0) {
-        const target = Math.max(0, this.maxSessionEntries - newKeys.length);
-        const evicted = selectEvictedBufferKeys(entries, newKeys, target, EVICTION_HOOKS);
-        if (newKeys.length > 0 && evicted.length < requiredEvictions) return this.ingress.refuseAll(additions);
-        for (const key of evicted) delete entries[key];
-        this.persistence.markEvicted(evicted);
-      }
-
-      const recorded: Array<{ bufferKey: string; turn: BufferTurn; mutation: AddTurnMutationResult }> = [];
-      for (const { bufferKey, turn } of additions) {
-        recorded.push({ bufferKey, turn, mutation: await this.recordTurnUnlocked(bufferKey, turn) });
-      }
-      return recorded;
-    });
-    if (pending === null) return null;
-
-    const outcomes: Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> = [];
-    for (const item of pending) {
-      outcomes.push({
-        bufferKey: item.bufferKey,
-        turn: item.turn,
-        outcome: await this.completeAddTurnOutcome(item.bufferKey, item.turn, item.mutation),
-      });
-    }
-    return outcomes;
+  /** #3368 durable observe replay only; duplicate means the scoped client key already landed. */
+  async addTurnsBoundedForObserveReplay(
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+    admissionKey: string,
+  ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null | "duplicate"> {
+    return addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches, admissionKey.trim());
   }
 
   /** Free one slot only when an empty entry can be reclaimed. */

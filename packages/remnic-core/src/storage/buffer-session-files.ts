@@ -66,6 +66,13 @@ interface SessionFileBody {
   extractionCount?: number;
 }
 
+const ADMISSION_IDEMPOTENCY_FILE = "_admission-idempotency.json";
+
+interface AdmissionIdempotencyFileBody {
+  keys?: Record<string, number>;
+  order?: string[];
+}
+
 function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
   if (!body || !Array.isArray(body.turns) || (body.key?.length ?? 0) === 0) return null;
   const entry: BufferEntryState = {
@@ -114,6 +121,68 @@ export class BufferSessionFiles {
 
   private fileFor(key: string): string {
     return path.join(this.dir, bufferSessionFileName(key));
+  }
+
+  private admissionMetaPath(): string {
+    return path.join(this.dir, ADMISSION_IDEMPOTENCY_FILE);
+  }
+
+  private async readAdmissionIdempotency(): Promise<Pick<BufferState, "admissionIdempotency" | "admissionIdempotencyOrder">> {
+    let raw: string;
+    try {
+      raw = await this.io.read(this.admissionMetaPath());
+    } catch (err) {
+      if (err instanceof Error && isMissing(asFsError(err))) return {};
+      throw err;
+    }
+    try {
+      const body: AdmissionIdempotencyFileBody = JSON.parse(raw);
+      const rawKeys = body.keys;
+      if (rawKeys == null || Array.isArray(rawKeys)) return {};
+      // SAFETY: admission file contract — keys is a plain record of finite turn counts.
+      const map = Object.create(null) as Record<string, number>;
+      for (const [key, value] of Object.entries(rawKeys)) {
+        const count = Number(value);
+        if (Number.isFinite(count)) map[key] = count;
+      }
+      const loaded: Pick<BufferState, "admissionIdempotency" | "admissionIdempotencyOrder"> = {
+        admissionIdempotency: map,
+      };
+      if (Array.isArray(body.order) && body.order.length > 0) {
+        const order: string[] = [];
+        for (const entry of body.order) {
+          const slot = String(entry);
+          if (Object.hasOwn(map, slot)) order.push(slot);
+        }
+        if (order.length > 0) loaded.admissionIdempotencyOrder = order;
+      }
+      return loaded;
+    } catch (err) {
+      log.warn(
+        `buffer: unreadable admission idempotency file; starting empty (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return {};
+    }
+  }
+
+  /** Persist observe-buffer idempotency metadata (production storage path). */
+  async saveAdmissionIdempotency(state: BufferState): Promise<void> {
+    const keys = state.admissionIdempotency;
+    if (!keys || Object.keys(keys).length === 0) {
+      await this.assertDirSafe();
+      try {
+        await unlink(this.admissionMetaPath());
+      } catch (err) {
+        if (!(err instanceof Error) || !isMissing(asFsError(err))) throw err;
+      }
+      return;
+    }
+    await this.assertDirSafe();
+    const order = state.admissionIdempotencyOrder ?? Object.keys(keys);
+    await this.io.write(
+      this.admissionMetaPath(),
+      JSON.stringify({ keys, order }),
+    );
   }
 
   /**
@@ -269,11 +338,13 @@ export class BufferSessionFiles {
     const out: NonNullable<BufferState["entries"]> = Object.create(null);
     for (const [key, entry] of entries) out[key] = entry;
     const def = entries.get("default");
+    const admission = await this.readAdmissionIdempotency();
     return {
       turns: def?.turns ?? [],
       lastExtractionAt: def?.lastExtractionAt ?? null,
       extractionCount: def?.extractionCount ?? 0,
       entries: out,
+      ...admission,
     };
   }
 
