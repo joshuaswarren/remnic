@@ -128,6 +128,12 @@ const AGY_SQLITE_MESSAGE_CAP = 8000;
 // SELECT itself stays as the hard bound for rows materialized in one read.
 const AGY_SQLITE_ROW_LIMIT = 10000;
 const AGY_JSONL_MESSAGE_CAP = 8000;
+// Line-count and byte bound on JSONL reads (#3454 / Kilo review): mirror the
+// SQLite row cap so a pathological transcript cannot load unbounded lines or
+// messages. Past the cap the parse throws and the shared parse-failed path
+// logs and retries on each hook event (same loud failure as .db over-cap).
+const AGY_JSONL_ROW_LIMIT = 10000;
+const AGY_JSONL_MAX_BYTES = AGY_JSONL_ROW_LIMIT * (AGY_JSONL_MESSAGE_CAP + 256);
 
 function asPlainRecord(value) {
   if (value === null) return null;
@@ -143,9 +149,23 @@ function jsonlStringContent(value) {
 }
 
 function parseAgyJsonl(jsonlPath) {
-  const lines = fs.readFileSync(jsonlPath, "utf8").split("\n").filter(Boolean);
+  const st = fs.statSync(jsonlPath);
+  if (st.size > AGY_JSONL_MAX_BYTES) {
+    throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_MAX_BYTES} bytes (${st.size})`);
+  }
+  const raw = fs.readFileSync(jsonlPath, "utf8");
   const messages = [];
-  for (const line of lines) {
+  let lineCount = 0;
+  let start = 0;
+  for (let i = 0; i <= raw.length; i++) {
+    if (i !== raw.length && raw[i] !== "\n") continue;
+    const line = raw.slice(start, i);
+    start = i + 1;
+    if (line.length === 0) continue;
+    lineCount += 1;
+    if (lineCount > AGY_JSONL_ROW_LIMIT) {
+      throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_ROW_LIMIT} lines (${lineCount})`);
+    }
     let parsed;
     try {
       parsed = JSON.parse(line);
@@ -160,6 +180,9 @@ function parseAgyJsonl(jsonlPath) {
       messages.push({ role: "user", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
     } else if (entry.type === "PLANNER_RESPONSE") {
       messages.push({ role: "assistant", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
+    }
+    if (messages.length > AGY_JSONL_ROW_LIMIT) {
+      throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_ROW_LIMIT} messages (${messages.length})`);
     }
   }
   return messages;

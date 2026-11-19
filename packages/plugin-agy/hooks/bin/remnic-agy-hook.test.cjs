@@ -217,6 +217,40 @@ test("post-tool-observe: parses the agy native JSONL transcript by type", async 
   }
 });
 
+test("post-tool-observe: an over-cap JSONL transcript refuses the parse loudly", async () => {
+  const home = mkHome();
+  const sessionId = "jsonl-cap";
+  const dir = path.join(home, "brain", sessionId, ".system_generated", "logs");
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = [];
+  for (let n = 0; n <= 10000; n++) {
+    lines.push(JSON.stringify({ type: "USER_INPUT", source: "USER_EXPLICIT", content: `line ${n}` }));
+  }
+  fs.writeFileSync(path.join(dir, "transcript.jsonl"), lines.join("\n"));
+  const { server, port, calls } = await startServer(okServer());
+  try {
+    const { json } = await runHook(
+      "post-tool-observe",
+      { session_id: sessionId, tool_name: "edit", prompt_id: "p1", transcriptPath: path.join(dir, "transcript.jsonl") },
+      { port, home },
+    );
+    assert.equal(json.continue, true);
+    const logFile = path.join(home, ".remnic", "logs", "remnic-post-tool-observe.log");
+    const deadline = Date.now() + 10000;
+    let logged = "";
+    while (Date.now() < deadline) {
+      logged = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
+      if (/parse failed/.test(logged)) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.match(logged, /parse failed/, "worker logged the over-cap jsonl parse failure");
+    assert.ok(!calls.find((c) => c.url === "/engram/v1/observe"), "no observe for over-cap jsonl");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("session-start: injects recall context and recovers cwd from AGY_PROJECT_DIR", async () => {
   const home = mkHome();
   const { server, port, calls } = await startServer(okServer());
