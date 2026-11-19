@@ -439,6 +439,7 @@ import {
   type MemoryIntent,
   type MemorySummary,
 } from "./types.js";
+import { scaleLcmSummarizeBudget } from "./lcm-summarize-budget.js";
 import { LcmEngine } from "./lcm/index.js";
 import { shouldSkipImplicitExtraction } from "./explicit-capture.js";
 import {
@@ -1772,17 +1773,19 @@ export class Orchestrator {
         targetTokens: number,
         aggressive: boolean,
       ) => {
+        const budget = scaleLcmSummarizeBudget(text, targetTokens);
+        const { promptText, effectiveTargetTokens, maxCompletionTokens } = budget;
         const instructionText = aggressive
-          ? `Compress the following into bullet points. One bullet per distinct fact or decision. Maximum ${targetTokens} tokens total. No prose.`
-          : `Compress the following conversation segment into a dense summary. Preserve: decisions made, code artifacts mentioned, errors encountered, open questions, and any commitments or next-steps. Omit: pleasantries, restatements, and anything the agent would not need to recall later. Output a single paragraph, maximum ${targetTokens} tokens.`;
+          ? `Compress the following into bullet points. One bullet per distinct fact or decision. Maximum ${effectiveTargetTokens} tokens total. No prose.`
+          : `Compress the following conversation segment into a dense summary. Preserve: decisions made, code artifacts mentioned, errors encountered, open questions, and any commitments or next-steps. Omit: pleasantries, restatements, and anything the agent would not need to recall later. Output a single paragraph, maximum ${effectiveTargetTokens} tokens.`;
         try {
           const messages = [
             { role: "system" as const, content: instructionText },
-            { role: "user" as const, content: text.slice(0, 12000) },
+            { role: "user" as const, content: promptText },
           ];
           const result = this.config.modelSource === "gateway" && this._fastGatewayLlm
             ? await this._fastGatewayLlm.chatCompletion(messages, {
-                maxTokens: targetTokens * 2,
+                maxTokens: maxCompletionTokens,
                 timeoutMs: this.config.localLlmFastTimeoutMs,
                 // LCM is latency-sensitive. A configured fast persona is the
                 // explicit fast-tier route; otherwise use taskModelChain so LCM
@@ -1792,7 +1795,7 @@ export class Orchestrator {
                   : gatewayTaskChainOptions(this.config)),
               })
             : await this.fastLlm.chatCompletion(messages, {
-                maxTokens: targetTokens * 2,
+                maxTokens: maxCompletionTokens,
                 operation: "lcm-summarize",
                 priority: "background",
               });
