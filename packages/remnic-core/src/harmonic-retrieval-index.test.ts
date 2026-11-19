@@ -6,7 +6,7 @@ import test from "node:test";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { openBetterSqlite3 } from "./runtime/better-sqlite.js";
 import { recordAbstractionNode } from "./abstraction-nodes.js";
-import { readProjectedHarmonicGraph, searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
+import { harmonicSearchIndexStats, readProjectedHarmonicGraph, searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
 import { rebuildMemoryProjection } from "./maintenance/rebuild-memory-projection.js";
 import { StorageManager } from "./storage.js";
 
@@ -435,6 +435,53 @@ test("indexed source resolution overlaps per-source file reads (#3450)", async (
     const graph = await readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: false });
     assert.equal(maxInFlight > 1, true, `source reads ran one at a time (max in-flight ${maxInFlight})`);
     assert.deepEqual(graph.nodes[0]?.sourceMemoryIds?.slice().sort(), sourceMemoryIds.slice().sort());
+  } finally {
+    t.mock.restoreAll();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("cached graph searches share one scoring index across recalls (#3450)", async (t) => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-index-reuse-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const a = await storage.writeMemory("fact", "shared index source payload", { source: "test" });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "shared-index-node",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "shared index source payload",
+        summary: "shared index summary",
+        sourceMemoryIds: [a.id],
+      },
+    });
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+
+    const run = () =>
+      searchHarmonicRetrieval({
+        memoryDir,
+        query: "shared index source payload",
+        maxResults: 5,
+        anchorsEnabled: false,
+        useGraphCache: true,
+      });
+    const first = await run();
+    const buildsBefore = harmonicSearchIndexStats.builds;
+    const second = await run();
+    const third = await run();
+    assert.equal(
+      harmonicSearchIndexStats.builds,
+      buildsBefore,
+      "repeat searches over a cached graph must reuse the same scoring index (re-tokenizing every recall costs ~750 ms on a real corpus)",
+    );
+    assert.deepEqual(third, second);
+    assert.deepEqual(second.map((r) => r.node.nodeId), first.map((r) => r.node.nodeId));
   } finally {
     t.mock.restoreAll();
     await rm(memoryDir, { recursive: true, force: true });

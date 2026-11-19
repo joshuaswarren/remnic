@@ -13,7 +13,7 @@ import { inferMemoryStatus, toMemoryPathRel } from "./memory-lifecycle-ledger-ut
  } from "./abstraction-nodes.js";
 import { resolveCueAnchorStoreDir, validateCueAnchor, type CueAnchor, type CueAnchorType } from "./cue-anchors.js";
 import { compareDeterministicStrings } from "./deterministic-order.js";
-import { countRecallTokenOverlap, normalizeRecallTokens } from "./recall-tokenization.js";
+import { normalizeRecallTokenSet, normalizeRecallTokens } from "./recall-tokenization.js";
 import { stripAttributesSuffix } from "./structured-attributes.js";
 import { isValidityExpiredNow } from "./temporal-validity.js";
 import { assertSafePathSegment, isRecord } from "./store-contract.js";
@@ -291,35 +291,109 @@ interface HarmonicCandidate {
   matchedAnchors: Map<string, HarmonicMatchedAnchor>;
 }
 
-function scoreNode(node: AbstractionNode, queryTokens: Set<string>): { score: number; matchedFields: string[] } {
+function tokenOverlap(queryTokens: Set<string>, fieldTokens: ReadonlySet<string>): number {
+  let matches = 0;
+  for (const token of queryTokens) {
+    if (fieldTokens.has(token)) matches += 1;
+  }
+  return matches;
+}
+
+interface HarmonicNodeTokens {
+  title: ReadonlySet<string>;
+  summary: ReadonlySet<string>;
+  tags: ReadonlySet<string>;
+  entities: ReadonlySet<string>;
+  kind: ReadonlySet<string>;
+}
+
+interface HarmonicAnchorTokens {
+  value: ReadonlySet<string>;
+  normalized: ReadonlySet<string>;
+  type: ReadonlySet<string>;
+  eligibleTags: ReadonlySet<string>;
+}
+
+interface HarmonicSearchIndex {
+  nodesById: Map<string, AbstractionNode>;
+  nodeTokens: Map<string, HarmonicNodeTokens>;
+  anchorTokens: Map<string, HarmonicAnchorTokens>;
+}
+
+export const harmonicSearchIndexStats = { builds: 0 };
+
+/**
+ * Per-graph scoring index, keyed on the frozen graph object itself. Scoring a
+ * recall tokenizes every node's title/summary/tags/entities/kind and every
+ * anchor's value/cue/type/eligible tags; on a cache hit that repeated the
+ * whole normalization for each recall (~0.75 s on a ~2.5k node, ~10k anchor
+ * corpus, issue #3450). The sets are identical to what `countRecallTokenOverlap`
+ * computed from the raw fields, so scores and matchedFields are unchanged.
+ * For an uncached graph the index is built per call — the same work the old
+ * code did inline.
+ */
+const harmonicSearchIndexes = new WeakMap<ProjectedHarmonicGraph, HarmonicSearchIndex>();
+
+function getHarmonicSearchIndex(graph: ProjectedHarmonicGraph): HarmonicSearchIndex {
+  const cached = harmonicSearchIndexes.get(graph);
+  if (cached) return cached;
+  harmonicSearchIndexStats.builds += 1;
+  const nodesById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
+  const nodeTokens = new Map<string, HarmonicNodeTokens>();
+  for (const node of graph.nodes) {
+    nodeTokens.set(node.nodeId, {
+      title: normalizeRecallTokenSet(node.title ?? ""),
+      summary: normalizeRecallTokenSet(node.summary ?? ""),
+      tags: normalizeRecallTokenSet(node.tags?.join(" ") ?? ""),
+      entities: normalizeRecallTokenSet(node.entityRefs?.join(" ") ?? ""),
+      kind: normalizeRecallTokenSet(`${node.kind} ${node.abstractionLevel}`),
+    });
+  }
+  const anchorTokens = new Map<string, HarmonicAnchorTokens>();
+  for (const anchor of graph.anchors) {
+    const eligibleNodeTags = new Set(anchor.nodeRefs.flatMap((nodeRef) => nodesById.get(nodeRef)?.tags ?? []));
+    const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
+    anchorTokens.set(anchor.anchorId, {
+      value: normalizeRecallTokenSet(anchor.anchorValue ?? ""),
+      normalized: normalizeRecallTokenSet(anchor.normalizedCue ?? ""),
+      type: normalizeRecallTokenSet(anchor.anchorType),
+      eligibleTags: normalizeRecallTokenSet(eligibleAnchorTags.join(" ")),
+    });
+  }
+  const index: HarmonicSearchIndex = { nodesById, nodeTokens, anchorTokens };
+  harmonicSearchIndexes.set(graph, index);
+  return index;
+}
+
+function scoreNode(tokens: HarmonicNodeTokens, queryTokens: Set<string>): { score: number; matchedFields: string[] } {
   const matchedFields: string[] = [];
   let score = 0;
 
-  const titleMatches = countRecallTokenOverlap(queryTokens, node.title);
+  const titleMatches = tokenOverlap(queryTokens, tokens.title);
   if (titleMatches > 0) {
     score += titleMatches * 3;
     matchedFields.push("title");
   }
 
-  const summaryMatches = countRecallTokenOverlap(queryTokens, node.summary);
+  const summaryMatches = tokenOverlap(queryTokens, tokens.summary);
   if (summaryMatches > 0) {
     score += summaryMatches * 3;
     matchedFields.push("summary");
   }
 
-  const tagMatches = countRecallTokenOverlap(queryTokens, node.tags?.join(" "));
+  const tagMatches = tokenOverlap(queryTokens, tokens.tags);
   if (tagMatches > 0) {
     score += tagMatches * 2;
     matchedFields.push("tags");
   }
 
-  const entityMatches = countRecallTokenOverlap(queryTokens, node.entityRefs?.join(" "));
+  const entityMatches = tokenOverlap(queryTokens, tokens.entities);
   if (entityMatches > 0) {
     score += entityMatches * 2;
     matchedFields.push("entityRefs");
   }
 
-  const kindMatches = countRecallTokenOverlap(queryTokens, `${node.kind} ${node.abstractionLevel}`);
+  const kindMatches = tokenOverlap(queryTokens, tokens.kind);
   if (kindMatches > 0) {
     score += kindMatches;
     matchedFields.push("kind");
@@ -328,16 +402,12 @@ function scoreNode(node: AbstractionNode, queryTokens: Set<string>): { score: nu
   return { score, matchedFields };
 }
 
-function scoreAnchor(
-  anchor: CueAnchor,
-  queryTokens: Set<string>,
-  eligibleNodeTags: readonly string[]
-): { score: number; matchedFields: string[] } {
+function scoreAnchor(tokens: HarmonicAnchorTokens, queryTokens: Set<string>): { score: number; matchedFields: string[] } {
   const matchedFields: string[] = [];
   let score = 0;
 
-  const valueMatches = countRecallTokenOverlap(queryTokens, anchor.anchorValue);
-  const normalizedMatches = countRecallTokenOverlap(queryTokens, anchor.normalizedCue);
+  const valueMatches = tokenOverlap(queryTokens, tokens.value);
+  const normalizedMatches = tokenOverlap(queryTokens, tokens.normalized);
   const cueMatches = Math.max(valueMatches, normalizedMatches);
   if (cueMatches > 0) {
     score += cueMatches * 4;
@@ -345,13 +415,13 @@ function scoreAnchor(
     if (normalizedMatches > 0) matchedFields.push("anchor");
   }
 
-  const typeMatches = countRecallTokenOverlap(queryTokens, anchor.anchorType);
+  const typeMatches = tokenOverlap(queryTokens, tokens.type);
   if (typeMatches > 0) {
     score += typeMatches;
     matchedFields.push("anchorType");
   }
 
-  const tagMatches = countRecallTokenOverlap(queryTokens, eligibleNodeTags.join(" "));
+  const tagMatches = tokenOverlap(queryTokens, tokens.eligibleTags);
   if (tagMatches > 0) {
     score += tagMatches * 2;
     matchedFields.push("anchorTags");
@@ -780,17 +850,21 @@ export async function searchHarmonicRetrieval(options: {
 
   // One projection for every graph reader: nodes and anchors both arrive
   // already narrowed to the namespace's current active memories.
-  const { nodes: eligibleNodes, anchors } = await readProjectedHarmonicGraph({
+  const graph = await readProjectedHarmonicGraph({
     ...options,
     useCache: options.useGraphCache === true,
     waitBudgetMs:
       options.waitBudgetMs === undefined ? HARMONIC_GRAPH_WAIT_BUDGET_MS : options.waitBudgetMs,
   });
+  const { nodes: eligibleNodes, anchors } = graph;
+  const searchIndex = getHarmonicSearchIndex(graph);
   const candidates = new Map<string, HarmonicCandidate>();
 
   for (const node of eligibleNodes) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    const { score, matchedFields } = scoreNode(node, queryTokens);
+    const tokens = searchIndex.nodeTokens.get(node.nodeId);
+    if (!tokens) continue;
+    const { score, matchedFields } = scoreNode(tokens, queryTokens);
     if (score <= 0) continue;
     candidates.set(node.nodeId, {
       node,
@@ -803,17 +877,16 @@ export async function searchHarmonicRetrieval(options: {
 
   if (options.anchorsEnabled) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    const nodeIndex = new Map(eligibleNodes.map((node) => [node.nodeId, node]));
     for (const anchor of anchors) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
       // `nodeRefs` are the projection's surviving references already.
       const eligibleNodeRefs = anchor.nodeRefs;
-      const eligibleNodeTags = new Set(eligibleNodeRefs.flatMap((nodeRef) => nodeIndex.get(nodeRef)?.tags ?? []));
-      const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
-      const { score, matchedFields } = scoreAnchor(anchor, queryTokens, eligibleAnchorTags);
+      const anchorTokens = searchIndex.anchorTokens.get(anchor.anchorId);
+      if (!anchorTokens) continue;
+      const { score, matchedFields } = scoreAnchor(anchorTokens, queryTokens);
       if (score <= 0) continue;
       for (const nodeRef of eligibleNodeRefs) {
-        const node = nodeIndex.get(nodeRef);
+        const node = searchIndex.nodesById.get(nodeRef);
         if (!node) continue;
         const existing = candidates.get(nodeRef) ?? {
           node,
