@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { setCodexCliFallbackRunnerForProcess } from "@remnic/core";
+import {
+  setCodexCliFallbackRunnerForProcess,
+  type CodexCliFallbackMessage,
+  type CodexCliFallbackRequest,
+} from "@remnic/core";
+import { estimateTokenCount } from "@remnic/core/token-estimate";
+import { z } from "zod";
 
 import { Orchestrator } from "@remnic/core/orchestrator";
 import { parseConfig } from "@remnic/core/config";
@@ -67,10 +74,10 @@ async function captureLcmGatewaySummary(
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-gateway-"));
   const calls: CapturedGatewayCall[] = [];
   const restoreRunner = setCodexCliFallbackRunnerForProcess(
-    async (request) => {
+    async (request: CodexCliFallbackRequest) => {
       calls.push({
         modelId: request.modelId,
-        agentPrompt: request.messages.map((message) => message.content).join("\n"),
+        agentPrompt: request.messages.map((message: CodexCliFallbackMessage) => message.content).join("\n"),
         timeoutMs: request.options.timeoutMs,
       });
       return {
@@ -151,4 +158,122 @@ test("LCM summarization preserves fastGatewayAgentId over taskModelChain", async
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.modelId, "fast-model");
+});
+
+const ChatRequestSchema = z.object({
+  max_tokens: z.number().int(),
+  messages: z.array(z.object({ role: z.string(), content: z.string() })),
+});
+
+const BoundPortSchema = z.object({ port: z.number().int() });
+
+async function startLoopbackChatCompletions(): Promise<{
+  baseUrl: string;
+  bodies: string[];
+  close: () => Promise<void>;
+}> {
+  const bodies: string[] = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      if (req.url?.endsWith("/chat/completions")) bodies.push(body);
+      res.setHeader("content-type", "application/json");
+      res.end(
+        JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "Gateway summary." }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 },
+        }),
+      );
+    });
+  });
+  const listening = Promise.withResolvers<void>();
+  server.once("error", listening.reject);
+  server.listen(0, "127.0.0.1", listening.resolve);
+  await listening.promise;
+  const { port } = BoundPortSchema.parse(server.address());
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    bodies,
+    close: () => {
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      return closed.promise;
+    },
+  };
+}
+
+function makeLoopbackGatewayConfig(baseUrl: string) {
+  return {
+    agents: {
+      defaults: { model: { primary: "loopback-provider/loopback-model" } },
+      list: [
+        {
+          id: "loopback-agent",
+          name: "Loopback provider",
+          model: { primary: "loopback-provider/loopback-model" },
+        },
+      ],
+    },
+    models: {
+      providers: {
+        "loopback-provider": {
+          baseUrl,
+          api: "openai-completions",
+          models: [{ id: "loopback-model", name: "loopback-model" }],
+        },
+      },
+    },
+  };
+}
+
+// Regression test for #3407: the gateway budget must use the sent prefix.
+test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole batch (#3407)", async () => {
+  // mkdtemp first: if it rejects, no server is listening yet, so nothing can
+  // strand the test process (CodeRabbit: protect cleanup before setup).
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-gateway-budget-"));
+  const stub = await startLoopbackChatCompletions();
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      lcmEnabled: true,
+      localLlmEnabled: false,
+      modelSource: "gateway",
+      gatewayAgentId: "loopback-agent",
+      gatewayConfig: makeLoopbackGatewayConfig(stub.baseUrl),
+    }),
+  );
+  try {
+    await orchestrator.initialize();
+    const engine = orchestrator.lcmEngine;
+    assert.ok(engine, "LCM engine should be enabled");
+    // SAFETY: engine is asserted present above; literal bracket access reads
+    // its private field with the declared SummarizeFn type, including null.
+    const summarizeFn = engine["summarizeFn"];
+
+    const batch = "[user] the deploy failed at step three; retry it with the cached artifact.\n\n".repeat(3_000);
+    const batchTarget = Math.max(64, Math.ceil(estimateTokenCount(batch) * 0.25));
+    assert.ok(batchTarget * 2 > 16_384, "fixture must exceed a common provider output cap under batch sizing");
+
+    const result = await summarizeFn(batch, batchTarget, false);
+
+    assert.equal(result, "Gateway summary.");
+    assert.equal(stub.bodies.length, 1, "the gateway route serves the LCM summarize call");
+    const request = ChatRequestSchema.parse(JSON.parse(stub.bodies[0]!));
+    const [system, user] = request.messages;
+    const sentTokens = estimateTokenCount(user!.content);
+    assert.equal(user!.content.length, 12_000, "only the 12,000-character prefix is sent");
+    assert.ok(
+      request.max_tokens <= 2 * (Math.ceil(sentTokens * 0.25) + 1),
+      `max_tokens ${request.max_tokens} must track the ${sentTokens} tokens sent`,
+    );
+    assert.ok(system!.content.includes(`maximum ${request.max_tokens / 2} tokens`));
+  } finally {
+    await stub.close();
+    await orchestrator.destroy();
+    orchestrator.lcmEngine?.close();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
