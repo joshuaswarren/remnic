@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -143,10 +144,14 @@ class PoolTargetsTest(unittest.TestCase):
                 {"base": self.base_c, "slots": 1},
             ],
         })
-        with self._post() as resp:
-            self.assertEqual(resp.status, 200)
-        with self._post() as resp:
-            self.assertEqual(resp.status, 200)
+        # Deterministic draw: uniform(0, total) → 0.0 always picks the first
+        # target in pool order (busy), so the 503 cooldown path is the one
+        # exercised on every run instead of a lucky weighted draw.
+        with unittest.mock.patch.object(self.mod.random, "uniform", return_value=0.0):
+            with self._post() as resp:
+                self.assertEqual(resp.status, 200)
+            with self._post() as resp:
+                self.assertEqual(resp.status, 200)
         busy_hits = [k for k, _ in _Target.hits if k == "busy"]
         c_hits = [k for k, _ in _Target.hits if k == "c"]
         self.assertEqual(len(busy_hits), 1)   # tried once, then cooled down
