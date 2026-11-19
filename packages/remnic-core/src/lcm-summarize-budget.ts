@@ -3,6 +3,8 @@ import { estimateTokenCount } from "./token-estimate.js";
 /** User payload char cap in orchestrator LCM summarize closure (issue #3407). */
 export const LCM_SUMMARIZE_PROMPT_MAX_CHARS = 12_000;
 
+const MIN_LCM_SUMMARIZE_TARGET_TOKENS = 64;
+
 export interface LcmSummarizeBudget {
   promptText: string;
   effectiveTargetTokens: number;
@@ -21,7 +23,9 @@ export function scaleLcmSummarizeBudget(
   const fullEst = Math.max(1, estimateTokenCount(fullText));
   const sentEst = Math.max(1, estimateTokenCount(promptText));
   const ratio = Math.min(1, sentEst / fullEst);
-  const effectiveTargetTokens = Math.ceil(targetTokens * ratio);
+  const scaledTarget = Math.ceil(targetTokens * ratio);
+  const minimumTarget = Math.min(targetTokens, MIN_LCM_SUMMARIZE_TARGET_TOKENS);
+  const effectiveTargetTokens = Math.max(minimumTarget, scaledTarget);
   return {
     promptText,
     effectiveTargetTokens,

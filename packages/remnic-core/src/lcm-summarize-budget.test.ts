@@ -47,6 +47,14 @@ test("#3407 unscaled 32-token target passes through on short batch", () => {
   assert.equal(budget.maxCompletionTokens, 64);
 });
 
+test("#3407 120k-char batch at target 64 does not collapse below 64", () => {
+  const fullText = "word ".repeat(30_000);
+  const budget = scaleLcmSummarizeBudget(fullText, 64);
+  assert.equal(budget.promptText.length, LCM_SUMMARIZE_PROMPT_MAX_CHARS);
+  assert.equal(budget.effectiveTargetTokens, 64);
+  assert.equal(budget.maxCompletionTokens, 128);
+});
+
 test("#3407 truncated 12k-char batch scales below batch target", () => {
   const filler = "word ".repeat(4000);
   const fullText = filler + "z".repeat(80_000);
