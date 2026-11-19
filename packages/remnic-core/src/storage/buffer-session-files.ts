@@ -66,6 +66,13 @@ interface SessionFileBody {
   extractionCount?: number;
 }
 
+const ADMISSION_IDEMPOTENCY_FILE = "_admission-idempotency.json";
+
+interface AdmissionIdempotencyFileBody {
+  keys?: Record<string, number>;
+  order?: string[];
+}
+
 function entryFromBody(body: SessionFileBody): { key: string; entry: BufferEntryState } | null {
   if (!body || !Array.isArray(body.turns) || (body.key?.length ?? 0) === 0) return null;
   const entry: BufferEntryState = {
@@ -114,6 +121,59 @@ export class BufferSessionFiles {
 
   private fileFor(key: string): string {
     return path.join(this.dir, bufferSessionFileName(key));
+  }
+
+  private admissionMetaPath(): string {
+    return path.join(this.dir, ADMISSION_IDEMPOTENCY_FILE);
+  }
+
+  private async readAdmissionIdempotency(): Promise<Pick<BufferState, "admissionIdempotency" | "admissionIdempotencyOrder">> {
+    let raw: string;
+    try {
+      raw = await this.io.read(this.admissionMetaPath());
+    } catch (err) {
+      if (err instanceof Error && isMissing(asFsError(err))) return {};
+      throw err;
+    }
+    try {
+      const body: AdmissionIdempotencyFileBody = JSON.parse(raw);
+      const keys = body.keys;
+      if (!keys || typeof keys !== "object") return {};
+      const map = Object.create(null) as Record<string, number>;
+      for (const [key, value] of Object.entries(keys)) {
+        if (typeof value === "number" && Number.isFinite(value)) map[key] = value;
+      }
+      const order = Array.isArray(body.order) ? body.order.filter((k) => typeof k === "string" && Object.hasOwn(map, k)) : undefined;
+      return {
+        admissionIdempotency: map,
+        ...(order && order.length > 0 ? { admissionIdempotencyOrder: order } : {}),
+      };
+    } catch (err) {
+      log.warn(
+        `buffer: unreadable admission idempotency file; starting empty (${err instanceof Error ? err.message : String(err)})`,
+      );
+      return {};
+    }
+  }
+
+  /** Persist observe-buffer idempotency metadata (production storage path). */
+  async saveAdmissionIdempotency(state: BufferState): Promise<void> {
+    const keys = state.admissionIdempotency;
+    if (!keys || Object.keys(keys).length === 0) {
+      await this.assertDirSafe();
+      try {
+        await unlink(this.admissionMetaPath());
+      } catch (err) {
+        if (!(err instanceof Error) || !isMissing(asFsError(err))) throw err;
+      }
+      return;
+    }
+    await this.assertDirSafe();
+    const order = state.admissionIdempotencyOrder ?? Object.keys(keys);
+    await this.io.write(
+      this.admissionMetaPath(),
+      JSON.stringify({ keys, order }),
+    );
   }
 
   /**
@@ -269,11 +329,13 @@ export class BufferSessionFiles {
     const out: NonNullable<BufferState["entries"]> = Object.create(null);
     for (const [key, entry] of entries) out[key] = entry;
     const def = entries.get("default");
+    const admission = await this.readAdmissionIdempotency();
     return {
       turns: def?.turns ?? [],
       lastExtractionAt: def?.lastExtractionAt ?? null,
       extractionCount: def?.extractionCount ?? 0,
       entries: out,
+      ...admission,
     };
   }
 

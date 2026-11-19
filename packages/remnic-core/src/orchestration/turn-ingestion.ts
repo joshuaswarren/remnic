@@ -444,12 +444,12 @@ export class TurnIngestionCoordinator {
       return pinned;
     };
     const admissionKey = options.bufferAdmissionIdempotencyKey?.trim();
-    if (admissionKey && (await this.deps.buffer.hasAdmissionIdempotencyKey(admissionKey))) {
-      return;
-    }
-
     const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
-    const outcomes = await this.deps.buffer.addTurnsBounded(batches);
+    const outcomes = await this.deps.buffer.addTurnsBounded(
+      batches,
+      admissionKey ? { bufferAdmissionIdempotencyKey: admissionKey } : undefined,
+    );
+    if (outcomes === "duplicate") return;
     if (outcomes === null) {
       const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
       throw new ReplayAdmissionRefusedError(
@@ -461,9 +461,6 @@ export class TurnIngestionCoordinator {
     // turn was saved. There is no retry identity: a repeat after a crash that
     // persisted only a prefix duplicates that prefix, as on main.
     await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
-    if (admissionKey) {
-      await this.deps.buffer.recordAdmissionIdempotency(admissionKey, outcomes.length);
-    }
 
     if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
       for (const [bufferKey, sessionTurns] of bySession) {

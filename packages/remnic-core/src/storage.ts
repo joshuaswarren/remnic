@@ -5518,6 +5518,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   async loadBuffer(): Promise<BufferState> { return this.bufferSessionFiles().load(); }
   async saveBuffer(state: BufferState): Promise<void> { await this.bufferSessionFiles().reconcile(state); }
   async saveBufferSession(key: string, entry: BufferEntryState): Promise<BufferSessionSaveOutcome> { return await this.bufferSessionFiles().save(key, entry); }
+  async saveBufferAdmissionIdempotency(state: BufferState): Promise<void> { await this.bufferSessionFiles().saveAdmissionIdempotency(state); }
   async deleteBufferSession(key: string): Promise<void> { await this.bufferSessionFiles().remove(key); }
   /** Sync gate check for the extraction queue: is this session claimed by a buffer drain? */
   isBufferSessionClaimed(key: string): boolean { return this.bufferSessionFiles().isClaimed(key); }

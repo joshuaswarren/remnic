@@ -21,6 +21,8 @@ export interface BufferStorage {
   isBufferSessionClaimed?(key: string): boolean;
   /** Optional surprise-telemetry sink; older storage and test doubles omit it. */
   appendBufferSurpriseEvents?(events: BufferSurpriseEvent[]): Promise<number>;
+  /** Persist observe-buffer idempotency metadata (#3368 production path). */
+  saveBufferAdmissionIdempotency?(state: BufferState): Promise<void>;
 }
 
 /** What one persist pass changed beyond plain writes. */
@@ -95,6 +97,7 @@ export interface BufferSessionPersistenceOptions {
 export class BufferSessionPersistence {
   private readonly dirty = new Set<string>();
   private readonly deleted = new Set<string>();
+  private admissionIdempotencyDirty = false;
   /** Last successful session-file write per key (deferral bookkeeping, #3389). */
   private readonly lastPersistedAt = new Map<string, number>();
   private readonly clock: () => number;
@@ -121,8 +124,12 @@ export class BufferSessionPersistence {
     for (const key of keys) this.markDeleted(key);
   }
 
+  markAdmissionIdempotencyDirty(): void {
+    this.admissionIdempotencyDirty = true;
+  }
+
   hasPending(): boolean {
-    return this.dirty.size > 0 || this.deleted.size > 0;
+    return this.dirty.size > 0 || this.deleted.size > 0 || this.admissionIdempotencyDirty;
   }
 
   /**
@@ -149,8 +156,12 @@ export class BufferSessionPersistence {
     const deleteSession = storage.deleteBufferSession?.bind(storage);
     if (!saveSession || !deleteSession) {
       await storage.saveBuffer(state);
+      if (this.admissionIdempotencyDirty && storage.saveBufferAdmissionIdempotency) {
+        await storage.saveBufferAdmissionIdempotency(state);
+      }
       this.dirty.clear();
       this.deleted.clear();
+      this.admissionIdempotencyDirty = false;
       return { handedOver: [], drainedTurns, deferred: [] };
     }
     const now = opts?.now ?? this.clock;
@@ -203,6 +214,10 @@ export class BufferSessionPersistence {
         drainedTurns.set(key, saveOutcome.drainedTurns);
       }
       if (saveOutcome?.status === "handed_over") this.lastPersistedAt.delete(key);
+    }
+    if (this.admissionIdempotencyDirty && storage.saveBufferAdmissionIdempotency) {
+      await storage.saveBufferAdmissionIdempotency(state);
+      this.admissionIdempotencyDirty = false;
     }
     const outcome: BufferPersistOutcome = { handedOver, drainedTurns, deferred };
     if (deferred.length > 0 && nextEligibleAt !== undefined) {

@@ -458,7 +458,12 @@ export function normalizeBufferState(state: BufferState): BufferState {
     lastExtractionAt: entries.default.lastExtractionAt,
     extractionCount: entries.default.extractionCount,
     entries,
-    ...(state.admissionIdempotency ? { admissionIdempotency: { ...state.admissionIdempotency } } : {}),
+    ...(state.admissionIdempotency
+      ? {
+          admissionIdempotency: Object.assign(Object.create(null), state.admissionIdempotency),
+          ...(state.admissionIdempotencyOrder ? { admissionIdempotencyOrder: [...state.admissionIdempotencyOrder] } : {}),
+        }
+      : {}),
   };
 }
 
