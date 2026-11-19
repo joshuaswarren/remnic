@@ -51,7 +51,7 @@ export async function addTurnsBoundedWithAdmissionKey(
       }
     }
 
-    if (refuseOverCapBatch((key) => host.peekEntry(key), batches, resolveMaxTurnsPerSession(host.config.bufferMaxTurnsPerSession))) {
+    if (refuseOverCapBatch((key) => host.peekEntry(key) ?? null, batches, resolveMaxTurnsPerSession(host.config.bufferMaxTurnsPerSession))) {
       return host.ingress.refuseAll(additions);
     }
     const entries = host.state.entries ?? {};
