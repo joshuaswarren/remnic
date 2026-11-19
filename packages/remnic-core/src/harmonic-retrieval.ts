@@ -316,7 +316,7 @@ interface HarmonicAnchorTokens {
 
 interface HarmonicSearchIndex {
   nodesById: Map<string, AbstractionNode>;
-  nodeTokens: Map<string, HarmonicNodeTokens>;
+  nodeTokens: HarmonicNodeTokens[];
   anchorTokens: HarmonicAnchorTokens[];
 }
 
@@ -339,16 +339,15 @@ function getHarmonicSearchIndex(graph: ProjectedHarmonicGraph): HarmonicSearchIn
   if (cached) return cached;
   harmonicSearchIndexStats.builds += 1;
   const nodesById = new Map(graph.nodes.map((node) => [node.nodeId, node]));
-  const nodeTokens = new Map<string, HarmonicNodeTokens>();
-  for (const node of graph.nodes) {
-    nodeTokens.set(node.nodeId, {
-      title: normalizeRecallTokenSet(node.title ?? ""),
-      summary: normalizeRecallTokenSet(node.summary ?? ""),
-      tags: normalizeRecallTokenSet(node.tags?.join(" ") ?? ""),
-      entities: normalizeRecallTokenSet(node.entityRefs?.join(" ") ?? ""),
-      kind: normalizeRecallTokenSet(`${node.kind} ${node.abstractionLevel}`),
-    });
-  }
+  // Node ids are only unique per record day (nodes/<day>/<nodeId>.json), so
+  // tokens are indexed by position in graph.nodes.
+  const nodeTokens = graph.nodes.map((node) => ({
+    title: normalizeRecallTokenSet(node.title ?? ""),
+    summary: normalizeRecallTokenSet(node.summary ?? ""),
+    tags: normalizeRecallTokenSet(node.tags?.join(" ") ?? ""),
+    entities: normalizeRecallTokenSet(node.entityRefs?.join(" ") ?? ""),
+    kind: normalizeRecallTokenSet(`${node.kind} ${node.abstractionLevel}`),
+  }));
   // Anchor ids are only unique per anchorType (cue-anchors dedups by
   // type+id), so tokens are indexed by position in graph.anchors.
   const anchorTokens = graph.anchors.map((anchor) => {
@@ -861,10 +860,9 @@ export async function searchHarmonicRetrieval(options: {
   const searchIndex = getHarmonicSearchIndex(graph);
   const candidates = new Map<string, HarmonicCandidate>();
 
-  for (const node of eligibleNodes) {
+  for (const [nodeIndexPos, node] of eligibleNodes.entries()) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    const tokens = searchIndex.nodeTokens.get(node.nodeId);
-    if (!tokens) continue;
+    const tokens = searchIndex.nodeTokens[nodeIndexPos];
     const { score, matchedFields } = scoreNode(tokens, queryTokens);
     if (score <= 0) continue;
     candidates.set(node.nodeId, {

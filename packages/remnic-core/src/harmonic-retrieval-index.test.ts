@@ -577,3 +577,48 @@ test("anchors sharing an anchorId across types keep their own cues (#3450)", asy
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("nodes sharing a nodeId across record days keep their own tokens (#3450)", async (t) => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-dup-node-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const a = await storage.writeMemory("fact", "zebra wobble retained source", { source: "test" });
+    const b = await storage.writeMemory("fact", "quartz tumble retained source", { source: "test" });
+    // Node records live under nodes/<day>/<nodeId>.json, so one nodeId can
+    // legitimately recur on a second day as a distinct projected node.
+    for (const [recordedAt, title, id] of [
+      ["2026-11-17T00:00:00.000Z", "zebra wobble", a.id],
+      ["2026-11-18T00:00:00.000Z", "quartz tumble", b.id],
+    ] as const) {
+      await recordAbstractionNode({
+        memoryDir,
+        node: {
+          schemaVersion: 1,
+          nodeId: "shared-id",
+          recordedAt,
+          sessionKey: "agent:index",
+          kind: "topic",
+          abstractionLevel: "meso",
+          title,
+          summary: title,
+          sourceMemoryIds: [id],
+        },
+      });
+    }
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+
+    const got = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "zebra wobble",
+      maxResults: 5,
+      anchorsEnabled: false,
+      useGraphCache: true,
+    });
+    assert.equal(got.length, 1);
+    assert.equal(got[0].node.sourceMemoryIds?.[0], a.id);
+  } finally {
+    t.mock.restoreAll();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
