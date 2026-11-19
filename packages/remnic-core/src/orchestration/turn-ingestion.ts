@@ -462,8 +462,7 @@ export class TurnIngestionCoordinator {
     // persisted only a prefix duplicates that prefix, as on main.
     await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
     if (admissionKey) {
-      const turnCount = outcomes.reduce((sum, { turn }) => sum + 1, 0);
-      await this.deps.buffer.recordAdmissionIdempotency(admissionKey, turnCount);
+      await this.deps.buffer.recordAdmissionIdempotency(admissionKey, outcomes.length);
     }
 
     if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
