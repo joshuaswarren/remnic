@@ -413,6 +413,15 @@ def _acquire_target(pool_file, targets, downstream, deadline, queue_label):
                 return target, sem
         if _caller_eof(downstream, CANCEL_POLL):
             raise CallerDisconnected(f"downstream caller disconnected while queued for {queue_label}")
+        # Bound the retry wait by the cancel cadence and the earliest wake
+        # (cooldown end or deadline); a readable-but-not-EOF caller socket
+        # makes the poll return instantly and would otherwise spin the CPU.
+        wake = deadline
+        for t in targets:
+            until = _target_down_until.get((pool_file, t["base"]), 0.0)
+            if until > now:
+                wake = min(wake, until)
+        time.sleep(min(CANCEL_POLL, max(0.0, wake - now)))
 
 
 def load_recall_pool():
