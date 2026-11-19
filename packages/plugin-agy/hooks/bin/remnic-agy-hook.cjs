@@ -149,11 +149,20 @@ function jsonlStringContent(value) {
 }
 
 function parseAgyJsonl(jsonlPath) {
-  const st = fs.statSync(jsonlPath);
-  if (st.size > AGY_JSONL_MAX_BYTES) {
-    throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_MAX_BYTES} bytes (${st.size})`);
+  // Read through one descriptor with a byte bound: stat-then-read lets a file
+  // grown between the calls load past the cap (CodeRabbit #3454).
+  const fd = fs.openSync(jsonlPath, "r");
+  const buf = Buffer.alloc(AGY_JSONL_MAX_BYTES + 1);
+  let read;
+  try {
+    read = fs.readSync(fd, buf, 0, buf.length, 0);
+  } finally {
+    fs.closeSync(fd);
   }
-  const raw = fs.readFileSync(jsonlPath, "utf8");
+  if (read > AGY_JSONL_MAX_BYTES) {
+    throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_MAX_BYTES} bytes`);
+  }
+  const raw = buf.toString("utf8", 0, read);
   const messages = [];
   let lineCount = 0;
   let start = 0;
