@@ -35,14 +35,15 @@ export function ensureAdmissionIdempotencyMap(state: BufferAdmissionIdempotencyS
 export function ensureAdmissionIdempotencyOrder(state: BufferAdmissionIdempotencyState): string[] {
   if (!state.admissionIdempotencyOrder) {
     state.admissionIdempotencyOrder = [];
-    const map = state.admissionIdempotency;
-    if (map) {
-      for (const key of Object.keys(map)) {
-        if (Object.hasOwn(map, key)) state.admissionIdempotencyOrder.push(key);
-      }
+  }
+  const order = state.admissionIdempotencyOrder;
+  const map = state.admissionIdempotency;
+  if (map) {
+    for (const key of Object.keys(map)) {
+      if (Object.hasOwn(map, key) && !order.includes(key)) order.push(key);
     }
   }
-  return state.admissionIdempotencyOrder;
+  return order;
 }
 
 export function hasBufferedAdmissionIdempotencyKey(state: BufferAdmissionIdempotencyState, key: string): boolean {

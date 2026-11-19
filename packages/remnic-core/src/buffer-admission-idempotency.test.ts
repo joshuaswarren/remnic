@@ -210,6 +210,22 @@ test("#3368 restored idempotency map without order participates in eviction cap"
   assert.equal(state.admissionIdempotency!.restored, undefined);
 });
 
+test("#3368 incomplete order array still evicts orphan map keys", () => {
+  const state: BufferState = {
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    admissionIdempotency: { restored: 1, orphan: 1 },
+    admissionIdempotencyOrder: ["stale-only"],
+  };
+  for (let i = 0; i < BUFFER_ADMISSION_IDEMPOTENCY_CAP; i++) {
+    recordBufferedAdmissionIdempotencyKey(state, `k${i}`, 1);
+  }
+  assert.equal(Object.keys(state.admissionIdempotency!).length, BUFFER_ADMISSION_IDEMPOTENCY_CAP);
+  assert.equal(state.admissionIdempotency!.restored, undefined);
+  assert.equal(state.admissionIdempotency!.orphan, undefined);
+});
+
 test("#3368 admission idempotency is not persisted while a session write is deferred", async () => {
   class DeferAdmissionStorage {
     readonly writes = new Map<string, number>();
