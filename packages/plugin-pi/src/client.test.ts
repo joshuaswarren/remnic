@@ -199,6 +199,7 @@ function baseConfig(): RemnicPiConfig {
     requestTimeoutMs: 60000,
     startupRequestTimeoutMs: 1000,
     turnRequestTimeoutMs: 20000,
+    firstTurnRecallBudgetMs: 1000,
     observeMaxBytes: 102400,
     observeMaxRetries: 2,
     daemonCooldownMs: 5000,
