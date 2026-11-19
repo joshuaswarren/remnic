@@ -6,6 +6,7 @@ import test from "node:test";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { openBetterSqlite3 } from "./runtime/better-sqlite.js";
 import { recordAbstractionNode } from "./abstraction-nodes.js";
+import { recordCueAnchor } from "./cue-anchors.js";
 import { harmonicSearchIndexStats, readProjectedHarmonicGraph, searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
 import { rebuildMemoryProjection } from "./maintenance/rebuild-memory-projection.js";
 import { StorageManager } from "./storage.js";
@@ -482,6 +483,95 @@ test("cached graph searches share one scoring index across recalls (#3450)", asy
     );
     assert.deepEqual(third, second);
     assert.deepEqual(second.map((r) => r.node.nodeId), first.map((r) => r.node.nodeId));
+  } finally {
+    t.mock.restoreAll();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("anchors sharing an anchorId across types keep their own cues (#3450)", async (t) => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-dup-anchor-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const alpha = await storage.writeMemory("fact", "alpha source body", { source: "test" });
+    const beta = await storage.writeMemory("fact", "beta source body", { source: "test" });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "dup-anchor-alpha",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "unmatched alpha title",
+        summary: "unmatched alpha summary",
+        sourceMemoryIds: [alpha.id],
+      },
+    });
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "dup-anchor-beta",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "unmatched beta title",
+        summary: "unmatched beta summary",
+        sourceMemoryIds: [beta.id],
+      },
+    });
+    // The anchor store dedups by (anchorType, anchorId), so one anchorId can
+    // legitimately recur under a second type — each keeps its own cue.
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "shared-anchor-id",
+        anchorType: "entity",
+        anchorValue: "zebra wobble",
+        normalizedCue: "zebra wobble",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        nodeRefs: ["dup-anchor-alpha"],
+        sourceMemoryIdsByNodeRef: { "dup-anchor-alpha": [alpha.id] },
+      },
+    });
+    await recordCueAnchor({
+      memoryDir,
+      anchor: {
+        schemaVersion: 1,
+        anchorId: "shared-anchor-id",
+        anchorType: "file",
+        anchorValue: "quartz tumble",
+        normalizedCue: "quartz tumble",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        nodeRefs: ["dup-anchor-beta"],
+        sourceMemoryIdsByNodeRef: { "dup-anchor-beta": [beta.id] },
+      },
+    });
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+
+    const zebra = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "zebra wobble",
+      maxResults: 5,
+      anchorsEnabled: true,
+      useGraphCache: true,
+    });
+    assert.deepEqual(zebra.map((r) => r.node.nodeId), ["dup-anchor-alpha"]);
+    const quartz = await searchHarmonicRetrieval({
+      memoryDir,
+      query: "quartz tumble",
+      maxResults: 5,
+      anchorsEnabled: true,
+      useGraphCache: true,
+    });
+    assert.deepEqual(quartz.map((r) => r.node.nodeId), ["dup-anchor-beta"]);
   } finally {
     t.mock.restoreAll();
     await rm(memoryDir, { recursive: true, force: true });

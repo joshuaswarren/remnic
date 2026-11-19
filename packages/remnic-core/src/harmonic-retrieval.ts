@@ -317,7 +317,7 @@ interface HarmonicAnchorTokens {
 interface HarmonicSearchIndex {
   nodesById: Map<string, AbstractionNode>;
   nodeTokens: Map<string, HarmonicNodeTokens>;
-  anchorTokens: Map<string, HarmonicAnchorTokens>;
+  anchorTokens: HarmonicAnchorTokens[];
 }
 
 export const harmonicSearchIndexStats = { builds: 0 };
@@ -349,17 +349,18 @@ function getHarmonicSearchIndex(graph: ProjectedHarmonicGraph): HarmonicSearchIn
       kind: normalizeRecallTokenSet(`${node.kind} ${node.abstractionLevel}`),
     });
   }
-  const anchorTokens = new Map<string, HarmonicAnchorTokens>();
-  for (const anchor of graph.anchors) {
+  // Anchor ids are only unique per anchorType (cue-anchors dedups by
+  // type+id), so tokens are indexed by position in graph.anchors.
+  const anchorTokens = graph.anchors.map((anchor) => {
     const eligibleNodeTags = new Set(anchor.nodeRefs.flatMap((nodeRef) => nodesById.get(nodeRef)?.tags ?? []));
     const eligibleAnchorTags = anchor.tags?.filter((tag) => eligibleNodeTags.has(tag)) ?? [];
-    anchorTokens.set(anchor.anchorId, {
+    return {
       value: normalizeRecallTokenSet(anchor.anchorValue ?? ""),
       normalized: normalizeRecallTokenSet(anchor.normalizedCue ?? ""),
       type: normalizeRecallTokenSet(anchor.anchorType),
       eligibleTags: normalizeRecallTokenSet(eligibleAnchorTags.join(" ")),
-    });
-  }
+    };
+  });
   const index: HarmonicSearchIndex = { nodesById, nodeTokens, anchorTokens };
   harmonicSearchIndexes.set(graph, index);
   return index;
@@ -877,12 +878,11 @@ export async function searchHarmonicRetrieval(options: {
 
   if (options.anchorsEnabled) {
     throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
-    for (const anchor of anchors) {
+    for (const [anchorIndex, anchor] of anchors.entries()) {
       throwIfAborted(options.abortSignal, "harmonic retrieval aborted");
       // `nodeRefs` are the projection's surviving references already.
       const eligibleNodeRefs = anchor.nodeRefs;
-      const anchorTokens = searchIndex.anchorTokens.get(anchor.anchorId);
-      if (!anchorTokens) continue;
+      const anchorTokens = searchIndex.anchorTokens[anchorIndex];
       const { score, matchedFields } = scoreAnchor(anchorTokens, queryTokens);
       if (score <= 0) continue;
       for (const nodeRef of eligibleNodeRefs) {
