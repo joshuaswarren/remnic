@@ -24,8 +24,8 @@ permissions:
   packages: write
 
 concurrency:
-  group: container-${{ github.ref }}
-  cancel-in-progress: true
+  group: container-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   docker-relevant:
