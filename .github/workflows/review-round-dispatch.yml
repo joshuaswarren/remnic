@@ -18,13 +18,14 @@ name: Review Round Dispatch
 # The decision logic lives in scripts/review-round-gate.mjs + review-rounds.mjs
 # (unit-tested); the step imports it directly rather than mirroring it inline.
 
+# Not ruleset-required; narrow triggers to cut ~issue_comment/review noise (wAQ CI cost, Nov 2026).
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
-    types: [submitted, edited, dismissed]
+    types: [submitted]
   pull_request_review_comment:
-    types: [created, edited, deleted]
+    types: [created]
   # Top-level PR comments (a bot verdict posted as an issue comment) are read by
   # the gate as bot activity, so wake on them too (GitHub files PR comments under
   # issue_comment). The gate's own comments use GITHUB_TOKEN, which does not
