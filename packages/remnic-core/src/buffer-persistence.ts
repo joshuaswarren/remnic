@@ -215,7 +215,10 @@ export class BufferSessionPersistence {
       }
       if (saveOutcome?.status === "handed_over") this.lastPersistedAt.delete(key);
     }
-    if (this.admissionIdempotencyDirty && storage.saveBufferAdmissionIdempotency) {
+    // #3368: never persist admission keys while session bodies are still deferred —
+    // a crash after the key lands but before the deferred rewrite would make a
+    // same-key retry swallow the unwritten turns.
+    if (this.admissionIdempotencyDirty && deferred.length === 0 && storage.saveBufferAdmissionIdempotency) {
       await storage.saveBufferAdmissionIdempotency(state);
       this.admissionIdempotencyDirty = false;
     }

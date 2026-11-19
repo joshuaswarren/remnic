@@ -5,7 +5,16 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { scopeObserveBufferAdmissionIdempotencyKey } from "./buffer-admission-idempotency.js";
+import {
+  BUFFER_ADMISSION_IDEMPOTENCY_CAP,
+  recordBufferedAdmissionIdempotencyKey,
+  scopeObserveBufferAdmissionIdempotencyKey,
+} from "./buffer-admission-idempotency.js";
+import {
+  BUFFER_SESSION_DEFER_INTERVAL_MS,
+  BUFFER_SESSION_DEFER_MIN_BYTES,
+  BufferSessionPersistence,
+} from "./buffer-persistence.js";
 import { SmartBuffer } from "./buffer.js";
 import type { BufferStorage } from "./buffer-persistence.js";
 import { BufferSessionFiles } from "./storage/buffer-session-files.js";
@@ -28,7 +37,7 @@ import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coo
 import { SessionObserverState } from "./session-observer-state.js";
 import { TranscriptManager } from "./transcript.js";
 import { parseConfig } from "./config.js";
-import type { BufferState, BufferTurn, PluginConfig } from "./types.js";
+import type { BufferEntryState, BufferState, BufferTurn, PluginConfig } from "./types.js";
 import type { ReplayTurn } from "./replay/types.js";
 
 class FakeStorage {
@@ -173,8 +182,10 @@ test("#3368 observe idempotency keys survive BufferSessionFiles restart", async 
     writeNamespaceOverride: "default",
     bufferAdmissionIdempotencyKey: idemKey,
   });
-  await buffer.load();
-  await coordinator.ingestReplayBatch([replay], {
+  const bufferAfterRestart = new SmartBuffer(makeConfig(memoryDir), storage, null, { countIngress: false });
+  await bufferAfterRestart.load();
+  const coordinatorAfterRestart = new TurnIngestionCoordinator(depsFor(bufferAfterRestart, memoryDir));
+  await coordinatorAfterRestart.ingestReplayBatch([replay], {
     archiveLcm: false,
     extractionMode: "buffered",
     writeNamespaceOverride: "default",
@@ -183,4 +194,88 @@ test("#3368 observe idempotency keys survive BufferSessionFiles restart", async 
   const reloaded = await files.load();
   assert.equal(reloaded.entries?.s1?.turns.length, 1);
   assert.equal(reloaded.admissionIdempotency?.[idemKey], 1);
+});
+
+test("#3368 restored idempotency map without order participates in eviction cap", () => {
+  const state: BufferState = {
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    admissionIdempotency: { restored: 1 },
+  };
+  for (let i = 0; i < BUFFER_ADMISSION_IDEMPOTENCY_CAP; i++) {
+    recordBufferedAdmissionIdempotencyKey(state, `k${i}`, 1);
+  }
+  assert.equal(Object.keys(state.admissionIdempotency!).length, BUFFER_ADMISSION_IDEMPOTENCY_CAP);
+  assert.equal(state.admissionIdempotency!.restored, undefined);
+});
+
+test("#3368 admission idempotency is not persisted while a session write is deferred", async () => {
+  class DeferAdmissionStorage {
+    readonly writes = new Map<string, number>();
+    admissionPersistSaves = 0;
+    private initial: BufferState = { turns: [], lastExtractionAt: null, extractionCount: 0 };
+
+    async loadBuffer(): Promise<BufferState> {
+      return structuredClone(this.initial);
+    }
+
+    async saveBuffer(state: BufferState): Promise<void> {
+      this.initial = structuredClone(state);
+    }
+
+    async saveBufferSession(key: string, entry: BufferEntryState): Promise<void> {
+      this.writes.set(key, (this.writes.get(key) ?? 0) + 1);
+      void entry;
+    }
+
+    async saveBufferAdmissionIdempotency(state: BufferState): Promise<void> {
+      this.admissionPersistSaves++;
+      this.initial = { ...this.initial, ...structuredClone(state) };
+    }
+
+    async deleteBufferSession(): Promise<void> {}
+
+    isBufferSessionClaimed(): boolean {
+      return false;
+    }
+  }
+
+  const bigEntry = (): BufferEntryState => ({
+    turns: [
+      {
+        role: "user",
+        content: "x".repeat(BUFFER_SESSION_DEFER_MIN_BYTES),
+        timestamp: "2026-11-19T00:00:00.000Z",
+        sessionKey: "big",
+      },
+    ],
+    lastExtractionAt: null,
+    extractionCount: 0,
+  });
+
+  const storage = new DeferAdmissionStorage();
+  const entries = new Map<string, BufferEntryState>([["big", bigEntry()]]);
+  const peek = (key: string) => entries.get(key);
+  const persistence = new BufferSessionPersistence();
+  let now = 1_000;
+  const clock = () => now;
+  const state: BufferState = {
+    turns: [],
+    lastExtractionAt: null,
+    extractionCount: 0,
+    admissionIdempotency: { "obs-key": 1 },
+  };
+
+  persistence.markDirty("big");
+  await persistence.persist(storage, state, peek, undefined, { now: clock, allowDeferral: true });
+  assert.equal(storage.writes.get("big"), 1);
+
+  persistence.markDirty("big");
+  persistence.markAdmissionIdempotencyDirty();
+  now += 1_000;
+  await persistence.persist(storage, state, peek, undefined, { now: clock, allowDeferral: true });
+  assert.equal(storage.writes.get("big"), 1, "large session rewrite deferred");
+  assert.equal(storage.admissionPersistSaves, 0, "idempotency must not land ahead of deferred turns");
+  assert.equal(persistence.hasPending(), true);
 });
