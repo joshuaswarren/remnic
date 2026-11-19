@@ -879,12 +879,13 @@ export class AccessObserveWriteSurface {
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
         };
-        if (typeof request.idempotencyKey === "string" && request.idempotencyKey.trim().length > 0) {
+        const clientIdempotencyKey = request.idempotencyKey?.trim();
+        if (clientIdempotencyKey) {
           ingestOptions.bufferAdmissionIdempotencyKey = scopeObserveBufferAdmissionIdempotencyKey({
             sessionKey: request.sessionKey,
             writeNamespace,
             principal: principalOverride,
-            clientKey: request.idempotencyKey,
+            clientKey: clientIdempotencyKey,
           });
         }
         if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {

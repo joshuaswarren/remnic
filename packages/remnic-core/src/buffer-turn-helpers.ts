@@ -453,18 +453,19 @@ export function normalizeBufferState(state: BufferState): BufferState {
       extractionCount: state.extractionCount ?? 0,
     };
   }
-  return {
+  const normalized: BufferState = {
     turns: entries.default.turns,
     lastExtractionAt: entries.default.lastExtractionAt,
     extractionCount: entries.default.extractionCount,
     entries,
-    ...(state.admissionIdempotency
-      ? {
-          admissionIdempotency: Object.assign(Object.create(null), state.admissionIdempotency),
-          ...(state.admissionIdempotencyOrder ? { admissionIdempotencyOrder: [...state.admissionIdempotencyOrder] } : {}),
-        }
-      : {}),
   };
+  if (state.admissionIdempotency) {
+    normalized.admissionIdempotency = Object.assign(Object.create(null), state.admissionIdempotency);
+    if (state.admissionIdempotencyOrder) {
+      normalized.admissionIdempotencyOrder = [...state.admissionIdempotencyOrder];
+    }
+  }
+  return normalized;
 }
 
 /** Trigger-mode decision for a buffer entry (extracted from SmartBuffer to

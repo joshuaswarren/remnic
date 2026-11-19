@@ -137,17 +137,26 @@ export class BufferSessionFiles {
     }
     try {
       const body: AdmissionIdempotencyFileBody = JSON.parse(raw);
-      const keys = body.keys;
-      if (!keys || typeof keys !== "object") return {};
+      const rawKeys = body.keys;
+      if (rawKeys == null || Array.isArray(rawKeys)) return {};
+      // SAFETY: admission file contract — keys is a plain record of finite turn counts.
       const map = Object.create(null) as Record<string, number>;
-      for (const [key, value] of Object.entries(keys)) {
-        if (typeof value === "number" && Number.isFinite(value)) map[key] = value;
+      for (const [key, value] of Object.entries(rawKeys)) {
+        const count = Number(value);
+        if (Number.isFinite(count)) map[key] = count;
       }
-      const order = Array.isArray(body.order) ? body.order.filter((k) => typeof k === "string" && Object.hasOwn(map, k)) : undefined;
-      return {
+      const loaded: Pick<BufferState, "admissionIdempotency" | "admissionIdempotencyOrder"> = {
         admissionIdempotency: map,
-        ...(order && order.length > 0 ? { admissionIdempotencyOrder: order } : {}),
       };
+      if (Array.isArray(body.order) && body.order.length > 0) {
+        const order: string[] = [];
+        for (const entry of body.order) {
+          const slot = String(entry);
+          if (Object.hasOwn(map, slot)) order.push(slot);
+        }
+        if (order.length > 0) loaded.admissionIdempotencyOrder = order;
+      }
+      return loaded;
     } catch (err) {
       log.warn(
         `buffer: unreadable admission idempotency file; starting empty (${err instanceof Error ? err.message : String(err)})`,
