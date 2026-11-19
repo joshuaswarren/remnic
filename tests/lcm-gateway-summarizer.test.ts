@@ -229,7 +229,7 @@ function makeLoopbackGatewayConfig(baseUrl: string) {
   };
 }
 
-// RichardHojunJang #3408: gateway branch must scale max_tokens to sent prefix, not whole batch.
+// Regression test for #3407: the gateway budget must use the sent prefix.
 test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole batch (#3407)", async () => {
   // mkdtemp first: if it rejects, no server is listening yet, so nothing can
   // strand the test process (CodeRabbit: protect cleanup before setup).
@@ -249,11 +249,9 @@ test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole
     await orchestrator.initialize();
     const engine = orchestrator.lcmEngine;
     assert.ok(engine, "LCM engine should be enabled");
-    // SAFETY: engine is asserted present above; the cast only re-exposes the
-    // private summarizeFn field initialize() guarantees when lcmEnabled, with
-    // its declared (batch, target, aggressive) => Promise<string> signature.
-    const summarizeFn = (engine as { summarizeFn: (batch: string, target: number, aggressive: boolean) => Promise<string> })
-      .summarizeFn;
+    // SAFETY: engine is asserted present above; literal bracket access reads
+    // its private field with the declared SummarizeFn type, including null.
+    const summarizeFn = engine["summarizeFn"];
 
     const batch = "[user] the deploy failed at step three; retry it with the cached artifact.\n\n".repeat(3_000);
     const batchTarget = Math.max(64, Math.ceil(estimateTokenCount(batch) * 0.25));
