@@ -706,3 +706,47 @@ test("fail-open: dead daemon still emits continue and never throws", async () =>
   assert.equal(json.continue, true);
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+// ── bounded jsonl read (CodeRabbit #3454 short-read finding) ────────────────
+
+test("readBounded accumulates multiple short reads before EOF", () => {
+  const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
+  const content = Buffer.from('{"a":1}\n{"b":2}\n{"c":3}\n', "utf8");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-agy-rb-")), "t.jsonl");
+  fs.writeFileSync(file, content);
+  const realRead = fs.readSync;
+  const realOpen = fs.openSync;
+  const realClose = fs.closeSync;
+  let calls = 0;
+  try {
+    fs.readSync = (fd, buf, off, len, pos) => {
+      calls += 1;
+      // Positive short reads: at most 5 bytes per call, then EOF.
+      return realRead(fd, buf, off, Math.min(len, 5), pos);
+    };
+    const got = readBounded(file, 1024);
+    assert.deepEqual(got, content, "short reads accumulate to the full file");
+    assert.ok(calls > 1, `expected multiple short reads, saw ${calls}`);
+  } finally {
+    fs.readSync = realRead;
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+    void realOpen;
+    void realClose;
+  }
+});
+
+test("readBounded returns maxBytes + 1 so the caller can reject the cap", () => {
+  const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
+  const content = Buffer.alloc(300, "x");
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-agy-rb-")), "t.jsonl");
+  fs.writeFileSync(file, content);
+  const realRead = fs.readSync;
+  try {
+    fs.readSync = (fd, buf, off, len, pos) => realRead(fd, buf, off, Math.min(len, 7), pos);
+    const got = readBounded(file, 100);
+    assert.equal(got.length, 101, "bound + 1 is returned even under short reads");
+  } finally {
+    fs.readSync = realRead;
+    fs.rmSync(path.dirname(file), { recursive: true, force: true });
+  }
+});

@@ -41,6 +41,7 @@ const os = require("os");
 const path = require("path");
 
 const { run } = require("./remnic-hook-core.cjs");
+const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
 
 // Conversation storage (measured on Linux 2026-11-17): per-conversation
 // SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
@@ -150,19 +151,14 @@ function jsonlStringContent(value) {
 
 function parseAgyJsonl(jsonlPath) {
   // Read through one descriptor with a byte bound: stat-then-read lets a file
-  // grown between the calls load past the cap (CodeRabbit #3454).
-  const fd = fs.openSync(jsonlPath, "r");
-  const buf = Buffer.alloc(AGY_JSONL_MAX_BYTES + 1);
-  let read;
-  try {
-    read = fs.readSync(fd, buf, 0, buf.length, 0);
-  } finally {
-    fs.closeSync(fd);
-  }
-  if (read > AGY_JSONL_MAX_BYTES) {
+  // grown between the calls load past the cap (CodeRabbit #3454). The bounded
+  // read lives in remnic-agy-jsonl-read.cjs so a short readSync (network
+  // filesystems) cannot truncate the transcript mid-parse.
+  const bytes = readBounded(jsonlPath, AGY_JSONL_MAX_BYTES);
+  if (bytes.length > AGY_JSONL_MAX_BYTES) {
     throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_MAX_BYTES} bytes`);
   }
-  const raw = buf.toString("utf8", 0, read);
+  const raw = bytes.toString("utf8");
   const messages = [];
   let lineCount = 0;
   let start = 0;
