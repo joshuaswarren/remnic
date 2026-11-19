@@ -41,14 +41,18 @@ test("#3407 aggressive retry keeps halved target (32 stays 32)", () => {
   assert.ok(aggressive.effectiveTargetTokens < normal.effectiveTargetTokens);
 });
 
-test("#3407 truncated 12k-char batch scales below batch target with bounded floor", () => {
+test("#3407 unscaled 32-token target passes through on short batch", () => {
+  const budget = scaleLcmSummarizeBudget("short lcm batch", 32);
+  assert.equal(budget.effectiveTargetTokens, 32);
+  assert.equal(budget.maxCompletionTokens, 64);
+});
+
+test("#3407 truncated 12k-char batch scales below batch target", () => {
   const filler = "word ".repeat(4000);
   const fullText = filler + "z".repeat(80_000);
   const batchTokens = estimateTokenCount(fullText);
   const targetTokens = Math.max(64, Math.ceil(batchTokens * 0.25));
   const budget = scaleLcmSummarizeBudget(fullText, targetTokens);
   assert.equal(budget.promptText.length, LCM_SUMMARIZE_PROMPT_MAX_CHARS);
-  const floor = Math.min(targetTokens, 64);
-  assert.ok(budget.effectiveTargetTokens >= floor);
   assert.ok(budget.effectiveTargetTokens < targetTokens);
 });
