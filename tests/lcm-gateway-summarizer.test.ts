@@ -5,7 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { setCodexCliFallbackRunnerForProcess } from "@remnic/core";
+import {
+  setCodexCliFallbackRunnerForProcess,
+  type CodexCliFallbackMessage,
+  type CodexCliFallbackRequest,
+} from "@remnic/core";
 import { estimateTokenCount } from "@remnic/core/token-estimate";
 import { z } from "zod";
 
@@ -70,10 +74,10 @@ async function captureLcmGatewaySummary(
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-gateway-"));
   const calls: CapturedGatewayCall[] = [];
   const restoreRunner = setCodexCliFallbackRunnerForProcess(
-    async (request) => {
+    async (request: CodexCliFallbackRequest) => {
       calls.push({
         modelId: request.modelId,
-        agentPrompt: request.messages.map((message) => message.content).join("\n"),
+        agentPrompt: request.messages.map((message: CodexCliFallbackMessage) => message.content).join("\n"),
         timeoutMs: request.options.timeoutMs,
       });
       return {
