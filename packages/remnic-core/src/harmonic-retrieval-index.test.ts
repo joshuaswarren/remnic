@@ -6,7 +6,7 @@ import test from "node:test";
 import { getMemoryProjectionPath } from "./memory-projection-store.js";
 import { openBetterSqlite3 } from "./runtime/better-sqlite.js";
 import { recordAbstractionNode } from "./abstraction-nodes.js";
-import { searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
+import { readProjectedHarmonicGraph, searchHarmonicRetrieval, type HarmonicRetrievalResult } from "./harmonic-retrieval.js";
 import { rebuildMemoryProjection } from "./maintenance/rebuild-memory-projection.js";
 import { StorageManager } from "./storage.js";
 
@@ -382,6 +382,61 @@ test("the cold path walk honors an aborted signal", async () => {
     assert.equal((await storage.collectColdMemoryPaths()).length, 1);
     await assert.rejects(() => storage.collectColdMemoryPaths({ abortSignal: AbortSignal.abort() }));
   } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("indexed source resolution overlaps per-source file reads (#3450)", async (t) => {
+  const memoryDir = await mkdtemp(path.join(tmpdir(), "remnic-harmonic-concurrency-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.ensureDirectories();
+    const sourceMemoryIds: string[] = [];
+    for (let i = 0; i < 40; i++) {
+      const { id } = await storage.writeMemory("fact", `concurrent source payload ${i}`, { source: "test" });
+      sourceMemoryIds.push(id);
+    }
+    await recordAbstractionNode({
+      memoryDir,
+      node: {
+        schemaVersion: 1,
+        nodeId: "many-sources",
+        recordedAt: "2026-11-19T00:00:00.000Z",
+        sessionKey: "agent:index",
+        kind: "topic",
+        abstractionLevel: "meso",
+        title: "stored title",
+        summary: "stored summary",
+        sourceMemoryIds,
+      },
+    });
+    await rebuildMemoryProjection({ memoryDir, storage, dryRun: false });
+
+    // Every recalled build resolves thousands of sources; when each read is
+    // awaited in turn the build takes seconds on real disks (w91: ~19 s inside
+    // harmonicRetrieval). With a small per-read delay, serial code keeps
+    // maxInFlight at 1 while batched reads overlap.
+    const originalRead = StorageManager.prototype.readMemoryByPath;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    t.mock.method(StorageManager.prototype, "readMemoryByPath", async function (
+      this: StorageManager,
+      ...args: Parameters<StorageManager["readMemoryByPath"]>
+    ) {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      try {
+        return await originalRead.call(this, ...args);
+      } finally {
+        inFlight -= 1;
+      }
+    });
+    const graph = await readProjectedHarmonicGraph({ memoryDir, anchorsEnabled: false });
+    assert.equal(maxInFlight > 1, true, `source reads ran one at a time (max in-flight ${maxInFlight})`);
+    assert.deepEqual(graph.nodes[0]?.sourceMemoryIds?.slice().sort(), sourceMemoryIds.slice().sort());
+  } finally {
+    t.mock.restoreAll();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
