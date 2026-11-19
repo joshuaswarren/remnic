@@ -15,6 +15,15 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - .github/workflows/container.yml
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - packages/remnic-core/**
+      - packages/remnic-server/**
   workflow_dispatch:
 
 permissions:

@@ -5,17 +5,25 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**.md"
+      - ".cursor/**"
+      - "LICENSE"
+      - "**.svg"
+      - "**.png"
+      - "**.gif"
   workflow_dispatch:
 
 permissions:
   contents: read
   pull-requests: read
 
-# A superseded push should not keep burning runners: cancel in-flight runs for
-# the same PR. Pushes to main are never cancelled.
+# Cancel superseded runs for the same PR or the same main ref so doc bursts and
+# quick fixups do not stack. PR merge checks unchanged (still full CI on every PR).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   detect-risky-paths:
