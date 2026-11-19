@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, realpath } from "node:fs/promises";
 import { throwIfAborted } from "./abort-error.js";
 import { readJsonFile, writeJsonFileAtomic } from "./json-store.js";
+import { mapInBatches } from "./map-in-batches.js";
 import { readProjectedMemoryPaths } from "./memory-projection-batch.js";
 import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { isPathInsideStorageRoot, isSafeLegacyPathSegment } from "./storage-paths.js";
@@ -80,20 +81,19 @@ export async function readUnresolvedHarmonicSources(options: {
   const cache = safeCache ? await readPathCache(cachePath, rebuiltAt, corpusVersion, nowMs) : new Map<string, PathEntry>();
   const found = new Map<string, MemoryFile>();
   const pending = new Set<string>();
-  for (const id of options.sourceMemoryIds) {
+  const probed = await mapInBatches(options.sourceMemoryIds, async (id) => {
     throwIfAborted(abortSignal, "harmonic retrieval aborted");
     const entry = cache.get(id);
-    if (entry?.path === null) continue;
-    if (entry?.path) {
-      const candidate = path.resolve(storage.dir, entry.path);
-      const memory = isCorpusPath(storage.dir, candidate)
-        ? await readHarmonicSourceMemory(storage, rootReal, candidate, abortSignal) : null;
-      if (memory?.frontmatter.id === id) {
-        found.set(id, memory);
-        continue;
-      }
-    }
-    pending.add(id);
+    if (entry?.path === null || !entry?.path) return { id, memory: null, skip: entry?.path === null };
+    const candidate = path.resolve(storage.dir, entry.path);
+    const memory = isCorpusPath(storage.dir, candidate)
+      ? await readHarmonicSourceMemory(storage, rootReal, candidate, abortSignal) : null;
+    return { id, memory: memory?.frontmatter.id === id ? memory : null, skip: false };
+  });
+  for (const { id, memory, skip } of probed) {
+    if (skip) continue;
+    if (memory) found.set(id, memory);
+    else pending.add(id);
   }
   if (pending.size === 0) return found;
 
@@ -104,12 +104,18 @@ export async function readUnresolvedHarmonicSources(options: {
     ...(await storage.collectActiveMemoryPaths({ abortSignal, propagateReadErrors: true })),
     ...(await storage.collectColdMemoryPaths({ abortSignal, propagateReadErrors: true })),
   ];
-  for (const filePath of walked) {
-    throwIfAborted(abortSignal, "harmonic retrieval aborted");
+  const toRead = walked.filter((filePath) =>
     // Existing projected files need no parse unless their filename names a wanted id.
     // New/imported files must be keyed by frontmatter id, not their basename (#3188).
-    if (!inspectProjected && !pending.has(path.basename(filePath, ".md")) && projectedPaths?.has(filePath)) continue;
+    inspectProjected || pending.has(path.basename(filePath, ".md")) || !projectedPaths?.has(filePath));
+  const read = await mapInBatches(toRead, async (filePath) => {
+    throwIfAborted(abortSignal, "harmonic retrieval aborted");
     const memory = await readHarmonicSourceMemory(storage, rootReal, filePath, abortSignal);
+    // Drop non-matching parses inside the batch so a full-corpus walk does not
+    // hold every MemoryFile until the last batch resolves.
+    return { filePath, memory: memory !== null && pending.has(memory.frontmatter.id) ? memory : null };
+  });
+  for (const { filePath, memory } of read) {
     if (!memory) continue;
     const id = memory.frontmatter.id;
     if (pending.has(id)) {

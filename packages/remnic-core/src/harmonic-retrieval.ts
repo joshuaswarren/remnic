@@ -24,6 +24,7 @@ import { SecureStoreLockedError } from "./secure-store/secure-fs.js";
 import { StorageManager } from "./storage.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { readHarmonicSourceMemory, readUnresolvedHarmonicSources } from "./harmonic-source-lookup.js";
+import { mapInBatches } from "./map-in-batches.js";
 
 
 type SourceMemoryMap = Map<string, MemoryFile>;
@@ -76,7 +77,7 @@ async function readIndexedSourceMemories(options: {
   const days = utcDaysSince(rebuiltMs, options.nowMs);
   const sourceMemories: SourceMemoryMap = new Map();
   const pending: string[] = [];
-  for (const id of options.sourceMemoryIds) {
+  const resolved = await mapInBatches(options.sourceMemoryIds, async (id) => {
     const state = batch.states.get(id);
     // An id is only ever joined into a path when it is a single safe segment.
     let safeId = true;
@@ -89,15 +90,16 @@ async function readIndexedSourceMemories(options: {
     const candidates = state
       ? [state.path, path.join(options.memoryDir, "cold", state.pathRel)]
       : safeId ? unprojectedCandidatePaths(options.memoryDir, id, days) : [];
-    let found = false;
     for (const candidate of candidates) {
       const memory = await readHarmonicSourceMemory(storage, rootReal, candidate, options.abortSignal);
       if (memory?.frontmatter.id !== id) continue;
-      sourceMemories.set(id, memory);
-      found = true;
-      break;
+      return { id, memory };
     }
-    if (!found) pending.push(id);
+    return { id, memory: undefined };
+  });
+  for (const { id, memory } of resolved) {
+    if (memory) sourceMemories.set(id, memory);
+    else pending.push(id);
   }
   if (pending.length === 0) return sourceMemories;
 
@@ -364,15 +366,15 @@ export async function readAbstractionNodes(options: {
 }): Promise<AbstractionNode[]> {
   const rootDir = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const files = await listJsonFilesStrict(path.join(rootDir, "nodes"), { allowMissingDirectory: true });
-  const nodes: AbstractionNode[] = [];
-  for (const filePath of files) {
+  const parsed = await mapInBatches(files, async (filePath) => {
     try {
-      nodes.push(validateAbstractionNode(await readJsonFile(filePath)));
+      return validateAbstractionNode(await readJsonFile(filePath));
     } catch {
       // fail-open: invalid artifacts stay visible via status tooling instead of recall
+      return null;
     }
-  }
-  return nodes;
+  });
+  return parsed.filter((node): node is AbstractionNode => node !== null);
 }
 
 export async function readCueAnchors(options: {
@@ -382,15 +384,15 @@ export async function readCueAnchors(options: {
   const abstractionRoot = resolveAbstractionNodeStoreDir(options.memoryDir, options.abstractionNodeStoreDir);
   const rootDir = resolveCueAnchorStoreDir(abstractionRoot);
   const files = await listJsonFilesStrict(rootDir, { allowMissingDirectory: true });
-  const anchors: CueAnchor[] = [];
-  for (const filePath of files) {
+  const parsed = await mapInBatches(files, async (filePath) => {
     try {
-      anchors.push(validateCueAnchor(await readJsonFile(filePath)));
+      return validateCueAnchor(await readJsonFile(filePath));
     } catch {
       // fail-open: invalid artifacts stay visible via status tooling instead of recall
+      return null;
     }
-  }
-  return anchors;
+  });
+  return parsed.filter((anchor): anchor is CueAnchor => anchor !== null);
 }
 
 export interface ProjectedHarmonicGraph {
