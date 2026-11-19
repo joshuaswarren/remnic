@@ -23,7 +23,7 @@ permissions:
 
 concurrency:
   group: release-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   release-tests:
