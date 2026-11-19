@@ -41,6 +41,7 @@ const os = require("os");
 const path = require("path");
 
 const { run } = require("./remnic-hook-core.cjs");
+const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
 
 // Conversation storage (measured on Linux 2026-11-17): per-conversation
 // SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
@@ -127,6 +128,70 @@ const AGY_SQLITE_MESSAGE_CAP = 8000;
 // that crosses the limit fails loudly and loses nothing. The LIMIT on the
 // SELECT itself stays as the hard bound for rows materialized in one read.
 const AGY_SQLITE_ROW_LIMIT = 10000;
+const AGY_JSONL_MESSAGE_CAP = 8000;
+// Line-count and byte bound on JSONL reads (#3454 / Kilo review): mirror the
+// SQLite row cap so a pathological transcript cannot load unbounded lines or
+// messages. Past the cap the parse throws and the shared parse-failed path
+// logs and retries on each hook event (same loud failure as .db over-cap).
+const AGY_JSONL_ROW_LIMIT = 10000;
+const AGY_JSONL_MAX_BYTES = AGY_JSONL_ROW_LIMIT * (AGY_JSONL_MESSAGE_CAP + 256);
+
+function asPlainRecord(value) {
+  if (value === null) return null;
+  if (Array.isArray(value)) return null;
+  if (Object(value) !== value) return null;
+  return value;
+}
+
+function jsonlStringContent(value) {
+  if (value === null || value === undefined) return "";
+  if (Object.prototype.toString.call(value) === "[object String]") return value.trim();
+  return "";
+}
+
+function parseAgyJsonl(jsonlPath) {
+  // Read through one descriptor with a byte bound: stat-then-read lets a file
+  // grown between the calls load past the cap (CodeRabbit #3454). The bounded
+  // read lives in remnic-agy-jsonl-read.cjs so a short readSync (network
+  // filesystems) cannot truncate the transcript mid-parse.
+  const bytes = readBounded(jsonlPath, AGY_JSONL_MAX_BYTES);
+  if (bytes.length > AGY_JSONL_MAX_BYTES) {
+    throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_MAX_BYTES} bytes`);
+  }
+  const raw = bytes.toString("utf8");
+  const messages = [];
+  let lineCount = 0;
+  let start = 0;
+  for (let i = 0; i <= raw.length; i++) {
+    if (i !== raw.length && raw[i] !== "\n") continue;
+    const line = raw.slice(start, i);
+    start = i + 1;
+    if (line.length === 0) continue;
+    lineCount += 1;
+    if (lineCount > AGY_JSONL_ROW_LIMIT) {
+      throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_ROW_LIMIT} lines (${lineCount})`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const entry = asPlainRecord(parsed);
+    if (!entry) continue;
+    const content = jsonlStringContent(entry.content);
+    if (!content) continue;
+    if (entry.type === "USER_INPUT") {
+      messages.push({ role: "user", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
+    } else if (entry.type === "PLANNER_RESPONSE") {
+      messages.push({ role: "assistant", content: content.slice(0, AGY_JSONL_MESSAGE_CAP) });
+    }
+    if (messages.length > AGY_JSONL_ROW_LIMIT) {
+      throw new Error(`agy jsonl transcript exceeds ${AGY_JSONL_ROW_LIMIT} messages (${messages.length})`);
+    }
+  }
+  return messages;
+}
 function parseAgySqlite(dbPath) {
   const { DatabaseSync } = require("node:sqlite");
   const db = new DatabaseSync(dbPath, { readOnly: true });
@@ -195,10 +260,15 @@ run({
   },
   transcriptFormat: "atif",
   resolveTranscriptPath,
-  parseTranscript: (transcriptPath) =>
-    transcriptPath.endsWith(".db")
-      ? parseAgySqlite(transcriptPath)
-      : undefined, // fall through: core handles JSON per transcriptFormat
+  parseTranscript: (transcriptPath) => {
+    if (transcriptPath.endsWith(".db")) return parseAgySqlite(transcriptPath);
+    // agy native JSONL transcript (brain/<id>/.system_generated/logs/transcript.jsonl):
+    // one JSON object per line with source/type/content. USER_INPUT is the
+    // user; PLANNER_RESPONSE with content is the model. Role comes from the
+    // type field, never from text patterns.
+    if (transcriptPath.endsWith(".jsonl")) return parseAgyJsonl(transcriptPath);
+    return undefined; // fall through: core handles JSON per transcriptFormat
+  },
   projectDirEnv: "AGY_PROJECT_DIR",
   // No compaction hooks on agy (no PreCompact/PostCompaction event exists),
   // so the shared pre-compact handler is never registered here.
