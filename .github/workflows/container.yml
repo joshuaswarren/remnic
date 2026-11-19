@@ -12,18 +12,11 @@ on:
       - pnpm-workspace.yaml
       - packages/remnic-core/**
       - packages/remnic-server/**
+      - admin-console/**
+      - docs/patches/**
   push:
     branches: [main]
     tags: ["v*"]
-    paths:
-      - Dockerfile
-      - .dockerignore
-      - .github/workflows/container.yml
-      - package.json
-      - pnpm-lock.yaml
-      - pnpm-workspace.yaml
-      - packages/remnic-core/**
-      - packages/remnic-server/**
   workflow_dispatch:
 
 permissions:
@@ -35,8 +28,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  docker-relevant:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      match: ${{ steps.f.outputs.match }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        with:
+          filters: |
+            match:
+              - Dockerfile
+              - .dockerignore
+              - .github/workflows/container.yml
+              - package.json
+              - pnpm-lock.yaml
+              - pnpm-workspace.yaml
+              - packages/remnic-core/**
+              - packages/remnic-server/**
+              - admin-console/**
+              - docs/patches/**
+
   build:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    needs: docker-relevant
+    if: |
+      always() &&
+      (github.event_name != 'pull_request' || github.event.pull_request.draft == false) &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'pull_request' ||
+        startsWith(github.ref, 'refs/tags/v') ||
+        (needs.docker-relevant.result == 'success' && needs.docker-relevant.outputs.match == 'true')
+      )
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

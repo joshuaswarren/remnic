@@ -19,11 +19,11 @@ permissions:
   contents: read
   pull-requests: read
 
-# Cancel superseded runs for the same PR or the same main ref so doc bursts and
-# quick fixups do not stack. PR merge checks unchanged (still full CI on every PR).
+# Cancel superseded runs on the same PR only. Main pushes stay queued (do not
+# cancel an in-flight main validation when a second push lands).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   detect-risky-paths:
