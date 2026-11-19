@@ -5,6 +5,12 @@ export const LCM_SUMMARIZE_PROMPT_MAX_CHARS = 12_000;
 
 const MIN_LCM_SUMMARIZE_TARGET_TOKENS = 64;
 
+export interface LcmSummarizeBudget {
+  promptText: string;
+  effectiveTargetTokens: number;
+  maxCompletionTokens: number;
+}
+
 /**
  * Scale summarize budgets to the text actually sent to the model when the
  * full batch exceeds {@link LCM_SUMMARIZE_PROMPT_MAX_CHARS}.
@@ -12,7 +18,7 @@ const MIN_LCM_SUMMARIZE_TARGET_TOKENS = 64;
 export function scaleLcmSummarizeBudget(
   fullText: string,
   targetTokens: number,
-): { promptText: string; effectiveTargetTokens: number; maxCompletionTokens: number } {
+): LcmSummarizeBudget {
   const promptText = fullText.slice(0, LCM_SUMMARIZE_PROMPT_MAX_CHARS);
   const fullEst = Math.max(1, estimateTokenCount(fullText));
   const sentEst = Math.max(1, estimateTokenCount(promptText));
