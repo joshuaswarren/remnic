@@ -231,8 +231,10 @@ function makeLoopbackGatewayConfig(baseUrl: string) {
 
 // RichardHojunJang #3408: gateway branch must scale max_tokens to sent prefix, not whole batch.
 test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole batch (#3407)", async () => {
-  const stub = await startLoopbackChatCompletions();
+  // mkdtemp first: if it rejects, no server is listening yet, so nothing can
+  // strand the test process (CodeRabbit: protect cleanup before setup).
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-lcm-gateway-budget-"));
+  const stub = await startLoopbackChatCompletions();
   const orchestrator = new Orchestrator(
     parseConfig({
       memoryDir,
@@ -247,6 +249,9 @@ test("LCM gateway summarize sizes max_tokens by the text it sends, not the whole
     await orchestrator.initialize();
     const engine = orchestrator.lcmEngine;
     assert.ok(engine, "LCM engine should be enabled");
+    // SAFETY: engine is asserted present above; the cast only re-exposes the
+    // private summarizeFn field initialize() guarantees when lcmEnabled, with
+    // its declared (batch, target, aggressive) => Promise<string> signature.
     const summarizeFn = (engine as { summarizeFn: (batch: string, target: number, aggressive: boolean) => Promise<string> })
       .summarizeFn;
 
