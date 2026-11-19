@@ -2700,7 +2700,7 @@ export interface BufferState {
   lastExtractionAt: string | null;
   extractionCount: number;
   entries?: Record<string, BufferEntryState>;
-  /** #3368: observe admission keys persisted with buffer flush (bounded). */
+  /** #3368: observe idempotency keys in buffer flush (cap 512 FIFO). Evicted keys may be admitted again on retry. */
   admissionIdempotency?: Record<string, number>;
 }
 
