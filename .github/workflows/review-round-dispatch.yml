@@ -31,7 +31,7 @@ on:
   # issue_comment). The gate's own comments use GITHUB_TOKEN, which does not
   # re-trigger workflows, so this cannot self-loop (issue #1992 P2).
   issue_comment:
-    types: [created]
+    types: [created, edited]
   # A bot completing only a check run (Cursor-style verdict) must also wake the
   # gate — otherwise the ledger will not advance until an unrelated
   # push/comment/label fires (issue #1992 P2). GitHub Actions has NO

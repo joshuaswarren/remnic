@@ -109,7 +109,7 @@ test("the round-dispatch workflow wakes on top-level PR comments and has Checks 
   const dispatch = read(".github/workflows/review-round-dispatch.yml");
   // Top-level bot verdicts (issue_comment) must wake the gate, and
   // checks.listForRef needs the Checks read permission (issue #1992).
-  assert.match(dispatch, /^\s*issue_comment:\s*\n\s*types:\s*\[created\]/m);
+  assert.match(dispatch, /^\s*issue_comment:\s*\n\s*types:\s*\[created, edited\]/m);
   assert.match(dispatch, /^\s*checks:\s*read/m);
 });
 
