@@ -7,7 +7,11 @@ on:
     branches: [main]
     paths-ignore:
       - "docs/**"
-      - "**.md"
+      - "/README.md"
+      - "/CHANGELOG.md"
+      - "/CONTRIBUTING.md"
+      - "/SECURITY.md"
+      - "/CODE_OF_CONDUCT.md"
       - ".cursor/**"
       - "LICENSE"
       - "**.svg"
