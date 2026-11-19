@@ -445,10 +445,9 @@ export class TurnIngestionCoordinator {
     };
     const admissionKey = options.bufferAdmissionIdempotencyKey?.trim();
     const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
-    const outcomes = await this.deps.buffer.addTurnsBounded(
-      batches,
-      admissionKey ? { bufferAdmissionIdempotencyKey: admissionKey } : undefined,
-    );
+    const outcomes = admissionKey
+      ? await this.deps.buffer.addTurnsBoundedForObserveReplay(batches, admissionKey)
+      : await this.deps.buffer.addTurnsBounded(batches);
     if (outcomes === "duplicate") return;
     if (outcomes === null) {
       const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";

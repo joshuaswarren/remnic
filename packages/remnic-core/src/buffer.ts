@@ -518,11 +518,25 @@ export class SmartBuffer {
 
   async addTurnsBounded(
     batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
-    options?: { bufferAdmissionIdempotencyKey?: string },
+  ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {
+    const result = await this.addTurnsBoundedWithAdmissionKey(batches);
+    return result === "duplicate" ? null : result;
+  }
+
+  /** #3368 durable observe replay only; duplicate means the scoped client key already landed. */
+  async addTurnsBoundedForObserveReplay(
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+    admissionKey: string,
+  ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null | "duplicate"> {
+    return this.addTurnsBoundedWithAdmissionKey(batches, admissionKey.trim());
+  }
+
+  private async addTurnsBoundedWithAdmissionKey(
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+    admissionKey?: string,
   ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null | "duplicate"> {
     const pending = await this.enqueueMutation(async () => {
       await this.loadUnlocked();
-      const admissionKey = options?.bufferAdmissionIdempotencyKey?.trim();
       if (admissionKey && hasBufferedAdmissionIdempotencyKey(this.state, admissionKey)) {
         return "duplicate" as const;
       }
