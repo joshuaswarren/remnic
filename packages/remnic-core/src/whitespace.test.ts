@@ -116,6 +116,54 @@ test("truncateGraphemeSafe: emoji, ZWJ, flags, jamo, and combining marks stay wh
   assert.equal(truncateGraphemeSafe("e\u0301x", 1), "");
 });
 
+function truncateGraphemeSafeEager(value: string, maxChars: number): string {
+  if (maxChars <= 0) return "";
+  if (value.length <= maxChars) return value;
+  let truncated = "";
+  for (const unit of graphemeUnits(value)) {
+    if (truncated.length + unit.length > maxChars) break;
+    truncated += unit;
+  }
+  return truncated;
+}
+
+test("#3427: truncateGraphemeSafe matches the whole-string implementation", () => {
+  const random = lcg(20261116);
+  for (let iteration = 0; iteration < 2000; iteration += 1) {
+    let input = "";
+    const pieceCount = 1 + Math.floor(random() * 60);
+    for (let piece = 0; piece < pieceCount; piece += 1) {
+      input += GRAPHEME_PIECES[Math.floor(random() * GRAPHEME_PIECES.length)]!;
+    }
+    const maxChars = Math.floor(random() * (input.length + 2));
+    assert.equal(
+      truncateGraphemeSafe(input, maxChars),
+      truncateGraphemeSafeEager(input, maxChars),
+      `${JSON.stringify(input)} @ ${maxChars}`,
+    );
+  }
+});
+
+test("#3427: truncateGraphemeSafe stops segmenting at the budget on a long input", () => {
+  const probe = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment("")[Symbol.iterator]();
+  const iteratorPrototype: { next: () => IteratorResult<Intl.SegmentData> } = Object.getPrototypeOf(probe);
+  const originalNext = iteratorPrototype.next;
+  let pulled = 0;
+  iteratorPrototype.next = function (this: Iterator<Intl.SegmentData>) {
+    pulled += 1;
+    return originalNext.call(this);
+  };
+  try {
+    const longFact = `${GRAPHEME_PIECES.join("")} ${"a long timeline fact ".repeat(20_000)}`;
+    const output = truncateGraphemeSafe(longFact, 180);
+    assert.equal(output, longFact.slice(0, output.length), "the output is a prefix of the input");
+    assert.ok(output.length <= 180 && output.length > 170, `the output fills the budget (${output.length})`);
+    assert.ok(pulled <= 182, `segmented ${pulled} clusters of a ${longFact.length}-unit input for a 180-unit budget`);
+  } finally {
+    iteratorPrototype.next = originalNext;
+  }
+});
+
 test("truncateCodePointSafe and collapseWhitespace keep prior behavior", () => {
   assert.equal(collapseWhitespace(" a \n b "), "a b");
   assert.equal(truncateCodePointSafe("abcd", 2), "ab");
