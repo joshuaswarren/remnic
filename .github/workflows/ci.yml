@@ -19,8 +19,8 @@ permissions:
   contents: read
   pull-requests: read
 
-# Cancel superseded runs on the same PR only. Main pushes stay queued (do not
-# cancel an in-flight main validation when a second push lands).
+# Cancel superseded runs on the same PR only. Main pushes use per-SHA groups so
+# concurrent main validations do not cancel each other (CodeRabbit).
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
