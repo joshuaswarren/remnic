@@ -281,6 +281,8 @@ export class TurnIngestionCoordinator {
       extractionMode?: "immediate" | "buffered";
       /** #3251: invoked per trigger-queued extraction promise (buffered mode). */
       onExtractionQueued?: (extraction: Promise<void>) => void;
+      /** #3368: durable observe retry — skip buffer add when key already admitted. */
+      bufferAdmissionIdempotencyKey?: string;
       /**
        * #3251: the ALREADY-resolved native coding context for this capture
        * (buffered mode). Pinned on the durable turns so drains re-resolve
@@ -416,6 +418,7 @@ export class TurnIngestionCoordinator {
       scopeProfileWritePlan?: ResolvedScopeProfilePlan | null;
       codingContext?: import("../types.js").CodingContext;
       onExtractionQueued?: (extraction: Promise<void>) => void;
+      bufferAdmissionIdempotencyKey?: string;
     },
   ): Promise<void> {
     // #3251: resolve the original actual storage target ONCE at method entry,
@@ -440,6 +443,11 @@ export class TurnIngestionCoordinator {
       if (options.scopeProfileWritePlan) pinned.scopeProfileWritePlan = options.scopeProfileWritePlan;
       return pinned;
     };
+    const admissionKey = options.bufferAdmissionIdempotencyKey?.trim();
+    if (admissionKey && (await this.deps.buffer.hasAdmissionIdempotencyKey(admissionKey))) {
+      return;
+    }
+
     const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
     const outcomes = await this.deps.buffer.addTurnsBounded(batches);
     if (outcomes === null) {
@@ -453,6 +461,10 @@ export class TurnIngestionCoordinator {
     // turn was saved. There is no retry identity: a repeat after a crash that
     // persisted only a prefix duplicates that prefix, as on main.
     await this.deps.buffer.flushPendingSave({ throwOnFailure: true });
+    if (admissionKey) {
+      const turnCount = outcomes.reduce((sum, { turn }) => sum + 1, 0);
+      await this.deps.buffer.recordAdmissionIdempotency(admissionKey, turnCount);
+    }
 
     if (options.archiveLcm !== false && this.deps.lcmEngine?.enabled) {
       for (const [bufferKey, sessionTurns] of bySession) {

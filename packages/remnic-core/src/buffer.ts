@@ -48,6 +48,7 @@ import type { BufferSurpriseProbe, SurpriseTelemetryQueueEntry } from "./buffer-
 // Raised from 200 in #3303: live captures were being dropped at busy hours
 // while the single extraction worker drained a backlog.
 const FALLBACK_MAX_BUFFER_SESSIONS = 1000;
+export const BUFFER_ADMISSION_IDEMPOTENCY_CAP = 512;
 
 /**
  * Upper bound on how long a debounced buffer save may be deferred under
@@ -510,6 +511,32 @@ export class SmartBuffer {
    * Preflight every new key under the mutation lock before persisting any
    * turn; refusal records nothing and drops nothing.
    */
+
+  async hasAdmissionIdempotencyKey(key: string): Promise<boolean> {
+    const trimmed = key.trim();
+    if (!trimmed) return false;
+    return this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      return this.state.admissionIdempotency?.[trimmed] !== undefined;
+    });
+  }
+
+  async recordAdmissionIdempotency(key: string, turnCount: number): Promise<void> {
+    const trimmed = key.trim();
+    if (!trimmed || turnCount <= 0) return;
+    await this.enqueueMutation(async () => {
+      await this.loadUnlocked();
+      if (!this.state.admissionIdempotency) this.state.admissionIdempotency = {};
+      this.state.admissionIdempotency[trimmed] = turnCount;
+      const keys = Object.keys(this.state.admissionIdempotency);
+      while (keys.length > BUFFER_ADMISSION_IDEMPOTENCY_CAP) {
+        delete this.state.admissionIdempotency[keys.shift()!];
+      }
+      for (const k of Object.keys(this.state.entries ?? {})) this.persistence.markDirty(k);
+      await this.saveNowRetainingPendingOnFailure("recordAdmissionIdempotency", { allowDeferral: false });
+    });
+  }
+
   async addTurnsBounded(
     batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
   ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {

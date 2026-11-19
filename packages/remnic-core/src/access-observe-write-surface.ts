@@ -878,6 +878,9 @@ export class AccessObserveWriteSurface {
           codingContext: this.deps.orchestrator.getCodingContextForSession(request.sessionKey) ?? undefined,
           abortSignal: observeAbortController.signal,
         };
+        if (typeof request.idempotencyKey === "string" && request.idempotencyKey.trim().length > 0) {
+          ingestOptions.bufferAdmissionIdempotencyKey = request.idempotencyKey.trim();
+        }
         if (request.authenticatedPrincipal !== undefined && request.authenticatedPrincipal.trim().length > 0) {
           ingestOptions.sessionOwnerPrincipal = request.authenticatedPrincipal.trim();
         }
