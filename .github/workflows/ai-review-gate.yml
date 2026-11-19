@@ -1,10 +1,12 @@
 name: AI Review Gate
 
+# PR synchronize still re-runs the required ai-reviewers check on each head.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
-    types: [submitted, edited, dismissed]
+    # GHA cost: skip edited/dismissed; bot verdicts arrive as submitted.
+    types: [submitted]
   pull_request_review_comment:
     types: [created]
   check_run:
