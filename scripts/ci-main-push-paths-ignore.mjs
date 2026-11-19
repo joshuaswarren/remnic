@@ -24,10 +24,11 @@ export const SHIPPED_MD_PREFIXES = [
   "src/",
   "integrations/",
   "admin-console/",
+  ".agents/",
 ];
 
 export function isShippedMarkdown(path) {
-  if (typeof path !== "string" || !path.endsWith(".md")) return false;
+  if (!path.endsWith(".md")) return false;
   const normalized = path.replaceAll("\\", "/");
   if (normalized.startsWith("docs/")) return false;
   if (SHIPPED_MD_PREFIXES.some((prefix) => normalized.startsWith(prefix))) return true;
