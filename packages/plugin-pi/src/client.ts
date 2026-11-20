@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 
+import type { GitContext } from "@remnic/core";
+
 import type { RemnicPiConfig } from "./config.js";
 
 export interface RecallResponse {
@@ -45,6 +47,11 @@ export interface RequestOptions {
    * Falls back to `config.principal` when unset.
    */
   principal?: string;
+}
+
+/** Response of `POST /engram/v1/coding-context` — acknowledged or empty body. */
+export interface SetCodingContextResponse {
+  ok?: boolean;
 }
 
 export interface ObserveOptions extends RequestOptions {
@@ -364,6 +371,25 @@ export class RemnicClient {
       }
     }
     return mergeObserveResults(results);
+  }
+
+  /**
+   * Post the pane-host's resolved git context (#3515). Resolution happens on
+   * the client because the daemon's filesystem may not contain the pane's cwd
+   * (remote panes). `codingContext: null` clears the attached context. Shares
+   * the per-turn budget; no retries — the next sync re-posts when unchanged.
+   */
+  async setCodingContext(
+    sessionKey: string,
+    codingContext: GitContext | null,
+    options: RequestOptions = {},
+  ): Promise<SetCodingContextResponse> {
+    return this.requestWithRetry(
+      "POST",
+      "/engram/v1/coding-context",
+      { sessionKey, codingContext },
+      { ...options, timeoutMs: options.timeoutMs ?? this.config.turnRequestTimeoutMs, maxRetries: options.maxRetries ?? 0 },
+    );
   }
 
   async storeMemory(content: string, sessionKey: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {

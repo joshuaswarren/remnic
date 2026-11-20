@@ -23,6 +23,7 @@ import {
   toObserveMessage,
 } from "./messages.js";
 import { RecallTimeoutBreaker, isRecallTimeoutError } from "./recall-timeout-breaker.js";
+import { attachCodingContextSync, maybeSyncSessionCodingContext } from "./coding-context.js";
 import { createMcpRegistration } from "./mcp-registration.js";
 import { joinStartupProbe, runStartupProbeChain, settleWithinBudget, type DaemonHealthVerdict } from "./startup-probe.js";
 import type { PiSessionState } from "./session-state.js";
@@ -208,7 +209,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // budget on a doomed call. The status LABEL stays gated on statusEnabled.
       // The chain runs in the background (#3273 phase 1); the promise is kept on
       // session state so first-turn hooks can await it.
-      state.startupProbe = runStartupProbeChain(
+      state.startupProbe = attachCodingContextSync(runStartupProbeChain(
         {
           probeHealth: probeDaemonHealth,
           statusLabel: remnicStatusLabel,
@@ -217,13 +218,14 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
           errorText: errorMessage,
         },
         { pi, session, client, config, recallTimeoutBreaker, state, epoch: state.startupEpoch, isLive: () => sessionStates.get(session.sessionKey) === state },
-      );
+      ), { session, state, client, config, epoch: state.startupEpoch });
     });
 
     pi.on("before_agent_start", async (event, ctx) => {
       const session = snapshotPiContext(ctx);
       if (!session) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
+      void maybeSyncSessionCodingContext({ session, state, client, config }); // #3515: re-post on branch/root change
 
       // On the first before_agent_start, populate the cache using the user's
       // prompt text so semantic recall produces relevant results.  Once
@@ -782,6 +784,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       startupProbeJoined: false,
       startupEpoch: 0,
       statusOffline: false,
+      lastCodingContextSignature: null,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);
