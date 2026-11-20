@@ -13,6 +13,7 @@ import { CompoundingEngine } from "./compounding/engine.js";
 import { parseConfig } from "./config.js";
 import { rebuildMemoryProjection } from "./maintenance/rebuild-memory-projection.js";
 import { Orchestrator } from "./orchestrator.js";
+import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
 import {
   PHASE2_AWAIT_STATUSES,
   type Phase2AwaitStatus,
@@ -467,19 +468,20 @@ test("recall response body carries no timing-contract fields", async () => {
 
 test("a recall the outer timeout cuts short records outcome error, not ok", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-timing-outer-timeout-"));
-  const config = makeConfig(memoryDir, {
-    qmdEnabled: true,
-    harmonicRetrievalEnabled: true,
-    recallOuterTimeoutMs: 50,
-  });
+  const config = makeConfig(memoryDir, { recallOuterTimeoutMs: 50 });
   const orchestrator = new Orchestrator(config);
-  const harness = await makeHarmonicHarness(memoryDir);
-  stubQmd(orchestrator, harness);
+  // Enrichment deadlines can now degrade a slow section inside the request
+  // budget, so park the corpus read itself: a recall that never gets its
+  // memories still owes the outer timeout its cut.
+  mock.method(
+    NamespaceReadFanoutCoordinator.prototype,
+    "readAllMemoriesForNamespaces",
+    () => new Promise<MemoryFile[]>(() => {}),
+  );
   const service = new EngramAccessService(orchestrator);
   // The entry coordinator swallows the timeout and returns a degraded context,
   // so the surface call resolves; the record must still say it did not complete.
   await service.recall({ query: "atlas source lookup", sessionKey: "outer:timeout" });
-  harness.releaseHarmonicRead();
   const records = getRecallTimings(config);
   assert.equal(records.length, 1);
   assert.equal(records[0]?.outcome, "error");
