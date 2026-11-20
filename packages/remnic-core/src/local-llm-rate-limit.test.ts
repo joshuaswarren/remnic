@@ -148,6 +148,31 @@ test("the terminal predicate matches the proxy's error-only pool-missing payload
   assert.equal(isTerminalLocalLlmProxyPoolError(503, "upstream timeout"), false);
 });
 
+test("the terminal predicate parses a structured pool code at any JSON spacing", () => {
+  // kilo on #3474: the needles matched only '"code":"x"' and '"code": "x"'; any
+  // other valid JSON spacing ('"code" : "x"', key reorder, pretty print with a
+  // deeper indent) fell through to the generic 5xx retry. Parse the body.
+  assert.equal(
+    isTerminalLocalLlmProxyPoolError(503, '{"code" : "remnic_recall_pool_unavailable"}'),
+    true,
+  );
+  assert.equal(
+    isTerminalLocalLlmProxyPoolError(
+      503,
+      JSON.stringify({ extra: 1, code: "remnic_extraction_pool_unavailable", detail: "x" }, null, 4),
+    ),
+    true,
+  );
+  assert.equal(
+    isTerminalLocalLlmProxyPoolError(503, '{"code":"remnic_unrelated_error"}'),
+    false,
+  );
+  assert.equal(
+    isTerminalLocalLlmProxyPoolError(503, '{"code":"remnic_recall_pool_unavailable"}'),
+    true,
+  );
+});
+
 test("a pool-missing 503 is a config failure, not endpoint saturation (#3475)", () => {
   assert.equal(isRateLimitedResponse(503, "recall pool missing or disabled; recall ops must not use the trained extraction pool (no fallback)"), false);
   assert.equal(isRateLimitedResponse(503, "trained pool missing or disabled; trained-model-only policy forbids fallback (pool missing or disabled)"), false);

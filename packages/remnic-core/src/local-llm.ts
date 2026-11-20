@@ -1211,7 +1211,7 @@ export class LocalLlmClient {
       log.warn(`local LLM request error: op=${operation} error=${options.redactProviderErrors ? "provider error details redacted" : errMsg}`);
       this.isAvailable = false; // Mark as unavailable on non-abort errors
       const nonRecoverableReason = extractNonRecoverableBackendReason(errMsg);
-      if (nonRecoverableReason && chatUrl) {
+      if (nonRecoverableReason && chatUrl.length > 0) {
         this.markBackendUnavailable(
           nonRecoverableReason,
           this.config.localLlm400CooldownMs,

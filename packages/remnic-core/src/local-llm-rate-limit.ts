@@ -84,12 +84,24 @@ const POOL_MISSING_PATTERN = /pool missing or disabled/i;
  * 400s are never rate limits (context-window errors mention fallbacks).
  */
 /** Proxy 503 with a pool-config error code is terminal; do not enter rate-limit retries. */
-const TERMINAL_PROXY_POOL_CODES = [
-  '"code":"remnic_recall_pool_unavailable"',
-  '"code": "remnic_recall_pool_unavailable"',
-  '"code":"remnic_extraction_pool_unavailable"',
-  '"code": "remnic_extraction_pool_unavailable"',
-] as const;
+const TERMINAL_PROXY_POOL_CODES: ReadonlySet<string> = new Set([
+  "remnic_recall_pool_unavailable",
+  "remnic_extraction_pool_unavailable",
+]);
+
+/** Today's proxy answers {"error": "..."} with no code field, so the code path
+ * parses the body instead of substring-matching JSON — spacing and key order
+ * must not decide whether a terminal refusal retries (kilo on #3474). */
+function bodyHasTerminalPoolCode(bodyText: string): boolean {
+  try {
+    // SAFETY: the proxy body is an opaque JSON object and `code` is optional, so a
+    // wrong-shape or wrong-type payload reads as undefined and fails the Set lookup.
+    const { code } = JSON.parse(bodyText) as { code?: string };
+    return code !== undefined && TERMINAL_PROXY_POOL_CODES.has(code);
+  } catch {
+    return false;
+  }
+}
 
 /** The proxy answers pool-config refusals as {"error": "... pool missing or
  * disabled ..."} with no code field; the text shape is part of the terminal
@@ -100,7 +112,7 @@ export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: strin
   if (status !== 503) return false;
   return (
     bodyText.toLowerCase().includes(TERMINAL_PROXY_POOL_TEXT) ||
-    TERMINAL_PROXY_POOL_CODES.some((needle) => bodyText.includes(needle))
+    bodyHasTerminalPoolCode(bodyText)
   );
 }
 
