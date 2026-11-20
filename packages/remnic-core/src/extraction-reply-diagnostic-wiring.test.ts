@@ -40,18 +40,18 @@ async function extractCapturingWarns(local: LocalStub) {
   }
 }
 
-/** End-to-end pin: exactly one diagnostic on the unusable-reply path, the parse_empty class unchanged, and no reply fragment in any warn line. */
-test("an unusable reply logs one content-free diagnostic; the rejection and parse_empty class are unchanged", async () => {
+/** End-to-end pin: a length-truncated reply is its own class (#3521), exactly one diagnostic carrying the output ceiling, and no reply fragment in any warn line. */
+test("a length-truncated unusable reply classifies output_truncated and logs the ceiling", async () => {
   const reply = `Here is my analysis of ${SECRET}: nothing durable was said.`;
   const { result, warns } = await extractCapturingWarns(async (_messages, options) => {
     if (options.failureDiag) options.failureDiag.finishReason = "length";
     return { content: reply };
   });
   assert.equal(result.extractionFailure, "local_llm_error");
-  assert.equal(result.extractionFailureClass, "parse_empty");
+  assert.equal(result.extractionFailureClass, "output_truncated");
   const lines = warns.filter((w) => w.includes(MARKER));
   assert.equal(lines.length, 1);
-  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=1 parsedAnyJson=false unrecognizedPayloads=0 topLevelKeys= partialFacts=0`));
+  assert.match(lines[0]!, new RegExp(`replyChars=${reply.length} finishReason=length startsWithBrace=false jsonCandidates=1 parsedAnyJson=false unrecognizedPayloads=0 topLevelKeys= partialFacts=0 maxOutputTokens=1000`));
   assert.ok(warns.some((w) => w.includes("LocalLlmRejectedError: local LLM answered with unusable content")));
   for (const warn of warns) {
     assert.equal(warn.includes(SECRET), false);

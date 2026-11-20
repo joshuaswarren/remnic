@@ -38,7 +38,7 @@ import {
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
-import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
+import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, classifyLocalLlmRejected, formatExtractionParseFailureLog, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
 import { buildUnusableReplyDiagnostic, formatUnusableReplyDiagnostic, looksLikeExtractionResultPayload } from "./extraction-reply-diagnostic.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
@@ -1230,7 +1230,7 @@ export class ExtractionEngine {
             entities: [],
             questions: [],
             extractionFailure: "local_llm_error",
-            extractionFailureClass: err instanceof LocalLlmRejectedError ? "parse_empty" : classifyExtractionThrownError(err),
+            extractionFailureClass: err instanceof LocalLlmRejectedError ? classifyLocalLlmRejected(err) : classifyExtractionThrownError(err),
           };
         }
         log.info("extraction: local LLM error, falling back to gateway default AI:", err);
@@ -1503,8 +1503,8 @@ ${truncatedConversation}`;
     if (!response?.content) {
       const rejected = localRejectionStatus(failureDiag);
       if (rejected !== undefined) {
-        log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic("", failureDiag.finishReason, 0)));
-        throw new LocalLlmRejectedError(rejected); // the endpoint is up and refuses this input
+        log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic("", failureDiag.finishReason, 0, contextSizes.maxOutputTokens)));
+        throw new LocalLlmRejectedError(rejected, failureDiag.finishReason); // the endpoint is up and refuses this input
       }
       log.debug("extractWithLocalLlm: chatCompletion returned null or empty content");
       return null;
@@ -1541,8 +1541,8 @@ ${truncatedConversation}`;
       log.debug(`extractWithLocalLlm: extracted ${partial.facts.length} partial facts from truncated JSON`);
       return partial;
     }
-    log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic(content, failureDiag.finishReason, partial.facts.length)));
-    throw new LocalLlmRejectedError(); // the endpoint answered and nothing in the answer is usable
+    log.warn(formatUnusableReplyDiagnostic(buildUnusableReplyDiagnostic(content, failureDiag.finishReason, partial.facts.length, contextSizes.maxOutputTokens)));
+    throw new LocalLlmRejectedError(undefined, failureDiag.finishReason); // the endpoint answered and nothing in the answer is usable
   }
 
   /**

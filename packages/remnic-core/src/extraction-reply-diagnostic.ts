@@ -49,13 +49,16 @@ export interface UnusableReplyDiagnostic {
   /** From the first candidate that parsed. */
   topLevelKeys: string[];
   partialFacts: number;
+  /** The effective output ceiling the reply was cut at (`contextSizes.maxOutputTokens`); a number, never content. */
+  maxOutputTokens: number | undefined;
 }
 
-/** `content` is the trimmed reply; `finishReason` is whatever the client recorded (validated here). */
+/** `content` is the trimmed reply; `finishReason` is whatever the client recorded (validated here). `maxOutputTokens` is the call's output ceiling. */
 export function buildUnusableReplyDiagnostic(
   content: string,
   finishReason: string | undefined,
   partialFacts: number,
+  maxOutputTokens?: number,
 ): UnusableReplyDiagnostic {
   const candidates = extractJsonCandidates(content);
   let parsedAnyJson = false;
@@ -82,6 +85,10 @@ export function buildUnusableReplyDiagnostic(
     unrecognizedPayloads,
     topLevelKeys,
     partialFacts,
+    maxOutputTokens:
+      maxOutputTokens !== undefined && Number.isFinite(maxOutputTokens) && maxOutputTokens > 0
+        ? Math.floor(maxOutputTokens)
+        : undefined,
   };
 }
 
@@ -101,5 +108,6 @@ export function formatUnusableReplyDiagnostic(d: UnusableReplyDiagnostic): strin
     `unrecognizedPayloads=${d.unrecognizedPayloads}`,
     `topLevelKeys=${d.topLevelKeys.join(",")}`,
     `partialFacts=${d.partialFacts}`,
+    `maxOutputTokens=${d.maxOutputTokens ?? "none"}`,
   ].join(" ");
 }

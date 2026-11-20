@@ -1648,7 +1648,7 @@ function parseExtractionRetryStateEntries(raw: unknown): NonNullable<MetaState["
     if (!("firstFailedAt" in entry) || typeof entry.firstFailedAt !== "string") continue;
     if (!("lastFailureClass" in entry)) continue;
     const cls = entry.lastFailureClass;
-    if (cls !== "provider_retryable" && cls !== "parse_empty" && cls !== "auth_config") continue;
+    if (cls !== "provider_retryable" && cls !== "parse_empty" && cls !== "output_truncated" && cls !== "auth_config") continue;
     const lastFailureClass: ExtractionFailureClass = cls;
     valid.push({
       fingerprint: entry.fingerprint,
