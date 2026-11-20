@@ -770,3 +770,46 @@ test("#3520: status reports captures parked in the spill file", async () => {
   assert.equal(status.pending, 1);
   assert.equal(status.spilled, 2);
 });
+
+test("#3520: an eligible spilled capture replays while the hot window is blocked on another destination", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-blocked-window"), { maxEntries: 2 });
+  // The hot window fills with captures bound for a different daemon; B's
+  // capture lands in the spill. A drainer for B must still reach it.
+  await outbox.enqueue({ ...sessionInput("sess-A", "a1"), destination: "daemon-a" });
+  await outbox.enqueue({ ...sessionInput("sess-A", "a2"), destination: "daemon-a" });
+  await outbox.enqueue({ ...sessionInput("sess-B", "b1"), destination: "daemon-b" });
+
+  const delivered: string[] = [];
+  const result = await outbox.drain(
+    async (entry) => {
+      delivered.push(entry.messages[0].content);
+    },
+    { destination: "daemon-b" }
+  );
+
+  assert.deepEqual(delivered, ["b1"], "the spilled capture is reachable past the foreign hot window");
+  assert.equal(result.delivered, 1);
+  assert.equal(result.foreign, 2, "the blocked window entries are reported, not sent");
+});
+
+test("#3520: a session skipped by the hot window does not hide its own or others' spilled captures forever", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-skip-window"), { maxEntries: 2 });
+  await outbox.enqueue(sessionInput("sess-A", "a1"));
+  await outbox.enqueue(sessionInput("sess-A", "a2"));
+  await outbox.enqueue(sessionInput("sess-B", "b1"));
+  await outbox.enqueue(sessionInput("sess-A", "a3"));
+
+  const sent: string[] = [];
+  const result = await outbox.drain(
+    async (entry) => {
+      if (entry.sessionKey === "sess-A") {
+        throw new RemnicHttpError(503, "at capacity", "capture_capacity_exceeded");
+      }
+      sent.push(entry.messages[0].content);
+    },
+    { sleep: async () => {} }
+  );
+
+  assert.deepEqual(sent, ["b1"], "sess-B's spilled capture delivers while sess-A keeps its queued retry budget");
+  assert.equal(result.delivered, 1);
+});

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -189,6 +189,19 @@ const UNREADABLE_SIGNATURE = "unreadable";
 const LOCK_STALE_MS = 30_000;
 const LOCK_MAX_WAIT_MS = 5_000;
 
+/** Best-effort directory fsync, mirroring writeFileAtomically's post-rename step. */
+async function syncDirectory(dir: string): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(dir, "r");
+    await handle.sync();
+  } catch {
+    // Directory fsync is best-effort across platforms and filesystems.
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 export class ObserveOutbox {
   readonly filePath: string;
   private readonly lockPath: string;
@@ -365,8 +378,18 @@ export class ObserveOutbox {
     const parked = overflow.slice(0, fits);
     const lost = overflow.length - parked.length;
     if (parked.length > 0) {
-      const lines = parked.map((entry) => JSON.stringify(entry)).join("\n");
-      await appendFile(this.spillPath, `${lines}\n`, { mode: 0o600 });
+      // A plain appendFile is not durable: without fsync the parked captures can
+      // vanish on power loss even though enqueue resolved. Match the queue's
+      // guarantee with a flushed append plus a directory sync on first create.
+      const existed = this.spillSignature !== null || (await this.spillSig()) !== null;
+      const handle = await open(this.spillPath, "a", 0o600);
+      try {
+        await handle.appendFile(`${parked.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      if (!existed) await syncDirectory(path.dirname(this.spillPath));
       this.spillCount = before + parked.length;
       this.spillSignature = await this.spillSig();
       notify?.(
@@ -390,9 +413,10 @@ export class ObserveOutbox {
    * BEFORE the spill is rewritten: a crash between the two writes leaves the
    * moved entries in both files (nonce-deduplicated) instead of dropping them.
    */
-  private async refillFromSpill(notify?: OutboxNotify): Promise<void> {
-    if (this.entries.length >= this.maxEntries) return;
-    if ((await this.spillSig()) === null) return;
+  private async refillFromSpill(notify?: OutboxNotify): Promise<boolean> {
+    if (this.entries.length >= this.maxEntries) return false;
+    if ((await this.spillSig()) === null) return false;
+    let movedCount = 0;
     await this.mutate(async () => {
       const room = this.maxEntries - this.entries.length;
       if (room <= 0) return;
@@ -413,6 +437,7 @@ export class ObserveOutbox {
       this.entries.push(...moved);
       await this.persist();
       await this.writeSpill(spill.entries.slice(room));
+      movedCount = moved.length;
       if (spill.skipped > 0) {
         notify?.(
           `Remnic observe outbox: skipped ${spill.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the remaining spilled captures were preserved`,
@@ -420,6 +445,7 @@ export class ObserveOutbox {
         );
       }
     }, notify);
+    return movedCount > 0;
   }
 
   /**
@@ -529,6 +555,36 @@ export class ObserveOutbox {
     return attempts;
   }
 
+  /** Remove the entry from whichever file holds it — queue or spill. */
+  private async removeEntry(entry: ObserveOutboxEntry, fromSpill: boolean): Promise<void> {
+    if (!fromSpill) {
+      await this.remove(entry.id);
+      return;
+    }
+    await this.mutate(async () => {
+      const spill = await this.readSpill();
+      if (!spill) return;
+      const remaining = spill.entries.filter((candidate) => candidate.id !== entry.id);
+      if (remaining.length !== spill.entries.length) await this.writeSpill(remaining);
+    });
+  }
+
+  /** Same contract as recordFailure, for an entry parked in the spill file. */
+  private async recordEntryFailure(entry: ObserveOutboxEntry, fromSpill: boolean): Promise<number> {
+    if (!fromSpill) return this.recordFailure(entry.id);
+    let attempts = 0;
+    await this.mutate(async () => {
+      const spill = await this.readSpill();
+      if (!spill) return;
+      const found = spill.entries.find((candidate) => candidate.id === entry.id);
+      if (!found) return;
+      found.failedAttempts = (found.failedAttempts ?? 0) + 1;
+      attempts = found.failedAttempts;
+      await this.writeSpill(spill.entries);
+    });
+    return attempts;
+  }
+
   /**
    * Deliver queued entries strictly in order. Capacity/rate-limit/ambiguous failures
    * retry the same entry with Retry-After-aware backoff, at most `maxAttempts`
@@ -569,6 +625,14 @@ export class ObserveOutbox {
     const warnedStale = new Set<string>();
     /** Sessions whose head entry already failed this pass; retried on the next pass (#3520). */
     const skippedSessions = new Set<string>();
+    /**
+     * Spill entries loaded on demand: consulted only when the hot window has no
+     * eligible candidate for this drainer, so a window full of foreign or
+     * session-blocked entries cannot starve spilled captures (#3520 review).
+     * Ordered oldest-first; per-session order is preserved because a session's
+     * entries spill only after its queued ones.
+     */
+    let spillReplay: ObserveOutboxEntry[] | null = null;
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
@@ -579,13 +643,27 @@ export class ObserveOutbox {
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
-        await this.refillFromSpill(notify);
+        // A refill invalidates the spill read-cache: entries it just moved into
+        // the hot queue must not also be picked from the stale list.
+        if (await this.refillFromSpill(notify)) spillReplay = null;
         // Entries bound to another daemon are skipped, never sent: the file is
         // shared per machine and a pane repointed elsewhere must not replay
         // someone else's conversations to the wrong destination (#3381). An
         // entry whose session already failed this pass is skipped too, so a
         // pinned session cannot starve the others (#3520).
-        const entry = this.entries.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
+        let entry = this.entries.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
+        let fromSpill = false;
+        if (!entry) {
+          if (spillReplay === null) {
+            const spill = await this.readSpill().catch(() => null);
+            spillReplay = spill?.entries ?? [];
+          }
+          const parked = spillReplay.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
+          if (parked) {
+            entry = parked;
+            fromSpill = true;
+          }
+        }
         if (!entry) {
           // Nothing else to try this pass. If every remaining entry belongs to a
           // session that already failed, a new pass gives each of them one more
@@ -609,7 +687,8 @@ export class ObserveOutbox {
           if (failureClass === "permanent") {
             dropped += 1;
             this.counters.dropped += 1;
-            await this.remove(entry.id);
+            await this.removeEntry(entry, fromSpill);
+            spillReplay = fromSpill ? (spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null) : spillReplay;
             const reason = err instanceof Error ? err.message : String(err);
             const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
             notify?.(
@@ -639,11 +718,12 @@ export class ObserveOutbox {
           // with a visible reason (#3381). Capacity refusals are the daemon
           // asking us to come back, so they are not counted.
           if (failureClass === "retry-ambiguous") {
-            const attempts = await this.recordFailure(entry.id);
+            const attempts = await this.recordEntryFailure(entry, fromSpill);
             if (attempts >= MAX_ENTRY_FAILURES) {
               dropped += 1;
               this.counters.dropped += 1;
-              await this.remove(entry.id);
+              await this.removeEntry(entry, fromSpill);
+              spillReplay = fromSpill ? (spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null) : spillReplay;
               const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
               notify?.(
                 `Remnic observe outbox: gave up on a queued capture after ${attempts} failed attempts (${status}${err instanceof Error ? err.message : String(err)}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); the daemon kept failing it, so it was dropped rather than blocking the queue`,
@@ -661,7 +741,8 @@ export class ObserveOutbox {
           await sleep(Math.min(maxRetryAfterMs, Math.max(0, Math.round(base * jitter))));
           continue;
         }
-        await this.remove(entry.id);
+        await this.removeEntry(entry, fromSpill);
+        if (fromSpill) spillReplay = spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null;
         delivered += 1;
         this.counters.delivered += 1;
       }
