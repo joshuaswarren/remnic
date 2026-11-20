@@ -274,12 +274,14 @@ export class SingleFlightProbe {
   }
 }
 
-/** True when `value` is safe for `fetch` request headers (HTTP token / field value). */
+/** True when `value` is safe for `fetch` request headers. Node's `Headers`
+ * accepts a ByteString: controls and DEL are out, and so is anything above
+ * U+00FF — `é` is sendable, `Ā` is not (Kilo review on #3474). */
 export function isHttpHeaderFieldValue(value: string): boolean {
   if (!value) return false;
   for (let i = 0; i < value.length; i += 1) {
     const code = value.charCodeAt(i);
-    if (code < 0x20 || code === 0x7f) return false;
+    if (code < 0x20 || code === 0x7f || code > 0xff) return false;
   }
   return true;
 }

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildLocalLlmRoutingHeaders,
   formatLocalLlmPoolKey,
   getLocalLlmTrippedBackendPoolState,
   markLocalLlmBackendPoolUnavailable,
@@ -1089,11 +1090,14 @@ test("LocalLlmClient sends a terminal recall-pool 503 once, with the proxy's rea
   );
 
   const client = new LocalLlmClient(buildConfig({ localLlmRetry5xxCount: 2, localLlmRetryBackoffMs: 0 }));
+  // SAFETY: test seeds the private health cache so the first request goes straight to fetch.
   (client as any).isAvailable = true;
+  // SAFETY: same seeding — a fresh timestamp keeps the cache inside its minute window.
   (client as any).lastHealthCheck = Date.now();
 
   const originalFetch = globalThis.fetch;
   let calls = 0;
+  // SAFETY: the stub replaces global fetch for this test and is restored in finally.
   globalThis.fetch = (async () => {
     calls += 1;
     return new Response(
@@ -1127,12 +1131,15 @@ test("LocalLlmClient pool expiry invalidates every client's cached verdict, not 
   const first = new LocalLlmClient(buildConfig());
   const second = new LocalLlmClient(buildConfig());
   // The second client holds a genuine probe verdict from while the pool was down.
+  // SAFETY: test seeds the private health cache with the stale verdict under test.
   (second as any).isAvailable = false;
+  // SAFETY: same seeding — a fresh timestamp keeps the stale verdict inside its minute window.
   (second as any).lastHealthCheck = Date.now();
   markLocalLlmBackendPoolUnavailable("Failed to load model", 5, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP);
   await new Promise((resolve) => setTimeout(resolve, 25));
 
   const originalFetch = globalThis.fetch;
+  // SAFETY: the stub replaces global fetch for this test and is restored in finally.
   globalThis.fetch = (async () =>
     new Response(JSON.stringify({ data: [{ id: "local-test-model" }] }), {
       status: 200,
@@ -1160,12 +1167,15 @@ test("LocalLlmClient honors the pool circuit for an empty operation label", asyn
   );
 
   const client = new LocalLlmClient(buildConfig());
+  // SAFETY: test seeds the private health cache so a probe would count as a fetch call.
   (client as any).isAvailable = true;
+  // SAFETY: same seeding — a fresh timestamp keeps the cache inside its minute window.
   (client as any).lastHealthCheck = Date.now();
   markLocalLlmBackendPoolUnavailable("Failed to load model", 10_000, DEFAULT_CHAT_URL, "");
 
   const originalFetch = globalThis.fetch;
   let calls = 0;
+  // SAFETY: the stub replaces global fetch for this test and is restored in finally.
   globalThis.fetch = (async () => {
     calls += 1;
     return new Response("ok", { status: 200 });
@@ -1178,4 +1188,14 @@ test("LocalLlmClient honors the pool circuit for an empty operation label", asyn
     markLocalLlmBackendPoolUnavailable("", 0, DEFAULT_CHAT_URL, "");
     globalThis.fetch = originalFetch;
   }
+});
+
+test("buildLocalLlmRoutingHeaders drops a label fetch cannot send", () => {
+  // Kilo on #3474: Headers takes a ByteString — \u0100 is out, \u00e9 is fine.
+  const latin = buildLocalLlmRoutingHeaders("caf\u00e9-op", undefined);
+  assert.equal(latin["X-Remnic-Operation"], "caf\u00e9-op");
+  const unsendable = buildLocalLlmRoutingHeaders("bad\u0100op", undefined);
+  assert.equal("X-Remnic-Operation" in unsendable, false);
+  const control = buildLocalLlmRoutingHeaders("bad\u0007op", undefined);
+  assert.equal("X-Remnic-Operation" in control, false);
 });
