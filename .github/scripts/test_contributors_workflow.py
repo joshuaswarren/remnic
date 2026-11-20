@@ -30,6 +30,9 @@ class BotPrBodyCarryPath(unittest.TestCase):
         self.assertIn("github-actions[bot]", body)
         self.assertIn("cannot pass", body)
         self.assertIn("ai-reviewers gate", body)
+        # GITHUB_TOKEN runs can queue for maintainer approval, so the claim
+        # must be qualified; an unqualified "does not start" is inaccurate.
+        self.assertIn("automatically", body.lower())
 
     def test_body_names_the_maintainer_carry_path(self):
         body = pr_body_block().lower()
