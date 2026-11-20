@@ -867,6 +867,7 @@ export class AccessRecallSurface {
         : {}),
     };
     if (request.searchOptions) recallOptions.searchOptions = request.searchOptions;
+    if (request.deadlineMs !== undefined) recallOptions.deadlineMs = request.deadlineMs;
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are
     // one synchronous JS turn (no await between them), so record()'s own

@@ -57,6 +57,7 @@ import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
   resolveRecallCoreSectionDeadlineMs,
+  resolveRecallOuterDeadlineAtMs,
 } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
@@ -172,17 +173,16 @@ export class RecallInternalCoordinator {
     // section, against the request budget still left when that section starts.
     const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
     const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
-    const enrichmentSectionDeadlineMs =
-      this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
+    const enrichmentSectionDeadlineMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
     // even on unexpected exceptions (e.g., throwIfRecallAborted, phase-1 errors).
     try {
-    const recordRecallSectionMetric = createRecallSectionMetricRecorder({
-      timings,
-      logger: log,
+    const recordRecallSectionMetric =
+      createRecallSectionMetricRecorder({ timings, logger: log });
+    // The client's deadlineMs (issue #3499) caps the configured ceiling.
+    const outerDeadlineAtMs = resolveRecallOuterDeadlineAtMs({
+      recallStart, recallOuterTimeoutMs, clientDeadlineMs: options.deadlineMs,
     });
-    const outerDeadlineAtMs =
-      recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null;
     const enrichmentAbort = () =>
       createEnrichmentAbortHandle(options.abortSignal, resolveRecallCoreSectionDeadlineMs({
         configuredCoreDeadlineMs: enrichmentSectionDeadlineMs,
@@ -4932,7 +4932,7 @@ export class RecallInternalCoordinator {
         sectionBuckets, recalledMemoryPaths,
         recalledMemoryNamespaces: episodicMemoryNamespaces,
         scopePlan, namespacesEnabled,
-        enrichmentSectionDeadlineMs, recallOuterTimeoutMs, recallStart,
+        enrichmentSectionDeadlineMs, outerDeadlineAtMs,
         recordMetric: recordRecallSectionMetric, abortSignal: options.abortSignal,
       });
     } catch (err) {

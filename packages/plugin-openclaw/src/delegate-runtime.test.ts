@@ -4880,3 +4880,33 @@ test("a daemon limit below the chunk floor splits instead of quarantining good n
     await rm(workspaceDir, { recursive: true, force: true });
   }
 });
+
+test("delegate recall publishes its hook deadline to the daemon (#3499)", async () => {
+  const stub = await startDaemonStub(() => ({ context: "scoped daemon context", count: 1 }));
+  try {
+    const api = recordingApi();
+    registerDelegateRuntime(
+      api,
+      optionsFor(stub.port, { hookTimeoutMs: 60_000, recallTimeoutMs: 30_000 }),
+    );
+    const before = Date.now();
+    await invoke(
+      api,
+      "before_prompt_build",
+      { prompt: "what did we decide about the rollout?" },
+      { sessionKey: "session-budget" },
+    );
+    const recall = stub.calls.find((call) => call.pathname === "/engram/v1/recall");
+    assert.ok(recall, "daemon recall route was called");
+    const deadlineMs = Number(recall.body.deadlineMs);
+    // promptDeadline = hook start + min(hookTimeoutMs, recallTimeoutMs)
+    assert.ok(
+      Number.isFinite(deadlineMs) &&
+        deadlineMs >= before + 30_000 - 2_000 &&
+        deadlineMs <= before + 30_000 + 2_000,
+      `recall request should publish deadlineMs ~hook start + min(hook, recall) budget, got ${String(recall.body.deadlineMs)}`,
+    );
+  } finally {
+    await stub.close();
+  }
+});
