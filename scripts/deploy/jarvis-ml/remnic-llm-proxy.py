@@ -247,7 +247,7 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             return None
         old = urllib.parse.urlparse(req.full_url)
         dest = urllib.parse.urlparse(new.full_url)
-        if (old.scheme, old.netloc) != (dest.scheme, dest.netloc) or dest.scheme != "https" and old.scheme == "https":
+        if (old.scheme, old.netloc) != (dest.scheme, dest.netloc) or (dest.scheme != "https" and old.scheme == "https"):
             return None
         return new
 
@@ -287,7 +287,8 @@ def _cancellable_open(req, timeout, downstream):
     except urllib.error.HTTPError as err:
         # Drain and close the error body while the watcher is still active:
         # after the finally joins the watcher, err.read() can hang or raise
-        # where sibling except clauses cannot route it to failover.
+        # where sibling except clauses cannot route it to failover. The body
+        # is stashed on err.drained_body for the caller's except clause.
         try:
             err.drained_body = err.read()
         finally:
