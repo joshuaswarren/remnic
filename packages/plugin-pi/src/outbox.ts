@@ -7,6 +7,7 @@ import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
 import { RemnicHttpError, RemnicRequestTimeoutError, isTransientNetworkError } from "./client.js";
 import type { ObserveMessage } from "./client.js";
+import { boundedReplayMessages } from "./messages.js";
 
 /**
  * Durable local queue for observe batches that the daemon could not accept:
@@ -138,36 +139,9 @@ const DEFAULT_MAX_ENTRIES = 200;
 const DEFAULT_MAX_ATTEMPTS = 4;
 /** Failed deliveries after which a retry-ambiguous entry is dropped so a deterministic failure cannot pin the FIFO (#3381). */
 const MAX_ENTRY_FAILURES = 8;
-/** Serialized bytes of rawContent kept per message in the durable replay; larger bodies are omitted, not persisted whole (#3381). */
-const MAX_RAW_CONTENT_BYTES = 32 * 1024;
 const DEFAULT_BACKOFF_BASE_MS = 500;
 const DEFAULT_MAX_RETRY_AFTER_MS = 30_000;
 const DEFAULT_JITTER_RATIO = 0.2;
-
-/**
- * The entry bound (200) caps count, not bytes: a single tool result can be
- * megabytes of rawContent, and every mutate rewrites the whole file (#3381).
- * Oversized rawContent is omitted from the durable replay — the daemon
- * extracts from the rendered `content`, and hashes + replay nonce keep the
- * capture's identity. Small bodies persist untouched.
- */
-function boundedReplayMessages(messages: ObserveMessage[], notify?: OutboxNotify): ObserveMessage[] {
-  let omitted = 0;
-  const bounded = messages.map((message) => {
-    if (message.rawContent === undefined) return message;
-    if (Buffer.byteLength(JSON.stringify(message.rawContent)) <= MAX_RAW_CONTENT_BYTES) return message;
-    omitted += 1;
-    const { rawContent: _oversized, ...rest } = message;
-    return rest;
-  });
-  if (omitted > 0) {
-    notify?.(
-      `Remnic observe outbox: omitted ${omitted} raw message bod${omitted === 1 ? "y" : "ies"} over ${MAX_RAW_CONTENT_BYTES / 1024} KiB from the durable replay so the queue stays small; the rendered text of the turn still replays`,
-      "warning"
-    );
-  }
-  return bounded;
-}
 
 function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   let parsed: unknown;

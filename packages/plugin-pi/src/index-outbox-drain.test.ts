@@ -334,3 +334,35 @@ test("#3381: a foreign session's delivered entry updates that session's state, n
   assert.equal(drainerHashes.size, 0);
   assert.equal(drainerReplayKeys.size, 0);
 });
+
+test("a lost-response replay keeps the live attempt's idempotency key even when rawContent is bounded out", async (t) => {
+  // #3381 review: the daemon dedupes on the idempotency key, which is hashed
+  // over the exact body. Bounding rawContent only at enqueue makes the replay
+  // body differ from the live body — a lost-response replay then ingests twice.
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const outbox = new ObserveOutbox(outboxPath);
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const keys: Array<string | undefined> = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    // SAFETY: this test's own fetch mock serialized the request body; only the key is read.
+    const body = JSON.parse(String(init?.body ?? "{}")) as { idempotencyKey?: string };
+    keys.push(body.idempotencyKey);
+    return calls === 1
+      ? new Response(JSON.stringify({ error: "internal_error" }), { status: 500 })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const big = { id: "l-big", role: "user", content: "live turn", blob: "x".repeat(64 * 1024) };
+  await observeMessages(liveCtx(() => {}), new RemnicClient(config), [big], new Set<string>(), undefined, config, outbox);
+  assert.equal(await outbox.size(), 1, "the ambiguous 500 queues the turn");
+
+  await drainObserveOutbox({ notify: () => {} }, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
+
+  assert.ok(keys[0] && keys[1], "the live attempt and the replay each carried an idempotency key");
+  assert.equal(keys[1], keys[0], "the replay must reuse the live attempt's key or the daemon ingests twice");
+});

@@ -15,6 +15,7 @@ import {
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
 import {
+  boundedReplayMessages,
   hashObservedMessage,
   observedMessageDedupeKey,
   sessionKeyFromContext,
@@ -841,6 +842,11 @@ async function observeMessagesForSession(
     messageHashes.push(hash);
   }
   if (messages.length === 0) return;
+  // Bound oversized raw bodies BEFORE the first send (#3381 item 11): the
+  // daemon dedupes on an idempotency key hashed over the exact body, so the
+  // live body, the persisted outbox entry and its later replay must stay
+  // identical or a lost-response replay ingests twice.
+  const sendMessages = boundedReplayMessages(messages, (message, level) => session.notify(message, level));
   // Circuit breaker: when config is wired (the live Pi handlers always pass
   // it), skip observe fast while the daemon is known-down so a dead host
   // doesn't burn the full per-turn budget on every turn (#1626). Shutdown is
@@ -859,12 +865,12 @@ async function observeMessagesForSession(
   const observeOptions: ObserveOptions = { replayNonce };
   if (config) observeOptions.timeoutMs = forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs;
   try {
-    await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
+    await client.observe(session.sessionKey, session.cwd, sendMessages, observeOptions);
     if (config) client.markReachable();
     if (state && config) refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker?.isTripped() ?? false);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
-      for (const message of messages) {
+      for (const message of sendMessages) {
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, session.sessionKey));
       }
     }
@@ -888,7 +894,7 @@ async function observeMessagesForSession(
     // queue them durably for replay on the next successful contact.
     try {
       await outbox?.enqueue(
-        { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce, principal: config?.principal, destination: config?.remnicDaemonUrl },
+        { sessionKey: session.sessionKey, cwd: session.cwd, messages: sendMessages, messageHashes, replayNonce, principal: config?.principal, destination: config?.remnicDaemonUrl },
         (message, level) => session.notify(message, level),
       );
     } catch (enqueueErr) {
