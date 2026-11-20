@@ -1074,3 +1074,108 @@ test("a caller arriving after the last waiter cancels starts a fresh probe", asy
     globalThis.fetch = originalFetch;
   }
 });
+
+test("LocalLlmClient sends a terminal recall-pool 503 once, with the proxy's real payload", async () => {
+  // wAN on #3474: the proxy answers {"error":"recall pool missing or disabled; ..."}
+  // — an error field, no code — and the client still ran the generic 5xx retry.
+  initLogger(
+    {
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+    },
+    true,
+  );
+
+  const client = new LocalLlmClient(buildConfig({ localLlmRetry5xxCount: 2, localLlmRetryBackoffMs: 0 }));
+  (client as any).isAvailable = true;
+  (client as any).lastHealthCheck = Date.now();
+
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response(
+      JSON.stringify({ error: "recall pool missing or disabled; recall ops must not use the extraction pool" }),
+      { status: 503, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const out = await client.chatCompletion([{ role: "user", content: "hello" }], {
+      operation: "entity_summary",
+    });
+    assert.equal(out, null);
+    assert.equal(calls, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LocalLlmClient pool expiry invalidates every client's cached verdict, not just the first", async () => {
+  initLogger(
+    {
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+    },
+    true,
+  );
+
+  const first = new LocalLlmClient(buildConfig());
+  const second = new LocalLlmClient(buildConfig());
+  // The second client holds a genuine probe verdict from while the pool was down.
+  (second as any).isAvailable = false;
+  (second as any).lastHealthCheck = Date.now();
+  markLocalLlmBackendPoolUnavailable("Failed to load model", 5, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ data: [{ id: "local-test-model" }] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch;
+
+  try {
+    assert.equal(await first.checkAvailability(undefined, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP), true);
+    assert.equal(await second.checkAvailability(undefined, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP), true);
+  } finally {
+    clearPoolCircuit();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LocalLlmClient honors the pool circuit for an empty operation label", async () => {
+  initLogger(
+    {
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+    },
+    true,
+  );
+
+  const client = new LocalLlmClient(buildConfig());
+  (client as any).isAvailable = true;
+  (client as any).lastHealthCheck = Date.now();
+  markLocalLlmBackendPoolUnavailable("Failed to load model", 10_000, DEFAULT_CHAT_URL, "");
+
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async () => {
+    calls += 1;
+    return new Response("ok", { status: 200 });
+  }) as typeof fetch;
+
+  try {
+    assert.equal(await client.checkAvailability(undefined, DEFAULT_CHAT_URL, ""), false);
+    assert.equal(calls, 0);
+  } finally {
+    markLocalLlmBackendPoolUnavailable("", 0, DEFAULT_CHAT_URL, "");
+    globalThis.fetch = originalFetch;
+  }
+});

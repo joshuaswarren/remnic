@@ -325,7 +325,15 @@ const LOCAL_LLM_GLOBAL_BACKEND_STATE = "__openclawEngramLocalLlmBackendState";
 export type LocalLlmBackendPoolState = {
   untilMs: number;
   reason: string;
+  /** Once the trip lapses this is set instead of deleting the entry: every
+   * client must observe the transition once, so a tombstone stays visible for
+   * BACKEND_POOL_TOMBSTONE_MS. */
+  expiredAtMs?: number;
 };
+
+/** How long a lapsed circuit stays readable so each client can invalidate its
+ * cached health verdict once (the health cache is 60s; this leaves margin). */
+const BACKEND_POOL_TOMBSTONE_MS = 15 * 60_000;
 
 function localLlmBackendPoolMap(): Map<string, LocalLlmBackendPoolState> {
   // SAFETY: globalThis carries one optional Map slot keyed for backend pool state.
@@ -345,25 +353,29 @@ export function getLocalLlmTrippedBackendPoolState(
   operation: string,
 ): LocalLlmBackendPoolState | null {
   const key = formatLocalLlmPoolKey(chatUrl, operation);
-  const state = localLlmBackendPoolMap().get(key) ?? null;
+  const map = localLlmBackendPoolMap();
+  const state = map.get(key) ?? null;
   if (!state) return null;
   if (state.untilMs <= now) {
-    localLlmBackendPoolMap().delete(key);
+    state.expiredAtMs ??= state.untilMs;
+    if (state.expiredAtMs + BACKEND_POOL_TOMBSTONE_MS <= now) map.delete(key);
     return null;
   }
   return state;
 }
 
-/** True when a pool entry existed but just expired; consumed so the caller can
- * invalidate any cached health verdict before it is checked. */
-export function consumeLocalLlmBackendPoolExpiry(now: number, chatUrl: string, operation: string): boolean {
+/** The instant this pool's circuit lapsed, or null while it is active or
+ * absent. The tombstone stays in the map so every client holding a cached
+ * health verdict can observe the transition once — deleting on first read left
+ * later clients stale (wAN review on #3474). */
+export function localLlmBackendPoolExpiredAtMs(now: number, chatUrl: string, operation: string): number | null {
   const key = formatLocalLlmPoolKey(chatUrl, operation);
   const state = localLlmBackendPoolMap().get(key) ?? null;
   if (state && state.untilMs <= now) {
-    localLlmBackendPoolMap().delete(key);
-    return true;
+    state.expiredAtMs ??= state.untilMs;
+    return state.expiredAtMs;
   }
-  return false;
+  return null;
 }
 
 export function markLocalLlmBackendPoolUnavailable(

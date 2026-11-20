@@ -16,6 +16,7 @@ import {
   endpointBackoffRemainingMs,
   extendEndpointBackoff,
   isRateLimitedResponse,
+  isTerminalLocalLlmProxyPoolError,
   parseRetryAfterMs,
   parseTryAgainHintMs,
   resetLocalLlmRateLimitStateForTests,
@@ -132,6 +133,19 @@ test("classifies 429/503/408 and LiteLLM cooldown bodies as rate limits, not 400
     ),
     false,
   );
+});
+
+test("the terminal predicate matches the proxy's error-only pool-missing payload", () => {
+  // remnic-llm-proxy.py answers {"error": "..."} — no code field. The terminal
+  // check must catch the same bodies isRateLimitedResponse rejects, or the
+  // generic 5xx retry still fires (wAN review on #3474).
+  const proxyBody = JSON.stringify({
+    error: "recall pool missing or disabled; recall ops must not use the extraction pool",
+  });
+  assert.equal(isTerminalLocalLlmProxyPoolError(503, proxyBody), true);
+  assert.equal(isTerminalLocalLlmProxyPoolError(503, "embed pool missing or disabled (test)"), true);
+  assert.equal(isTerminalLocalLlmProxyPoolError(500, proxyBody), false);
+  assert.equal(isTerminalLocalLlmProxyPoolError(503, "upstream timeout"), false);
 });
 
 test("a pool-missing 503 is a config failure, not endpoint saturation (#3475)", () => {

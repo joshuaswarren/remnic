@@ -23,7 +23,7 @@ import {
   SingleFlightProbe,
   buildLocalLlmRoutingHeaders,
   formatLocalLlmPoolKey,
-  consumeLocalLlmBackendPoolExpiry,
+  localLlmBackendPoolExpiredAtMs,
   getLocalLlmTrippedBackendPoolState,
   markLocalLlmBackendPoolUnavailable,
   type LocalLlmChatCompletionOptions,
@@ -181,6 +181,8 @@ export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
   private lastHealthCheck: number = 0;
+  /** Pool key → lapsed-circuit instant this client already invalidated for. */
+  private poolExpirySeenMs = new Map<string, number>();
   private readonly availabilityProbe = new SingleFlightProbe();
   private detectedType: LocalLlmType | null = null;
   private cachedModelInfo: LocalModelInfo | null = null;
@@ -326,19 +328,26 @@ export class LocalLlmClient {
     if (signal?.aborted) return false;
     // Cache health check results for 1 minute
     const now = Date.now();
-    if (chatUrl && operation) {
-      // An expired circuit must clear the cached verdict before the window check
-      // below, or a stale "unavailable" survives the rest of the cache interval.
-      if (consumeLocalLlmBackendPoolExpiry(now, chatUrl, operation)) {
+    if (chatUrl) {
+      // An empty label is a real pool key — callers that pass "" must still
+      // see the circuit that a refusal recorded under it (wAN on #3474).
+      const poolOperation = operation ?? "unspecified";
+      const poolKey = formatLocalLlmPoolKey(chatUrl, poolOperation);
+      // A lapsed circuit stays visible as a tombstone; each client clears its
+      // cached verdict once, or a stale "unavailable" survives the rest of the
+      // cache interval.
+      const expiredAtMs = localLlmBackendPoolExpiredAtMs(now, chatUrl, poolOperation);
+      if (expiredAtMs !== null && expiredAtMs > (this.poolExpirySeenMs.get(poolKey) ?? 0)) {
+        this.poolExpirySeenMs.set(poolKey, expiredAtMs);
         this.isAvailable = null;
         this.lastHealthCheck = 0;
       }
-      const trippedState = getLocalLlmTrippedBackendPoolState(now, chatUrl, operation);
+      const trippedState = getLocalLlmTrippedBackendPoolState(now, chatUrl, poolOperation);
       if (trippedState) {
         this.isAvailable = false;
         this.lastHealthCheck = 0;
         log.info(
-          `local LLM availability: backend circuit open for ${Math.max(0, trippedState.untilMs - now)}ms (${trippedState.reason}) op=${operation}`,
+          `local LLM availability: backend circuit open for ${Math.max(0, trippedState.untilMs - now)}ms (${trippedState.reason}) op=${poolOperation}`,
         );
         return false;
       }

@@ -91,9 +91,17 @@ const TERMINAL_PROXY_POOL_CODES = [
   '"code": "remnic_extraction_pool_unavailable"',
 ] as const;
 
+/** The proxy answers pool-config refusals as {"error": "... pool missing or
+ * disabled ..."} with no code field; the text shape is part of the terminal
+ * contract, or the generic 5xx retry still fires (wAN review on #3474). */
+const TERMINAL_PROXY_POOL_TEXT = "pool missing or disabled";
+
 export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: string): boolean {
   if (status !== 503) return false;
-  return TERMINAL_PROXY_POOL_CODES.some((needle) => bodyText.includes(needle));
+  return (
+    bodyText.toLowerCase().includes(TERMINAL_PROXY_POOL_TEXT) ||
+    TERMINAL_PROXY_POOL_CODES.some((needle) => bodyText.includes(needle))
+  );
 }
 
 export function isRateLimitedResponse(status: number, bodyText: string): boolean {
