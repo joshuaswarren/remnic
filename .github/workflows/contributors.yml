@@ -3,9 +3,9 @@ name: Contributor registry upkeep
 # Regenerates the generated block in CONTRIBUTORS.md from the GitHub API
 # and opens or updates a pull request when it drifts. The updater's unit
 # tests run first and in-run validation gates the PR. Pull requests created
-# with GITHUB_TOKEN do not trigger pull_request workflows, so the run also
-# posts its own `contributors-validation` check on the PR head SHA; that
-# check reports only this validation, never repository CI.
+# with GITHUB_TOKEN do not trigger pull_request workflows automatically, so
+# the run also posts its own `contributors-validation` check on the PR head
+# SHA; that check reports only this validation, never repository CI.
 
 on:
   schedule:

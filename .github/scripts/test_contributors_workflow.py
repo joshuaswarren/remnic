@@ -1,11 +1,11 @@
 """The bot-authored registry PR must name its supported merge path.
 
 A pull request opened with GITHUB_TOKEN does not start the normal
-pull_request workflows, and the bot author has no review seat, so the
-required ai-reviewers gate can never pass on it (issue #3495). The pull
-request body must say so and must name the supported path — verify the
-generated diff and carry it in a normal maintainer PR — or the next
-registry update will sit blocked with no instruction attached.
+pull_request workflows automatically, and the bot author has no review
+seat, so the required ai-reviewers gate can never pass on it (issue
+#3495). The pull request body must say so and must name the supported
+path — verify the generated diff and carry it in a normal maintainer PR —
+or the next registry update will sit blocked with no instruction attached.
 """
 
 import os
