@@ -2035,11 +2035,10 @@ export class QmdClient implements SearchBackend {
 
     const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
-    // Mark the session while this call stays pending past the slow threshold;
-    // settle removes the marker on success, failure, and cancellation (#3499).
-    const watch = this.watchDaemonCall(this.daemonSession);
+    let watch: DaemonInflightWatch | undefined;
     try {
       let args: Record<string, unknown>;
+      let usesModels = true; // The v1 tool chooses its own search legs.
       if (v2) {
         // QMD v2: query tool expects { searches: [...], collections?: [...] }
         // The MCP tool is structured-only in 2.x; use lex+vec+hyde by default
@@ -2052,6 +2051,7 @@ export class QmdClient implements SearchBackend {
           args.collections = [collection];
         }
         this.addResolvedSearchOptionsToMcpArgs(args, options);
+        usesModels = args.rerank !== false || searches.some(({ type }) => type !== "lex");
       } else {
         // QMD v1: query tool accepts { query, collection?, limit }
         args = { query, limit: maxResults };
@@ -2061,6 +2061,7 @@ export class QmdClient implements SearchBackend {
         this.addResolvedSearchOptionsToMcpArgs(args, options);
       }
 
+      if (usesModels) watch = this.watchDaemonCall(this.daemonSession);
       const result = await this.daemonSession.callTool("query", args, this.daemonTimeoutMs, signal);
       const durationMs = performance.now() - startedAtMs;
 
@@ -2101,7 +2102,7 @@ export class QmdClient implements SearchBackend {
       this.handleDaemonTransientError("search", err, durationMs);
       return null;
     } finally {
-      watch.settle();
+      watch?.settle();
     }
   }
 

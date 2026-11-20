@@ -265,6 +265,49 @@ test("a repeat of a slow query takes a lexical plan without waiting for the orig
   assert.equal(calls.length, 2);
 });
 
+for (const [leg, rerank, gatesSibling] of [
+  ["lex", false, false],
+  ["lex", undefined, true],
+  ["vec", false, true],
+] as const) {
+  test(`slow in-flight ${leg} (rerank=${rerank ?? "default"}) gates hybrid: ${gatesSibling}`, async (t) => {
+    let now = 1000;
+    t.mock.method(performance, "now", () => now);
+    const calls: CapturedCall[] = [];
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const { client, internals } = makeClient(async (name, args) => {
+      calls.push({ name, args });
+      if (calls.length === 1) {
+        started.resolve();
+        await release.promise;
+      }
+      return mcpOk([{ path: "result.md" }]);
+    });
+
+    const query = `slow ${leg} recall (rerank=${rerank ?? "default"})`;
+    const options: Parameters<typeof client.search>[3] = {
+      structuredSearches: [{ type: leg, query }],
+    };
+    if (rerank === false) {
+      options.rerank = false;
+    }
+    const pending = client.search(query, "memories", 3, options);
+    try {
+      await started.promise;
+      assert.deepEqual(legTypes(calls[0]!), [leg]);
+      assert.equal(calls[0]!.args.rerank, rerank);
+      now += internals.daemonSlowQueryMs;
+      const results = await client.search(`hybrid sibling of ${query}`, "memories", 3);
+      assert.equal(results[0]?.path, "result.md");
+      assert.deepEqual(legTypes(calls[1]!), gatesSibling ? ["lex"] : ["lex", "vec", "hyde"]);
+    } finally {
+      release.resolve();
+      await pending;
+    }
+  });
+}
+
 test("a fresh in-flight call does not gate siblings yet (#3499)", async (t) => {
   let now = 1000;
   t.mock.method(performance, "now", () => now);
