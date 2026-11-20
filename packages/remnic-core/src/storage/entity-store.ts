@@ -79,7 +79,7 @@ export interface EntityStoreDeps {
   getEntityMutationVersion(): number;
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
-  knowledgeIndexCache: { scored: ScoredEntity[]; builtAt: number } | null;
+  knowledgeIndexCache: { scored: ScoredEntity[]; builtAt: number; revision: number } | null;
   okfConformanceEnabled(): boolean;
   normalizeEntityName(raw: string, type: string): string;
   readAllEntityFiles(): Promise<EntityFile[]>;
@@ -780,8 +780,13 @@ export class EntityStore {
     let scored: ScoredEntity[];
     let cached = false;
     const cache = this.deps.knowledgeIndexCache;
+    // The shared entity mutation revision advances on every peer write
+    // (knowledge-index-peer-write.test.ts): a TTL-fresh cache at a stale
+    // revision would serve a corpus the directory has already outgrown.
+    const liveRevision = this.deps.getEntityMutationVersion();
     if (
       cache &&
+      cache.revision === liveRevision &&
       Date.now() - cache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
     ) {
       scored = cache.scored;
@@ -798,7 +803,12 @@ export class EntityStore {
         topRelationships: e.relationships.slice(0, 3).map((r) => r.target),
       }));
       scored.sort((a, b) => b.score - a.score);
-      this.deps.knowledgeIndexCache = { scored, builtAt: Date.now() };
+      // Publish only when the shared revision held across the corpus read:
+      // a peer write landing mid-scan must not pin a half-seen corpus under
+      // a revision the next call already knows is stale.
+      if (this.deps.getEntityMutationVersion() === liveRevision) {
+        this.deps.knowledgeIndexCache = { scored, builtAt: Date.now(), revision: liveRevision };
+      }
     }
 
     // Sort by score descending, take top N
