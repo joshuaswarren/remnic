@@ -1097,6 +1097,10 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       this.service.setCodingContext({
         sessionKey: body.sessionKey,
         codingContext,
+        // Caller-supplied root: bind to the transport principal and mark it
+        // remote — it was resolved on the caller's host, not this filesystem.
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        remote: true,
       });
       this.respondJson(res, 200, { ok: true });
       return;

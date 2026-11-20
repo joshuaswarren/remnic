@@ -6,7 +6,7 @@
  * locally and posts the result through `POST /engram/v1/coding-context`.
  * Server-side cwd resolution remains the fallback for same-host daemons.
  */
-import { resolveGitContext, type GitContext } from "@remnic/core";
+import { resolveGitContext, type GitContext } from "@remnic/core/coding/git-context";
 
 import type { SetCodingContextResponse } from "./client.js";
 
@@ -17,6 +17,14 @@ export interface CodingContextCarrier {
 export interface CodingContextSyncState {
   /** Signature of the last context the daemon accepted; null = nothing posted. */
   lastCodingContextSignature: string | null;
+  /**
+   * Set when a sync observed the daemon unreachable: a restart there wipes the
+   * per-session context map, so the latched signature may no longer be true.
+   * The next reachable sync clears the latch and re-posts the current context.
+   */
+  codingContextRepostPending: boolean;
+  /** In-flight/queued sync — serializes posts so the newest resolution always lands last. */
+  codingContextSyncChain?: Promise<void>;
 }
 
 export interface SyncCodingContextOptions {
@@ -33,12 +41,35 @@ export interface CodingContextSyncCtx {
   state: CodingContextSyncState & { startupEpoch?: number };
   client: CodingContextCarrier & { isReachable(): boolean };
   config: { authToken?: string };
+  /** Injectable for tests; defaults to the shared core resolver. */
+  resolve?: (cwd: string) => Promise<GitContext | null>;
 }
 
 /** Per-turn refresh: re-resolve off the turn path and post only on change. */
 export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): Promise<void> {
-  if (!ctx.config.authToken || !ctx.client.isReachable()) return;
-  await syncSessionCodingContext({ sessionKey: ctx.session.sessionKey, cwd: ctx.session.cwd, state: ctx.state, client: ctx.client });
+  if (!ctx.config.authToken) return;
+  if (!ctx.client.isReachable()) {
+    ctx.state.codingContextRepostPending = true;
+    return;
+  }
+  if (ctx.state.codingContextRepostPending) {
+    ctx.state.lastCodingContextSignature = null;
+    ctx.state.codingContextRepostPending = false;
+  }
+  // Serialize per session (wAK review): a slower earlier sync must never post
+  // after a newer one. Each queued run resolves fresh, so the last post the
+  // daemon sees always carries the newest resolution.
+  const run = (ctx.state.codingContextSyncChain ?? Promise.resolve()).then(() =>
+    syncSessionCodingContext({
+      sessionKey: ctx.session.sessionKey,
+      cwd: ctx.session.cwd,
+      state: ctx.state,
+      client: ctx.client,
+      resolve: ctx.resolve,
+    }),
+  );
+  ctx.state.codingContextSyncChain = run;
+  await run;
 }
 
 /**

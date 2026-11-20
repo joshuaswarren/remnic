@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import packageJson from "../package.json" with { type: "json" };
 
-import type { GitContext } from "@remnic/core";
+import type { GitContext } from "@remnic/core/coding/git-context";
 
 import type { RemnicPiConfig } from "./config.js";
 

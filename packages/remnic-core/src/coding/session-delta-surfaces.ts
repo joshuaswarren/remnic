@@ -21,6 +21,7 @@
  * state file is operator-side bookkeeping, not user memory content — the
  * same way `calibration.ts` writes are uncounted).
  */
+import { codingContextLocalRoot } from "../access-coding-context-resolution.js";
 import type {
   CodingKnowledgeConfig,
   CodingContext,
@@ -224,7 +225,7 @@ async function deltaGet(
   //    coding context was resolved from; it MUST exist for a delta to make
   //    sense. Fall back to `projectId` only as a path hint — refresh is the
   //    caller's responsibility (the gate already required a context).
-  const repoRoot = codingContext.rootPath ?? codingContext.projectId;
+  const repoRoot = codingContextLocalRoot(codingContext);
   const sliceResult: ResolveSliceResult = resolveSlice(
     repoRoot,
     lastSeen?.head ?? null,

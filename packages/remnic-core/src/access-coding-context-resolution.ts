@@ -1,5 +1,12 @@
+import { z } from "zod";
+
+import { EngramAccessInputError } from "./access-errors.js";
+import { codingContextSchema } from "./access-schema.js";
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { resolveGitContext, sharedGitContextCache } from "./coding/git-context.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
+import type { Orchestrator } from "./orchestrator.js";
 import type { CodingContext } from "./types.js";
 
 export interface InterruptibleCodingScopeInput {
@@ -40,4 +47,99 @@ export async function resolveCodingContextFromOptions(
     }
     return null;
   }
+}
+
+/**
+ * Attach a coding context to a session (issue #569). Used by the Claude
+ * Code / Codex connectors at session start, and by the
+ * `remnic.set_coding_context` MCP tool (PR 7).
+ */
+export interface EngramAccessSetCodingContextRequest {
+  sessionKey: string;
+  codingContext: {
+    projectId: string;
+    branch: string | null;
+    rootPath: string;
+    defaultBranch: string | null;
+  } | null;
+  /**
+   * Transport-bound caller principal — set by the boundary from the resolved
+   * request identity, never from the payload. With namespaces enabled the
+   * session's derived principal must match (or resolve to `default`), the
+   * same binding the extraction force-flush enforces (#3515 review).
+   */
+  authenticatedPrincipal?: string;
+  /**
+   * Set by the boundary for caller-supplied roots (#3515 review): marks the
+   * stored context's rootPath as remote so daemon surfaces never open it as
+   * a local path. Internal resolutions (cwd/projectTag on this host, CLI)
+   * leave it unset.
+   */
+  remote?: boolean;
+}
+
+/**
+ * The coding-context root as a daemon-local path. A client-resolved (remote)
+ * root degrades to the projectId — exactly what a projectTag-derived context
+ * already carries — so surfaces behave like today's non-repo contexts instead
+ * of scanning a foreign host's path.
+ */
+export function codingContextLocalRoot(codingContext: CodingContext): string {
+  return codingContext.remote === true ? codingContext.projectId : codingContext.rootPath;
+}
+
+/**
+ * Validates the input shape and rejects malformed payloads rather than
+ * silently accepting them (CLAUDE.md #51). Pass `codingContext: null` to
+ * clear. With namespaces enabled, set and clear are bound to the caller's
+ * principal so one client cannot rewrite another session's context.
+ */
+const setCodingContextRequestSchema = z.object({
+  sessionKey: z.string().trim().min(1, "sessionKey is required for setCodingContext"),
+  codingContext: codingContextSchema,
+  authenticatedPrincipal: z.string().optional(),
+  remote: z.boolean().optional(),
+});
+
+export function setSessionCodingContext(
+  orchestrator: Orchestrator,
+  request: EngramAccessSetCodingContextRequest,
+): void {
+  const parsed = setCodingContextRequestSchema.safeParse(request);
+  if (!parsed.success) {
+    const detail = parsed.error.issues
+      .map((issue) => (issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message))
+      .join("; ");
+    throw new EngramAccessInputError(detail || "invalid setCodingContext request");
+  }
+  const sessionKey = parsed.data.sessionKey;
+  // Bind set AND clear to the caller (#3515 review): with namespaces on,
+  // the session's derived principal must be the caller (or `default`,
+  // i.e. unclaimed — first caller binds), mirroring the extraction
+  // force-flush ownership check.
+  if (resolveNamespaceCapabilities(orchestrator.config).namespaces === true) {
+    const authenticatedPrincipal = parsed.data.authenticatedPrincipal?.trim();
+    const sessionPrincipal = resolvePrincipal(sessionKey, orchestrator.config);
+    if (
+      !authenticatedPrincipal ||
+      (sessionPrincipal !== undefined && sessionPrincipal !== "default" && sessionPrincipal !== authenticatedPrincipal)
+    ) {
+      throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
+    }
+  }
+  const ctx = parsed.data.codingContext;
+  if (ctx === null) {
+    orchestrator.setCodingContextForSession(sessionKey, null);
+    return;
+  }
+  const stored: CodingContext = {
+    projectId: ctx.projectId,
+    branch: ctx.branch,
+    rootPath: ctx.rootPath,
+    defaultBranch: ctx.defaultBranch,
+  };
+  if (parsed.data.remote === true) {
+    stored.remote = true;
+  }
+  orchestrator.setCodingContextForSession(sessionKey, stored);
 }

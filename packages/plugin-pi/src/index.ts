@@ -784,7 +784,7 @@ function getSessionState(sessionKey: string, states: Map<string, PiSessionState>
       startupProbeJoined: false,
       startupEpoch: 0,
       statusOffline: false,
-      lastCodingContextSignature: null,
+      lastCodingContextSignature: null, codingContextRepostPending: false,
     };
     states.set(sessionKey, state);
     pruneSessionStates(states);

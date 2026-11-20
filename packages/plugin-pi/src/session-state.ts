@@ -26,4 +26,8 @@ export type PiSessionState = {
   statusOffline: boolean;
   /** Signature of the coding context last accepted by the daemon; null = nothing posted yet (#3515). */
   lastCodingContextSignature: string | null;
+  /** Daemon restart may have wiped its context map while unreachable; re-post on recovery (#3515). */
+  codingContextRepostPending: boolean;
+  /** Serializes coding-context posts so the newest resolution lands last (#3515). */
+  codingContextSyncChain?: Promise<void>;
 };
