@@ -219,7 +219,9 @@ export class ObserveOutbox {
     const data = this.entries.map((entry) => JSON.stringify(entry)).join("\n");
     // Atomic replace with fsync of the temp file and the directory, so an OS crash or
     // power loss cannot commit the rename ahead of the data and leave a short queue.
-    await writeFileAtomically(this.filePath, data ? `${data}\n` : "");
+    // Entries carry raw tool output, so the queue file is owner-only (#3381); the
+    // temp file is created 0600 and the rename keeps that mode on every rewrite.
+    await writeFileAtomically(this.filePath, data ? `${data}\n` : "", undefined, 0o600);
   }
 
   /**
@@ -229,12 +231,19 @@ export class ObserveOutbox {
    */
   private mutate(update: () => void, notify?: OutboxNotify): Promise<void> {
     const run = this.writeChain.then(async () => {
-      await mkdir(path.dirname(this.filePath), { recursive: true });
+      // New parents are private from creation (#3381). A PRE-EXISTING directory keeps
+      // its mode: observeOutboxPath may point into a shared directory, and chmod'ing it
+      // would remove other users' access to every sibling (Codex P2 on #3503).
+      await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
       await withHeldFileLock(
         this.lockPath,
         { staleMs: LOCK_STALE_MS, maxWaitMs: this.lockMaxWaitMs },
         async (acquired) => {
           if (!acquired) throw new Error(`observe outbox is locked by another process (${this.lockPath})`);
+          // The FILE needs no chmod: persist() replaces it through a 0600 temp on
+          // every write, so a looser file is tightened by the write itself - and
+          // an unreadable one keeps failing closed below instead of being repaired
+          // into a silent empty.
           await this.refresh(notify, true);
           update();
           await this.persist();

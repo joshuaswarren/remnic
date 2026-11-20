@@ -38,6 +38,7 @@ export async function writeFileAtomically(
   outputPath: string,
   content: string | Uint8Array,
   backupPath?: string,
+  mode?: number,
 ): Promise<string | undefined> {
   const dir = path.dirname(outputPath);
   await mkdir(dir, { recursive: true });
@@ -45,7 +46,7 @@ export async function writeFileAtomically(
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   let resolvedBackupPath: string | undefined;
   try {
-    handle = await open(tempPath, "w");
+    handle = await open(tempPath, "w", mode);
     if (typeof content === "string") {
       await handle.writeFile(content, "utf-8");
     } else {
