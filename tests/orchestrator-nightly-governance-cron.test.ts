@@ -85,8 +85,8 @@ test("initialize loads aliases before running storage migration", async () => {
 
     assert.deepEqual(order.slice(0, 2), ["loadAliases", "ensureDirectories"]);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -108,8 +108,8 @@ test("initialize skips nightly governance cron auto-register unless explicitly e
 
     assert.equal(nightlyCalls, 0);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -131,8 +131,8 @@ test("initialize triggers nightly governance cron auto-register when explicitly 
 
     assert.equal(nightlyCalls, 1);
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
 
@@ -157,7 +157,7 @@ test("abortDeferredInit stops deferred initialization before cron registration",
     assert.equal(nightlyCalls, 0);
   } finally {
     if (orchestrator) await orchestrator.destroy().catch(() => undefined);
-    await rm(memoryDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 });
