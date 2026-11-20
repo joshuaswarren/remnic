@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { EntityFile, MemoryFile } from "./types.js";
 import { clearQmdRecallCache, qmdRecallCacheSize } from "./qmd-recall-cache.js";
 
@@ -261,67 +262,33 @@ interface QmdCacheEntry {
 const QMD_CACHE_TTL_MS = 60_000;
 const qmdSearchCache = new Map<string, QmdCacheEntry>();
 
-/** While depth > 0, QMD search cache uses extended TTL (primary + top-up share one recall cycle, R4). */
-let qmdSearchCacheRecallScopeDepth = 0;
-let qmdSearchCacheRecallTtlMs: number | undefined;
-
-export function beginQmdSearchCacheRecallScope(ttlMs: number): void {
-  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return;
-  const next = Math.floor(ttlMs);
-  qmdSearchCacheRecallScopeDepth += 1;
-  qmdSearchCacheRecallTtlMs = Math.max(qmdSearchCacheRecallTtlMs ?? 0, next);
-}
-
-export function endQmdSearchCacheRecallScope(): void {
-  if (qmdSearchCacheRecallScopeDepth <= 0) return;
-  qmdSearchCacheRecallScopeDepth -= 1;
-  if (qmdSearchCacheRecallScopeDepth === 0) {
-    qmdSearchCacheRecallTtlMs = undefined;
-  }
-}
+const qmdSearchCacheRecallTtl = new AsyncLocalStorage<number>();
 
 export async function runInQmdSearchCacheRecallScope<T>(
   ttlMs: number,
   run: () => Promise<T>,
 ): Promise<T> {
-  const acquired = Number.isFinite(ttlMs) && ttlMs > 0;
-  if (acquired) beginQmdSearchCacheRecallScope(ttlMs);
-  try {
-    return await run();
-  } finally {
-    if (acquired) endQmdSearchCacheRecallScope();
-  }
-}
-
-/** Observable refcount for unit tests (R4 scope guard). */
-export function peekQmdSearchCacheRecallScopeDepth(): number {
-  return qmdSearchCacheRecallScopeDepth;
-}
-
-function effectiveQmdSearchCacheTtlMs(): number {
-  return Math.max(QMD_CACHE_TTL_MS, qmdSearchCacheRecallTtlMs ?? 0);
+  const ttl = Number.isFinite(ttlMs)
+    ? Math.max(QMD_CACHE_TTL_MS, Math.floor(ttlMs))
+    : QMD_CACHE_TTL_MS;
+  return qmdSearchCacheRecallTtl.run(ttl, run);
 }
 
 export function getCachedQmdSearch(cacheKey: string): unknown[] | null {
   const entry = qmdSearchCache.get(cacheKey);
   if (!entry) return null;
-  const ttl = effectiveQmdSearchCacheTtlMs();
-  if (Date.now() - entry.cachedAt > ttl) {
-    qmdSearchCache.delete(cacheKey);
-    return null;
-  }
+  const ttl = qmdSearchCacheRecallTtl.getStore() ?? QMD_CACHE_TTL_MS;
+  // A concurrent recall can still use an entry that is too old for this recall.
+  if (Date.now() - entry.cachedAt > ttl) return null;
   return entry.results;
 }
 
 export function setCachedQmdSearch(cacheKey: string, results: unknown[]): void {
+  qmdSearchCache.delete(cacheKey);
   qmdSearchCache.set(cacheKey, { results, cachedAt: Date.now() });
-  // Evict old entries to prevent unbounded growth
   if (qmdSearchCache.size > 200) {
-    const now = Date.now();
-    const ttl = effectiveQmdSearchCacheTtlMs();
-    for (const [key, entry] of qmdSearchCache) {
-      if (now - entry.cachedAt > ttl) qmdSearchCache.delete(key);
-    }
+    const oldest = qmdSearchCache.keys().next();
+    if (!oldest.done) qmdSearchCache.delete(oldest.value);
   }
 }
 
