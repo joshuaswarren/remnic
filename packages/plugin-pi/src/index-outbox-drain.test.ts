@@ -10,6 +10,7 @@ import { RemnicClient, RemnicHttpError } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import { createRemnicPiExtension, observeMessages } from "./index.js";
 import type { PiApi } from "./index.js";
+import { observedMessageDedupeKey, toObserveMessage } from "./messages.js";
 import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
@@ -365,4 +366,37 @@ test("a lost-response replay keeps the live attempt's idempotency key even when 
 
   assert.ok(keys[0] && keys[1], "the live attempt and the replay each carried an idempotency key");
   assert.equal(keys[1], keys[0], "the replay must reuse the live attempt's key or the daemon ingests twice");
+});
+
+test("a queued entry bound to another daemon does not suppress the live capture for this one", async (t) => {
+  // #3504 CodeRabbit: pendingHashes must be destination-aware — an entry bound
+  // to daemon-a is never delivered to this daemon, so its hash cannot skip the
+  // live send here.
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath); // remnicDaemonUrl http://127.0.0.1:4318
+  const outbox = new ObserveOutbox(outboxPath);
+  const raw = { id: "l-1", role: "user", content: "shared capture" };
+  const message = toObserveMessage(raw);
+  assert.ok(message);
+  await outbox.enqueue({
+    ...queuedEntry,
+    sessionKey: "live-session",
+    destination: "http://daemon-a:4318",
+    messageHashes: [observedMessageDedupeKey(message, "live-session")],
+  });
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let sent = 0;
+  globalThis.fetch = async () => {
+    sent += 1;
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  await observeMessages(liveCtx(() => {}), new RemnicClient(config), [raw], new Set<string>(), undefined, config, outbox);
+  await settleObserveOutboxDrain(outbox);
+  assert.equal(sent, 1, "the capture reaches this daemon instead of being suppressed by the foreign entry");
+  assert.equal(await outbox.size(), 1, "the foreign entry stays queued for its own daemon");
 });

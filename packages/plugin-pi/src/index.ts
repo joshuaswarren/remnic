@@ -828,7 +828,10 @@ async function observeMessagesForSession(
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
   const pendingHashes = new Set<string>();
-  const outboxPending = outbox ? await outbox.pendingHashes() : null;
+  // Suppress only hashes a drain on THIS daemon would deliver: an entry bound
+  // to another destination never reaches this daemon, so its hash must not
+  // skip the live capture here (#3504 review).
+  const outboxPending = outbox ? await outbox.pendingHashes(config?.remnicDaemonUrl) : null;
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;

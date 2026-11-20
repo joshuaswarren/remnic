@@ -643,3 +643,16 @@ test("enqueue bounds a large rawContent so the durable replay stays small but ke
   assert.ok(fs.statSync(filePath).size < 64 * 1024, `the persisted entry is bounded (got ${fs.statSync(filePath).size} bytes)`);
   assert.ok(notifications.some((m) => /bounded|omitted|too large/i.test(m)), "the bound is surfaced, not silent");
 });
+
+test("pendingHashes only suppresses captures a drain on this destination would deliver", async () => {
+  // #3504 CodeRabbit: switching daemon URLs with a foreign entry queued must not
+  // suppress the new live capture — that entry is never delivered to this daemon.
+  const outbox = new ObserveOutbox(tmpOutboxPath("pending-dest"));
+  await outbox.enqueue({ ...entryInput("foreign-capture"), destination: "http://daemon-a:4318" });
+  await outbox.enqueue({ ...entryInput("own-capture"), destination: "http://daemon-b:4318" });
+  await outbox.enqueue(entryInput("legacy-capture"));
+
+  const forB = await outbox.pendingHashes("http://daemon-b:4318");
+  assert.deepEqual([...forB].sort(), ["hash-legacy-capture", "hash-own-capture"], "own + unbound entries suppress; foreign do not");
+  assert.equal((await outbox.pendingHashes()).size, 3, "no destination = general drainer: every queued capture suppresses");
+});

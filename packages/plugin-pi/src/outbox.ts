@@ -115,6 +115,17 @@ export type DrainOptions = {
 /** The daemon remembers observe idempotency keys for about this long (512-entry record). */
 const SERVER_IDEMPOTENCY_WINDOW_MS = 15 * 60_000;
 
+/**
+ * Whether a drain on `destination` would deliver `entry`. An omitted caller
+ * destination makes every entry eligible (the DrainOptions contract); an
+ * unbound (pre-field) entry runs on any drainer; a bound entry only on its own.
+ * Shared by drain selection, the foreign count and live-capture suppression so
+ * all three agree on which captures a destination covers (#3381, #3504).
+ */
+function entryEligibleForDestination(entry: ObserveOutboxEntry, destination: string | undefined): boolean {
+  return destination === undefined || entry.destination === undefined || entry.destination === destination;
+}
+
 export type OutboxStatus = {
   pending: number;
   /** Age of the oldest queued entry, or null when empty. */
@@ -287,11 +298,17 @@ export class ObserveOutbox {
     return this.entries.length;
   }
 
-  /** Dedupe keys of everything currently queued (used to avoid double-delivery channels). */
-  async pendingHashes(): Promise<Set<string>> {
+  /**
+   * Dedupe keys of everything currently queued that a drain on `destination`
+   * would deliver. Entries bound to another daemon do not suppress the live
+   * capture for this one — they are never delivered here (#3504 review).
+   */
+  async pendingHashes(destination?: string): Promise<Set<string>> {
     await this.refreshOrKeepLastKnown();
     return new Set(
-      this.entries.flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
+      this.entries
+        .filter((entry) => entryEligibleForDestination(entry, destination))
+        .flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
     );
   }
 
@@ -384,9 +401,7 @@ export class ObserveOutbox {
     // An omitted destination makes every entry eligible per the DrainOptions
     // contract; a destination-bound entry only runs on its own drainer (#3381).
     const eligible = (entry: ObserveOutboxEntry): boolean =>
-      options.destination === undefined ||
-      entry.destination === undefined ||
-      entry.destination === options.destination;
+      entryEligibleForDestination(entry, options.destination);
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
