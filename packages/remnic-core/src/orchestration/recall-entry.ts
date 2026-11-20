@@ -97,6 +97,18 @@ export class RecallEntryCoordinator {
       options.abortSignal?.addEventListener("abort", onAbort, { once: true });
     }
 
+    // Resolve the client's absolute deadline ONCE at method entry (issue
+    // #3499): a relative budget then counts from arrival, and this abort
+    // timer bounds the init gate, standing reads, and the inner race.
+    const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
+    let clientDeadlineHandle: NodeJS.Timeout | null = null;
+    if (clientDeadlineAtMs !== null) {
+      clientDeadlineHandle = setTimeout(
+        () => abortController.abort(),
+        Math.max(1, clientDeadlineAtMs - Date.now()),
+      );
+    }
+
     const principal =
       typeof options.principalOverride === "string" &&
       options.principalOverride.length > 0
@@ -137,6 +149,7 @@ export class RecallEntryCoordinator {
         abortController.signal.removeEventListener("abort", onInitGateAbort);
       if (gateResult === "aborted") {
         this.deps.logRecallFailure(abortRecallError("recall aborted before init"));
+        if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
         return "";
       }
       if (gateResult === "timeout") {
@@ -154,6 +167,7 @@ export class RecallEntryCoordinator {
         "[secure-store locked] Memory store is encrypted and locked. " +
         "Unlock the secure-store inside this daemon process, or restart the daemon through a secure-store aware launcher that installs the key.";
       log.warn("recall blocked: secure-store is locked");
+      if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
       return lockedMsg;
     }
 
@@ -219,8 +233,9 @@ export class RecallEntryCoordinator {
       const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
       const configuredOuterMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
       // The client's own deadlineMs (issue #3499) bounds this entry race
-      // too — phase-one work can stall outside every section budget.
-      const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
+      // too — phase-one work can stall outside every section budget. The
+      // deadline resolved at method entry already deducts elapsed init and
+      // standing-read time from the remaining budget here.
       const clientRemainingMs =
         clientDeadlineAtMs === null ? null : Math.max(1, clientDeadlineAtMs - Date.now());
       const RECALL_TIMEOUT_MS =
@@ -280,6 +295,7 @@ export class RecallEntryCoordinator {
       });
       return composeRecallContext(missing);
     } finally {
+      if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
       options.abortSignal?.removeEventListener("abort", onAbort);
     }
   }

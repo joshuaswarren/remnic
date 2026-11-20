@@ -723,3 +723,25 @@ test("a client deadlineMs bounds the entry-level recall race (#3499)", async () 
     { recallOuterTimeoutMs: 400 },
   );
 });
+
+test("a client deadlineMs bounds the cold-start init gate too (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-deadline-init-gate-",
+    false,
+    async (orchestrator) => {
+      // A cold-start gate that resolves well after the client budget, and an
+      // internal pipeline that never returns — only the deadline can return.
+      Object.assign(orchestrator, {
+        initPromise: new Promise<void>((resolve) => setTimeout(resolve, 400)),
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const start = Date.now();
+      await orchestrator.recall(QUERY, "client-deadline-init", { deadlineMs: 50 });
+      assert.ok(
+        Date.now() - start < 400,
+        "the +50ms client deadline bounds the init gate wait, not just the inner race",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
