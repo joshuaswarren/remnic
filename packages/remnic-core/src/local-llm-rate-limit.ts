@@ -83,8 +83,44 @@ const POOL_MISSING_PATTERN = /pool missing or disabled/i;
  * 408/429/503, or a 5xx whose body carries LiteLLM's cooldown wording.
  * 400s are never rate limits (context-window errors mention fallbacks).
  */
+/** Proxy 503 with a pool-config error code is terminal; do not enter rate-limit retries. */
+const TERMINAL_PROXY_POOL_CODES: ReadonlySet<string> = new Set([
+  "remnic_recall_pool_unavailable",
+  "remnic_extraction_pool_unavailable",
+]);
+
+/** Today's proxy answers {"error": "..."} with no code field, so the code path
+ * parses the body instead of substring-matching JSON — spacing and key order
+ * must not decide whether a terminal refusal retries (kilo on #3474). */
+function bodyHasTerminalPoolCode(bodyText: string): boolean {
+  try {
+    // SAFETY: the proxy body is an opaque JSON object and `code` is optional, so a
+    // wrong-shape or wrong-type payload reads as undefined and fails the Set lookup.
+    const { code } = JSON.parse(bodyText) as { code?: string };
+    return code !== undefined && TERMINAL_PROXY_POOL_CODES.has(code);
+  } catch {
+    return false;
+  }
+}
+
+/** The proxy answers pool-config refusals as {"error": "... pool missing or
+ * disabled ..."} with no code field; the text shape is part of the terminal
+ * contract, or the generic 5xx retry still fires (wAN review on #3474). */
+const TERMINAL_PROXY_POOL_TEXT = "pool missing or disabled";
+
+export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: string): boolean {
+  if (status !== 503) return false;
+  return (
+    bodyText.toLowerCase().includes(TERMINAL_PROXY_POOL_TEXT) ||
+    bodyHasTerminalPoolCode(bodyText)
+  );
+}
+
 export function isRateLimitedResponse(status: number, bodyText: string): boolean {
-  if (POOL_MISSING_PATTERN.test(bodyText)) return false;
+  if (isTerminalLocalLlmProxyPoolError(status, bodyText)) return false;
+  // Pool-side refusals carry "pool missing or disabled" as text: a config
+  // failure, not endpoint saturation. Substring check, no regex.
+  if (bodyText.toLowerCase().includes("pool missing or disabled")) return false;
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   return status >= 500 && RATE_LIMIT_BODY_PATTERN.test(bodyText);
 }

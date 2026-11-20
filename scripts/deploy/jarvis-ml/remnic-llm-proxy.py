@@ -16,6 +16,7 @@ Remnic's `localLlmUrl` and `localLlmFastUrl` point here. One proxy, three rules:
    When RECALL_POOL_FILE is set and the caller sends `X-Remnic-Operation`
    matching recall-side ops (see `should_use_recall_pool`), the same request
    goes to the recall pool instead (e.g. jarvis-ml qwen 4-slot on :8091).
+   `X-Remnic-Priority` may be present for operator visibility; routing ignores it.
    Trained-model-only policy (Joshua, 2026-11-06): memory-writing paths stay
    on the trained pool; recall-side local LLM ops may use the recall pool.
    If RECALL_POOL_FILE is unset/disabled, recall ops get 503 immediately (no

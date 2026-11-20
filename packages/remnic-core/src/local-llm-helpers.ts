@@ -274,21 +274,123 @@ export class SingleFlightProbe {
   }
 }
 
-/** Routing headers sent to the LLM proxy; named so the known Content-Type
- * key survives alongside the optional operation/priority markers. */
-export type LocalLlmRoutingHeaders = Record<string, string> & {
-  "Content-Type": string;
-  "X-Remnic-Operation"?: string;
-  "X-Remnic-Priority"?: string;
-};
+/** True when `value` is safe for `fetch` request headers. Node's `Headers`
+ * accepts a ByteString: controls and DEL are out, and so is anything above
+ * U+00FF — `é` is sendable, `Ā` is not (Kilo review on #3474). */
+export function isHttpHeaderFieldValue(value: string): boolean {
+  if (!value) return false;
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code < 0x20 || code === 0x7f || code > 0xff) return false;
+  }
+  return true;
+}
 
-/** Routing headers for the LLM proxy: operation marker and priority hint. */
+function trimTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 47) end -= 1;
+  return end === url.length ? url : url.slice(0, end);
+}
+
+/** Circuit-breaker and rate-limit scope when recall/extraction share one proxy URL. */
+export function formatLocalLlmPoolKey(chatUrl: string, operation: string): string {
+  let normalized = chatUrl.replace("localhost", "127.0.0.1");
+  normalized = trimTrailingSlashes(normalized);
+  if (normalized.endsWith("/v1")) {
+    normalized = normalized.slice(0, -3);
+  }
+  const completions = normalized.endsWith("/chat/completions")
+    ? normalized
+    : `${normalized}/v1/chat/completions`;
+  return `${completions}|op=${operation}`;
+}
+
+/** HTTP headers the jarvis-ml recall proxy reads for pool routing. */
 export function buildLocalLlmRoutingHeaders(
   operation: string,
-  priority: string | undefined,
-): LocalLlmRoutingHeaders {
-  const headers: LocalLlmRoutingHeaders = { "Content-Type": "application/json" };
-  if (operation !== "unspecified") headers["X-Remnic-Operation"] = operation;
-  if (priority) headers["X-Remnic-Priority"] = priority;
-  return headers;
+  priority: "recall-critical" | "background" | undefined,
+): Record<string, string> {
+  const routingEntries: Array<readonly [string, string]> = [
+    ["Content-Type", "application/json"],
+  ];
+  if (operation !== "unspecified" && isHttpHeaderFieldValue(operation)) {
+    routingEntries.push(["X-Remnic-Operation", operation]);
+  }
+  if (priority) {
+    routingEntries.push(["X-Remnic-Priority", priority]);
+  }
+  return Object.fromEntries(routingEntries) satisfies Record<string, string>;
+}
+
+const LOCAL_LLM_GLOBAL_BACKEND_STATE = "__openclawEngramLocalLlmBackendState";
+
+export type LocalLlmBackendPoolState = {
+  untilMs: number;
+  reason: string;
+  /** Once the trip lapses this is set instead of deleting the entry: every
+   * client must observe the transition once, so a tombstone stays visible for
+   * BACKEND_POOL_TOMBSTONE_MS. */
+  expiredAtMs?: number;
+};
+
+/** How long a lapsed circuit stays readable so each client can invalidate its
+ * cached health verdict once (the health cache is 60s; this leaves margin). */
+const BACKEND_POOL_TOMBSTONE_MS = 15 * 60_000;
+
+function localLlmBackendPoolMap(): Map<string, LocalLlmBackendPoolState> {
+  // SAFETY: globalThis carries one optional Map slot keyed for backend pool state.
+  const globalAny = globalThis as typeof globalThis & {
+    [LOCAL_LLM_GLOBAL_BACKEND_STATE]?: Map<string, LocalLlmBackendPoolState>;
+  };
+  const existing = globalAny[LOCAL_LLM_GLOBAL_BACKEND_STATE];
+  if (existing) return existing;
+  const created = new Map<string, LocalLlmBackendPoolState>();
+  globalAny[LOCAL_LLM_GLOBAL_BACKEND_STATE] = created;
+  return created;
+}
+
+export function getLocalLlmTrippedBackendPoolState(
+  now: number,
+  chatUrl: string,
+  operation: string,
+): LocalLlmBackendPoolState | null {
+  const key = formatLocalLlmPoolKey(chatUrl, operation);
+  const map = localLlmBackendPoolMap();
+  const state = map.get(key) ?? null;
+  if (!state) return null;
+  if (state.untilMs <= now) {
+    state.expiredAtMs ??= state.untilMs;
+    if (state.expiredAtMs + BACKEND_POOL_TOMBSTONE_MS <= now) map.delete(key);
+    return null;
+  }
+  return state;
+}
+
+/** The instant this pool's circuit lapsed, or null while it is active or
+ * absent. The tombstone stays in the map so every client holding a cached
+ * health verdict can observe the transition once — deleting on first read left
+ * later clients stale (wAN review on #3474). */
+export function localLlmBackendPoolExpiredAtMs(now: number, chatUrl: string, operation: string): number | null {
+  const key = formatLocalLlmPoolKey(chatUrl, operation);
+  const state = localLlmBackendPoolMap().get(key) ?? null;
+  if (state && state.untilMs <= now) {
+    state.expiredAtMs ??= state.untilMs;
+    return state.expiredAtMs;
+  }
+  return null;
+}
+
+export function markLocalLlmBackendPoolUnavailable(
+  reason: string,
+  durationMs: number,
+  chatUrl: string,
+  operation: string,
+): void {
+  const normalizedReason = normalizeBackendTripReason(reason);
+  const key = formatLocalLlmPoolKey(chatUrl, operation);
+  if (durationMs > 0) {
+    localLlmBackendPoolMap().set(key, { untilMs: Date.now() + durationMs, reason: normalizedReason });
+  } else {
+    localLlmBackendPoolMap().delete(key);
+  }
 }

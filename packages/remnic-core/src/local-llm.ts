@@ -7,10 +7,9 @@ import os from "node:os";
 import type { ModelRegistry } from "./model-registry.js";
 import { launchProcessSync } from "./runtime/child-process.js";
 import { mergeEnv, readEnvVar } from "./runtime/env.js";
-import { resolveLocalLlmCapabilities } from "./capabilities.js";
-import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
+import { resolveLocalLlmCapabilities, resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { ChatTransport } from "./local-llm-transport.js";
-import { LocalLlmRateLimitSession, resolveRateLimitSettings } from "./local-llm-rate-limit.js";
+import { LocalLlmRateLimitSession, resolveRateLimitSettings, isTerminalLocalLlmProxyPoolError } from "./local-llm-rate-limit.js";
 import {
   extractNonRecoverableBackendReason,
   extractNonRecoverableBackendReasonFromErrorText,
@@ -22,9 +21,13 @@ import {
   waitForRetryBackoff,
   combineClientAbortSignals,
   SingleFlightProbe,
+  buildLocalLlmRoutingHeaders,
+  formatLocalLlmPoolKey,
+  localLlmBackendPoolExpiredAtMs,
+  getLocalLlmTrippedBackendPoolState,
+  markLocalLlmBackendPoolUnavailable,
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
-  buildLocalLlmRoutingHeaders,
 } from "./local-llm-helpers.js";
 import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import {
@@ -167,12 +170,6 @@ interface LocalLlmQueuedRequest {
   resolve: (value: LocalLlmChatCompletionResult | null) => void;
 }
 
-const LOCAL_LLM_GLOBAL_BACKEND_STATE = "__openclawEngramLocalLlmBackendState";
-
-type LocalLlmBackendState = {
-  untilMs: number;
-  reason: string;
-};
 /**
  * Local LLM client for OpenAI-compatible endpoints (LM Studio, Ollama, MLX, etc.)
  *
@@ -184,6 +181,7 @@ export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
   private lastHealthCheck: number = 0;
+  private poolExpirySeenMs = new Map<string, number>(); // pool key → lapsed-circuit instant already invalidated
   private readonly availabilityProbe = new SingleFlightProbe();
   private detectedType: LocalLlmType | null = null;
   private cachedModelInfo: LocalModelInfo | null = null;
@@ -236,11 +234,16 @@ export class LocalLlmClient {
   }
 
   private buildRequestHeaders(base: Record<string, string> = {}): Record<string, string> {
-    const headers: Record<string, string> = {
-      ...base,
-      ...(this.config.localLlmHeaders ?? {}),
-    };
+    const headers = { ...base } satisfies Record<string, string>;
+    const configured = this.config.localLlmHeaders ?? {};
+    for (const [key, value] of Object.entries(configured)) {
+      const existing = Object.keys(headers).find((name) => name.toLowerCase() === key.toLowerCase());
+      if (existing !== undefined) delete headers[existing];
+      headers[key] = value;
+    }
     if (this.config.localLlmApiKey && this.config.localLlmAuthHeader !== false) {
+      const existing = Object.keys(headers).find((name) => name.toLowerCase() === "authorization");
+      if (existing !== undefined) delete headers[existing];
       headers.Authorization = `Bearer ${this.config.localLlmApiKey}`;
     }
     return headers;
@@ -261,45 +264,17 @@ export class LocalLlmClient {
     return this.detectedType;
   }
 
-  private getBackendKey(): string {
-    return trimTrailingSlashes(
-      this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
-    ).replace(/\/v1$/, "");
-  }
-
-  private getGlobalBackendState(): Map<string, LocalLlmBackendState> {
-    const globalAny = globalThis as typeof globalThis & {
-      [LOCAL_LLM_GLOBAL_BACKEND_STATE]?: Map<string, LocalLlmBackendState>;
-    };
-    if (!globalAny[LOCAL_LLM_GLOBAL_BACKEND_STATE]) {
-      globalAny[LOCAL_LLM_GLOBAL_BACKEND_STATE] = new Map();
-    }
-    return globalAny[LOCAL_LLM_GLOBAL_BACKEND_STATE];
-  }
-
-  private getTrippedBackendState(now: number): LocalLlmBackendState | null {
-    const state = this.getGlobalBackendState().get(this.getBackendKey()) ?? null;
-    if (!state) return null;
-    if (state.untilMs <= now) {
-      this.getGlobalBackendState().delete(this.getBackendKey());
-      this.lastHealthCheck = 0;
-      return null;
-    }
-    return state;
-  }
-
-  private markBackendUnavailable(reason: string, durationMs: number): void {
-    const normalizedReason = normalizeBackendTripReason(reason);
-    if (durationMs > 0) {
-      const untilMs = Date.now() + durationMs;
-      this.getGlobalBackendState().set(this.getBackendKey(), { untilMs, reason: normalizedReason });
-    } else {
-      this.getGlobalBackendState().delete(this.getBackendKey());
-    }
+  private markBackendUnavailable(
+    reason: string,
+    durationMs: number,
+    chatUrl: string,
+    operation: string,
+  ): void {
+    markLocalLlmBackendPoolUnavailable(reason, durationMs, chatUrl, operation);
     this.isAvailable = false;
     this.lastHealthCheck = 0;
     log.warn(
-      `local LLM backend unavailable for ${durationMs}ms: model=${this.config.localLlmModel} reason=${normalizedReason}`,
+      `local LLM backend unavailable for ${durationMs}ms: model=${this.config.localLlmModel} reason=${normalizeBackendTripReason(reason)} op=${operation}`,
     );
   }
 
@@ -344,18 +319,33 @@ export class LocalLlmClient {
    * Check if local LLM is available
    * Uses 127.0.0.1 instead of localhost to avoid DNS issues (consistent with tactician)
    */
-  async checkAvailability(signal?: AbortSignal): Promise<boolean> {
+  async checkAvailability(
+    signal?: AbortSignal,
+    chatUrl?: string,
+    operation?: string,
+  ): Promise<boolean> {
     if (signal?.aborted) return false;
-    // Cache health check results for 1 minute
-    const now = Date.now();
-    const trippedState = this.getTrippedBackendState(now);
-    if (trippedState) {
-      this.isAvailable = false;
-      this.lastHealthCheck = 0;
-      log.info(
-        `local LLM availability: backend circuit open for ${Math.max(0, trippedState.untilMs - now)}ms (${trippedState.reason})`,
-      );
-      return false;
+    const now = Date.now(); // cache health check results for 1 minute
+    if (chatUrl) {
+      // An empty label is a real pool key: a "" caller still sees a recorded circuit (wAN on #3474).
+      const poolOperation = operation ?? "unspecified";
+      const poolKey = formatLocalLlmPoolKey(chatUrl, poolOperation);
+      // A lapsed circuit stays visible as a tombstone; each client clears its cached verdict once.
+      const expiredAtMs = localLlmBackendPoolExpiredAtMs(now, chatUrl, poolOperation);
+      if (expiredAtMs !== null && expiredAtMs > (this.poolExpirySeenMs.get(poolKey) ?? 0)) {
+        this.poolExpirySeenMs.set(poolKey, expiredAtMs);
+        this.isAvailable = null;
+        this.lastHealthCheck = 0;
+      }
+      const trippedState = getLocalLlmTrippedBackendPoolState(now, chatUrl, poolOperation);
+      if (trippedState) {
+        this.isAvailable = false;
+        this.lastHealthCheck = 0;
+        log.info(
+          `local LLM availability: backend circuit open for ${Math.max(0, trippedState.untilMs - now)}ms (${trippedState.reason}) op=${poolOperation}`,
+        );
+        return false;
+      }
     }
     if (this.isAvailable !== null && now - this.lastHealthCheck < LocalLlmClient.HEALTH_CHECK_INTERVAL_MS) {
       return this.isAvailable;
@@ -882,13 +872,20 @@ export class LocalLlmClient {
         );
     }
 
+    let chatUrl = "";
     try {
       const signal = combineClientAbortSignals(options.signal, this.shutdownSignal);
       if (signal?.aborted) return null;
-      const isAvailable = await this.checkAvailability(signal);
+      const baseUrl = trimTrailingSlashes(
+        this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
+      );
+      chatUrl = baseUrl.endsWith("/v1")
+        ? `${baseUrl}/chat/completions`
+        : `${baseUrl}/v1/chat/completions`;
+      const isAvailable = await this.checkAvailability(signal, chatUrl, operation);
       if (!isAvailable) {
         log.debug(
-          `local LLM: checkAvailability returned false for ${this.config.localLlmUrl}`,
+          `local LLM: checkAvailability returned false for ${this.config.localLlmUrl} op=${operation}`,
         );
         return null;
       }
@@ -948,14 +945,6 @@ export class LocalLlmClient {
         }
       }
 
-      // Normalize URL (use 127.0.0.1 instead of localhost)
-      const baseUrl = trimTrailingSlashes(
-        this.config.localLlmUrl.replace("localhost", "127.0.0.1"),
-      );
-      const chatUrl = baseUrl.endsWith("/v1")
-        ? `${baseUrl}/chat/completions`
-        : `${baseUrl}/v1/chat/completions`;
-
       let requestBodyJson = JSON.stringify(requestBody);
       log.debug(
         `local LLM: sending request to ${chatUrl} with model ${this.config.localLlmModel}`,
@@ -973,8 +962,12 @@ export class LocalLlmClient {
       // process-wide semaphore caps concurrent HTTP attempts across clients.
       // Waits are bounded by the request timeout so a short caller budget
       // (e.g. rerankTimeoutMs) is never stretched by a long cooldown.
-      const rateLimit = new LocalLlmRateLimitSession(chatUrl, resolveRateLimitSettings(this.config),
-        (queueMeta?.priority ?? options.priority) === "recall-critical", effectiveTimeoutMs);
+      const rateLimit = new LocalLlmRateLimitSession(
+        formatLocalLlmPoolKey(chatUrl, operation),
+        resolveRateLimitSettings(this.config),
+        (queueMeta?.priority ?? options.priority) === "recall-critical",
+        effectiveTimeoutMs,
+      );
       let lastRateLimitDelayMs: number | null = null;
       let response: Response | null = null, responseBody = "";
       let lastAbortError: Error | null = null;
@@ -1066,6 +1059,8 @@ export class LocalLlmClient {
             this.markBackendUnavailable(
               nonRecoverableReason,
               this.config.localLlm400CooldownMs,
+              chatUrl,
+              operation,
             );
             this.consecutive400s = 0;
             return null;
@@ -1079,6 +1074,8 @@ export class LocalLlmClient {
           attempt -= 1; // own retry budget; the loop top waits out the backoff
           continue;
         }
+        // A terminal pool-unavailable 503 must not reach the generic 5xx retry.
+        if (isTerminalLocalLlmProxyPoolError(response.status, responseBody)) break;
         if (response.status < 500 || attempt >= maxAttempts) break;
 
         const backoffMs = this.config.localLlmRetryBackoffMs * attempt;
@@ -1124,6 +1121,8 @@ export class LocalLlmClient {
           this.markBackendUnavailable(
             nonRecoverableReason,
             this.config.localLlm400CooldownMs,
+            chatUrl,
+            operation,
           );
           this.consecutive400s = 0;
           return null;
@@ -1207,10 +1206,12 @@ export class LocalLlmClient {
       log.warn(`local LLM request error: op=${operation} error=${options.redactProviderErrors ? "provider error details redacted" : errMsg}`);
       this.isAvailable = false; // Mark as unavailable on non-abort errors
       const nonRecoverableReason = extractNonRecoverableBackendReason(errMsg);
-      if (nonRecoverableReason) {
+      if (nonRecoverableReason && chatUrl.length > 0) {
         this.markBackendUnavailable(
           nonRecoverableReason,
           this.config.localLlm400CooldownMs,
+          chatUrl,
+          operation,
         );
       }
       return null;
