@@ -560,6 +560,7 @@ test("QMD skips hybrid top-up when namespace-deliverable page is already full", 
     (p: string) => (p.includes("other") ? "other-ns" : "default"),
   );
 
+  const skipReasons: Array<string | undefined> = [];
   const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp(
     "namespace-saturated",
     4,
@@ -570,6 +571,9 @@ test("QMD skips hybrid top-up when namespace-deliverable page is already full", 
       resolveNamespace: (p: string) =>
         p.includes("other") ? "other-ns" : "default",
       collection: "openclaw-engram",
+      onDebugSnapshot: async (snapshot) => {
+        skipReasons.push(snapshot.hybridTopUpSkippedReason);
+      },
       queryAwarePrefilter: {
         candidatePaths: null,
         temporalFromDate: null,
@@ -582,10 +586,37 @@ test("QMD skips hybrid top-up when namespace-deliverable page is already full", 
   );
 
   assert.equal(hybridCalls, 0, "raw recallable count must not force hybrid when deliverable page is full");
+  assert.equal(skipReasons.at(-1), "primary_deliverable_sufficient");
   assert.deepEqual(
     out.map((candidate) => candidate.path),
     inScope.map((r) => r.path),
   );
+});
+
+test("QMD hybrid top-up fills an underfilled namespace page with an archive hit", async () => {
+  const primary = [
+    result("default", "archive/2026-07-25/old.md"),
+    ...Array.from({ length: 4 }, (_, index) => result("other-ns", `facts/other-${index}.md`)),
+    result("default", "facts/primary.md"),
+  ];
+  const hybrid = result("default", "facts/hybrid.md");
+  const namespaceFromPath = (p: string) => p.includes("other") ? "other-ns" : "default";
+  const coordinator = makeHybridTopUpStubCoordinator(
+    { search: async () => primary, hybridSearch: async () => [hybrid] },
+    namespaceFromPath,
+  );
+  const out = await coordinator.fetchQmdMemoryResultsWithArtifactTopUp("archive with namespace overflow", 4, 4, {
+    namespacesEnabled: true,
+    recallNamespaces: ["default"],
+    resolveNamespace: namespaceFromPath,
+    collection: "openclaw-engram",
+    queryAwarePrefilter: {
+      candidatePaths: null, temporalFromDate: null, matchedTags: [], expandedTags: [],
+      combination: "none",
+      filteredToFullSearch: false,
+    },
+  });
+  assert.ok(out.some((candidate) => candidate.path === hybrid.path));
 });
 
 test("QMD stops after an underfilled archive-only page", async () => {
