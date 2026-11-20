@@ -3339,6 +3339,16 @@
       "types": "./dist/write-quarantine.d.ts",
       "remnic-source": "./src/write-quarantine.ts",
       "import": "./dist/write-quarantine.js"
+    },
+    "./local-llm-helpers": {
+      "types": "./dist/local-llm-helpers.d.ts",
+      "remnic-source": "./src/local-llm-helpers.ts",
+      "import": "./dist/local-llm-helpers.js"
+    },
+    "./local-llm-helpers.js": {
+      "types": "./dist/local-llm-helpers.d.ts",
+      "remnic-source": "./src/local-llm-helpers.ts",
+      "import": "./dist/local-llm-helpers.js"
     }
   },
   "files": [

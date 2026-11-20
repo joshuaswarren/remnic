@@ -9,7 +9,7 @@ import { launchProcessSync } from "./runtime/child-process.js";
 import { mergeEnv, readEnvVar } from "./runtime/env.js";
 import { resolveLocalLlmCapabilities, resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { ChatTransport } from "./local-llm-transport.js";
-import { LocalLlmRateLimitSession, resolveRateLimitSettings } from "./local-llm-rate-limit.js";
+import { LocalLlmRateLimitSession, resolveRateLimitSettings, isTerminalLocalLlmProxyPoolError } from "./local-llm-rate-limit.js";
 import {
   extractNonRecoverableBackendReason,
   extractNonRecoverableBackendReasonFromErrorText,
@@ -23,6 +23,7 @@ import {
   SingleFlightProbe,
   buildLocalLlmRoutingHeaders,
   formatLocalLlmPoolKey,
+  consumeLocalLlmBackendPoolExpiry,
   getLocalLlmTrippedBackendPoolState,
   markLocalLlmBackendPoolUnavailable,
   type LocalLlmChatCompletionOptions,
@@ -326,6 +327,12 @@ export class LocalLlmClient {
     // Cache health check results for 1 minute
     const now = Date.now();
     if (chatUrl && operation) {
+      // An expired circuit must clear the cached verdict before the window check
+      // below, or a stale "unavailable" survives the rest of the cache interval.
+      if (consumeLocalLlmBackendPoolExpiry(now, chatUrl, operation)) {
+        this.isAvailable = null;
+        this.lastHealthCheck = 0;
+      }
       const trippedState = getLocalLlmTrippedBackendPoolState(now, chatUrl, operation);
       if (trippedState) {
         this.isAvailable = false;
@@ -1063,6 +1070,8 @@ export class LocalLlmClient {
           attempt -= 1; // own retry budget; the loop top waits out the backoff
           continue;
         }
+        // A terminal pool-unavailable 503 must not reach the generic 5xx retry.
+        if (isTerminalLocalLlmProxyPoolError(response.status, responseBody)) break;
         if (response.status < 500 || attempt >= maxAttempts) break;
 
         const backoffMs = this.config.localLlmRetryBackoffMs * attempt;

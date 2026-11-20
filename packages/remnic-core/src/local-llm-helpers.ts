@@ -354,6 +354,18 @@ export function getLocalLlmTrippedBackendPoolState(
   return state;
 }
 
+/** True when a pool entry existed but just expired; consumed so the caller can
+ * invalidate any cached health verdict before it is checked. */
+export function consumeLocalLlmBackendPoolExpiry(now: number, chatUrl: string, operation: string): boolean {
+  const key = formatLocalLlmPoolKey(chatUrl, operation);
+  const state = localLlmBackendPoolMap().get(key) ?? null;
+  if (state && state.untilMs <= now) {
+    localLlmBackendPoolMap().delete(key);
+    return true;
+  }
+  return false;
+}
+
 export function markLocalLlmBackendPoolUnavailable(
   reason: string,
   durationMs: number,
