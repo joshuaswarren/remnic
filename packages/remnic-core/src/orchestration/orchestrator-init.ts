@@ -138,6 +138,7 @@ export class OrchestratorInitCoordinator {
   /** Default-namespace collection state from the initialize() check,
    *  epoch-scoped so a retired lifecycle's outcome cannot leak into the next. */
   private startupDefaultCollection: { epoch: number; state: SearchCollectionState } | undefined;
+  private startupSyncInFlight: { epoch: number; promise: Promise<boolean> } | null = null;
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -681,20 +682,30 @@ export class OrchestratorInitCoordinator {
     // awaited path. Fire the same startupSearchSync once the ready mark
     // settles — registered now so a deferred-init failure still gets the
     // update — and record the success in the shared flag, so a server retry
-    // that races in sees the same bookkeeping either direction. Tracked as a
-    // startup warmup so destroy() aborts and drains it like the others.
-    const postReadySync = this.deps.deferredReady.then(async () => {
-      if (!resolveQmdCapabilities(this.deps.config).qmdMaintenance
+    // that races in sees the same bookkeeping either direction. Only the
+    // sync run itself joins startupWarmups: the deferredReady-derived outer
+    // promise would make drainStartupWarmups() wait on the ready gate that
+    // destroy() must not touch, while the abort signal already cancels the
+    // run.
+    void this.deps.deferredReady.then(async () => {
+      if (signal.aborted
+          || !resolveQmdCapabilities(this.deps.config).qmdMaintenance
           || this.deps.deferredSyncSucceeded) return;
       try {
-        const synced = await this.startupSearchSync(signal);
-        if (synced) this.deps.deferredSyncSucceeded = true;
+        const sync = this.startupSearchSync(signal);
+        const tracked = sync.then(() => undefined, () => undefined);
+        this.startupWarmups.add(tracked);
+        void tracked.then(() => this.startupWarmups.delete(tracked));
+        const synced = await sync;
+        // A retired epoch's run can resolve after its abort landed: only a
+        // current, unaborted sync may publish success for this lifecycle.
+        if (synced && !signal.aborted && this.isCurrentStartupEpoch(epoch)) {
+          this.deps.deferredSyncSucceeded = true;
+        }
       } catch (err) {
         log.warn(`post-ready QMD sync failed (non-fatal): ${err}`);
       }
     });
-    this.startupWarmups.add(postReadySync);
-    void postReadySync.finally(() => this.startupWarmups.delete(postReadySync));
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
@@ -931,8 +942,6 @@ export class OrchestratorInitCoordinator {
    *
    * Returns true if the sync succeeded (QMD now available), false otherwise.
    */
-  private startupSyncInFlight: { epoch: number; promise: Promise<boolean> } | null = null;
-
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
     const epoch = this.currentOrNewStartupEpoch();
     if (epoch === null) return false;
@@ -1045,6 +1054,10 @@ export class OrchestratorInitCoordinator {
       }
     }
 
+    // A retired epoch's warmup settles without throwing: re-check before
+    // publishing success, so a stale run cannot mark a replacement
+    // lifecycle as synced (#3527 review).
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) return false;
     return discovery.complete;
   }
 

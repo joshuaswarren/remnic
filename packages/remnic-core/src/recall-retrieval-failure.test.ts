@@ -39,12 +39,12 @@ const QUERY = "what writing rules apply here?";
 function searchBackend(
   observed: { calls: number },
   degrade: boolean,
-  onSearch?: () => Promise<void>,
+  onSearch?: (query: string) => Promise<void>,
 ): SearchBackend {
-  const search = async (execution?: SearchExecutionOptions) => {
+  const search = async (query: string, execution?: SearchExecutionOptions) => {
     observed.calls += 1;
     if (degrade) execution?.onDegradation?.(TIMEOUT_DEGRADATION);
-    await onSearch?.();
+    await onSearch?.(query);
     return [];
   };
   const backend: Partial<SearchBackend> = {
@@ -57,20 +57,20 @@ function searchBackend(
     debugStatus() {
       return degrade ? "backend=timeout-stub" : "backend=empty-stub";
     },
-    async search(_query, _collection, _maxResults, _options, execution) {
-      return search(execution);
+    async search(query, _collection, _maxResults, _options, execution) {
+      return search(query, execution);
     },
-    async searchGlobal(_query, _maxResults, execution) {
-      return search(execution);
+    async searchGlobal(query, _maxResults, execution) {
+      return search(query, execution);
     },
-    async bm25Search(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async bm25Search(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
-    async vectorSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async vectorSearch(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
-    async hybridSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async hybridSearch(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
     async update() {},
     async updateCollection() {},
@@ -152,8 +152,10 @@ test("recall reports storage corpus versions captured before retrieval, not inde
     const beforeRetrieval = storage.getMemoryCorpusVersion();
     let writeDuringSearch = true;
     let indexUpdates = 0;
-    const backend = searchBackend(observed, false, async () => {
-      if (!writeDuringSearch) return;
+    // The post-ready startupSearchSync fires its own warm-up search (#3525);
+    // only this test's recall query may consume the one-shot write.
+    const backend = searchBackend(observed, false, async (query) => {
+      if (!writeDuringSearch || query !== QUERY) return;
       writeDuringSearch = false;
       await storage.writeMemory("fact", "write committed while retrieval was in flight");
     });
@@ -181,8 +183,10 @@ test("includeRecall X-ray responses report storage versions sampled before retri
     const storage = await orchestrator.getStorage("default");
     const beforeRetrieval = storage.getMemoryCorpusVersion();
     let writeDuringSearch = true;
-    const backend = searchBackend(observed, false, async () => {
-      if (!writeDuringSearch) return;
+    // The post-ready startupSearchSync fires its own warm-up search (#3525);
+    // only this test's recall query may consume the one-shot write.
+    const backend = searchBackend(observed, false, async (query) => {
+      if (!writeDuringSearch || query !== QUERY) return;
       writeDuringSearch = false;
       await storage.writeMemory("fact", "write committed while X-ray retrieval was in flight");
     });
