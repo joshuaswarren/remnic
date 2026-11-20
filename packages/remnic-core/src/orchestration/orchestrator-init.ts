@@ -99,6 +99,13 @@ export interface OrchestratorInitDeps {
   wearablesAutoSyncHandle: { stop(): Promise<void> } | null;
 }
 
+/** Outcome of one backend bring-up: probe, catalog-union discovery, per-namespace
+ * collection ensure, and the missing-collection noop swap. "ready" carries the
+ * epoch and discovery the full sync needs for its corpus update. */
+type StartupBackendEnsure =
+  | { state: "ready"; epoch: number; discovery: { namespaces: string[]; complete: boolean } }
+  | { state: "unavailable" | "missing" | "retired" };
+
 export class OrchestratorInitCoordinator {
   private nextStartupEpoch = 0;
   private activeStartupEpoch: number | null = null;
@@ -106,6 +113,7 @@ export class OrchestratorInitCoordinator {
   private maintenanceNamespacesFlight:
     | { epoch: number; promise: Promise<string[]> }
     | undefined;
+  private startupBackendEnsureFlight: Promise<StartupBackendEnsure> | undefined;
   private correctionCatalogFlight:
     | { epoch: number; promise: Promise<Awaited<ReturnType<NamespaceCatalog["listNamespaces"]>>> }
     | undefined;
@@ -972,14 +980,44 @@ export class OrchestratorInitCoordinator {
    * namespace discovery, per-namespace collection ensure, and the
    * missing-collection noop swap. `startupSearchReadySync` exposes this for
    * the awaited ready path; `startupSearchSync` layers the corpus update and
-   * warm-up search on top for the post-ready retry loop (#3518).
+   * warm-up search on top for the post-ready retry loop (#3518). Concurrent
+   * callers join one in-flight `runStartupSearchBackend` so nobody observes
+   * the mid-run state where probe() has already flipped isAvailable() (#3518
+   * second read).
    */
-  private async ensureStartupSearchBackend(
+  private ensureStartupSearchBackend(
     signal?: AbortSignal,
-  ): Promise<
-    | { state: "ready"; epoch: number; discovery: { namespaces: string[]; complete: boolean } }
-    | { state: "unavailable" | "missing" | "retired" }
-  > {
+  ): Promise<StartupBackendEnsure> {
+    if (signal?.aborted) return Promise.resolve({ state: "retired" });
+    // Share one backend bring-up across concurrent callers (#3518 second
+    // read): probe() flips isAvailable() before the collection ensure and the
+    // missing-collection noop swap finish, so a readiness caller arriving
+    // mid-run must await the SAME run — never observe the half-finished state
+    // or start a second probe/ensure. The joiner keeps its own aborted-signal
+    // check above; the shared run keeps its original epoch fencing and signal.
+    if (this.startupBackendEnsureFlight) return this.startupBackendEnsureFlight;
+    const run = this.runStartupSearchBackend(signal);
+    this.startupBackendEnsureFlight = run;
+    // .then(clear, clear) clears the flight on settle in both directions
+    // without creating a second derived promise that could reject unhandled.
+    run.then(
+      () => {
+        if (this.startupBackendEnsureFlight === run) {
+          this.startupBackendEnsureFlight = undefined;
+        }
+      },
+      () => {
+        if (this.startupBackendEnsureFlight === run) {
+          this.startupBackendEnsureFlight = undefined;
+        }
+      },
+    );
+    return run;
+  }
+
+  private async runStartupSearchBackend(
+    signal?: AbortSignal,
+  ): Promise<StartupBackendEnsure> {
     if (signal?.aborted) return { state: "retired" };
     const epoch = this.currentOrNewStartupEpoch();
     if (epoch === null) return { state: "retired" };

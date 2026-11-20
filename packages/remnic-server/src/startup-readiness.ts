@@ -276,9 +276,14 @@ export function createStartupSyncEnsurers(orchestrator: Orchestrator) {
 
   const ensureSearchReady = async (signal: AbortSignal): Promise<boolean> => {
     if (orchestrator.deferredSyncSucceeded) return true;
-    // Available means the probe and collection ensure already ran (in
-    // initialize() or an earlier ready sync); nothing readiness-level is owed.
-    if (orchestrator.qmd.isAvailable()) return true;
+    // Join an in-flight readiness run first — the dedup must precede any
+    // availability reasoning, because isAvailable() flips inside probe()
+    // BEFORE the collection ensure and noop swap finish (qmd.ts
+    // recordProbeSuccess). A probe-only-true backend is not proof the
+    // collection work completed, so readiness always runs the readiness-level
+    // sync; concurrent full-sync runs share its backend phase inside the
+    // orchestrator rather than blocking this gate on the corpus update
+    // (#3518 second read).
     if (searchReadyInFlight) return searchReadyInFlight;
     const attempt = orchestrator.startupSearchReadySync(signal);
     searchReadyInFlight = attempt;

@@ -180,3 +180,81 @@ test("startupSearchSync still runs the corpus update over the catalog union for 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("startupSearchReadySync joins an in-flight full sync's backend phase and resolves before its corpus update (#3518 second read)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const probeCalls: number[] = [];
+  const ensureEntries: string[] = [];
+  const updateCalls: number[] = [];
+  const ensureGate = Promise.withResolvers<void>();
+  const updateGate = Promise.withResolvers<void>();
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => {
+        probeCalls.push(1);
+        return true;
+      },
+      debugStatus: () => "synthetic-qmd",
+      // The real backend flips isAvailable() inside probe(), before ensure
+      // finishes (qmd.ts recordProbeSuccess) — the window the warm-up gate
+      // used to trust.
+      isAvailable: () => probeCalls.length > 0,
+      search: async () => [],
+      update: async () => {},
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async (ns: string) => {
+      ensureEntries.push(ns);
+      await ensureGate.promise;
+      return "present";
+    };
+    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+      updateCalls.push(1);
+      await updateGate.promise;
+      return ns.length;
+    };
+
+    const signal = new AbortController().signal;
+    const full = orchestrator.startupSearchSync(signal);
+    for (let i = 0; i < 200 && ensureEntries.length === 0; i += 1) await sleep(5);
+    assert.ok(ensureEntries.length > 0, "the full sync reaches its collection ensure");
+
+    const ready = orchestrator.startupSearchReadySync(signal);
+    await sleep(50);
+    assert.equal(
+      probeCalls.length,
+      1,
+      "the ready sync must join the in-flight backend run, not start a second probe",
+    );
+    assert.equal(
+      new Set(ensureEntries).size,
+      ensureEntries.length,
+      "each namespace is ensured once across joined callers",
+    );
+
+    ensureGate.resolve();
+    assert.equal(
+      await Promise.race([ready, sleep(2_000).then(() => "hung" as const)]),
+      true,
+      "the joined ready sync resolves once the shared ensure completes",
+    );
+    assert.equal(
+      await Promise.race([full.then(() => "synced" as const), sleep(50).then(() => "pending" as const)]),
+      "pending",
+      "the full sync keeps running its corpus update after the ready sync resolves",
+    );
+
+    updateGate.resolve();
+    assert.equal(await full, true);
+    assert.equal(updateCalls.length, 1);
+  } finally {
+    ensureGate.resolve();
+    updateGate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
