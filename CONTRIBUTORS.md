@@ -43,6 +43,7 @@ sections above are maintained by hand and never touched by automation.
 - [@earlvanze](https://github.com/earlvanze)
 - [@Fancyhe1](https://github.com/Fancyhe1)
 - [@geekbozu](https://github.com/geekbozu)
+- [@hanming5](https://github.com/hanming5)
 - [@KenFab](https://github.com/KenFab)
 - [@kopertop](https://github.com/kopertop)
 - [@MrGPUs](https://github.com/MrGPUs)
