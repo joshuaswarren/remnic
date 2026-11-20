@@ -139,12 +139,16 @@ test("initialize and its init gate survive an enabled catalog planner timeout", 
       (orchestrator as any).deferredReady.then(() => "settled" as const),
     );
     assert.equal(deferredResult, "settled", "deferred initialization must settle after incomplete discovery");
-    assert.deepEqual(updatedNamespaces, [configuredNamespaces]);
+    assert.deepEqual(
+      updatedNamespaces,
+      [],
+      "the corpus update must not run in the awaited deferred path (#3518)",
+    );
     assert.equal((orchestrator as any).deferredSyncSucceeded, false);
 
     const retryResult = await withTestDeadline(orchestrator.startupSearchSync());
     assert.equal(retryResult, false, "incomplete discovery must leave startup retry armed");
-    assert.deepEqual(updatedNamespaces, [configuredNamespaces, configuredNamespaces]);
+    assert.deepEqual(updatedNamespaces, [configuredNamespaces]);
     const fallbackEnsureCalls = [...configuredNamespaces, ...configuredNamespaces];
     assert.deepEqual(ensuredNamespaces, fallbackEnsureCalls);
 
@@ -164,7 +168,6 @@ test("initialize and its init gate survive an enabled catalog planner timeout", 
       "a later complete retry must re-stage dynamic collection checks",
     );
     assert.deepEqual(updatedNamespaces, [
-      configuredNamespaces,
       configuredNamespaces,
       completeNamespaces,
     ]);

@@ -625,41 +625,22 @@ export class OrchestratorInitCoordinator {
     // triggered update — which can be days ago if the daemon restarted without
     // new extractions. This is the root cause of "0 memories" recall results
     // despite thousands of facts on disk.
-    if (this.deps.qmd.isAvailable() && resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
-      try {
-        log.info("QMD startup sync: updating index to match current disk state");
-        const discovery = await this.startupNamespaces(epoch);
-        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
-        if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
-          // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
-          // a dynamic namespace written before a daemon restart must be synced on
-          // boot, not only by the debounced runQmdMaintenance() path. Same union +
-          // catalog-read-failure fallback as runQmdMaintenance.
-          await this.deps.namespaceSearchRouter.updateNamespaces(
-            discovery.namespaces,
-            { signal },
-          );
-        } else {
-          await this.deps.qmd.update({ signal });
-        }
-        if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
-        log.info("QMD startup sync: complete");
-        if (discovery.complete) {
-          this.deps.deferredSyncSucceeded = true;
-        } else {
-          this.deps.deferredSyncSucceeded = false;
-          log.warn("QMD startup sync used configured namespace fallback; retry remains armed");
-        }
-      } catch (err) {
-        log.warn(`QMD startup sync failed (non-fatal): ${err}`);
-        // deferredSyncSucceeded stays false — server retry will attempt sync
-      }
-    } else if (!(this.deps.qmd.isAvailable())) {
-      // QMD not available at deferred init time — server retry will handle it
-    } else {
-      // QMD available but maintenance disabled — consider sync not needed
+    //
+    // The corpus-wide update is deliberately NOT awaited here (#3518): the
+    // probe and collection ensure already ran in initialize(), the model
+    // warm-up below is the last thing deferredReady waits on, and the update
+    // runs after the ready mark under the server retry loop, which sees
+    // deferredSyncSucceeded === false and calls startupSearchSync. The index
+    // lands atomically, so recall serves the previous index until the update
+    // commits rather than holding readiness for a full reindex.
+    if (this.deps.qmd.isAvailable() && !resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
+      // Available backend with maintenance disabled — no corpus update is
+      // owed; consider sync done.
       this.deps.deferredSyncSucceeded = true;
     }
+    // Otherwise the flag stays false and the server retry loop owns the
+    // sync: the corpus update when maintenance is on, backend recovery when
+    // the probe failed.
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
@@ -869,10 +850,25 @@ export class OrchestratorInitCoordinator {
   }
 
   /**
+   * Readiness level of startupSearchSync (#3518): probe, catalog-union
+   * collection ensure, and the missing-collection noop swap — WITHOUT the
+   * corpus-wide index update. The awaited ready path and the warm-up gate use
+   * this so readiness waits only on the probe, the collection and the model
+   * warm-up; the corpus update runs after ready under the server retry loop
+   * via startupSearchSync. Returns true when the backend is usable for
+   * warm-up search, false while unavailable, retired, or noop-disposed.
+   */
+  async startupSearchReadySync(signal?: AbortSignal): Promise<boolean> {
+    const ensured = await this.ensureStartupSearchBackend(signal);
+    return ensured.state === "ready";
+  }
+
+  /**
    * Namespace-aware startup search sync. Re-probes QMD, ensures collections
    * (namespace-aware when namespacesEnabled), runs update, and warms up search.
    * Designed for server retry paths that run after the deferred init completes
-   * when QMD was not available during initial startup.
+   * when QMD was not available during initial startup — and, since #3518, for
+   * the post-ready corpus update the deferred path no longer awaits.
    *
    * Accepts an optional AbortSignal so callers can interrupt the sync during
    * shutdown. The signal is checked between phases and forwarded into the QMD
@@ -882,87 +878,10 @@ export class OrchestratorInitCoordinator {
    * Returns true if the sync succeeded (QMD now available), false otherwise.
    */
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
-    if (signal?.aborted) return false;
-    const epoch = this.currentOrNewStartupEpoch();
-    if (epoch === null) return false;
-
-    const available = await this.probeForStartupEpoch(epoch, signal);
-    if (!available) return false;
-    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
-      log.debug("startupSearchSync: aborted or retired after probe");
-      return false;
-    }
-
-    log.info(`startupSearchSync: backend now available ${this.deps.qmd.debugStatus()}`);
-
-    // Clear namespace router cache so re-probe picks up newly available backends
-    if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
-      this.deps.namespaceSearchRouter.clearCache();
-    }
-
-    // Ensure collections — namespace-aware when enabled.
-    // Use the catalog-union namespace set (issue #1499 sweep, same class as
-    // NHZEV): this is the QMD startup-recovery sync that ensures collections AND
-    // runs `updateNamespaces(...)` below over the SAME `namespaces` set. A dynamic
-    // namespace that exists only in the persisted catalog must be ensured and
-    // re-synced here too, otherwise after a backend-was-unavailable-at-boot
-    // recovery its collection stays stale. Falls back to the configured set on any
-    // catalog read failure.
-    const discovery = await this.startupNamespaces(epoch);
-    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
-      log.debug("startupSearchSync: aborted or retired after namespace discovery");
-      return false;
-    }
+    const ensured = await this.ensureStartupSearchBackend(signal);
+    if (ensured.state !== "ready") return false;
+    const { epoch, discovery } = ensured;
     const namespaces = discovery.namespaces;
-
-    const states = await Promise.all(
-      namespaces.map(async (namespace) => {
-        const epochAbort = this.linkedEpochAbortController(epoch, signal);
-        try {
-          return {
-            namespace,
-            state: resolveNamespaceCapabilities(this.deps.config).namespaces
-              ? await this.deps.namespaceSearchRouter.ensureNamespaceCollection(
-                  namespace,
-                  { signal: epochAbort.controller.signal },
-                )
-              : await this.deps.qmd.ensureCollection(
-                  this.deps.config.memoryDir,
-                  this.deps.config.qmdCollection,
-                  { signal: epochAbort.controller.signal },
-                ),
-          };
-        } finally {
-          epochAbort.dispose();
-        }
-      }),
-    );
-
-    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
-      log.debug("startupSearchSync: aborted or retired after ensureCollection");
-      return false;
-    }
-
-    const defaultState =
-      states.find((e) => e.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
-    if (defaultState === "missing") {
-      await this.deps.disposeSearchBackendIfNeeded();
-      if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
-        log.debug("startupSearchSync: aborted or retired while disposing a missing backend");
-        return false;
-      }
-      // Reset the real backend's available flag before replacing it with noop.
-      // probe() set available=true earlier in this call; without this reset,
-      // any code that captured a reference to the old backend (e.g. a concurrent
-      // recall() that read this.deps.qmd before the reassignment) would observe
-      // isAvailable()===true against a backend with a missing collection.
-      if ("available" in this.deps.qmd) {
-        (this.deps.qmd as any).available = false;
-      }
-      this.deps.qmd = new NoopSearchBackend();
-      log.warn("startupSearchSync: search collection missing; disabling search (fallback retrieval remains enabled)");
-      return false;
-    }
 
     // Run index update — namespace-aware when enabled.
     // qmd.update() swallows errors internally, so we: (1) snapshot fail/run
@@ -1046,5 +965,104 @@ export class OrchestratorInitCoordinator {
     }
 
     return discovery.complete;
+  }
+
+  /**
+   * The shared readiness half of the startup sync: probe, catalog-union
+   * namespace discovery, per-namespace collection ensure, and the
+   * missing-collection noop swap. `startupSearchReadySync` exposes this for
+   * the awaited ready path; `startupSearchSync` layers the corpus update and
+   * warm-up search on top for the post-ready retry loop (#3518).
+   */
+  private async ensureStartupSearchBackend(
+    signal?: AbortSignal,
+  ): Promise<
+    | { state: "ready"; epoch: number; discovery: { namespaces: string[]; complete: boolean } }
+    | { state: "unavailable" | "missing" | "retired" }
+  > {
+    if (signal?.aborted) return { state: "retired" };
+    const epoch = this.currentOrNewStartupEpoch();
+    if (epoch === null) return { state: "retired" };
+
+    const available = await this.probeForStartupEpoch(epoch, signal);
+    if (!available) return { state: "unavailable" };
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after probe");
+      return { state: "retired" };
+    }
+
+    log.info(`startupSearchSync: backend now available ${this.deps.qmd.debugStatus()}`);
+
+    // Clear namespace router cache so re-probe picks up newly available backends
+    if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
+      this.deps.namespaceSearchRouter.clearCache();
+    }
+
+    // Ensure collections — namespace-aware when enabled.
+    // Use the catalog-union namespace set (issue #1499 sweep, same class as
+    // NHZEV): this is the QMD startup-recovery sync that ensures collections AND
+    // lets `startupSearchSync` run `updateNamespaces(...)` over the SAME
+    // `namespaces` set. A dynamic namespace that exists only in the persisted
+    // catalog must be ensured and re-synced here too, otherwise after a
+    // backend-was-unavailable-at-boot recovery its collection stays stale.
+    // Falls back to the configured set on any catalog read failure.
+    const discovery = await this.startupNamespaces(epoch);
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after namespace discovery");
+      return { state: "retired" };
+    }
+    const namespaces = discovery.namespaces;
+
+    const states = await Promise.all(
+      namespaces.map(async (namespace) => {
+        const epochAbort = this.linkedEpochAbortController(epoch, signal);
+        try {
+          return {
+            namespace,
+            state: resolveNamespaceCapabilities(this.deps.config).namespaces
+              ? await this.deps.namespaceSearchRouter.ensureNamespaceCollection(
+                  namespace,
+                  { signal: epochAbort.controller.signal },
+                )
+              : await this.deps.qmd.ensureCollection(
+                  this.deps.config.memoryDir,
+                  this.deps.config.qmdCollection,
+                  { signal: epochAbort.controller.signal },
+                ),
+          };
+        } finally {
+          epochAbort.dispose();
+        }
+      }),
+    );
+
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after ensureCollection");
+      return { state: "retired" };
+    }
+
+    const defaultState =
+      states.find((e) => e.namespace === this.deps.config.defaultNamespace)?.state ?? "unknown";
+    if (defaultState === "missing") {
+      await this.deps.disposeSearchBackendIfNeeded();
+      if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+        log.debug("startupSearchSync: aborted or retired while disposing a missing backend");
+        return { state: "retired" };
+      }
+      // Reset the real backend's available flag before replacing it with noop.
+      // probe() set available=true earlier in this call; without this reset,
+      // any code that captured a reference to the old backend (e.g. a concurrent
+      // recall() that read this.deps.qmd before the reassignment) would observe
+      // isAvailable()===true against a backend with a missing collection.
+      if ("available" in this.deps.qmd) {
+        // SAFETY: the concrete backend owns `available`; the SearchBackend interface does not declare it.
+        (this.deps.qmd as any).available = false;
+      }
+      this.deps.qmd = new NoopSearchBackend();
+      log.warn("startupSearchSync: search collection missing; disabling search (fallback retrieval remains enabled)");
+      return { state: "missing" };
+    }
+
+    return { state: "ready", epoch, discovery };
   }
 }

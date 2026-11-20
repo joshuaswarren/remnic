@@ -26,6 +26,7 @@ import {
   STARTUP_DEGRADED_AFTER_ATTEMPTS,
   abortableDelay,
   completeStartupReadiness,
+  createStartupSyncEnsurers,
   logListenerBound,
   runStartupSearchWarmup,
   type StartupReadinessState,
@@ -887,21 +888,10 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   const startupSyncAbort = new AbortController();
   const readinessAbort = new AbortController();
   startEventLoopLagMonitor({ signal: readinessAbort.signal });
-  let startupSyncInFlight: Promise<boolean> | undefined;
-  const ensureStartupSync = async (signal: AbortSignal): Promise<boolean> => {
-    if (orchestrator.deferredSyncSucceeded) return true;
-    if (startupSyncInFlight) return startupSyncInFlight;
-    const attempt = orchestrator.startupSearchSync(signal).then((synced) => {
-      if (synced) orchestrator.deferredSyncSucceeded = true;
-      return synced;
-    });
-    startupSyncInFlight = attempt;
-    try {
-      return await attempt;
-    } finally {
-      if (startupSyncInFlight === attempt) startupSyncInFlight = undefined;
-    }
-  };
+  // The two sync levels (#3518): the warm-up gate takes the readiness level
+  // (probe + collection ensure) while the post-ready retry loop owns the
+  // corpus update via the full sync.
+  const { ensureSearchReady, ensureStartupSync } = createStartupSyncEnsurers(orchestrator);
   const readinessTask = completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
     warmup: (signal) => runStartupSearchWarmup({
@@ -918,7 +908,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
         },
       }),
     }),
-    prepareWarmup: ensureStartupSync,
+    prepareWarmup: ensureSearchReady,
     state: readiness,
     override: parsedServerConfig.readinessOverride,
     degradedAfterAttempts: parsedServerConfig.readinessDegradedAfterAttempts,
