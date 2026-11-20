@@ -45,6 +45,18 @@ import {
   rememberObservedHash,
   skipLiveObservedReplayMessages,
 } from "./observe-flow.js";
+import {
+  branchMessagesWithEntryIdentity,
+  makeNotifier,
+  makeStatusSetter,
+  safeBranch,
+  safeEntries,
+  safeRead,
+  safeSessionKeyFromContext,
+  safeStringRead,
+  trimContext,
+  type NotifyFn,
+} from "./context-helpers.js";
 export type { DaemonProbeResult } from "./status-label.js";
 
 export type PiApi = {
@@ -66,7 +78,6 @@ const STATE_CUSTOM_TYPE = "remnic_state";
 const MCP_TOOLS_LIST_RETRY_FLOOR_MS = 250;
 const MAX_SESSION_STATES = 50;
 const MAX_CONTEXT_CHARS = 12000;
-const TRUNCATION_NOTICE = "\n\n[Remnic context truncated]";
 const SESSION_OWNED_FIELDS = new Set(["sessionKey", "namespace", "cwd"]);
 const RECALL_BREAKER_REGISTRY_KEY = Symbol.for("remnic.plugin-pi.recall-timeout-breakers");
 const recallBreakerRegistry = globalThis as { [key: symbol]: Map<string, RecallTimeoutBreaker> | undefined };
@@ -112,8 +123,6 @@ function isRecallProducingToolName(serverToolName: string): boolean {
   );
 }
 
-type NotifyLevel = "info" | "success" | "warning" | "error";
-type NotifyFn = (message: string, level: NotifyLevel) => void;
 
 export type PiContextSnapshot = {
   sessionKey: string;
@@ -1029,112 +1038,6 @@ function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): Pi
     setStatus: makeStatusSetter(ui, hasUI),
     compact: typeof compact === "function" ? () => compact.call(ctx) : undefined,
   };
-}
-
-function safeSessionKeyFromContext(ctx: any): string | null {
-  try {
-    return sessionKeyFromContext(ctx);
-  } catch {
-    return null;
-  }
-}
-
-function makeNotifier(ui: unknown, hasUI: boolean): NotifyFn {
-  if (hasUI || !isRecord(ui) || typeof ui.notify !== "function") {
-    return () => undefined;
-  }
-  const notifyFn = ui.notify;
-  return (message, level) => {
-    try {
-      notifyFn.call(ui, message, level);
-    } catch {
-      // Pi invalidates session-bound UI objects during reload/replacement. A
-      // notification failure must not tear down Remnic's hooks.
-    }
-  };
-}
-
-function makeStatusSetter(ui: unknown, hasUI: boolean): PiContextSnapshot["setStatus"] {
-  if (hasUI || !isRecord(ui) || typeof ui.setStatus !== "function") {
-    return () => undefined;
-  }
-  const setStatusFn = ui.setStatus;
-  return (key, value) => {
-    try {
-      setStatusFn.call(ui, key, value);
-    } catch {
-      // See makeNotifier: stale UI should not make extension startup fail.
-    }
-  };
-}
-
-function safeRead<T>(read: () => T, fallback: T): T {
-  try {
-    return read();
-  } catch {
-    return fallback;
-  }
-}
-
-function safeStringRead(read: () => unknown, fallback: string): string {
-  const value = safeRead(read, fallback);
-  return typeof value === "string" ? value : fallback;
-}
-
-function safeEntries(ctx: any): any[] {
-  try {
-    const entries = ctx.sessionManager?.getEntries?.();
-    return Array.isArray(entries) ? entries : [];
-  } catch {
-    return [];
-  }
-}
-
-function safeBranch(ctx: any): any[] {
-  try {
-    const branch = ctx.sessionManager?.getBranch?.();
-    return Array.isArray(branch) ? branch : [];
-  } catch {
-    return [];
-  }
-}
-
-function branchMessagesWithEntryIdentity(branch: any[]): unknown[] {
-  const messages: unknown[] = [];
-  for (const entry of branch) {
-    const message = messageWithEntryIdentity(entry);
-    if (message) messages.push(message);
-  }
-  return messages;
-}
-
-function messageWithEntryIdentity(entry: any): unknown | null {
-  const message = entry?.message;
-  if (!message || typeof message !== "object" || Array.isArray(message)) return message ?? null;
-
-  const source = isRecord(entry) ? entry : {};
-  const enriched: Record<string, unknown> = { ...(message as Record<string, unknown>) };
-  assignMissingIdentity(enriched, "entryId", source.id ?? source.entryId ?? source.entry_id);
-  assignMissingIdentity(enriched, "timestamp", source.timestamp);
-  assignMissingIdentity(enriched, "createdAt", source.createdAt ?? source.created_at);
-  return enriched;
-}
-
-function assignMissingIdentity(target: Record<string, unknown>, field: string, value: unknown): void {
-  if (target[field] !== undefined) return;
-  if (typeof value === "string" && value.length > 0) {
-    target[field] = value;
-    return;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    target[field] = value;
-  }
-}
-
-function trimContext(value: string, budget: number): string {
-  if (value.length <= budget) return value;
-  if (budget <= TRUNCATION_NOTICE.length) return TRUNCATION_NOTICE.slice(0, budget);
-  return `${value.slice(0, budget - TRUNCATION_NOTICE.length)}${TRUNCATION_NOTICE}`;
 }
 
 
