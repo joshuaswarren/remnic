@@ -619,6 +619,7 @@ test("enqueue bounds a large rawContent so the durable replay stays small but ke
     },
     (message) => notifications.push(message)
   );
+  // SAFETY: this test's drain wrote the entry itself, so the file holds { messages, messageHashes }; the assertions below verify the shape.
   const persisted = JSON.parse(fs.readFileSync(filePath, "utf8").trim()) as { messages: ObserveMessage[]; messageHashes: string[] };
   assert.equal(persisted.messageHashes[0], "hash-big", "the replay identity is preserved");
   assert.equal(persisted.messages[0].content, "a turn with a huge tool result", "the rendered text still replays");

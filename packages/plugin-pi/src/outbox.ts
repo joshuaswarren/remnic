@@ -460,6 +460,7 @@ export class ObserveOutbox {
     } finally {
       this.drainInProgress = false;
     }
-    return { delivered, dropped, pending: this.entries.length, ...(foreign > 0 ? { foreign } : {}) };
+    const summary = { delivered, dropped, pending: this.entries.length };
+    return foreign > 0 ? { ...summary, foreign } : summary;
   }
 }
