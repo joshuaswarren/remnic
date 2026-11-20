@@ -275,9 +275,11 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
             }
           })();
-          // A recall slower than the first-turn budget keeps running in the
-          // background; its context is injected from the next turn on (#3273).
-          await settleWithinBudget(recallPromise, config.firstTurnRecallBudgetMs);
+          if (config.firstTurnRecallBudgetMs === 0) {
+            await recallPromise;
+          } else {
+            await settleWithinBudget(recallPromise, config.firstTurnRecallBudgetMs);
+          }
         }
       }
 

@@ -157,6 +157,7 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
         recallTopK: "50",
         requestTimeoutMs: "10",
         startupRequestTimeoutMs: "20",
+        firstTurnRecallBudgetMs: "0",
         recallTimeoutThreshold: "3",
         recallTimeoutWindow: "5",
       }),
@@ -173,6 +174,7 @@ test("loadConfig merges file values and coerces boolean-like strings", () => {
     assert.equal(config.recallTopK, 50);
     assert.equal(config.requestTimeoutMs, 10);
     assert.equal(config.startupRequestTimeoutMs, 20);
+    assert.equal(config.firstTurnRecallBudgetMs, 0);
     assert.equal(config.recallTimeoutThreshold, 3);
     assert.equal(config.recallTimeoutWindow, 5);
   } finally {
