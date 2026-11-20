@@ -41,6 +41,7 @@ import errno
 import functools
 import http.client
 import json
+import math
 import os
 import random
 import select
@@ -505,6 +506,11 @@ def _embed_rows_ok(data, expected_dims, expected_count):
             return False
         if expected_dims and len(row["embedding"]) != expected_dims:
             return False
+        if not all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+            for v in row["embedding"]
+        ):
+            return False
     return True
 
 
@@ -642,7 +648,10 @@ class Handler(BaseHTTPRequestHandler):
             return 400, json.dumps({"error": "requested dimensions conflict with the pool's fixed dimensions"}).encode()
         expected_dims = req_dims or pool_dims
         inputs = payload.get("input")
-        expected_count = len(inputs) if isinstance(inputs, list) else 1
+        # A flat list of ints is one token-array input, not a batch.
+        is_batch = (isinstance(inputs, list) and bool(inputs)
+                    and not all(isinstance(item, int) for item in inputs))
+        expected_count = len(inputs) if is_batch else 1
         deadline = time.monotonic() + EMBED_DEADLINE_S
         with _lock:
             _health["embed_in_flight"] += 1

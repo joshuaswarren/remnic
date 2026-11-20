@@ -46,6 +46,9 @@ class _Embedder(BaseHTTPRequestHandler):
         inputs = payload_in.get("input") or []
         if isinstance(inputs, str):
             inputs = [inputs]
+        # A flat token array is one input under the embeddings API.
+        if isinstance(inputs, list) and inputs and all(isinstance(i, int) for i in inputs):
+            inputs = [inputs]
         payload = json.dumps({
             "data": [{"embedding": [0.0] * dims, "index": i} for i, _ in enumerate(inputs)],
             "model": payload_in.get("model", "embed-model"),
@@ -203,6 +206,27 @@ class EmbedPoolTest(unittest.TestCase):
         self.assertFalse(self.mod._embed_rows_ok(good, 384, 1))  # wrong dims
         self.assertFalse(self.mod._embed_rows_ok(b'{"data": [{"embedding": "x"}]}', 768, 1))
         self.assertFalse(self.mod._embed_rows_ok(b"not-json", 768, 1))
+
+    def test_embed_rows_ok_rejects_non_finite_components(self):
+        good = json.dumps({"data": [{"embedding": [0.5, 1, -0.25]}]}).encode()
+        self.assertTrue(self.mod._embed_rows_ok(good, 3, 1))  # int and float components ok
+        for bad in ([None, 0.2, 0.3], [True, 0.2, 0.3], ["x", 0.2, 0.3]):
+            body = json.dumps({"data": [{"embedding": bad}]}).encode()
+            self.assertFalse(self.mod._embed_rows_ok(body, 3, 1), bad)
+        # NaN/Infinity are not representable in JSON; encode them as produced
+        # anyway by a lax upstream serializer.
+        for bad in (b'{"data": [{"embedding": [NaN, 0.2, 0.3]}]}',
+                    b'{"data": [{"embedding": [Infinity, 0.2, 0.3]}]}'):
+            self.assertFalse(self.mod._embed_rows_ok(bad, 3, 1), bad)
+
+    def test_flat_token_array_is_one_input(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m", "dimensions": 768,
+            "members": [{"name": "a", "url": self.base_a}],
+        })
+        with self._post([1, 2, 3, 4]) as resp:
+            data = json.loads(resp.read())
+            self.assertEqual(len(data["data"]), 1)  # one vector for the token array
 
     def test_top_level_array_body_fails_over(self):
         self._write_pool({
