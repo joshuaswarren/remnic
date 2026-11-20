@@ -3,9 +3,9 @@ name: Contributor registry upkeep
 # Regenerates the generated block in CONTRIBUTORS.md from the GitHub API
 # and opens or updates a pull request when it drifts. The updater's unit
 # tests run first and in-run validation gates the PR. Pull requests created
-# with GITHUB_TOKEN do not trigger pull_request workflows, so the run also
-# posts its own `contributors-validation` check on the PR head SHA; that
-# check reports only this validation, never repository CI.
+# with GITHUB_TOKEN do not trigger pull_request workflows automatically, so
+# the run also posts its own `contributors-validation` check on the PR head
+# SHA; that check reports only this validation, never repository CI.
 
 on:
   schedule:
@@ -89,6 +89,14 @@ jobs:
             echo "(non-anonymous commit authors + merged PR authors; maintainer, bot and"
             echo "agent accounts excluded). Validated in-run: unit tests, idempotent"
             echo "second pass, single-file diff. No repository CI is claimed by this PR."
+            echo
+            echo "This pull request is authored by github-actions[bot] and cannot pass the"
+            echo "required ai-reviewers gate: the bot has no review seat and a GITHUB_TOKEN"
+            echo "pull request does not start normal PR workflows automatically."
+            echo "Do not merge it directly. Instead verify the generated diff below and carry it in a"
+            echo "normal maintainer pull request, get independent review at that exact"
+            echo "head, and close this pull request only after the replacement merges."
+            echo "Issue #3495 governs; #3494 carried #3436 this way."
             echo
             echo '```'
             git diff "origin/$BASE...HEAD" -- CONTRIBUTORS.md | head -200

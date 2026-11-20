@@ -293,6 +293,16 @@ conventions — no check reads an agent's shell. Run the gate locally with
 
 ## Agent / automation contributors
 
+The scheduled contributor-registry workflow opens its pull request as
+`github-actions[bot]`. That pull request cannot pass the required
+`ai-reviewers` gate: the bot has no review seat and a `GITHUB_TOKEN` pull
+request does not start normal PR workflows automatically. To land a
+registry update,
+verify the generated diff and carry it in a normal maintainer pull
+request, get independent review at that exact head, and close the bot
+pull request only after the replacement merges (issue #3495; #3494
+carried #3436 this way).
+
 Use `scripts/dev-worktree.sh <worktree-path> <branch> [base]` to create an
 isolated, installed worktree with a core type-check smoke check.
 - **Subagent worktree discipline.** Verify `pwd` before every write; use absolute paths rooted at this worktree; NEVER write to the main checkout or sibling worktrees; agent file tools may ignore cwd.
