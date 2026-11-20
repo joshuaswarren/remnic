@@ -11,12 +11,17 @@ export type ObservedDeferredEnrichmentPromise<T> =
 /** Cancelable child abort signal owned by one enrichment promise. */
 export interface EnrichmentAbortHandle {
   signal: AbortSignal;
+  /** True only when the handle's own deadline fired — not a parent abort or a manual cancel. */
+  readonly timedOut: boolean;
   cancel: () => void;
   dispose: () => void;
 }
 
-/** Child abort controller that follows `parentSignal`; `dispose` detaches the listener. */
-export function createEnrichmentAbortHandle(parentSignal?: AbortSignal): EnrichmentAbortHandle {
+/** Child abort controller that follows `parentSignal` and, when `deadlineMs` is
+ * finite and positive, fires on its own at that deadline — the metric label the
+ * enrichment sections already carried, enforced (#3499). `dispose` detaches the
+ * listener and clears the timer. */
+export function createEnrichmentAbortHandle(parentSignal?: AbortSignal, deadlineMs?: number): EnrichmentAbortHandle {
   const controller = new AbortController();
   const onAbort = () => controller.abort();
   if (parentSignal?.aborted) {
@@ -24,14 +29,27 @@ export function createEnrichmentAbortHandle(parentSignal?: AbortSignal): Enrichm
   } else if (parentSignal) {
     parentSignal.addEventListener("abort", onAbort, { once: true });
   }
+  let timedOut = false;
+  const timer =
+    deadlineMs !== undefined && Number.isFinite(deadlineMs) && deadlineMs > 0
+      ? setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, deadlineMs)
+      : undefined;
+  timer?.unref?.();
   let disposed = false;
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    if (timer !== undefined) clearTimeout(timer);
     parentSignal?.removeEventListener("abort", onAbort);
   };
   return {
     signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
     cancel: () => {
       controller.abort();
       dispose();

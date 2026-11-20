@@ -56,6 +56,7 @@ import {
 import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
+  resolveRecallCoreSectionDeadlineMs,
 } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
@@ -68,7 +69,7 @@ import {
 import { foldQueueWaitTiming } from "../recall-timings.js";
 import { emitRecallTiming } from "../recall-attempt-timing.js";
 import { createPhase2Timer, type Phase2AwaitStatus } from "../recall-phase2-timing.js";
-import { createEnrichmentAbortHandle, observeEnrichmentPromise, type DeferredEnrichmentOutcome, type ObservedDeferredEnrichmentPromise } from "../recall-enrichment-promise.js";
+import { createEnrichmentAbortHandle, observeEnrichmentPromise, type DeferredEnrichmentOutcome, type EnrichmentAbortHandle, type ObservedDeferredEnrichmentPromise } from "../recall-enrichment-promise.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { rerankLocalOrNoop, reorderByRankedKeys } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -180,10 +181,15 @@ export class RecallInternalCoordinator {
       timings,
       logger: log,
     });
+    const outerDeadlineAtMs =
+      recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null;
+    const enrichmentAbort = () =>
+      createEnrichmentAbortHandle(options.abortSignal, resolveRecallCoreSectionDeadlineMs({
+        configuredCoreDeadlineMs: enrichmentSectionDeadlineMs,
+        remainingOuterMs: outerDeadlineAtMs === null ? null : outerDeadlineAtMs - Date.now() }));
     const runBoundedCoreSection = createBoundedCoreSectionRunner({
       configuredDeadlineMs: recallSectionDeadlineMs,
-      outerDeadlineAtMs:
-        recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null,
+      outerDeadlineAtMs,
       parentSignal: options.abortSignal,
       record: recordRecallSectionMetric,
       logger: log,
@@ -1446,9 +1452,7 @@ export class RecallInternalCoordinator {
     })();
 
     const harmonicStartedMs = performance.now();
-    const harmonicRetrievalAbort = createEnrichmentAbortHandle(
-      options.abortSignal,
-    );
+    const harmonicRetrievalAbort = enrichmentAbort();
     const harmonicRetrievalPromise = observeEnrichmentPromise(
       (async (): Promise<string | null> => {
         const t0 = Date.now();
@@ -1878,7 +1882,7 @@ export class RecallInternalCoordinator {
         vectorTierAvailable: resolveMemoryLifecycleCapabilities(this.deps.config).embeddingFallback,
       });
     })().catch(() => null);
-    const qmdEnrichmentAbort = createEnrichmentAbortHandle(options.abortSignal);
+    const qmdEnrichmentAbort = enrichmentAbort();
     const qmdPromise = observeEnrichmentPromise(
       (async (): Promise<QmdPhaseResult> => {
         const t0 = Date.now();
@@ -2485,9 +2489,7 @@ export class RecallInternalCoordinator {
       return section;
     })();
 
-    const nativeKnowledgeAbort = createEnrichmentAbortHandle(
-      options.abortSignal,
-    );
+    const nativeKnowledgeAbort = enrichmentAbort();
     const nativeKnowledgePromise = observeEnrichmentPromise(
       (async (): Promise<string | null> => {
         const t0 = Date.now();
@@ -2851,24 +2853,37 @@ export class RecallInternalCoordinator {
       name: string,
       promise: ObservedDeferredEnrichmentPromise<T>,
       onStatus?: (status: Phase2AwaitStatus) => void,
+      sectionHandle?: EnrichmentAbortHandle,
     ): Promise<T | null> => {
       const finalizeEnrichmentOutcome = (
         outcome: DeferredEnrichmentOutcome<T>,
       ): T | null => {
-        if (outcome.status === "resolved") {
-          log.debug(
-            `recall phase-1 enrichment [${name}]: resolved at +${Date.now() - phase1Start}ms`,
-          );
-          onStatus?.("ok");
-          return outcome.value;
-        }
-
         if (options.abortSignal?.aborted) {
           log.debug(
             `recall phase-1 enrichment [${name}]: skipped after abort at +${Date.now() - phase1Start}ms`,
           );
           onStatus?.("skipped");
           return null;
+        }
+        if (sectionHandle?.timedOut) {
+          // cancel() routes a deadline cut through the degradation accounting
+          // the assembly race performs; keep a value the section still
+          // delivered (e.g. a stale-cache fallback served before the cut).
+          promise.cancel();
+          if (outcome.status === "resolved" && outcome.value != null) {
+            onStatus?.("ok");
+            return outcome.value;
+          }
+          log.debug(`recall phase-1 enrichment [${name}]: section deadline fired at +${Date.now() - phase1Start}ms`);
+          onStatus?.("timeout");
+          return null;
+        }
+        if (outcome.status === "resolved") {
+          log.debug(
+            `recall phase-1 enrichment [${name}]: resolved at +${Date.now() - phase1Start}ms`,
+          );
+          onStatus?.("ok");
+          return outcome.value;
         }
         log.warn(
           `recall phase-1 enrichment [${name}] failed open: ` +
@@ -3388,10 +3403,7 @@ export class RecallInternalCoordinator {
       );
     }
 
-    const nativeKnowledgeSection = await awaitEnrichmentSection(
-      "nativeKnowledge",
-      nativeKnowledgePromise,
-    );
+    const nativeKnowledgeSection = await awaitEnrichmentSection("nativeKnowledge", nativeKnowledgePromise, undefined, nativeKnowledgeAbort);
     if (nativeKnowledgeSection) {
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3640,7 +3652,7 @@ export class RecallInternalCoordinator {
     // 2. QMD results — post-process and format
     const qmdWasSettledBeforeAssemblyWait =
       qmdPromise.getSettledOutcome() !== undefined;
-    const qmdResult = await awaitEnrichmentSection("qmd", qmdPromise);
+    const qmdResult = await awaitEnrichmentSection("qmd", qmdPromise, undefined, qmdEnrichmentAbort);
     if (qmdResult) {
       const t0 = Date.now();
       const {
@@ -4740,7 +4752,7 @@ export class RecallInternalCoordinator {
       "Harmonic",
       harmonicStartedMs,
       () => timings.harmonicRetrieval?.startsWith("skip") === true,
-      (onStatus) => awaitEnrichmentSection("harmonic", harmonicRetrievalPromise, onStatus),
+      (onStatus) => awaitEnrichmentSection("harmonic", harmonicRetrievalPromise, onStatus, harmonicRetrievalAbort),
     );
     if (harmonicRetrievalSection) {
       this.deps.appendRecallSection(

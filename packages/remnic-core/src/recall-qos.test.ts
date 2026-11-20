@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { throwIfAborted } from "./abort-error.js";
+import { createEnrichmentAbortHandle } from "./recall-enrichment-promise.js";
 import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
@@ -371,4 +372,27 @@ test("yieldToEventLoop lets a pending timer run", async () => {
   clearTimeout(timer);
 
   assert.equal(timerFired, true);
+});
+
+test("an enrichment abort handle fires its deadline without a parent abort (#3499)", async () => {
+  // Enrichment sections (harmonic retrieval, QMD, native knowledge) only followed
+  // the parent signal, so their deadlineMs was a metric label — a slow section ran
+  // past the client's budget with nothing to cut it. A real timer is the subject.
+  const handle = createEnrichmentAbortHandle(undefined, 15);
+  const fired = Promise.withResolvers<void>();
+  handle.signal.addEventListener("abort", () => fired.resolve());
+  // The deadline timer is unref'd so a stale budget never holds the process;
+  // this ref'd wait is only the test keeping the loop alive for it to fire.
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(handle.signal.aborted, true);
+  await fired.promise;
+  handle.dispose();
+});
+
+test("an enrichment abort handle with no deadline still follows the parent signal", async () => {
+  const parent = new AbortController();
+  const handle = createEnrichmentAbortHandle(parent.signal);
+  parent.abort();
+  assert.equal(handle.signal.aborted, true);
+  handle.dispose();
 });
