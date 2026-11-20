@@ -6,6 +6,17 @@ import { classifyObserveFailure, type DrainOptions, type ObserveFailureClass, ty
 /** Minimal session surface the outbox drain needs. */
 export type OutboxSession = { notify: (message: string, level: "info" | "success" | "warning" | "error") => void };
 
+/**
+ * The dedup state a delivered outbox entry is recorded into. Delivered
+ * identities belong to the session that WROTE the entry, resolved live by
+ * `stateForSession`; an entry whose session is gone records nowhere rather
+ * than polluting the drainer's set with keys that can never match (#3381).
+ */
+export type OutboxDrainTarget = {
+  observedHashes: Set<string>;
+  liveObservedReplayKeys?: Map<string, number>;
+};
+
 export const MAX_OBSERVED_HASHES = 2000;
 
 /** Longest a session-start or shutdown replay attempt may take. */
@@ -71,6 +82,7 @@ export async function drainObserveOutbox(
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
   bounded = false,
+  stateForSession?: (sessionKey: string) => OutboxDrainTarget | undefined,
 ): Promise<void> {
   const drainOptions: DrainOptions = { notify: (message, level) => session.notify(message, level) };
   if (bounded) drainOptions.maxAttempts = 1;
@@ -97,13 +109,22 @@ export async function drainObserveOutbox(
       stopReason = err instanceof Error ? classifyObserveFailure(err) : "retry-ambiguous";
       throw err;
     }
-    // Delivered: remember identity so later turns and the shutdown replay skip these.
-    for (const hash of entry.messageHashes) {
-      if (hash !== null) rememberObservedHash(observedHashes, hash);
-    }
-    if (liveObservedReplayKeys) {
-      for (const message of entry.messages) {
-        rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, entry.sessionKey));
+    // Delivered: remember identity so later turns and the shutdown replay skip
+    // these. The hashes and replay keys embed the entry's OWN sessionKey, so
+    // they are recorded in that session's state (#3381): a drain running under
+    // another session must not file them in its own set, where they can never
+    // match, while the writer's shutdown resends the same turns under a new
+    // nonce. A writer session that is not live has no in-memory state to teach;
+    // its persisted hashes cannot be written from here, so nothing is recorded.
+    const target = stateForSession ? stateForSession(entry.sessionKey) : { observedHashes, liveObservedReplayKeys };
+    if (target) {
+      for (const hash of entry.messageHashes) {
+        if (hash !== null) rememberObservedHash(target.observedHashes, hash);
+      }
+      if (target.liveObservedReplayKeys) {
+        for (const message of entry.messages) {
+          rememberLiveObservedReplayKey(target.liveObservedReplayKeys, liveReplayKey(message, entry.sessionKey));
+        }
       }
     }
   }, drainOptions);
@@ -137,8 +158,9 @@ export function startObserveOutboxDrain(
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
   bounded = false,
+  stateForSession?: (sessionKey: string) => OutboxDrainTarget | undefined,
 ): Promise<void> {
-  const run: Promise<void> = drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys, bounded)
+  const run: Promise<void> = drainObserveOutbox(session, client, config, outbox, observedHashes, liveObservedReplayKeys, bounded, stateForSession)
     .catch((err: Error) => {
       try {
         // The drain only throws Errors (lock timeout, write failure); coerce defensively for the message.
@@ -175,8 +197,9 @@ export async function drainObserveOutboxAtStartup(
   outbox: ObserveOutbox,
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
+  stateForSession?: (sessionKey: string) => OutboxDrainTarget | undefined,
 ): Promise<void> {
-  const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, true);
+  const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, true, stateForSession);
   const { promise: deadline, resolve } = Promise.withResolvers<void>();
   const timer = setTimeout(resolve, STARTUP_DRAIN_BUDGET_MS);
   timer.unref();

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { chmod, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -219,7 +219,9 @@ export class ObserveOutbox {
     const data = this.entries.map((entry) => JSON.stringify(entry)).join("\n");
     // Atomic replace with fsync of the temp file and the directory, so an OS crash or
     // power loss cannot commit the rename ahead of the data and leave a short queue.
-    await writeFileAtomically(this.filePath, data ? `${data}\n` : "");
+    // Entries carry raw tool output, so the queue file is owner-only (#3381); the
+    // temp file is created 0600 and the rename keeps that mode on every rewrite.
+    await writeFileAtomically(this.filePath, data ? `${data}\n` : "", undefined, 0o600);
   }
 
   /**
@@ -235,6 +237,12 @@ export class ObserveOutbox {
         { staleMs: LOCK_STALE_MS, maxWaitMs: this.lockMaxWaitMs },
         async (acquired) => {
           if (!acquired) throw new Error(`observe outbox is locked by another process (${this.lockPath})`);
+          // The dedicated directory is tightened once per write (#3381): mkdir's
+          // mode only applies to newly created parents. The FILE needs no chmod:
+          // persist() replaces it through a 0600 temp on every write, so a looser
+          // file is tightened by the write itself - and an unreadable one keeps
+          // failing closed below instead of being repaired into a silent empty.
+          await chmod(path.dirname(this.filePath), 0o700).catch(() => undefined);
           await this.refresh(notify, true);
           update();
           await this.persist();

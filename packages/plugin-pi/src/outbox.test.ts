@@ -528,3 +528,24 @@ test("two drains started back to back on one instance send the head entry once (
   assert.equal(sends, 1, "the second drain must not start while the first is reading");
   assert.equal([a, b].filter((r) => r.skipped).length, 1, "exactly one drain was skipped");
 });
+
+test("#3381: queued captures stay private: file 0600 and directory 0700", async () => {
+  const filePath = tmpOutboxPath("private");
+  const outbox = new ObserveOutbox(filePath);
+  await outbox.enqueue(entryInput("secret"));
+
+  // Entries carry rawContent of tool results - private to the owner's account.
+  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600, "the queue file must not be group/world readable");
+  assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o700, "the queue directory must not be group/world readable");
+});
+
+test("#3381: a pre-existing looser file and directory are tightened on the next write", async () => {
+  const filePath = tmpOutboxPath("tighten");
+  fs.chmodSync(path.dirname(filePath), 0o755);
+  fs.writeFileSync(filePath, entryLine("old"), { mode: 0o644 });
+  const outbox = new ObserveOutbox(filePath);
+  await outbox.enqueue(entryInput("new"));
+
+  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o700);
+});

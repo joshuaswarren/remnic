@@ -288,3 +288,38 @@ test("replay sends the queued entry's principal, not the draining process's", as
   assert.equal(sentPrincipals[0], "w7P:p2@writer-host", "queued writer identity survives a foreign drainer");
   assert.equal(sentPrincipals[1], "wD6:p1@drainer-host", "entries without a principal keep the drainer's");
 });
+
+test("#3381: a foreign session's delivered entry updates that session's state, not the drainer's", async () => {
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const outbox = new ObserveOutbox(outboxPath);
+  await outbox.enqueue(queuedEntry); // sessionKey "other-session"
+  await outbox.enqueue({ ...queuedEntry, sessionKey: "gone-session", messageHashes: ["hash-gone"] });
+  const client = new RemnicClient(config);
+  client.observe = async () => ({ ok: true }) as never;
+
+  const drainerHashes = new Set<string>();
+  const drainerReplayKeys = new Map<string, number>();
+  const writerState = { observedHashes: new Set<string>(), liveObservedReplayKeys: new Map<string, number>() };
+  const session = { notify: () => {} };
+
+  await drainObserveOutbox(
+    session,
+    client,
+    config,
+    outbox,
+    drainerHashes,
+    drainerReplayKeys,
+    true,
+    (key) => (key === "other-session" ? writerState : undefined),
+  );
+
+  // The writer's own live session state learns what was delivered under its
+  // identity, so its shutdown replay does not send the same turns twice.
+  assert.ok(writerState.observedHashes.has("hash-queued-earlier"));
+  assert.equal(writerState.liveObservedReplayKeys.size, 1);
+  // And the drainer's dedup state is not polluted with foreign identities -
+  // not by the live writer's entry nor by an entry whose session is gone.
+  assert.equal(drainerHashes.size, 0);
+  assert.equal(drainerReplayKeys.size, 0);
+});
