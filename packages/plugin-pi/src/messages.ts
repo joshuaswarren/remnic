@@ -92,6 +92,41 @@ export function observedMessageDedupeKey(
   return identity ? hashObservedMessage(message, sessionKey, identity) : null;
 }
 
+/** Serialized bytes of rawContent kept per message; larger bodies are omitted rather than sent or persisted whole (#3381). */
+export const MAX_RAW_CONTENT_BYTES = 32 * 1024;
+
+/**
+ * Bound the raw body of each message so one observe is never megabytes: a
+ * single tool result can dwarf everything else, the outbox's 200-entry bound
+ * caps count rather than bytes, and every rewrite copies the file (#3381).
+ * Applied before the FIRST send too, not only on enqueue: the daemon dedupes
+ * on an idempotency key hashed over the exact body, so live, queued and
+ * replayed bodies must stay identical or a lost-response replay ingests
+ * twice. Oversized rawContent is dropped — the daemon extracts from the
+ * rendered `content`, and the dedupe hash was already taken from the
+ * original. Small bodies pass through untouched.
+ */
+export function boundedReplayMessages(
+  messages: ObserveMessage[],
+  notify?: (message: string, level: "info" | "warning" | "error") => void,
+): ObserveMessage[] {
+  let omitted = 0;
+  const bounded = messages.map((message) => {
+    if (message.rawContent === undefined) return message;
+    if (Buffer.byteLength(JSON.stringify(message.rawContent)) <= MAX_RAW_CONTENT_BYTES) return message;
+    omitted += 1;
+    const { rawContent: _oversized, ...rest } = message;
+    return rest;
+  });
+  if (omitted > 0) {
+    notify?.(
+      `Remnic observe: omitted ${omitted} raw message bod${omitted === 1 ? "y" : "ies"} over ${MAX_RAW_CONTENT_BYTES / 1024} KiB (the rendered text still reaches the daemon)`,
+      "warning"
+    );
+  }
+  return bounded;
+}
+
 export function summarizeMessages(messages: unknown[], maxChars: number): string {
   const chunks: string[] = [];
   let used = 0;

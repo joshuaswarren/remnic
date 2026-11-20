@@ -10,6 +10,7 @@ import { RemnicClient, RemnicHttpError } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import { createRemnicPiExtension, observeMessages } from "./index.js";
 import type { PiApi } from "./index.js";
+import { observedMessageDedupeKey, sessionKeyFromContext, toObserveMessage } from "./messages.js";
 import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
@@ -77,15 +78,18 @@ test("a live observe returns without waiting for a refused queued replay", async
     globalThis.fetch = originalFetch;
   });
   let replayAttempts = 0;
+  const releaseReplay = Promise.withResolvers<void>();
   globalThis.fetch = async (_input, init) => {
     // SAFETY: this test's own fetch mock serialized the request body; only messages[0].content is read.
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ content?: string }> };
     if (body.messages?.[0]?.content === "live turn") return new Response(JSON.stringify({ ok: true }), { status: 200 });
     replayAttempts += 1;
-    return new Response(JSON.stringify({ error: "busy", code: "buffer_admission_refused" }), {
-      status: 503,
-      headers: { "retry-after": "5" },
-    });
+    // The first replay is held open until the test's assertions are done: the
+    // live hook cannot wait even on a replay that never answers. Releasing it
+    // answers 401 so the drain stops on a blocked refusal — a 503 would park on
+    // its unref'd retry sleep and leave this test awaiting an empty event loop.
+    if (replayAttempts === 1) await releaseReplay.promise;
+    return new Response(JSON.stringify({ error: "token rejected" }), { status: 401 });
   };
 
   const notifications: Array<{ message: string; level: string }> = [];
@@ -105,6 +109,14 @@ test("a live observe returns without waiting for a refused queued replay", async
   assert.equal(await outbox.size(), 1, "the refused entry is still queued, never dropped");
   assert.ok(!notifications.some((n) => n.level === "error"), "no error for a successful live observe");
   assert.ok(replayAttempts <= 4, "the background drain stays bounded");
+
+  // Finish the background drain under this test's own mock before fetch is
+  // restored (#3381 item 9): the released attempt's 401 stops the drain on the
+  // blocked path, which keeps the queue and does not sleep.
+  releaseReplay.resolve();
+  await settleObserveOutboxDrain(outbox);
+  assert.equal(await outbox.size(), 1, "a blocked refusal keeps the capture queued");
+  assert.ok(replayAttempts <= 4, "the drain made at most its bounded attempts");
 });
 
 test("a drain failure never reports the delivered live turn as failed or re-queues it", async (t) => {
@@ -322,4 +334,74 @@ test("#3381: a foreign session's delivered entry updates that session's state, n
   // not by the live writer's entry nor by an entry whose session is gone.
   assert.equal(drainerHashes.size, 0);
   assert.equal(drainerReplayKeys.size, 0);
+});
+
+test("a lost-response replay keeps the live attempt's idempotency key even when rawContent is bounded out", async (t) => {
+  // #3381 review: the daemon dedupes on the idempotency key, which is hashed
+  // over the exact body. Bounding rawContent only at enqueue makes the replay
+  // body differ from the live body — a lost-response replay then ingests twice.
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const outbox = new ObserveOutbox(outboxPath);
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  const keys: Array<string | undefined> = [];
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    // SAFETY: this test's own fetch mock serialized the request body; only the key is read.
+    const body = JSON.parse(String(init?.body ?? "{}")) as { idempotencyKey?: string };
+    keys.push(body.idempotencyKey);
+    return calls === 1
+      ? new Response(JSON.stringify({ error: "internal_error" }), { status: 500 })
+      : new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  const big = { id: "l-big", role: "user", content: "live turn", blob: "x".repeat(64 * 1024) };
+  await observeMessages(liveCtx(() => {}), new RemnicClient(config), [big], new Set<string>(), undefined, config, outbox);
+  assert.equal(await outbox.size(), 1, "the ambiguous 500 queues the turn");
+
+  await drainObserveOutbox({ notify: () => {} }, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
+
+  assert.ok(keys[0] && keys[1], "the live attempt and the replay each carried an idempotency key");
+  assert.equal(keys[1], keys[0], "the replay must reuse the live attempt's key or the daemon ingests twice");
+});
+
+test("a queued entry bound to another daemon does not suppress the live capture for this one", async (t) => {
+  // #3504 CodeRabbit: pendingHashes must be destination-aware — an entry bound
+  // to daemon-a is never delivered to this daemon, so its hash cannot skip the
+  // live send here.
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath); // remnicDaemonUrl http://127.0.0.1:4318
+  const outbox = new ObserveOutbox(outboxPath);
+  const raw = { id: "l-1", role: "user", content: "shared capture" };
+  const message = toObserveMessage(raw);
+  assert.ok(message);
+  // Both fixture values derive from the ctx the live path gets: the outbox
+  // hash only suppresses when it is computed over the SAME session key
+  // ("pi:live-session", not "live-session") the live observe resolves.
+  const ctx = liveCtx(() => {});
+  const liveSessionKey = sessionKeyFromContext(ctx);
+  await outbox.enqueue({
+    ...queuedEntry,
+    sessionKey: liveSessionKey,
+    destination: "http://daemon-a:4318",
+    messageHashes: [observedMessageDedupeKey(message, liveSessionKey)],
+  });
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  let sent = 0;
+  globalThis.fetch = async () => {
+    sent += 1;
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  await observeMessages(ctx, new RemnicClient(config), [raw], new Set<string>(), undefined, config, outbox);
+  await settleObserveOutboxDrain(outbox);
+  assert.equal(sent, 1, "the capture reaches this daemon instead of being suppressed by the foreign entry");
+  assert.equal(await outbox.size(), 1, "the foreign entry stays queued for its own daemon");
 });

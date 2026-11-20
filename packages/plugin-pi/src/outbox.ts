@@ -7,6 +7,7 @@ import { withHeldFileLock } from "@remnic/core/utils/serialize-mutations";
 
 import { RemnicHttpError, RemnicRequestTimeoutError, isTransientNetworkError } from "./client.js";
 import type { ObserveMessage } from "./client.js";
+import { boundedReplayMessages } from "./messages.js";
 
 /**
  * Durable local queue for observe batches that the daemon could not accept:
@@ -37,11 +38,23 @@ export type ObserveOutboxEntryInput = {
    * existed — those replay under the drainer's principal, same as today.
    */
   principal?: string;
+  /**
+   * The daemon URL this capture was enqueued for (#3381): the outbox file is
+   * shared per machine, so a pane repointed at a second daemon must not replay
+   * another destination's conversations to it. Absent on pre-field entries —
+   * those replay under any destination, same as today.
+   */
+  destination?: string;
 };
 
 export type ObserveOutboxEntry = ObserveOutboxEntryInput & {
   id: string;
   queuedAt: string;
+  /**
+   * Failed delivery attempts, persisted so a deterministic retry-ambiguous
+   * failure still leaves the FIFO once it crosses MAX_ENTRY_FAILURES (#3381).
+   */
+  failedAttempts?: number;
 };
 
 export type OutboxNotify = (message: string, level: "info" | "warning" | "error") => void;
@@ -62,9 +75,13 @@ export function classifyObserveFailure(err: Error): ObserveFailureClass {
     // 503 is server backpressure (capacity admission or not-ready) and 429 a write
     // quota (observe counts against it); the capture was never executed, so a keyed
     // retry is safe. 401/403 park the queue. Any other HTTP answer is a semantic
-    // rejection (bad payload, storage-target 400) that no retry can fix.
+    // rejection (bad payload, storage-target 400) that no retry can fix — except
+    // an unrecognized 5xx, which is far more often a transient internal_error
+    // than a verdict on the payload (#3381): it is retry-ambiguous, and the
+    // per-entry failure cap is what keeps a deterministic 5xx from pinning the FIFO.
     if (RETRYABLE_HTTP_STATUSES.has(err.status)) return "retry-capacity";
     if (AUTH_HTTP_STATUSES.has(err.status)) return "blocked";
+    if (err.status >= 500) return "retry-ambiguous";
     return "permanent";
   }
   if (err instanceof RemnicRequestTimeoutError) return "retry-ambiguous";
@@ -87,10 +104,27 @@ export type DrainOptions = {
   notify?: OutboxNotify;
   /** Clock seam for the stale-replay warning (default Date.now). */
   now?: () => number;
+  /**
+   * Only entries enqueued for this daemon URL are delivered; entries bound to
+   * another destination stay queued for their own drainer (#3381). Absent:
+   * every entry is eligible, same as before the field existed.
+   */
+  destination?: string;
 };
 
 /** The daemon remembers observe idempotency keys for about this long (512-entry record). */
 const SERVER_IDEMPOTENCY_WINDOW_MS = 15 * 60_000;
+
+/**
+ * Whether a drain on `destination` would deliver `entry`. An omitted caller
+ * destination makes every entry eligible (the DrainOptions contract); an
+ * unbound (pre-field) entry runs on any drainer; a bound entry only on its own.
+ * Shared by drain selection, the foreign count and live-capture suppression so
+ * all three agree on which captures a destination covers (#3381, #3504).
+ */
+function entryEligibleForDestination(entry: ObserveOutboxEntry, destination: string | undefined): boolean {
+  return destination === undefined || entry.destination === undefined || entry.destination === destination;
+}
 
 export type OutboxStatus = {
   pending: number;
@@ -106,12 +140,16 @@ export type DrainResult = {
   delivered: number;
   dropped: number;
   pending: number;
+  /** Queued entries bound to another daemon destination; never sent here, so they must not count as saturation. */
+  foreign?: number;
   /** True when this call did nothing because another drain on this instance was already running. */
   skipped?: boolean;
 };
 
 const DEFAULT_MAX_ENTRIES = 200;
 const DEFAULT_MAX_ATTEMPTS = 4;
+/** Failed deliveries after which a retry-ambiguous entry is dropped so a deterministic failure cannot pin the FIFO (#3381). */
+const MAX_ENTRY_FAILURES = 8;
 const DEFAULT_BACKOFF_BASE_MS = 500;
 const DEFAULT_MAX_RETRY_AFTER_MS = 30_000;
 const DEFAULT_JITTER_RATIO = 0.2;
@@ -260,11 +298,17 @@ export class ObserveOutbox {
     return this.entries.length;
   }
 
-  /** Dedupe keys of everything currently queued (used to avoid double-delivery channels). */
-  async pendingHashes(): Promise<Set<string>> {
+  /**
+   * Dedupe keys of everything currently queued that a drain on `destination`
+   * would deliver. Entries bound to another daemon do not suppress the live
+   * capture for this one — they are never delivered here (#3504 review).
+   */
+  async pendingHashes(destination?: string): Promise<Set<string>> {
     await this.refreshOrKeepLastKnown();
     return new Set(
-      this.entries.flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
+      this.entries
+        .filter((entry) => entryEligibleForDestination(entry, destination))
+        .flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
     );
   }
 
@@ -287,6 +331,7 @@ export class ObserveOutbox {
         id,
         queuedAt: new Date().toISOString(),
         ...input,
+        messages: boundedReplayMessages(input.messages, notify),
         replayNonce: input.replayNonce ?? id,
       });
       if (this.entries.length > this.maxEntries) {
@@ -303,6 +348,19 @@ export class ObserveOutbox {
     await this.mutate(() => {
       this.entries = this.entries.filter((entry) => entry.id !== id);
     });
+  }
+
+  /** Bump the entry's persisted ambiguous-failure count; 0 when another process already removed it. */
+  private async recordFailure(id: string): Promise<number> {
+    let attempts = 0;
+    await this.mutate(() => {
+      const entry = this.entries.find((e) => e.id === id);
+      if (entry) {
+        entry.failedAttempts = (entry.failedAttempts ?? 0) + 1;
+        attempts = entry.failedAttempts;
+      }
+    });
+    return attempts;
   }
 
   /**
@@ -340,10 +398,17 @@ export class ObserveOutbox {
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
+    // An omitted destination makes every entry eligible per the DrainOptions
+    // contract; a destination-bound entry only runs on its own drainer (#3381).
+    const eligible = (entry: ObserveOutboxEntry): boolean =>
+      entryEligibleForDestination(entry, options.destination);
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
-        const entry = this.entries[0];
+        // Entries bound to another daemon are skipped, never sent: the file is
+        // shared per machine and a pane repointed elsewhere must not replay
+        // someone else's conversations to the wrong destination (#3381).
+        const entry = this.entries.find(eligible);
         if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
@@ -379,6 +444,25 @@ export class ObserveOutbox {
           }
           failures += 1;
           this.counters.retried += 1;
+          // Ambiguous failures accrue a persisted per-entry count: a daemon
+          // that fails the same capture every time (a deterministic 500) must
+          // not pin the FIFO forever, so the entry leaves the queue at the cap
+          // with a visible reason (#3381). Capacity refusals are the daemon
+          // asking us to come back, so they are not counted.
+          if (failureClass === "retry-ambiguous") {
+            const attempts = await this.recordFailure(entry.id);
+            if (attempts >= MAX_ENTRY_FAILURES) {
+              dropped += 1;
+              this.counters.dropped += 1;
+              await this.remove(entry.id);
+              const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
+              notify?.(
+                `Remnic observe outbox: gave up on a queued capture after ${attempts} failed attempts (${status}${err instanceof Error ? err.message : String(err)}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); the daemon kept failing it, so it was dropped rather than blocking the queue`,
+                "warning"
+              );
+              continue;
+            }
+          }
           if (failures >= maxAttempts) break;
           const hint = err instanceof RemnicHttpError ? err.retryAfterMs : undefined;
           const hinted = hint !== undefined && Number.isFinite(hint) ? hint : undefined;
@@ -395,6 +479,8 @@ export class ObserveOutbox {
     } finally {
       this.drainInProgress = false;
     }
-    return { delivered, dropped, pending: this.entries.length };
+    const foreign = this.entries.filter((entry) => !eligible(entry)).length;
+    const summary = { delivered, dropped, pending: this.entries.length };
+    return foreign > 0 ? { ...summary, foreign } : summary;
   }
 }

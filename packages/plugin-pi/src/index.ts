@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 
-
 import { DEFAULT_CONFIG, loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
 import {
   RemnicClient,
@@ -15,6 +14,7 @@ import {
 } from "./client.js";
 import { resolvePiAgentHome } from "./paths.js";
 import {
+  boundedReplayMessages,
   hashObservedMessage,
   observedMessageDedupeKey,
   sessionKeyFromContext,
@@ -827,7 +827,9 @@ async function observeMessagesForSession(
   const messages: ObserveMessage[] = [];
   const messageHashes: Array<string | null> = [];
   const pendingHashes = new Set<string>();
-  const outboxPending = outbox ? await outbox.pendingHashes() : null;
+  // Suppress only hashes a drain on THIS daemon would deliver — an entry bound
+  // to another destination never reaches this daemon and must not skip capture here (#3504 review).
+  const outboxPending = outbox ? await outbox.pendingHashes(config?.remnicDaemonUrl) : null;
   for (const raw of rawMessages) {
     const message = toObserveMessage(raw);
     if (!message) continue;
@@ -841,6 +843,11 @@ async function observeMessagesForSession(
     messageHashes.push(hash);
   }
   if (messages.length === 0) return;
+  // Bound oversized raw bodies BEFORE the first send (#3381 item 11): the
+  // daemon dedupes on an idempotency key hashed over the exact body, so the
+  // live body, the persisted outbox entry and its later replay must stay
+  // identical or a lost-response replay ingests twice.
+  const sendMessages = boundedReplayMessages(messages, (message, level) => session.notify(message, level));
   // Circuit breaker: when config is wired (the live Pi handlers always pass
   // it), skip observe fast while the daemon is known-down so a dead host
   // doesn't burn the full per-turn budget on every turn (#1626). Shutdown is
@@ -859,12 +866,12 @@ async function observeMessagesForSession(
   const observeOptions: ObserveOptions = { replayNonce };
   if (config) observeOptions.timeoutMs = forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs;
   try {
-    await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
+    await client.observe(session.sessionKey, session.cwd, sendMessages, observeOptions);
     if (config) client.markReachable();
     if (state && config) refreshOfflineStatusLabel(session, state, config, recallTimeoutBreaker?.isTripped() ?? false);
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
-      for (const message of messages) {
+      for (const message of sendMessages) {
         rememberLiveObservedReplayKey(liveObservedReplayKeys, liveReplayKey(message, session.sessionKey));
       }
     }
@@ -888,7 +895,7 @@ async function observeMessagesForSession(
     // queue them durably for replay on the next successful contact.
     try {
       await outbox?.enqueue(
-        { sessionKey: session.sessionKey, cwd: session.cwd, messages, messageHashes, replayNonce, principal: config?.principal },
+        { sessionKey: session.sessionKey, cwd: session.cwd, messages: sendMessages, messageHashes, replayNonce, principal: config?.principal, destination: config?.remnicDaemonUrl },
         (message, level) => session.notify(message, level),
       );
     } catch (enqueueErr) {
@@ -970,7 +977,6 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
   });
 }
 
-
 /**
  * Probe the daemon and return the verdict plus the shared-breaker action the
  * startup chain must apply (under its own currency guard). This runs at
@@ -1001,7 +1007,6 @@ async function probeDaemonHealth(
     return { result: "unreachable", breaker: isDaemonUnreachableError(err) ? "unreachable" : "none" };
   }
 }
-
 
 function snapshotPiContext(ctx: any, options: PiContextSnapshotOptions = {}): PiContextSnapshot | null {
   const sessionKey = safeSessionKeyFromContext(ctx);
@@ -1128,7 +1133,6 @@ function trimContext(value: string, budget: number): string {
   return `${value.slice(0, budget - TRUNCATION_NOTICE.length)}${TRUNCATION_NOTICE}`;
 }
 
-
 export function isDaemonUnreachableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (/Remnic request timed out/.test(err.message)) return true;
@@ -1158,7 +1162,6 @@ function notifyRecallDisabled(session: PiContextSnapshot): string {
   return message;
 }
 
-
 async function executeRecallWithBreaker<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   breaker: RecallTimeoutBreaker,
@@ -1182,7 +1185,6 @@ async function executeRecallWithBreaker<T>(
     throw err;
   }
 }
-
 
 function finiteTokenCount(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
