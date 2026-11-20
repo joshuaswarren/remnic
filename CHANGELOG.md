@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Retaining failed extractions when retry scheduling is disabled (#3415): first proposed by @earlvanze in #3416; shipped in #3437.
+
 ## [v10.0.155] — 2026-11-20
 
 ### Fixed
