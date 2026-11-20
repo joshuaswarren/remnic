@@ -813,3 +813,234 @@ test("#3520: a session skipped by the hot window does not hide its own or others
   assert.deepEqual(sent, ["b1"], "sess-B's spilled capture delivers while sess-A keeps its queued retry budget");
   assert.equal(result.delivered, 1);
 });
+
+// --- #3522 review hardening: durability, ordering and concurrency fixes ---
+
+interface SpillCleanupSeam {
+  removeSpillFile(this: ObserveOutbox): Promise<void>;
+}
+
+test("#3522: a failed spill cleanup surfaces instead of silently reporting empty", async () => {
+  const filePath = tmpOutboxPath("spill-unlink");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("one"));
+  // A non-empty directory where the spill file should be: unlink fails non-ENOENT.
+  const spillDir = `${filePath}.spill`;
+  fs.mkdirSync(spillDir);
+  fs.writeFileSync(path.join(spillDir, "stub"), "x");
+  // SAFETY: reaches the private cleanup seam through the prototype to force the
+  // non-ENOENT removal failure the review finding covers; the public API cannot
+  // time an unlink failure against the signature cache.
+  const seam = Object.getPrototypeOf(outbox) as SpillCleanupSeam;
+  await assert.rejects(
+    seam.removeSpillFile.call(outbox),
+    /ENOTEMPTY|EISDIR|EPERM/,
+    "a removal failure must propagate, not masquerade as an empty spill"
+  );
+});
+
+test("#3522: an unterminated spill tail cannot swallow the next appended capture", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("torn"), { maxEntries: 1 });
+  await outbox.enqueue(entryInput("hot"));
+  await outbox.enqueue(entryInput("spilled-1"));
+  // Simulate a crash mid-append: a partial JSON record with no trailing newline.
+  fs.appendFileSync(`${outbox.filePath}.spill`, `{"id":"torn","messages":[{"role":"user"`);
+  await outbox.enqueue(entryInput("spilled-2"));
+
+  const delivered: string[] = [];
+  await outbox.drain(async (entry) => {
+    delivered.push(entry.messages[0].content);
+  });
+  assert.deepEqual(
+    delivered,
+    ["hot", "spilled-1", "spilled-2"],
+    "the torn fragment is delimited and skipped alone; the appended capture survives"
+  );
+});
+
+test("#3522: a pre-existing loose spill file is tightened to owner-only on append", async () => {
+  const filePath = tmpOutboxPath("spill-mode");
+  fs.writeFileSync(`${filePath}.spill`, "", { mode: 0o644 });
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("hot"));
+  await outbox.enqueue(entryInput("spilled"));
+  assert.equal(
+    fs.statSync(`${filePath}.spill`).mode & 0o777,
+    0o600,
+    "captures appended to a pre-existing spill still land owner-only"
+  );
+});
+
+test("#3522: a read issued behind a mutation observes the mutation's result", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("read-order"), { maxEntries: 4 });
+  const enqueued = outbox.enqueue(entryInput("x"));
+  const size = outbox.size();
+  const [, count] = await Promise.all([enqueued, size]);
+  assert.equal(count, 1, "public reads serialize behind pending writes instead of racing them");
+});
+
+test("#3522: public reads overlapping mutations cannot lose captures", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("read-clobber"), { maxEntries: 4 });
+  const pending: Array<Promise<unknown>> = [];
+  const expected: string[] = [];
+  for (let i = 0; i < 30; i += 1) {
+    const content = `cap-${i}`;
+    expected.push(content);
+    pending.push(outbox.enqueue(entryInput(content)));
+    pending.push(outbox.status());
+    pending.push(outbox.size());
+    pending.push(outbox.pendingHashes());
+  }
+  await Promise.all(pending);
+
+  const delivered: string[] = [];
+  await outbox.drain(async (entry) => {
+    delivered.push(entry.messages[0].content);
+  });
+  assert.deepEqual(
+    [...delivered].sort(),
+    [...expected].sort(),
+    "every enqueued capture survives concurrent status/size/pendingHashes reads"
+  );
+});
+
+test("#3522: a drainer removes a delivered spill entry wherever it actually lives", async () => {
+  const filePath = tmpOutboxPath("stale-loc");
+  const drainerA = new ObserveOutbox(filePath, { maxEntries: 1 });
+  const drainerB = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await drainerA.enqueue({ ...entryInput("foreign"), destination: "daemon-elsewhere" });
+  await drainerA.enqueue({ ...entryInput("x"), destination: "daemon-1" });
+
+  // A selects x from the spill; while its send is in flight, B's drain on the
+  // foreign destination delivers the hot entry and refills x into the hot file.
+  // A's removal must resolve x's CURRENT location, not the file it was read from.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const enteredX = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const sentByA: string[] = [];
+  const drainA = drainerA.drain(
+    async (entry) => {
+      if (entry.messages[0].content !== "x") return;
+      sentByA.push("x");
+      entered();
+      await gate;
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+
+  await enteredX;
+  await drainerB.drain(async () => undefined, { destination: "daemon-elsewhere", sleep: async () => {} });
+  release();
+  const resultA = await drainA;
+  assert.equal(resultA.delivered, 1, "x delivers once even though it moved files mid-send");
+
+  // x was delivered and removed from wherever it lived: a later drain must never
+  // see it again.
+  const sentLater: string[] = [];
+  await drainerA.drain(
+    async (entry) => {
+      sentLater.push(entry.messages[0].content);
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+  assert.deepEqual(sentLater, [], "the delivered entry is gone from both files — no phantom resend");
+});
+
+test("#3522: the drain revalidates its spill view when the file changes under it", async () => {
+  const filePath = tmpOutboxPath("stale-spill");
+  const drainerA = new ObserveOutbox(filePath, { maxEntries: 1 });
+  const drainerB = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await drainerA.enqueue({ ...entryInput("foreign"), destination: "daemon-elsewhere" });
+  await drainerA.enqueue({ ...entryInput("x"), destination: "daemon-1" });
+  await drainerA.enqueue({ ...entryInput("y"), destination: "daemon-1" });
+
+  // A caches [x, y] when it consults the spill. While A's send of x is in
+  // flight, B drains the file and delivers both entries underneath it.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let entered!: () => void;
+  const enteredX = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const sentByA: string[] = [];
+  const drainA = drainerA.drain(
+    async (entry) => {
+      sentByA.push(entry.messages[0].content);
+      if (entry.messages[0].content !== "x") return;
+      entered();
+      await gate;
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+
+  await enteredX;
+  await drainerB.drain(async () => undefined, { destination: "daemon-1", sleep: async () => {} });
+  release();
+  await drainA;
+
+  assert.deepEqual(
+    sentByA,
+    ["x"],
+    "an entry another process already consumed is re-read, not replayed from a stale snapshot"
+  );
+});
+
+test("#3522: direct spill sends do not rewrite the whole file per entry", async () => {
+  const filePath = tmpOutboxPath("spill-io");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue({ ...entryInput("foreign"), destination: "daemon-elsewhere" });
+  for (let i = 0; i < 8; i += 1) {
+    await outbox.enqueue({ ...entryInput(`s-${i}`), destination: "daemon-1" });
+  }
+  const spillPath = `${filePath}.spill`;
+  const ino = () => (fs.existsSync(spillPath) ? fs.statSync(spillPath).ino : -1);
+  let last = ino();
+  let rewrites = 0;
+  await outbox.drain(
+    async () => {
+      const current = ino();
+      if (current !== last) {
+        rewrites += 1;
+        last = current;
+      }
+    },
+    { destination: "daemon-1" }
+  );
+  assert.ok(rewrites <= 2, `the spill file was fully rewritten ${rewrites} times for 8 sends (want at most 2)`);
+});
+
+test("#3522: pendingHashes suppresses live captures already parked in the spill", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-hashes"), { maxEntries: 1 });
+  await outbox.enqueue(entryInput("hot", "h-hot"));
+  await outbox.enqueue({ ...entryInput("spilled", "h-spilled"), destination: "daemon-1" });
+  await outbox.enqueue({ ...entryInput("other", "h-other"), destination: "daemon-2" });
+
+  const forD1 = await outbox.pendingHashes("daemon-1");
+  assert.ok(forD1.has("h-hot"), "an unbound queued hash suppresses the live capture");
+  assert.ok(forD1.has("h-spilled"), "an eligible spilled hash suppresses a live resend under a fresh nonce");
+  assert.ok(!forD1.has("h-other"), "a spill entry bound to another daemon does not suppress here");
+});
+
+test("#3522: the drain summary counts what remains in the spill file", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-summary"), { maxEntries: 1 });
+  await outbox.enqueue({ ...entryInput("foreign"), destination: "daemon-elsewhere" });
+  await outbox.enqueue({ ...entryInput("x"), destination: "daemon-1" });
+  await outbox.enqueue({ ...entryInput("other"), destination: "daemon-elsewhere" });
+
+  const result = await outbox.drain(
+    async () => {
+      throw new RemnicHttpError(503, "at capacity", "capture_capacity_exceeded");
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+
+  assert.equal(result.pending, 3, "pending counts the parked spill entries, not just the hot window");
+  assert.equal(result.foreign, 2, "foreign counts entries bound elsewhere in BOTH files");
+});

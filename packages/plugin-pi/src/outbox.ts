@@ -184,6 +184,39 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   return entry;
 }
 
+/**
+ * Marker records share the spill file with parked captures: "consumed" retires
+ * an entry that was delivered, dropped, or moved to the hot queue; "failed"
+ * carries its persisted ambiguous-failure count. Appending a short marker
+ * keeps consumption O(1) instead of rewriting the whole file per send (#3522
+ * review); markers are dropped by the next compaction.
+ */
+type SpillMarker = { kind: "consumed" | "failed"; id: string; failedAttempts?: number };
+
+function parseSpillMarker(line: string): SpillMarker | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || Array.isArray(parsed)) return null;
+  // SAFETY: JSON.parse produced a non-null, non-array value; the checks below
+  // accept only the two literal marker forms this class writes — anything else
+  // parses as an entry or counts as a skipped line.
+  const marker = parsed as { $spill?: unknown; id?: unknown; failedAttempts?: unknown };
+  if (!marker.id) return null;
+  if (marker.$spill === "consumed") return { kind: "consumed", id: String(marker.id) };
+  if (marker.$spill === "failed" && Number.isFinite(marker.failedAttempts)) {
+    return { kind: "failed", id: String(marker.id), failedAttempts: Number(marker.failedAttempts) };
+  }
+  return null;
+}
+
+const spillConsumedLine = (id: string): string => JSON.stringify({ $spill: "consumed", id });
+const spillFailedLine = (id: string, failedAttempts: number): string =>
+  JSON.stringify({ $spill: "failed", id, failedAttempts });
+
 /** Never equal to a real ino:size:mtime signature, so an unreadable file is retried on the next refresh. */
 const UNREADABLE_SIGNATURE = "unreadable";
 const LOCK_STALE_MS = 30_000;
@@ -212,9 +245,17 @@ export class ObserveOutbox {
   private entries: ObserveOutboxEntry[] = [];
   /** ino:size:mtime of the file as last read or written by this instance. */
   private diskSignature: string | null = null;
-  /** ino:size:mtime of the spill file at the last count this instance took. */
-  private spillSignature: string | null = null;
-  private spillCount: number | null = null;
+  /**
+   * Live spill view, keyed by the file's ino:size:mtime signature: a match means
+   * no process touched the file since the view was built, so it is authoritative
+   * for count, drain consult and live-capture suppression (#3522 review).
+   */
+  private spillView: {
+    signature: string | null;
+    live: ObserveOutboxEntry[];
+    skipped: number;
+    markers: number;
+  } | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private drainInProgress = false;
   private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
@@ -236,13 +277,30 @@ export class ObserveOutbox {
     return info ? `${info.ino}:${info.size}:${info.mtimeMs}` : null;
   }
 
+  /**
+   * Queue a read behind in-flight mutations on the same writeChain: a refresh
+   * that resolves mid-mutation could overwrite the entries the write is about
+   * to persist and lose them (#3522 review). Mutations never call this — they
+   * use refresh() directly under the lock — so it cannot deadlock.
+   */
+  private withReadChain<T>(read: () => Promise<T>): Promise<T> {
+    const run = this.writeChain.then(read);
+    this.writeChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
   /** Read-only callers keep the last known entries when the file cannot be read. */
-  private async refreshOrKeepLastKnown(notify?: OutboxNotify): Promise<void> {
-    try {
-      await this.refresh(notify);
-    } catch {
-      // Unreadable file: stay on the last known view; mutations still fail closed.
-    }
+  private refreshOrKeepLastKnown(notify?: OutboxNotify): Promise<void> {
+    return this.withReadChain(async () => {
+      try {
+        await this.refresh(notify);
+      } catch {
+        // Unreadable file: stay on the last known view; mutations still fail closed.
+      }
+    });
   }
 
   /** Re-read the shared file when another process (or this one) changed it. */
@@ -305,7 +363,11 @@ export class ObserveOutbox {
    * the next append or refill would otherwise write over captures it cannot see,
    * the same fail-closed rule as the queue file itself.
    */
-  private async readSpill(): Promise<{ entries: ObserveOutboxEntry[]; skipped: number } | null> {
+  private async readSpill(): Promise<{
+    entries: ObserveOutboxEntry[];
+    skipped: number;
+    markers: number;
+  } | null> {
     let raw: string;
     try {
       raw = await readFile(this.spillPath, "utf8");
@@ -316,51 +378,143 @@ export class ObserveOutbox {
       throw err;
     }
     const entries: ObserveOutboxEntry[] = [];
+    const consumed = new Set<string>();
+    const failed = new Map<string, number>();
     let skipped = 0;
+    let markers = 0;
     for (const line of raw.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+      // Marker lines retire entries or carry their failure counts; a line whose
+      // content merely mentions "$spill" falls through and parses as an entry.
+      if (trimmed.includes('"$spill"')) {
+        const marker = parseSpillMarker(trimmed);
+        if (marker) {
+          markers += 1;
+          if (marker.kind === "consumed") consumed.add(marker.id);
+          else failed.set(marker.id, marker.failedAttempts ?? 0);
+          continue;
+        }
+      }
       const entry = parseOutboxEntry(trimmed);
       if (entry) entries.push(entry);
       else skipped += 1;
     }
-    return { entries, skipped };
+    const live = entries.filter((entry) => !consumed.has(entry.id));
+    for (const entry of live) {
+      const attempts = failed.get(entry.id);
+      if (attempts !== undefined) entry.failedAttempts = attempts;
+    }
+    return { entries: live, skipped, markers };
   }
 
   /**
-   * Parsed entries parked in the spill, signature-cached like the queue's
-   * diskSignature: a matching signature means no process touched the file since
-   * this instance last counted, so the cached count is authoritative. Runs
-   * inside the file lock on every mutating path, so the count and the write it
-   * guards cannot race another writer.
+   * The spill's live entries, signature-cached like the queue's diskSignature:
+   * a matching signature means no process touched the file since this instance
+   * last read it, so the view is authoritative. This instance's own writes keep
+   * it current; anything else invalidates it. A present-but-unreadable file
+   * throws — the next append or refill would otherwise write over captures it
+   * cannot see, the same fail-closed rule as the queue file itself.
    */
-  private async countSpill(): Promise<number> {
+  private async liveSpillView(): Promise<{ live: ObserveOutboxEntry[]; skipped: number; markers: number }> {
     const signature = await this.spillSig();
     if (signature === null) {
-      this.spillSignature = null;
-      this.spillCount = 0;
-      return 0;
+      this.spillView = { signature: null, live: [], skipped: 0, markers: 0 };
+      return this.spillView;
     }
-    if (signature !== this.spillSignature || this.spillCount === null) {
+    if (!this.spillView || this.spillView.signature !== signature) {
       const spill = await this.readSpill();
-      this.spillCount = spill?.entries.length ?? 0;
-      this.spillSignature = signature;
+      this.spillView = {
+        signature,
+        live: spill?.entries ?? [],
+        skipped: spill?.skipped ?? 0,
+        markers: spill?.markers ?? 0,
+      };
     }
-    return this.spillCount;
+    return this.spillView;
   }
 
-  /** Replace the spill file atomically (0600); an empty remainder removes it. */
-  private async writeSpill(entries: ObserveOutboxEntry[]): Promise<void> {
-    if (entries.length === 0) {
-      await unlink(this.spillPath).catch(() => undefined);
-      this.spillSignature = null;
-      this.spillCount = 0;
+  /** Live spill count, signature-cached. Runs under the lock on every mutating path. */
+  private async countSpill(): Promise<number> {
+    return (await this.liveSpillView()).live.length;
+  }
+
+  /**
+   * Append records to the spill end durably: opened handle + fsync plus a
+   * directory sync on first create — a plain appendFile is not durable (Codex
+   * on #3522). An existing file is tightened to owner-only because the open
+   * mode applies on create only. A torn tail from a crash or a failed earlier
+   * append is delimited with a newline first, so the fragment cannot merge into
+   * the next record and take it down as one unparseable line.
+   */
+  private async appendSpillLines(lines: string[]): Promise<void> {
+    if (lines.length === 0) return;
+    const existed = (await this.spillSig()) !== null;
+    const handle = await open(this.spillPath, "a+", 0o600);
+    try {
+      await handle.chmod(0o600);
+      const { size } = await handle.stat();
+      if (size > 0) {
+        const tail = Buffer.alloc(1);
+        await handle.read(tail, 0, 1, size - 1);
+        if (tail[0] !== 0x0a) await handle.appendFile("\n", "utf8");
+      }
+      await handle.appendFile(`${lines.join("\n")}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    if (!existed) await syncDirectory(path.dirname(this.spillPath));
+    // The file changed under our own write: keep a live view truthful by
+    // re-signing it. Callers then update the view's content to match.
+    if (this.spillView) this.spillView.signature = await this.spillSig();
+  }
+
+  /**
+   * Remove the spill file; ENOENT is the only tolerated failure — anything else
+   * must reach the caller, or the file keeps entries the cache already forgot
+   * and they replay again later (#3522 review).
+   */
+  private async removeSpillFile(): Promise<void> {
+    try {
+      await unlink(this.spillPath);
+    } catch (err) {
+      // SAFETY: unlink rejects with a Node system error carrying `.code`.
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    this.spillView = { signature: null, live: [], skipped: 0, markers: 0 };
+  }
+
+  /**
+   * Retire spill entries by id — delivered, dropped, or moved to the hot queue —
+   * as appended markers instead of a full rewrite (#3522 review). The live view
+   * loses them immediately; the markers are dropped by the next compaction.
+   */
+  private async consumeSpillIds(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.appendSpillLines(ids.map((id) => spillConsumedLine(id)));
+    if (this.spillView) {
+      const gone = new Set(ids);
+      this.spillView.live = this.spillView.live.filter((entry) => !gone.has(entry.id));
+      this.spillView.markers += ids.length;
+    }
+  }
+
+  /**
+   * Drop markers and unreadable lines by rewriting the live entries once —
+   * called at drain end so the steady path never pays a rewrite per send
+   * (#3522 review). An emptied or fully-invalid file is unlinked instead.
+   */
+  private async compactSpill(): Promise<void> {
+    const view = await this.liveSpillView();
+    if (view.markers === 0 && view.skipped === 0) return;
+    if (view.live.length === 0) {
+      await this.removeSpillFile();
       return;
     }
-    const data = entries.map((entry) => JSON.stringify(entry)).join("\n");
+    const data = view.live.map((entry) => JSON.stringify(entry)).join("\n");
     await writeFileAtomically(this.spillPath, `${data}\n`, undefined, 0o600);
-    this.spillSignature = await this.spillSig();
-    this.spillCount = entries.length;
+    this.spillView = { signature: await this.spillSig(), live: view.live, skipped: 0, markers: 0 };
   }
 
   /**
@@ -378,20 +532,8 @@ export class ObserveOutbox {
     const parked = overflow.slice(0, fits);
     const lost = overflow.length - parked.length;
     if (parked.length > 0) {
-      // A plain appendFile is not durable: without fsync the parked captures can
-      // vanish on power loss even though enqueue resolved. Match the queue's
-      // guarantee with a flushed append plus a directory sync on first create.
-      const existed = this.spillSignature !== null || (await this.spillSig()) !== null;
-      const handle = await open(this.spillPath, "a", 0o600);
-      try {
-        await handle.appendFile(`${parked.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      if (!existed) await syncDirectory(path.dirname(this.spillPath));
-      this.spillCount = before + parked.length;
-      this.spillSignature = await this.spillSig();
+      await this.appendSpillLines(parked.map((entry) => JSON.stringify(entry)));
+      if (this.spillView) this.spillView.live.push(...parked);
       notify?.(
         `Remnic observe outbox full: parked ${parked.length} incoming capture(s) in the durable spill file ${path.basename(this.spillPath)}; they replay once the older backlog drains`,
         "warning"
@@ -410,8 +552,9 @@ export class ObserveOutbox {
    * Pull parked captures back onto the hot queue's tail when it has room
    * (#3520). Spilled entries are the arrivals that came AFTER the queued ones,
    * so appending them preserves global FIFO. The queue file is persisted
-   * BEFORE the spill is rewritten: a crash between the two writes leaves the
-   * moved entries in both files (nonce-deduplicated) instead of dropping them.
+   * BEFORE the moved ids are marked consumed in the spill: a crash between the
+   * two leaves the entries in both files (nonce-deduplicated) instead of
+   * dropping them. Markers keep the move O(1) — no rewrite per entry (#3522).
    */
   private async refillFromSpill(notify?: OutboxNotify): Promise<boolean> {
     if (this.entries.length >= this.maxEntries) return false;
@@ -420,27 +563,27 @@ export class ObserveOutbox {
     await this.mutate(async () => {
       const room = this.maxEntries - this.entries.length;
       if (room <= 0) return;
-      const spill = await this.readSpill();
-      if (!spill || spill.entries.length === 0) {
-        // A spill of only corrupt lines would otherwise linger forever: clear it
-        // under the lock and say so, matching the queue file's visible skip.
-        if (spill && spill.skipped > 0) {
-          await this.writeSpill([]);
+      const view = await this.liveSpillView();
+      if (view.live.length === 0) {
+        // A spill of only markers or corrupt lines would linger forever: clear
+        // it under the lock and say so, matching the queue file's visible skip.
+        if (view.skipped > 0 || view.markers > 0) {
+          await this.removeSpillFile();
           notify?.(
-            `Remnic observe outbox: dropped ${spill.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the spill file held no valid captures`,
+            `Remnic observe outbox: dropped ${view.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the spill file held no live captures`,
             "warning"
           );
         }
         return;
       }
-      const moved = spill.entries.slice(0, room);
+      const moved = view.live.slice(0, room);
       this.entries.push(...moved);
       await this.persist();
-      await this.writeSpill(spill.entries.slice(room));
+      await this.consumeSpillIds(moved.map((entry) => entry.id));
       movedCount = moved.length;
-      if (spill.skipped > 0) {
+      if (view.skipped > 0) {
         notify?.(
-          `Remnic observe outbox: skipped ${spill.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the remaining spilled captures were preserved`,
+          `Remnic observe outbox: skipped ${view.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the remaining spilled captures were preserved`,
           "warning"
         );
       }
@@ -486,16 +629,21 @@ export class ObserveOutbox {
 
   /**
    * Dedupe keys of everything currently queued that a drain on `destination`
-   * would deliver. Entries bound to another daemon do not suppress the live
-   * capture for this one — they are never delivered here (#3504 review).
-   * Entries parked in the spill file are not counted: reading the whole spill
-   * on every call is not worth it when the bound keeps any live duplicate of
-   * a spilled capture bounded too (#3520).
+   * would deliver — hot entries AND spilled ones: a capture parked in the spill
+   * must still suppress its live twin, or it is sent live under a fresh nonce
+   * and ingested twice when the spill replays (#3522 review). Entries bound to
+   * another daemon do not suppress the live capture for this one — they are
+   * never delivered here (#3504 review).
    */
   async pendingHashes(destination?: string): Promise<Set<string>> {
     await this.refreshOrKeepLastKnown();
+    const spill = await this.withReadChain(() =>
+      this.liveSpillView()
+        .then((view) => view.live)
+        .catch((): ObserveOutboxEntry[] => [])
+    );
     return new Set(
-      this.entries
+      [...this.entries, ...spill]
         .filter((entry) => entryEligibleForDestination(entry, destination))
         .flatMap((entry) => entry.messageHashes.filter((hash): hash is string => hash !== null))
     );
@@ -505,7 +653,9 @@ export class ObserveOutbox {
   async status(now: () => number = Date.now): Promise<OutboxStatus> {
     await this.refreshOrKeepLastKnown();
     const oldest = this.entries[0] ? Date.parse(this.entries[0].queuedAt) : Number.NaN;
-    const spilled = await this.countSpill().catch(() => undefined);
+    const spilled = await this.withReadChain(() =>
+      this.countSpill().catch((): undefined => undefined)
+    );
     const status: OutboxStatus = {
       pending: this.entries.length,
       oldestAgeMs: Number.isFinite(oldest) ? Math.max(0, now() - oldest) : null,
@@ -536,51 +686,42 @@ export class ObserveOutbox {
     }, notify);
   }
 
-  private async remove(id: string): Promise<void> {
-    await this.mutate(() => {
-      this.entries = this.entries.filter((entry) => entry.id !== id);
-    });
-  }
-
-  /** Bump the entry's persisted ambiguous-failure count; 0 when another process already removed it. */
-  private async recordFailure(id: string): Promise<number> {
-    let attempts = 0;
-    await this.mutate(() => {
-      const entry = this.entries.find((e) => e.id === id);
-      if (entry) {
-        entry.failedAttempts = (entry.failedAttempts ?? 0) + 1;
-        attempts = entry.failedAttempts;
+  /**
+   * Remove the entry from whichever file holds it — resolved by id inside the
+   * lock because another drainer may have moved it between the files while this
+   * one's send was in flight (#3522 review). Already gone from both is a no-op.
+   */
+  private async removeEntry(entry: ObserveOutboxEntry): Promise<void> {
+    await this.mutate(async () => {
+      this.entries = this.entries.filter((candidate) => candidate.id !== entry.id);
+      const view = await this.liveSpillView();
+      if (view.live.some((candidate) => candidate.id === entry.id)) {
+        await this.consumeSpillIds([entry.id]);
       }
     });
-    return attempts;
   }
 
-  /** Remove the entry from whichever file holds it — queue or spill. */
-  private async removeEntry(entry: ObserveOutboxEntry, fromSpill: boolean): Promise<void> {
-    if (!fromSpill) {
-      await this.remove(entry.id);
-      return;
-    }
-    await this.mutate(async () => {
-      const spill = await this.readSpill();
-      if (!spill) return;
-      const remaining = spill.entries.filter((candidate) => candidate.id !== entry.id);
-      if (remaining.length !== spill.entries.length) await this.writeSpill(remaining);
-    });
-  }
-
-  /** Same contract as recordFailure, for an entry parked in the spill file. */
-  private async recordEntryFailure(entry: ObserveOutboxEntry, fromSpill: boolean): Promise<number> {
-    if (!fromSpill) return this.recordFailure(entry.id);
+  /**
+   * Bump the entry's persisted ambiguous-failure count in whichever file holds
+   * it; 0 when another process already removed it. A spill entry's count is an
+   * appended marker, not a rewrite (#3522 review).
+   */
+  private async recordEntryFailure(entry: ObserveOutboxEntry): Promise<number> {
     let attempts = 0;
     await this.mutate(async () => {
-      const spill = await this.readSpill();
-      if (!spill) return;
-      const found = spill.entries.find((candidate) => candidate.id === entry.id);
-      if (!found) return;
-      found.failedAttempts = (found.failedAttempts ?? 0) + 1;
-      attempts = found.failedAttempts;
-      await this.writeSpill(spill.entries);
+      const hot = this.entries.find((candidate) => candidate.id === entry.id);
+      if (hot) {
+        hot.failedAttempts = (hot.failedAttempts ?? 0) + 1;
+        attempts = hot.failedAttempts;
+        return;
+      }
+      const view = await this.liveSpillView();
+      const parked = view.live.find((candidate) => candidate.id === entry.id);
+      if (!parked) return;
+      parked.failedAttempts = (parked.failedAttempts ?? 0) + 1;
+      attempts = parked.failedAttempts;
+      await this.appendSpillLines([spillFailedLine(entry.id, attempts)]);
+      if (this.spillView) this.spillView.markers += 1;
     });
     return attempts;
   }
@@ -625,14 +766,6 @@ export class ObserveOutbox {
     const warnedStale = new Set<string>();
     /** Sessions whose head entry already failed this pass; retried on the next pass (#3520). */
     const skippedSessions = new Set<string>();
-    /**
-     * Spill entries loaded on demand: consulted only when the hot window has no
-     * eligible candidate for this drainer, so a window full of foreign or
-     * session-blocked entries cannot starve spilled captures (#3520 review).
-     * Ordered oldest-first; per-session order is preserved because a session's
-     * entries spill only after its queued ones.
-     */
-    let spillReplay: ObserveOutboxEntry[] | null = null;
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
@@ -643,26 +776,25 @@ export class ObserveOutbox {
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
-        // A refill invalidates the spill read-cache: entries it just moved into
-        // the hot queue must not also be picked from the stale list.
-        if (await this.refillFromSpill(notify)) spillReplay = null;
+        await this.refillFromSpill(notify);
         // Entries bound to another daemon are skipped, never sent: the file is
         // shared per machine and a pane repointed elsewhere must not replay
         // someone else's conversations to the wrong destination (#3381). An
         // entry whose session already failed this pass is skipped too, so a
         // pinned session cannot starve the others (#3520).
         let entry = this.entries.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
-        let fromSpill = false;
         if (!entry) {
-          if (spillReplay === null) {
-            const spill = await this.readSpill().catch(() => null);
-            spillReplay = spill?.entries ?? [];
-          }
-          const parked = spillReplay.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
-          if (parked) {
-            entry = parked;
-            fromSpill = true;
-          }
+          // The signature-keyed live view is re-read whenever another writer
+          // touched the file, so a snapshot can never resurrect an entry another
+          // process already consumed (#3522 review). Consulted only when the
+          // hot window has no eligible candidate, so a window full of foreign or
+          // session-blocked entries cannot starve spilled captures (#3520).
+          const parked = (
+            await this.liveSpillView()
+              .then((view) => view.live)
+              .catch((): ObserveOutboxEntry[] => [])
+          ).find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
+          if (parked) entry = parked;
         }
         if (!entry) {
           // Nothing else to try this pass. If every remaining entry belongs to a
@@ -687,8 +819,7 @@ export class ObserveOutbox {
           if (failureClass === "permanent") {
             dropped += 1;
             this.counters.dropped += 1;
-            await this.removeEntry(entry, fromSpill);
-            spillReplay = fromSpill ? (spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null) : spillReplay;
+            await this.removeEntry(entry);
             const reason = err instanceof Error ? err.message : String(err);
             const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
             notify?.(
@@ -718,12 +849,11 @@ export class ObserveOutbox {
           // with a visible reason (#3381). Capacity refusals are the daemon
           // asking us to come back, so they are not counted.
           if (failureClass === "retry-ambiguous") {
-            const attempts = await this.recordEntryFailure(entry, fromSpill);
+            const attempts = await this.recordEntryFailure(entry);
             if (attempts >= MAX_ENTRY_FAILURES) {
               dropped += 1;
               this.counters.dropped += 1;
-              await this.removeEntry(entry, fromSpill);
-              spillReplay = fromSpill ? (spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null) : spillReplay;
+              await this.removeEntry(entry);
               const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
               notify?.(
                 `Remnic observe outbox: gave up on a queued capture after ${attempts} failed attempts (${status}${err instanceof Error ? err.message : String(err)}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); the daemon kept failing it, so it was dropped rather than blocking the queue`,
@@ -741,16 +871,28 @@ export class ObserveOutbox {
           await sleep(Math.min(maxRetryAfterMs, Math.max(0, Math.round(base * jitter))));
           continue;
         }
-        await this.removeEntry(entry, fromSpill);
-        if (fromSpill) spillReplay = spillReplay?.filter((candidate) => candidate.id !== entry.id) ?? null;
+        await this.removeEntry(entry);
         delivered += 1;
         this.counters.delivered += 1;
       }
+      // One rewrite at the end retires the markers the steady path appended —
+      // consumption stays O(1) per send instead of O(file) per send (#3522).
+      await this.mutate(async () => {
+        await this.compactSpill();
+      }).catch(() => undefined);
     } finally {
       this.drainInProgress = false;
     }
-    const foreign = this.entries.filter((entry) => !eligible(entry)).length;
-    const summary = { delivered, dropped, pending: this.entries.length };
+    // Pending and foreign counts span both files — a drain that leaves only
+    // parked spill entries must still report them, or the caller believes the
+    // outbox is empty while a backlog waits (#3522 review).
+    const spillRest = await this.liveSpillView()
+      .then((view) => view.live)
+      .catch((): ObserveOutboxEntry[] => []);
+    const foreign =
+      this.entries.filter((entry) => !eligible(entry)).length +
+      spillRest.filter((entry) => !eligible(entry)).length;
+    const summary = { delivered, dropped, pending: this.entries.length + spillRest.length };
     return foreign > 0 ? { ...summary, foreign } : summary;
   }
 }
