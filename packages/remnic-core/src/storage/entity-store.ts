@@ -79,7 +79,7 @@ export interface EntityStoreDeps {
   getEntityMutationVersion(): number;
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
-  knowledgeIndexCache: { result: string; builtAt: number } | null;
+  knowledgeIndexCache: { scored: ScoredEntity[]; builtAt: number } | null;
   okfConformanceEnabled(): boolean;
   normalizeEntityName(raw: string, type: string): string;
   readAllEntityFiles(): Promise<EntityFile[]>;
@@ -773,45 +773,41 @@ export class EntityStore {
     config: PluginConfig,
     overrides?: { maxEntities?: number; maxChars?: number },
   ): Promise<{ result: string; cached: boolean }> {
-    const useDefaultLimits =
-      overrides?.maxEntities === undefined &&
-      overrides?.maxChars === undefined;
-    // Return cached index if still fresh
+    // The cache holds the SCORED corpus, not a rendered string: limits are
+    // applied on every call, so explicit maxEntities/maxChars (which recall
+    // always passes) reuse the same index instead of bypassing it into a
+    // full entity-corpus reread (issue #3529).
+    let scored: ScoredEntity[];
+    let cached = false;
+    const cache = this.deps.knowledgeIndexCache;
     if (
-      useDefaultLimits &&
-      this.deps.knowledgeIndexCache &&
-      Date.now() - this.deps.knowledgeIndexCache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
+      cache &&
+      Date.now() - cache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
     ) {
-      return { result: this.deps.knowledgeIndexCache.result, cached: true };
+      scored = cache.scored;
+      cached = true;
+    } else {
+      const entities = await this.deps.readAllEntityFiles();
+      const now = new Date();
+      scored = entities.map((e) => ({
+        name: e.name,
+        type: e.type,
+        score: this.deps.storageManagerClass.scoreEntity(e, now),
+        factCount: e.facts.length,
+        summary: e.synthesis ?? e.summary,
+        topRelationships: e.relationships.slice(0, 3).map((r) => r.target),
+      }));
+      scored.sort((a, b) => b.score - a.score);
+      this.deps.knowledgeIndexCache = { scored, builtAt: Date.now() };
     }
-
-    const entities = await this.deps.readAllEntityFiles();
-    if (entities.length === 0) {
-      if (useDefaultLimits) this.deps.knowledgeIndexCache = { result: "", builtAt: Date.now() };
-      return { result: "", cached: false };
-    }
-
-    const now = new Date();
-    const scored: ScoredEntity[] = entities.map((e) => ({
-      name: e.name,
-      type: e.type,
-      score: this.deps.storageManagerClass.scoreEntity(e, now),
-      factCount: e.facts.length,
-      summary: e.synthesis ?? e.summary,
-      topRelationships: e.relationships.slice(0, 3).map((r) => r.target),
-    }));
 
     // Sort by score descending, take top N
-    scored.sort((a, b) => b.score - a.score);
     const maxEntities = typeof overrides?.maxEntities === "number"
       ? Math.max(0, Math.floor(overrides.maxEntities))
       : config.knowledgeIndexMaxEntities;
     const topN = scored.slice(0, maxEntities);
 
-    if (topN.length === 0) {
-      if (useDefaultLimits) this.deps.knowledgeIndexCache = { result: "", builtAt: Date.now() };
-      return { result: "", cached: false };
-    }
+    if (topN.length === 0) return { result: "", cached };
 
     // Build markdown table
     const header = "## Knowledge Index\n\n| Entity | Type | Summary | Connected to |\n|--------|------|---------|-------------|";
@@ -834,8 +830,7 @@ export class EntityStore {
     }
 
     const result = rows.length === 0 ? "" : `${header}\n${rows.join("\n")}\n`;
-    if (useDefaultLimits) this.deps.knowledgeIndexCache = { result, builtAt: Date.now() };
-    return { result, cached: false };
+    return { result, cached };
   }
 
   /**
