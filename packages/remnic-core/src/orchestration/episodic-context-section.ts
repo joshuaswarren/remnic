@@ -40,8 +40,9 @@ export async function appendEpisodicContextSection(
     scopePlan: ScopePlan;
     namespacesEnabled: boolean;
     enrichmentSectionDeadlineMs: number;
-    recallOuterTimeoutMs: number;
-    recallStart: number;
+    /** Absolute deadline for the whole request (already client-clamped),
+     * or null when unbounded. */
+    outerDeadlineAtMs: number | null;
     abortSignal?: AbortSignal;
     recordMetric: (metric: RecallSectionMetric) => void;
   },
@@ -72,12 +73,10 @@ export async function appendEpisodicContextSection(
     return;
   }
 
-  const outerDeadlineAtMs =
-    options.recallOuterTimeoutMs > 0
-      ? options.recallStart + options.recallOuterTimeoutMs
-      : null;
   const remainingOuterMs =
-    outerDeadlineAtMs === null ? null : outerDeadlineAtMs - deps.recallAssemblyClockMs();
+    options.outerDeadlineAtMs === null
+      ? null
+      : options.outerDeadlineAtMs - deps.recallAssemblyClockMs();
   const deadlineMs = resolveRecallCoreSectionDeadlineMs({
     configuredCoreDeadlineMs: options.enrichmentSectionDeadlineMs,
     remainingOuterMs,

@@ -854,7 +854,7 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
-      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
+      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true, { deadlineMs: request.deadlineMs }),
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),
@@ -867,6 +867,7 @@ export class AccessRecallSurface {
         : {}),
     };
     if (request.searchOptions) recallOptions.searchOptions = request.searchOptions;
+    if (request.deadlineMs !== undefined) recallOptions.deadlineMs = request.deadlineMs;
     const startedAt = Date.now();
     // #1906 atomic budget admission: the peek loop above and this record are
     // one synchronous JS turn (no await between them), so record()'s own

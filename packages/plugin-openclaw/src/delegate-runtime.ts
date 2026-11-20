@@ -383,6 +383,9 @@ export function registerDelegateRuntime(
               query,
               sessionKey,
               mode: "auto",
+              // The daemon clamps its outer deadline to this (issue #3499):
+              // a recall cannot outlive the hook budget the host gave us.
+              deadlineMs: promptDeadline,
               ...(cwd ? { cwd } : {}),
               ...(options.projectTag ? { projectTag: options.projectTag } : {}),
             },

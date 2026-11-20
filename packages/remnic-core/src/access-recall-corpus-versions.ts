@@ -1,4 +1,5 @@
 import type { RecallInvocationOptions } from "./orchestration/orchestrator-helpers.js";
+import { recallDeadlineSignal } from "./recall-qos.js";
 
 export type RecallCorpusVersion = { namespace: string; version: number | null };
 
@@ -20,10 +21,14 @@ export function createRecallCorpusVersionCapture(
   signal: AbortSignal | undefined,
   setVersions: (versions: RecallCorpusVersion[]) => void,
   includeNoRecall = false,
-  timeoutMs = DEFAULT_CAPTURE_TIMEOUT_MS,
+  options: { timeoutMs?: number; deadlineMs?: number } = {},
 ): NonNullable<RecallInvocationOptions["onRecallPlanResolved"]> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_CAPTURE_TIMEOUT_MS;
+  // The client's own deadline bounds this capture too (issue #3499): the
+  // request signal alone would let a stalled lookup run the full timeout.
+  const captureSignal = recallDeadlineSignal(signal, options.deadlineMs);
   return async (mode, namespaces) => {
-    if ((mode === "no_recall" && !includeNoRecall) || signal?.aborted) return;
+    if ((mode === "no_recall" && !includeNoRecall) || captureSignal?.aborted) return;
     const captured = await Promise.all(namespaces.map(async (namespace) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let abortCapture: (() => void) | undefined;
@@ -31,13 +36,13 @@ export function createRecallCorpusVersionCapture(
         const timeout = new Promise<null>((resolve) => {
           timer = setTimeout(() => resolve(null), timeoutMs);
         });
-        const aborted = signal
+        const aborted = captureSignal
           ? new Promise<null>((resolve) => {
-              if (signal.aborted) {
+              if (captureSignal.aborted) {
                 resolve(null);
               } else {
                 abortCapture = () => resolve(null);
-                signal.addEventListener("abort", abortCapture, { once: true });
+                captureSignal.addEventListener("abort", abortCapture, { once: true });
               }
             })
           : undefined;
@@ -51,9 +56,9 @@ export function createRecallCorpusVersionCapture(
         return { namespace, version: null };
       } finally {
         if (timer !== undefined) clearTimeout(timer);
-        if (abortCapture) signal?.removeEventListener("abort", abortCapture);
+        if (abortCapture) captureSignal?.removeEventListener("abort", abortCapture);
       }
     }));
-    if (!signal?.aborted) setVersions(captured);
+    if (!captureSignal?.aborted) setVersions(captured);
   };
 }

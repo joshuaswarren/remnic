@@ -4,6 +4,7 @@
  * (#1520/#1995). Verbatim move of `AccessRecallSurface.assembleRecallResponse`
  * as a free function taking the surface's dependency bundle; behavior unchanged.
  */
+import { createHash } from "node:crypto";
 import type { AccessAuditResult } from "./access-audit.js";
 import type { AccessRecallSurfaceDeps } from "./access-recall-surface.js";
 import {
@@ -69,9 +70,18 @@ export async function assembleRecallResponse(
     budgetDecision,
     budgetRecordPrincipal,
   } = params;
-  const snapshot = request.sessionKey
+  // Only a snapshot recorded for THIS request may shape the response: a
+  // timed-out recall that never reached record() must not serve the
+  // previous query's results on the same session (issue #3499 review).
+  const storedSnapshot = request.sessionKey
     ? deps.orchestrator.lastRecall.get(request.sessionKey)
     : null;
+  const snapshot =
+    storedSnapshot &&
+    storedSnapshot.queryHash === createHash("sha256").update(query).digest("hex") &&
+    Date.parse(storedSnapshot.recordedAt) >= startedAt
+      ? storedSnapshot
+      : null;
   const effectiveNamespace = snapshot?.namespace
     ? deps.resolveNamespace(snapshot.namespace)
     : namespace;

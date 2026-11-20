@@ -25,6 +25,7 @@
  * All fixtures are synthetic — no real user data.
  */
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
@@ -86,8 +87,12 @@ function makeRawExcerptProbe(options: {
 
   const snapshot: LastRecallSnapshot = {
     sessionKey: options.sessionKey,
-    recordedAt: new Date().toISOString(),
-    queryHash: "hash",
+    // Reads as recorded inside this request (the response path gates on
+    // recordedAt >= request start + the request query's hash — #3499).
+    recordedAt: new Date(Date.now() + 60_000).toISOString(),
+    queryHash: createHash("sha256")
+      .update("what database are we using?")
+      .digest("hex"),
     queryLen: 5,
     memoryIds: [],
     namespace: options.snapshotNamespace,
