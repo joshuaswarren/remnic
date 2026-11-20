@@ -218,6 +218,8 @@ class EmbedPoolTest(unittest.TestCase):
         for bad in (b'{"data": [{"embedding": [NaN, 0.2, 0.3]}]}',
                     b'{"data": [{"embedding": [Infinity, 0.2, 0.3]}]}'):
             self.assertFalse(self.mod._embed_rows_ok(bad, 3, 1), bad)
+        huge = ('{"data": [{"embedding": [%s, 0.2, 0.3]}]}' % ("1" * 400)).encode()
+        self.assertFalse(self.mod._embed_rows_ok(huge, 3, 1))  # int overflow -> invalid, no crash
 
     def test_flat_token_array_is_one_input(self):
         self._write_pool({

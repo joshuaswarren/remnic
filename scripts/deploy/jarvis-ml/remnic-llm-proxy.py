@@ -506,10 +506,15 @@ def _embed_rows_ok(data, expected_dims, expected_count):
             return False
         if expected_dims and len(row["embedding"]) != expected_dims:
             return False
-        if not all(
-            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-            for v in row["embedding"]
-        ):
+        try:
+            components_ok = all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                for v in row["embedding"]
+            )
+        except OverflowError:
+            # An oversized JSON int overflows the int->float conversion.
+            components_ok = False
+        if not components_ok:
             return False
     return True
 
