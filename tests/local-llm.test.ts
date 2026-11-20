@@ -1,8 +1,24 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import {
+  formatLocalLlmPoolKey,
+  getLocalLlmTrippedBackendPoolState,
+  markLocalLlmBackendPoolUnavailable,
+} from "@remnic/core/local-llm-helpers";
 import { LocalLlmClient } from "@remnic/core/local-llm";
 import { initLogger } from "@remnic/core/logger";
 import type { PluginConfig } from "@remnic/core/types";
+
+const DEFAULT_CHAT_URL = "http://127.0.0.1:1234/v1/chat/completions";
+const DEFAULT_CIRCUIT_OP = "entity_summary";
+
+function poolCircuitState(chatUrl = DEFAULT_CHAT_URL, operation = DEFAULT_CIRCUIT_OP) {
+  return getLocalLlmTrippedBackendPoolState(Date.now(), chatUrl, operation);
+}
+
+function clearPoolCircuit(chatUrl = DEFAULT_CHAT_URL, operation = DEFAULT_CIRCUIT_OP) {
+  markLocalLlmBackendPoolUnavailable("", 0, chatUrl, operation);
+}
 
 function buildConfig(overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -653,12 +669,12 @@ test("LocalLlmClient trips plain-text backend failures using configured cooldown
       operation: "entity_summary",
     });
     assert.equal(out, null);
-    const state = (client as any).getGlobalBackendState().get((client as any).getBackendKey());
+    const state = poolCircuitState();
     assert.ok(state);
     assert.match(state.reason, /Failed to load model/i);
     assert.ok(state.untilMs > Date.now());
   } finally {
-    (client as any).getGlobalBackendState().delete((client as any).getBackendKey());
+    clearPoolCircuit();
     globalThis.fetch = originalFetch;
   }
 });
@@ -728,12 +744,12 @@ test("LocalLlmClient does not retry non-recoverable 5xx backend failures", async
     });
     assert.equal(out, null);
     assert.equal(calls, 1);
-    const state = (client as any).getGlobalBackendState().get((client as any).getBackendKey());
+    const state = poolCircuitState();
     assert.ok(state);
     assert.match(state.reason, /Failed to load model/i);
     assert.ok(state.untilMs > Date.now());
   } finally {
-    (client as any).getGlobalBackendState().delete((client as any).getBackendKey());
+    clearPoolCircuit();
     globalThis.fetch = originalFetch;
   }
 });
@@ -751,8 +767,9 @@ test("LocalLlmClient probes immediately after zero-duration backend trip", async
 
   const client = new LocalLlmClient(buildConfig({ localLlm400CooldownMs: 0 }));
   (client as any).isAvailable = false;
-  (client as any).lastHealthCheck = Date.now();
-  (client as any).markBackendUnavailable("Failed to load model", 0);
+  // SAFETY: test forces an immediate probe by clearing the cached health timestamp.
+  (client as any).lastHealthCheck = 0;
+  markLocalLlmBackendPoolUnavailable("Failed to load model", 0, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP);
 
   const originalFetch = globalThis.fetch;
   let fetchCalls = 0;
@@ -774,7 +791,7 @@ test("LocalLlmClient probes immediately after zero-duration backend trip", async
     assert.equal(available, true);
     assert.ok(fetchCalls > 0, "expected an immediate availability probe after circuit expiry");
   } finally {
-    (client as any).getGlobalBackendState().delete((client as any).getBackendKey());
+    clearPoolCircuit();
     globalThis.fetch = originalFetch;
   }
 });
@@ -797,15 +814,20 @@ test("LocalLlmClient shares backend circuit state across models on equivalent en
     buildConfig({ localLlmModel: "fast-model", localLlmUrl: "http://127.0.0.1:1234" }),
   );
 
-  (primary as any).markBackendUnavailable("Failed to load model", 25);
+  const sharedChatUrl = "http://127.0.0.1:1234/v1/chat/completions";
+  const circuitOp = DEFAULT_CIRCUIT_OP;
+  markLocalLlmBackendPoolUnavailable("Failed to load model", 25, sharedChatUrl, circuitOp);
 
   try {
-    assert.equal((primary as any).getBackendKey(), (fast as any).getBackendKey());
-    const sharedState = (fast as any).getTrippedBackendState(Date.now());
+    assert.equal(
+      formatLocalLlmPoolKey("http://127.0.0.1:1234/v1/chat/completions", circuitOp),
+      formatLocalLlmPoolKey("http://127.0.0.1:1234", circuitOp),
+    );
+    const sharedState = getLocalLlmTrippedBackendPoolState(Date.now(), sharedChatUrl, circuitOp);
     assert.ok(sharedState);
     assert.equal(sharedState.reason, "Failed to load model");
   } finally {
-    (primary as any).getGlobalBackendState().delete((primary as any).getBackendKey());
+    clearPoolCircuit(sharedChatUrl, circuitOp);
   }
 });
 
@@ -836,11 +858,11 @@ test("LocalLlmClient stores a matched backend failure reason instead of raw erro
       operation: "entity_summary",
     });
     assert.equal(out, null);
-    const state = (client as any).getGlobalBackendState().get((client as any).getBackendKey());
+    const state = poolCircuitState();
     assert.ok(state);
     assert.equal(state.reason, "Failed to load model");
   } finally {
-    (client as any).getGlobalBackendState().delete((client as any).getBackendKey());
+    clearPoolCircuit();
     globalThis.fetch = originalFetch;
   }
 });
@@ -860,14 +882,14 @@ test("LocalLlmClient clears peer health cache while a shared backend circuit is 
   const peer = new LocalLlmClient(buildConfig({ localLlmModel: "peer-model" }));
   (peer as any).isAvailable = false;
   (peer as any).lastHealthCheck = Date.now();
-  (primary as any).markBackendUnavailable("Failed to load model", 25);
+  markLocalLlmBackendPoolUnavailable("Failed to load model", 25, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP);
 
   try {
-    const available = await peer.checkAvailability();
+    const available = await peer.checkAvailability(undefined, DEFAULT_CHAT_URL, DEFAULT_CIRCUIT_OP);
     assert.equal(available, false);
     assert.equal((peer as any).lastHealthCheck, 0);
   } finally {
-    (primary as any).getGlobalBackendState().delete((primary as any).getBackendKey());
+    clearPoolCircuit();
   }
 });
 

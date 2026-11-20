@@ -42,6 +42,8 @@ class ProxyRoutingTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.mod = load_proxy_module()
+        cls._saved_recall_operations = os.environ.get("RECALL_OPERATIONS")
+        os.environ.pop("RECALL_OPERATIONS", None)
         _Recorder.hits = []
         cls.up_extraction = ThreadingHTTPServer(("127.0.0.1", 0), _Recorder)
         cls.up_extraction.pool_kind = "extraction"
@@ -54,10 +56,17 @@ class ProxyRoutingTest(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.extraction_file = os.path.join(cls.tmp.name, "extraction-pool.json")
         cls.recall_file = os.path.join(cls.tmp.name, "recall-pool.json")
+        cls.synthetic_key = "test-redact-key-must-not-leak"
         with open(cls.extraction_file, "w", encoding="utf-8") as fh:
-            json.dump({"enabled": True, "base": cls.extraction_base, "model": "remnic-core"}, fh)
+            json.dump(
+                {"enabled": True, "base": cls.extraction_base, "model": "remnic-core", "key": cls.synthetic_key},
+                fh,
+            )
         with open(cls.recall_file, "w", encoding="utf-8") as fh:
-            json.dump({"enabled": True, "base": cls.recall_base, "model": "qwen3.8-27b-64k"}, fh)
+            json.dump(
+                {"enabled": True, "base": cls.recall_base, "model": "qwen3.8-27b-64k", "key": cls.synthetic_key},
+                fh,
+            )
         cls.mod.POOL_FILE = cls.extraction_file
         cls.mod.RECALL_POOL_FILE = cls.recall_file
         cls.proxy = ThreadingHTTPServer(("127.0.0.1", 0), cls.mod.Handler)
@@ -67,9 +76,16 @@ class ProxyRoutingTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.proxy.shutdown()
+        cls.proxy.server_close()
         cls.up_extraction.shutdown()
+        cls.up_extraction.server_close()
         cls.up_recall.shutdown()
+        cls.up_recall.server_close()
         cls.tmp.cleanup()
+        if cls._saved_recall_operations is None:
+            os.environ.pop("RECALL_OPERATIONS", None)
+        else:
+            os.environ["RECALL_OPERATIONS"] = cls._saved_recall_operations
 
     def setUp(self):
         _Recorder.hits.clear()
@@ -121,17 +137,29 @@ class ProxyRoutingTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, 503)
         self.assertEqual(_Recorder.hits, [])
 
+    def test_invalid_chat_json_returns_400(self):
+        req = urllib.request.Request(
+            self.proxy_url,
+            data=b"{not-json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 400)
+
     def test_health_redacts_pool_secrets(self):
         url = f"http://127.0.0.1:{self.proxy.server_address[1]}/health"
         with urllib.request.urlopen(url, timeout=10) as resp:
             payload = json.loads(resp.read().decode())
         for field in ("pool", "recall_pool"):
             block = payload.get(field)
-            if block:
-                self.assertNotIn("key", block)
-                self.assertNotIn("base", block)
-                self.assertIn("base_host", block)
-
+            self.assertIsInstance(block, dict, field)
+            self.assertNotIn("key", block)
+            self.assertNotIn("base", block)
+            self.assertIn("base_host", block)
+            self.assertTrue(block.get("has_key"))
+            self.assertNotIn(self.synthetic_key, json.dumps(block))
 
     def test_chat_query_string_still_routes_to_pool(self):
         url = self.proxy_url + "?ignored=1"
@@ -152,6 +180,7 @@ class ProxyRoutingTest(unittest.TestCase):
         self.assertIsNone(handler.redirect_request(req, None, 302, "Found", {}, "http://a.example/v1"))
         same = handler.redirect_request(req, None, 302, "Found", {}, "https://a.example/other")
         self.assertIsNotNone(same)
+
 
 
 if __name__ == "__main__":

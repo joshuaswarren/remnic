@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
+import {
+  formatLocalLlmPoolKey,
+  getLocalLlmTrippedBackendPoolState,
+  markLocalLlmBackendPoolUnavailable,
+} from "./local-llm-helpers.js";
 import type { LocalLlmChatCompletionOptions } from "./local-llm-helpers.js";
 import {
   LocalLlmConcurrencyLimiter,
@@ -113,6 +118,20 @@ test("classifies 429/503/408 and LiteLLM cooldown bodies as rate limits, not 400
   assert.equal(isRateLimitedResponse(500, "internal error"), false);
   assert.equal(isRateLimitedResponse(400, "Context Window exceeded ... fallbacks cooldown_list"), false);
   assert.equal(isRateLimitedResponse(502, ""), false);
+  assert.equal(
+    isRateLimitedResponse(
+      503,
+      JSON.stringify({ code: "remnic_recall_pool_unavailable", error: "recall pool missing" }),
+    ),
+    false,
+  );
+  assert.equal(
+    isRateLimitedResponse(
+      503,
+      JSON.stringify({ code: "remnic_extraction_pool_unavailable", error: "trained pool missing" }),
+    ),
+    false,
+  );
 });
 
 test("a pool-missing 503 is a config failure, not endpoint saturation (#3475)", () => {
@@ -290,7 +309,9 @@ test("a server hint beyond the max skips the retry and gates every client on tha
       const b = new LocalLlmClient(createConfig({ localLlmUrl: url }));
       assert.equal(await a.chatCompletion([{ role: "user", content: "x" }]), null);
       assert.equal(calls, 1, "60s hint > 20ms max: no immediate retry");
-      assert.ok(endpointBackoffRemainingMs(`${url}/v1/chat/completions`) > 50_000);
+      assert.ok(
+        endpointBackoffRemainingMs(formatLocalLlmPoolKey(`${url}/v1/chat/completions`, "unspecified")) > 50_000,
+      );
       const options: LocalLlmChatCompletionOptions = { failureDiag: {} };
       assert.equal(await b.chatCompletion([{ role: "user", content: "y" }], options), null);
       assert.equal(calls, 1, "second client must not hit the proxy during the shared backoff");
@@ -496,4 +517,22 @@ test("one-permit and unlimited limits still admit background work", async () => 
     first();
     assert.equal(limiter.inFlight, 0);
   }
+});
+
+test("rate-limit backoff on one proxy operation does not block another", () => {
+  resetLocalLlmRateLimitStateForTests();
+  const chatUrl = "http://127.0.0.1:4399/v1/chat/completions";
+  const extractionKey = formatLocalLlmPoolKey(chatUrl, "extraction");
+  const recallKey = formatLocalLlmPoolKey(chatUrl, "rerank");
+  extendEndpointBackoff(extractionKey, 60_000);
+  assert.ok(endpointBackoffRemainingMs(extractionKey) > 0);
+  assert.equal(endpointBackoffRemainingMs(recallKey), 0);
+});
+
+test("backend circuit on one proxy operation does not trip another", () => {
+  const chatUrl = "http://127.0.0.1:4399/v1/chat/completions";
+  const now = Date.now();
+  markLocalLlmBackendPoolUnavailable("model load failure", 60_000, chatUrl, "extraction");
+  assert.ok(getLocalLlmTrippedBackendPoolState(now, chatUrl, "extraction"));
+  assert.equal(getLocalLlmTrippedBackendPoolState(now, chatUrl, "rerank"), null);
 });

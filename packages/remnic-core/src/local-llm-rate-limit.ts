@@ -83,8 +83,24 @@ const POOL_MISSING_PATTERN = /pool missing or disabled/i;
  * 408/429/503, or a 5xx whose body carries LiteLLM's cooldown wording.
  * 400s are never rate limits (context-window errors mention fallbacks).
  */
+/** Proxy 503 with a pool-config error code is terminal; do not enter rate-limit retries. */
+const TERMINAL_PROXY_POOL_CODES = [
+  '"code":"remnic_recall_pool_unavailable"',
+  '"code": "remnic_recall_pool_unavailable"',
+  '"code":"remnic_extraction_pool_unavailable"',
+  '"code": "remnic_extraction_pool_unavailable"',
+] as const;
+
+export function isTerminalLocalLlmProxyPoolError(status: number, bodyText: string): boolean {
+  if (status !== 503) return false;
+  return TERMINAL_PROXY_POOL_CODES.some((needle) => bodyText.includes(needle));
+}
+
 export function isRateLimitedResponse(status: number, bodyText: string): boolean {
-  if (POOL_MISSING_PATTERN.test(bodyText)) return false;
+  if (isTerminalLocalLlmProxyPoolError(status, bodyText)) return false;
+  // Pool-side refusals carry "pool missing or disabled" as text: a config
+  // failure, not endpoint saturation. Substring check, no regex.
+  if (bodyText.toLowerCase().includes("pool missing or disabled")) return false;
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   return status >= 500 && RATE_LIMIT_BODY_PATTERN.test(bodyText);
 }
