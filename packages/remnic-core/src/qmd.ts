@@ -852,7 +852,10 @@ const DAEMON_CONGESTED_UNTIL = new WeakMap<QmdDaemonSession, number>();
 // already past the slow-query threshold gates siblings on the same session
 // even before its result opens the congestion window above. Handles carry the
 // mocked-clock-friendly start time; the gate is a pure clock comparison.
-const DAEMON_INFLIGHT_CALLS = new WeakMap<QmdDaemonSession, Array<{ since: number }>>();
+type DaemonInflightHandle = { since: number };
+/** What `watchDaemonCall` hands back: the settle that clears the handle. */
+type DaemonInflightWatch = { settle: () => void };
+const DAEMON_INFLIGHT_CALLS = new WeakMap<QmdDaemonSession, DaemonInflightHandle[]>();
 
 // Test-only seam: congestion tests drive a stub session object directly.
 export const daemonCongestionForTest = {
@@ -1548,18 +1551,19 @@ export class QmdClient implements SearchBackend {
    * threshold. `settle` removes the handle on success, failure, and
    * cancellation; call it in a `finally`.
    */
-  private watchDaemonCall(session: QmdDaemonSession): { settle: () => void } {
-    const handle = { since: performance.now() };
-    const calls = DAEMON_INFLIGHT_CALLS.get(session) ?? [];
-    calls.push(handle);
-    DAEMON_INFLIGHT_CALLS.set(session, calls);
-    return {
+  private watchDaemonCall(session: QmdDaemonSession): DaemonInflightWatch {
+    const handle: DaemonInflightHandle & DaemonInflightWatch = {
+      since: performance.now(),
       settle: () => {
         const live = DAEMON_INFLIGHT_CALLS.get(session);
         const index = live ? live.indexOf(handle) : -1;
         if (live && index >= 0) live.splice(index, 1);
       },
     };
+    const calls = DAEMON_INFLIGHT_CALLS.get(session) ?? [];
+    calls.push(handle);
+    DAEMON_INFLIGHT_CALLS.set(session, calls);
+    return handle;
   }
 
   /**
