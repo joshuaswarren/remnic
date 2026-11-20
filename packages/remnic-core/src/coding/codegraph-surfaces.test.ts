@@ -953,3 +953,34 @@ test("LSP wiring: a failed LSP pass is non-fatal — index still reports ok with
   assert.equal(result.lsp?.error, "lsp_resolution_error", "the degradation code surfaces (never silent)");
   assert.equal(result.lsp?.message, "server crashed", "the degradation message surfaces");
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// #3515 review (wAK): a client-supplied rootPath is remote to the daemon —
+// surfaces must never open it as a local path. It degrades to the projectId,
+// which is what a projectTag-derived context already carries.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("remote coding-context rootPath is never passed to repo scanning", async () => {
+  const remoteCtx: CodingContext = { ...CODING_CONTEXT, remote: true };
+  let built = "";
+  let indexed = "";
+  const ctx = makeEnabledCtx({
+    getCodingContext: () => remoteCtx,
+    buildArchitectureCard: async (root: string) => {
+      built = root;
+      return { card: "stub" };
+    },
+    reportIndexStatus: async (_store: CodegraphStore, repoRoot: string) => {
+      indexed = repoRoot;
+      return { ok: true, status: { mode: "fresh" } };
+    },
+  });
+  const arch = await handleCodegraphTool({ tool: "get_architecture", sessionKey: "s1" }, ctx);
+  assert.notEqual(built, CODING_CONTEXT.rootPath, "remote rootPath must not reach the scanner");
+  assert.equal(built, remoteCtx.projectId, "remote root degrades to projectId like a projectTag context");
+  assert.equal(arch.ok, true);
+  const status = await handleCodegraphTool({ tool: "index_status", sessionKey: "s1" }, ctx);
+  assert.notEqual(indexed, CODING_CONTEXT.rootPath);
+  assert.equal(indexed, remoteCtx.projectId);
+  assert.equal(status.ok, true);
+});

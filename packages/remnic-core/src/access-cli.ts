@@ -636,6 +636,7 @@ async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void
     const projectId = projectTagProjectId(projectTag.trim());
     service.setCodingContext({
       sessionKey,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
       codingContext: {
         projectId,
         branch: null,
@@ -698,6 +699,7 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
         : projectTagProjectId(path.basename(repoRoot));
     service.setCodingContext({
       sessionKey,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
       codingContext: {
         projectId,
         branch: null,
@@ -745,6 +747,7 @@ async function runDelta(args: ParsedArgs, preferredId?: string): Promise<void> {
         : projectTagProjectId(path.basename(repoRoot));
     service.setCodingContext({
       sessionKey,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
       codingContext: {
         projectId,
         branch: null,

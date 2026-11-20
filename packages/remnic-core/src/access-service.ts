@@ -39,8 +39,10 @@ import { daySummaryAutoOptions, type LocationContextRequestOptions } from "./loc
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
+  type EngramAccessSetCodingContextRequest,
   type InterruptibleCodingScopeInput,
   resolveCodingContextFromOptions,
+  setSessionCodingContext,
 } from "./access-coding-context-resolution.js";
 import {
   defaultNamespaceAtFlatRoot,
@@ -425,20 +427,7 @@ export interface EngramAccessRecallRequest extends RecallRequest {
   queueWaitMs?: number;
 }
 
-/**
- * Standalone request to attach / clear the coding context for a session
- * without performing a recall. Used by the Claude Code / Codex connectors
- * at session start, and by the `remnic.set_coding_context` MCP tool (PR 7).
- */
-export interface EngramAccessSetCodingContextRequest {
-  sessionKey: string;
-  codingContext: {
-    projectId: string;
-    branch: string | null;
-    rootPath: string;
-    defaultBranch: string | null;
-  } | null;
-}
+export type { EngramAccessSetCodingContextRequest };
 
 export interface EngramAccessRecallResponse {
   query: string;
@@ -2537,40 +2526,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
    * clear.
    */
   setCodingContext(request: EngramAccessSetCodingContextRequest): void {
-    const sessionKey = typeof request.sessionKey === "string" ? request.sessionKey.trim() : "";
-    if (!sessionKey) {
-      throw new EngramAccessInputError("sessionKey is required for setCodingContext");
-    }
-    if (request.codingContext === null) {
-      this.orchestrator.setCodingContextForSession(sessionKey, null);
-      return;
-    }
-    const ctx = request.codingContext;
-    if (!ctx || typeof ctx !== "object") {
-      throw new EngramAccessInputError("codingContext must be an object or null");
-    }
-    if (typeof ctx.projectId !== "string" || ctx.projectId.trim().length === 0) {
-      throw new EngramAccessInputError("codingContext.projectId must be a non-empty string");
-    }
-    // Whitespace-only rootPath must be rejected just like whitespace-only
-    // projectId — otherwise a payload like `{ rootPath: "   " }` slips past
-    // validation and produces a session whose rootPath is meaningless for
-    // `remnic doctor` output and for downstream namespace decisions.
-    if (typeof ctx.rootPath !== "string" || ctx.rootPath.trim().length === 0) {
-      throw new EngramAccessInputError("codingContext.rootPath must be a non-empty string");
-    }
-    if (ctx.branch !== null && typeof ctx.branch !== "string") {
-      throw new EngramAccessInputError("codingContext.branch must be a string or null");
-    }
-    if (ctx.defaultBranch !== null && typeof ctx.defaultBranch !== "string") {
-      throw new EngramAccessInputError("codingContext.defaultBranch must be a string or null");
-    }
-    this.orchestrator.setCodingContextForSession(sessionKey, {
-      projectId: ctx.projectId,
-      branch: ctx.branch,
-      rootPath: ctx.rootPath,
-      defaultBranch: ctx.defaultBranch,
-    });
+    setSessionCodingContext(this.orchestrator, request);
   }
 
   /**
@@ -2589,22 +2545,36 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
    */
   private async maybeAttachCodingContext(
     sessionKey: string | undefined,
-    options: { cwd?: string; projectTag?: string }
+    options: { cwd?: string; projectTag?: string; authenticatedPrincipal?: string }
   ): Promise<void> {
     if (!sessionKey) return;
     // Respect the configuration gate (CLAUDE.md #30).
     if (!this.orchestrator.config.codingMode?.projectScope) return;
     // Don't overwrite an already-attached context.
     if (this.orchestrator.getCodingContextForSession(sessionKey)) return;
+    // The daemon is the caller on this internal attach: when the transport
+    // carried no principal, resolve the session-derived one (the same
+    // fallback observe/recall use) so the setCodingContext ownership check
+    // self-binds instead of silently rejecting the daemon's own attach.
+    const callerPrincipal =
+      options.authenticatedPrincipal ?? resolvePrincipal(sessionKey, this.orchestrator.config);
     // projectTag takes priority over cwd.
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
       const projectId = projectTagProjectId(options.projectTag);
-      this.orchestrator.setCodingContextForSession(sessionKey, {
-        projectId,
-        branch: null,
-        rootPath: projectId,
-        defaultBranch: null,
-      });
+      try {
+        this.setCodingContext({
+          sessionKey,
+          codingContext: {
+            projectId,
+            branch: null,
+            rootPath: projectId,
+            defaultBranch: null,
+          },
+          authenticatedPrincipal: callerPrincipal,
+        });
+      } catch {
+        // Session owned by another principal — never attach (never throws).
+      }
       return;
     }
     // cwd → git resolution
@@ -2620,6 +2590,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
               rootPath: gitCtx.rootPath,
               defaultBranch: gitCtx.defaultBranch,
             },
+            authenticatedPrincipal: callerPrincipal,
           });
         }
       } catch {
@@ -2641,13 +2612,14 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
    * later bare recalls miss (Codex review).
    */
   private async attachCodingContextAfterScopedWrite(
-    request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string }
+    request: CodingScopedWriteInput & { namespace?: string; sessionKey?: string; authenticatedPrincipal?: string }
   ): Promise<void> {
     const hasExplicitNamespace = typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) return;
     await this.maybeAttachCodingContext(request.sessionKey, {
       cwd: request.cwd,
       projectTag: request.projectTag,
+      authenticatedPrincipal: request.authenticatedPrincipal,
     });
   }
 

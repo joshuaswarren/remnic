@@ -22,6 +22,7 @@
  *  - `refresh`: build a fresh card from the repo, persist it, and
  *    snapshot the prior version.
  */
+import { codingContextLocalRoot } from "../access-coding-context-resolution.js";
 import type {
   CodingKnowledgeConfig,
   CodingContext,
@@ -244,7 +245,7 @@ async function architectureRefresh(
   ctx: ArchitectureSurfaceContext,
   codingContext: CodingContext,
 ): Promise<ArchitectureSurfaceResponse> {
-  const repoRoot = codingContext.rootPath ?? codingContext.projectId;
+  const repoRoot = codingContextLocalRoot(codingContext);
   // Authorize the write + resolve storage BEFORE scanning the repo or
   // invoking the summariser, so an unauthorized refresh fails fast instead
   // of doing work (and an LLM call) it cannot persist (codex review: buildCard
