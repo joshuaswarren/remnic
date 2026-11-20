@@ -695,3 +695,31 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
   assert.equal(timedOut.retrievalFailure?.reason, "backend_unavailable");
   assert.equal(genuineEmpty.retrievalFailure, undefined);
 });
+
+test("a client deadlineMs bounds the entry-level recall race (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-client-deadline-",
+    false,
+    async (orchestrator) => {
+      // Park the internal pipeline — only the entry race can bring recall back.
+      Object.assign(orchestrator, {
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const timedRecall = async (deadlineMs?: number) => {
+        const start = Date.now();
+        await orchestrator.recall(QUERY, "client-deadline", { deadlineMs });
+        return Date.now() - start;
+      };
+      // No client hint -> the configured 400 ms outer race, unchanged.
+      assert.ok((await timedRecall()) >= 300, "no hint keeps the configured outer race");
+      // A +60 ms client budget must bring recall back near it, not at 400 ms.
+      assert.ok((await timedRecall(60)) < 400, "the +60ms client deadline bounds the entry race");
+      // An already-expired absolute deadline degrades at once.
+      assert.ok(
+        (await timedRecall(Date.now() - 1_000)) < 400,
+        "an expired client deadline degrades immediately",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});

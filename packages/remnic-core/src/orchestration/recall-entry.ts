@@ -24,6 +24,7 @@ import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import { composeRecallContext, type RecallContextComposition } from "../recall-context-composition.js";
+import { resolveClientDeadlineAtMs } from "../recall-qos.js";
 import {
   memoriesToStandingEntries,
   prefixStandingMemoryBlock,
@@ -216,7 +217,16 @@ export class RecallEntryCoordinator {
     };
     try {
       const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
-      const RECALL_TIMEOUT_MS = this.deps.config.recallOuterTimeoutMs ?? 75_000;
+      const configuredOuterMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
+      // The client's own deadlineMs (issue #3499) bounds this entry race
+      // too — phase-one work can stall outside every section budget.
+      const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
+      const clientRemainingMs =
+        clientDeadlineAtMs === null ? null : Math.max(1, clientDeadlineAtMs - Date.now());
+      const RECALL_TIMEOUT_MS =
+        clientRemainingMs === null
+          ? configuredOuterMs
+          : Math.min(configuredOuterMs > 0 ? configuredOuterMs : Number.POSITIVE_INFINITY, clientRemainingMs);
       if (RECALL_TIMEOUT_MS <= 0) {
         return prefixStandingMemoryBlock(await recallPromise, standingText, standingBudget);
       }
