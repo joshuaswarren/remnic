@@ -231,6 +231,40 @@ test("an already slow in-flight hybrid query degrades a sibling on the same daem
   }
 });
 
+test("a repeat of a slow query takes a lexical plan without waiting for the original", async (t) => {
+  let now = 1_000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const { client, internals } = makeClient(async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      await release.promise;
+      return mcpOk([{ path: "hybrid.md" }]);
+    }
+    return mcpOk([{ path: "lexical.md" }]);
+  });
+
+  const original = client.search("repeat during a slow query", "memories", 3);
+  await started.promise;
+  now += internals.daemonSlowQueryMs;
+  const repeat = client.search("repeat during a slow query", "memories", 3);
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(calls.length, 2, "the repeat must not join the slow hybrid call");
+    assert.deepEqual(legTypes(calls[1]!), ["lex"]);
+    assert.equal((await repeat)[0]?.path, "lexical.md");
+  } finally {
+    release.resolve();
+    await Promise.all([original, repeat]);
+  }
+  now += internals.daemonCongestionWindowMs + 1;
+  assert.equal((await client.search("repeat during a slow query", "memories", 3))[0]?.path, "hybrid.md");
+  assert.equal(calls.length, 2);
+});
+
 test("a fresh in-flight call does not gate siblings yet (#3499)", async (t) => {
   let now = 1000;
   t.mock.method(performance, "now", () => now);

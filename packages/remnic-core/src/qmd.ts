@@ -947,20 +947,11 @@ export class QmdClient implements SearchBackend {
   private readonly daemonRecheckIntervalMs: number;
   /** Consecutive transient daemon failures before invalidating the session. */
   private daemonTransientFailures = 0;
-  /** Epoch ms until which daemon searches run lex-only after a slow/timed-out query (#3476). */
-  private daemonCongestedUntilMs(): number {
-    return this.daemonSession ? (DAEMON_CONGESTED_UNTIL.get(this.daemonSession) ?? 0) : 0;
-  }
-
-  private isDaemonCongested(): boolean {
-    return performance.now() < this.daemonCongestedUntilMs();
-  }
-
-  /** A hybrid/vector call on this session is already past the slow threshold (#3499). */
-  private hasInflightSlowQuery(): boolean {
+  private shouldDegradeDaemonSearch(): boolean {
     const session = this.daemonSession;
     if (!session) return false;
     const now = performance.now();
+    if (now < (DAEMON_CONGESTED_UNTIL.get(session) ?? 0)) return true;
     return (DAEMON_INFLIGHT_CALLS.get(session) ?? []).some(
       (call) => now - call.since >= this.daemonSlowQueryMs,
     );
@@ -1759,14 +1750,13 @@ export class QmdClient implements SearchBackend {
     const optionsFingerprint = searchOptions ? JSON.stringify(searchOptions) : "";
     // Key must capture daemon/subprocess strategies to avoid cross-instance collisions (#1335).
     const strategyFingerprint = `${this.qmdSearchStrategy}:${this.qmdSubprocessStrategy}`;
-    // Degraded (congested) results must not poison the normal cache namespace
-    // for the TTL (#3476). The write key uses the plan that actually ran —
-    // the window can open between this sample and execution (#3479 review).
+    // Cache and join only calls with the same plan (#3476, #3499).
     const makeCacheKey = (planFingerprint: string) =>
       createHash("sha256")
         .update(`${strategyFingerprint}:${planFingerprint}:${col}:${n}:${optionsFingerprint}:${trimmed}`)
         .digest("hex");
-    const cacheKey = makeCacheKey(this.isDaemonCongested() ? "deg" : "std");
+    const degrade = this.daemonAvailable && this.shouldDegradeDaemonSearch();
+    const cacheKey = makeCacheKey(degrade ? "deg" : "std");
     const cached = getCachedQmdSearch(cacheKey);
     if (cached) {
       // No degradation on cache hit by design (#1536): only trustworthy results are cached.
@@ -1779,7 +1769,7 @@ export class QmdClient implements SearchBackend {
       let outcome: { results: QmdSearchResult[]; degraded: boolean } | null;
       try {
         outcome = await this.daemonSearchJoiner.join(cacheKey, execution?.signal, (sharedSignal) =>
-          this.searchViaDaemon(trimmed, col, n, searchOptions, sharedSignal)
+          this.searchViaDaemon(trimmed, col, n, searchOptions, sharedSignal, degrade)
         );
       } catch (err) {
         if (isCallerCancellation(err, execution?.signal)) {
@@ -2032,19 +2022,13 @@ export class QmdClient implements SearchBackend {
     collection: string | undefined,
     maxResults: number,
     options?: SearchQueryOptions,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    degrade = this.shouldDegradeDaemonSearch(),
   ): Promise<{ results: QmdSearchResult[]; degraded: boolean } | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
-    // Congestion degradation (#3476): the daemon embeds vec/hyde legs on one
-    // shared backend; when that backend is saturated, every hybrid query
-    // waits on it serially. While the congestion window is open, serve
-    // lex-only FTS — no embed legs — so recall stays responsive instead of
-    // stacking multi-second hybrid calls. The collection scope is preserved:
-    // a global search stays global while degraded. #3499 extends the gate to
-    // an in-flight call that is already slow, so siblings degrade before its
-    // result opens the window.
-    if (this.isDaemonCongested() || this.hasInflightSlowQuery()) {
+    // Keep the collection scope when falling back to lexical search.
+    if (degrade) {
       const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal, options);
       return degraded === null ? null : { results: degraded, degraded: true };
     }
@@ -2185,12 +2169,8 @@ export class QmdClient implements SearchBackend {
   ): Promise<QmdSearchResult[] | null> {
     if (!this.daemonSession || !this.daemonAvailable) return null;
 
-    // Congestion degradation (#3476): the vec leg is an embed call on the same
-    // contended backend — while the window is open, serve the lex leg instead
-    // so hybridSearch/vectorSearch callers keep working without embedding.
-    // #3499 adds the same gate for an in-flight call already past the slow
-    // threshold, before its result opens the window.
-    if (this.isDaemonCongested() || this.hasInflightSlowQuery()) {
+    // Use lexical search here too so vector callers skip embedding.
+    if (this.shouldDegradeDaemonSearch()) {
       return this.bm25SearchViaDaemon(query, collection, maxResults, signal);
     }
 
