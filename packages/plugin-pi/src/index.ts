@@ -199,15 +199,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (observeOutbox) {
         // One cheap attempt: a dead daemon must not hold session start behind retry and
         // backoff ladders; whatever stays queued replays on the next successful contact.
-        await drainObserveOutboxAtStartup(
-          session,
-          client,
-          config,
-          observeOutbox,
-          state.observedHashes,
-          state.liveObservedReplayKeys,
-          (key) => sessionStates.get(key),
-        );
+        await drainObserveOutboxAtStartup(session, client, config, observeOutbox, state.observedHashes, state.liveObservedReplayKeys, (key) => sessionStates.get(key));
       }
 
       // Probe health + update the circuit breaker UNCONDITIONALLY so an offline
@@ -881,16 +873,7 @@ async function observeMessagesForSession(
     // handling, so it can neither delay this hook nor turn a delivered live turn
     // into a failed (and re-queued) one.
     if (outbox && config) {
-      const drain = startObserveOutboxDrain(
-        session,
-        client,
-        config,
-        outbox,
-        observedHashes,
-        liveObservedReplayKeys,
-        forceAttempt === true,
-        sessionStates ? (key) => sessionStates.get(key) : undefined,
-      );
+      const drain = startObserveOutboxDrain(session, client, config, outbox, observedHashes, liveObservedReplayKeys, forceAttempt === true, sessionStates && ((key) => sessionStates.get(key)));
       // Shutdown is the last chance before teardown: wait for one bounded pass (it never rejects).
       if (forceAttempt) await drain;
     }
