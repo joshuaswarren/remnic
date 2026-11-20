@@ -296,7 +296,7 @@ test("#3381: a foreign session's delivered entry updates that session's state, n
   await outbox.enqueue(queuedEntry); // sessionKey "other-session"
   await outbox.enqueue({ ...queuedEntry, sessionKey: "gone-session", messageHashes: ["hash-gone"] });
   const client = new RemnicClient(config);
-  client.observe = async () => ({ ok: true }) as never;
+  client.observe = async () => ({ ok: true });
 
   const drainerHashes = new Set<string>();
   const drainerReplayKeys = new Map<string, number>();
