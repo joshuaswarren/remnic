@@ -197,6 +197,40 @@ test("a congestion mark from one client gates siblings sharing the daemon sessio
   assert.deepEqual(legTypes(calls[1]!), ["lex"]);
 });
 
+test("an already slow in-flight hybrid query degrades a sibling on the same daemon (#3499)", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sessionCallTool: CallToolFn = async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      await release.promise;
+    }
+    return mcpOk([{ path: "result.md" }]);
+  };
+  const first = makeClient(sessionCallTool);
+  const sibling = makeClient(sessionCallTool);
+  sibling.internals.daemonSession = first.internals.daemonSession;
+
+  const pending = first.client.search("first recall", "memories", 3);
+  try {
+    await started.promise;
+    assert.deepEqual(legTypes(calls[0]!), ["lex", "vec", "hyde"]);
+    now += first.internals.daemonSlowQueryMs + 1;
+    const results = await sibling.client.search("second recall", "memories", 3);
+    assert.equal(results.length, 1);
+    assert.deepEqual(calls[1]!.args.collections, ["memories"]);
+    assert.deepEqual(legTypes(calls[1]!), ["lex"]);
+    assert.equal(calls[1]!.args.rerank, false);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+
 test("a daemon call cancelled after the slow mark still opens the window", async () => {
   const calls: CapturedCall[] = [];
   const { client, internals } = makeClient((name, args, _timeout, signal) => {
