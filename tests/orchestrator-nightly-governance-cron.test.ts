@@ -68,8 +68,9 @@ function stubInitializeDependencies(
 test("initialize loads aliases before running storage migration", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-alias-before-migration-workspace-"));
+  let orchestrator: Orchestrator | undefined;
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
+    orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
     const order: string[] = [];
     stubInitializeDependencies(orchestrator, {
       ensureDirectories: async () => {
@@ -85,6 +86,7 @@ test("initialize loads aliases before running storage migration", async () => {
 
     assert.deepEqual(order.slice(0, 2), ["loadAliases", "ensureDirectories"]);
   } finally {
+    if (orchestrator) await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
@@ -93,8 +95,9 @@ test("initialize loads aliases before running storage migration", async () => {
 test("initialize skips nightly governance cron auto-register unless explicitly enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-workspace-"));
+  let orchestrator: Orchestrator | undefined;
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
+    orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
@@ -108,6 +111,7 @@ test("initialize skips nightly governance cron auto-register unless explicitly e
 
     assert.equal(nightlyCalls, 0);
   } finally {
+    if (orchestrator) await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
@@ -116,8 +120,9 @@ test("initialize skips nightly governance cron auto-register unless explicitly e
 test("initialize triggers nightly governance cron auto-register when explicitly enabled", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-on-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-on-workspace-"));
+  let orchestrator: Orchestrator | undefined;
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true));
+    orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
@@ -131,6 +136,7 @@ test("initialize triggers nightly governance cron auto-register when explicitly 
 
     assert.equal(nightlyCalls, 1);
   } finally {
+    if (orchestrator) await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     await rm(workspaceDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
