@@ -518,7 +518,7 @@ test("stalled corpus-version storage cannot block recall planning", async () => 
     undefined,
     (versions) => { captured = versions; },
     true,
-    20,
+    { timeoutMs: 20 },
   );
   const result = await Promise.race([
     Promise.resolve(capture("no_recall", ["stalled"])).then(() => "captured"),
@@ -741,6 +741,52 @@ test("a client deadlineMs bounds the cold-start init gate too (#3499)", async ()
         Date.now() - start < 400,
         "the +50ms client deadline bounds the init gate wait, not just the inner race",
       );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a client deadlineMs bounds the standing-plan capture too (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-standing-capture-deadline-",
+    false,
+    async (orchestrator) => {
+      // Park the corpus-version lookup the standing-plan capture awaits —
+      // its own 250 ms timeout can no longer outrun the client deadline.
+      Object.assign(orchestrator, {
+        getStorage: () => new Promise<never>(() => {}),
+        recallInternal: async () => "recall ok",
+      });
+      const start = Date.now();
+      await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey: "standing-capture-deadline",
+        deadlineMs: 50,
+      });
+      assert.ok(
+        Date.now() - start < 250,
+        "the +50ms client deadline bounds the standing-plan capture",
+      );
+    },
+    { recallStandingBlock: true },
+  );
+});
+
+test("a far-future client deadlineMs does not abort a healthy recall early (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-far-deadline-",
+    false,
+    async (orchestrator) => {
+      // Node clamps timer delays to 2^31-1 ms; a +30 day budget must not
+      // overflow the delay and abort the 75 ms init after ~4 ms.
+      Object.assign(orchestrator, {
+        initPromise: new Promise<void>((resolve) => setTimeout(resolve, 75)),
+        recallInternal: async () => "recall ok",
+      });
+      const result = await orchestrator.recall(QUERY, "far-deadline", {
+        deadlineMs: 30 * 24 * 60 * 60 * 1000,
+      });
+      assert.equal(result, "recall ok");
     },
     { recallOuterTimeoutMs: 400 },
   );

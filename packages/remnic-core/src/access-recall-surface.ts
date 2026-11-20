@@ -854,7 +854,7 @@ export class AccessRecallSurface {
       onContextComposition: (composition) => {
         contextComposition = composition;
       },
-      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true),
+      onRecallPlanResolved: createRecallCorpusVersionCapture(this.deps.orchestrator, request.abortSignal, (versions) => { storageCorpusVersionsAtRecallStart = mergeRecallCorpusVersions(storageCorpusVersionsAtRecallStart, versions); }, true, { deadlineMs: request.deadlineMs }),
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       ...(request.stateView !== undefined ? { stateView: request.stateView } : {}),

@@ -24,7 +24,7 @@ import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import { composeRecallContext, type RecallContextComposition } from "../recall-context-composition.js";
-import { resolveClientDeadlineAtMs } from "../recall-qos.js";
+import { clientDeadlineTimerMs, resolveClientDeadlineAtMs } from "../recall-qos.js";
 import {
   memoriesToStandingEntries,
   prefixStandingMemoryBlock,
@@ -105,7 +105,7 @@ export class RecallEntryCoordinator {
     if (clientDeadlineAtMs !== null) {
       clientDeadlineHandle = setTimeout(
         () => abortController.abort(),
-        Math.max(1, clientDeadlineAtMs - Date.now()),
+        clientDeadlineTimerMs(clientDeadlineAtMs, Date.now()),
       );
     }
 
@@ -237,7 +237,7 @@ export class RecallEntryCoordinator {
       // deadline resolved at method entry already deducts elapsed init and
       // standing-read time from the remaining budget here.
       const clientRemainingMs =
-        clientDeadlineAtMs === null ? null : Math.max(1, clientDeadlineAtMs - Date.now());
+        clientDeadlineAtMs === null ? null : clientDeadlineTimerMs(clientDeadlineAtMs, Date.now());
       const RECALL_TIMEOUT_MS =
         clientRemainingMs === null
           ? configuredOuterMs

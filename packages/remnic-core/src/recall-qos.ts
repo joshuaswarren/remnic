@@ -139,6 +139,29 @@ export function resolveClientDeadlineAtMs(
   return deadlineMs > CLIENT_DEADLINE_EPOCH_FLOOR_MS ? deadlineMs : now + deadlineMs;
 }
 
+// Node clamps timer delays to 2^31-1 ms (~24.8 days) and a larger delay
+// overflows to an immediate fire — every client-deadline timer must clamp
+// or a far-future budget aborts a healthy call at once (issue #3499).
+const CLIENT_DEADLINE_TIMER_MAX_MS = 2_147_483_647;
+
+export function clientDeadlineTimerMs(clientDeadlineAtMs: number, now: number): number {
+  return Math.max(1, Math.min(clientDeadlineAtMs - now, CLIENT_DEADLINE_TIMER_MAX_MS));
+}
+
+export function recallDeadlineSignal(
+  baseSignal: AbortSignal | undefined,
+  deadlineMs: number | undefined,
+  now = Date.now(),
+): AbortSignal | undefined {
+  const deadlineAtMs = resolveClientDeadlineAtMs(deadlineMs, now);
+  if (deadlineAtMs === null) return baseSignal;
+  const deadlineSignal =
+    deadlineAtMs <= now
+      ? AbortSignal.abort()
+      : AbortSignal.timeout(clientDeadlineTimerMs(deadlineAtMs, now));
+  return baseSignal === undefined ? deadlineSignal : AbortSignal.any([baseSignal, deadlineSignal]);
+}
+
 /**
  * Effective outer deadline for a recall: the configured ceiling capped by
  * the client's own deadline when the request carries one (issue #3499).
