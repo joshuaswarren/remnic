@@ -16,6 +16,7 @@ import { log } from "../logger.js";
 import { resolvePrincipal } from "../namespaces/principal.js";
 import { type RecallSectionAppendOptions, type RecallSectionBuckets } from "./recall-section-coordinator.js";
 import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-helpers.js";
+import { isAbortError } from "../abort-error.js";
 import { ProfilingCollector } from "../profiling.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
@@ -97,18 +98,6 @@ export class RecallEntryCoordinator {
       options.abortSignal?.addEventListener("abort", onAbort, { once: true });
     }
 
-    // Resolve the client's absolute deadline ONCE at method entry (issue
-    // #3499): a relative budget then counts from arrival, and this abort
-    // timer bounds the init gate, standing reads, and the inner race.
-    const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
-    let clientDeadlineHandle: NodeJS.Timeout | null = null;
-    if (clientDeadlineAtMs !== null) {
-      clientDeadlineHandle = setTimeout(
-        () => abortController.abort(),
-        clientDeadlineTimerMs(clientDeadlineAtMs, Date.now()),
-      );
-    }
-
     const principal =
       typeof options.principalOverride === "string" &&
       options.principalOverride.length > 0
@@ -117,6 +106,20 @@ export class RecallEntryCoordinator {
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
     if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
+    }
+
+    // Resolve the client's absolute deadline ONCE at method entry (issue
+    // #3499): a relative budget then counts from arrival, and this abort
+    // timer bounds the init gate, standing reads, and the inner race. It is
+    // armed after validation so a rejecting call never leaks the timer.
+    const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
+    let clientDeadlineFired = false;
+    let clientDeadlineHandle: NodeJS.Timeout | null = null;
+    if (clientDeadlineAtMs !== null) {
+      clientDeadlineHandle = setTimeout(() => {
+        clientDeadlineFired = true;
+        abortController.abort();
+      }, clientDeadlineTimerMs(clientDeadlineAtMs, Date.now()));
     }
 
     // Wait for initialization to complete before attempting recall. The timeout
@@ -147,7 +150,9 @@ export class RecallEntryCoordinator {
       if (initGateTimeoutHandle) clearTimeout(initGateTimeoutHandle);
       if (onInitGateAbort)
         abortController.signal.removeEventListener("abort", onInitGateAbort);
-      if (gateResult === "aborted") {
+      // A fired client deadline is a timeout, not cancellation — the flow
+      // below then degrades to the missing-note response instead of "".
+      if (gateResult === "aborted" && !clientDeadlineFired) {
         this.deps.logRecallFailure(abortRecallError("recall aborted before init"));
         if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
         return "";
@@ -283,9 +288,13 @@ export class RecallEntryCoordinator {
     } catch (err) {
       this.deps.logRecallFailure(err);
       this.deps.profiler.endTrace();
-      const missing = options.abortSignal?.aborted
+      // A fired client deadline is a timeout, not caller cancellation: the
+      // caller still expects the degraded response, not "" (issue #3499).
+      const missing = options.abortSignal?.aborted && !clientDeadlineFired
         ? null
-        : recallFailureComposition(err);
+        : recallFailureComposition(
+            clientDeadlineFired && isAbortError(err) ? new Error("recall timeout") : err,
+          );
       if (!missing) return "";
       if (standingText.length > 0) {
         missing.context = prefixStandingMemoryBlock(missing.context ?? "", standingText, standingBudget);

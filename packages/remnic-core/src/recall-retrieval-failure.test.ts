@@ -791,3 +791,74 @@ test("a far-future client deadlineMs does not abort a healthy recall early (#349
     { recallOuterTimeoutMs: 400 },
   );
 });
+
+test("a fired client deadlineMs degrades as a timeout, not caller abort (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-deadline-classify-",
+    false,
+    async (orchestrator) => {
+      // An abort-aware stalled pipeline: it rejects AbortError when the
+      // request signal fires. The client deadline must still degrade to the
+      // missing-note context — "" is indistinguishable from "no matches".
+      Object.assign(orchestrator, {
+        recallInternal: (_prompt: string, _session: string, o: { abortSignal?: AbortSignal }) =>
+          new Promise<string>((_resolve, reject) => {
+            o.abortSignal?.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          }),
+      });
+      const result = await orchestrator.recall(QUERY, "deadline-classify", { deadlineMs: 30 });
+      assert.ok(result.length > 0, "deadline exhaustion must degrade to the missing note, not empty");
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a timed-out recall does not serve the previous query's snapshot (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-stale-snapshot-",
+    false,
+    async (orchestrator) => {
+      await orchestrator.lastRecall.record({
+        sessionKey: "stale-snapshot",
+        query: "the first question on this session",
+        memoryIds: ["m-stale"],
+      });
+      Object.assign(orchestrator, {
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "a different second question",
+        sessionKey: "stale-snapshot",
+        deadlineMs: 50,
+      });
+      assert.deepEqual(
+        response.memoryIds,
+        [],
+        "a timed-out recall must not report the previous query's memory ids",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a client deadlineMs does not swallow the namespace auth rejection (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-deadline-auth-",
+    false,
+    async (orchestrator) => {
+      await assert.rejects(
+        () => orchestrator.recall(QUERY, undefined, { deadlineMs: 50 }),
+        /authentication required/,
+      );
+    },
+    { namespacesEnabled: true },
+  );
+});
