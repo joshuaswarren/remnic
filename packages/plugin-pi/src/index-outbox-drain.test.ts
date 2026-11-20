@@ -10,7 +10,7 @@ import { RemnicClient, RemnicHttpError } from "./client.js";
 import type { RemnicPiConfig } from "./config.js";
 import { createRemnicPiExtension, observeMessages } from "./index.js";
 import type { PiApi } from "./index.js";
-import { observedMessageDedupeKey, toObserveMessage } from "./messages.js";
+import { observedMessageDedupeKey, sessionKeyFromContext, toObserveMessage } from "./messages.js";
 import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
@@ -378,11 +378,16 @@ test("a queued entry bound to another daemon does not suppress the live capture 
   const raw = { id: "l-1", role: "user", content: "shared capture" };
   const message = toObserveMessage(raw);
   assert.ok(message);
+  // Both fixture values derive from the ctx the live path gets: the outbox
+  // hash only suppresses when it is computed over the SAME session key
+  // ("pi:live-session", not "live-session") the live observe resolves.
+  const ctx = liveCtx(() => {});
+  const liveSessionKey = sessionKeyFromContext(ctx);
   await outbox.enqueue({
     ...queuedEntry,
-    sessionKey: "live-session",
+    sessionKey: liveSessionKey,
     destination: "http://daemon-a:4318",
-    messageHashes: [observedMessageDedupeKey(message, "live-session")],
+    messageHashes: [observedMessageDedupeKey(message, liveSessionKey)],
   });
 
   const originalFetch = globalThis.fetch;
@@ -395,7 +400,7 @@ test("a queued entry bound to another daemon does not suppress the live capture 
     return new Response(JSON.stringify({ ok: true }), { status: 200 });
   };
 
-  await observeMessages(liveCtx(() => {}), new RemnicClient(config), [raw], new Set<string>(), undefined, config, outbox);
+  await observeMessages(ctx, new RemnicClient(config), [raw], new Set<string>(), undefined, config, outbox);
   await settleObserveOutboxDrain(outbox);
   assert.equal(sent, 1, "the capture reaches this daemon instead of being suppressed by the foreign entry");
   assert.equal(await outbox.size(), 1, "the foreign entry stays queued for its own daemon");
