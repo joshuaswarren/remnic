@@ -566,7 +566,7 @@ export class RecallInternalCoordinator {
         this.deps.trackRecallBackgroundWrite(
           this.deps.lastRecall.record({
             sessionKey,
-            query: retrievalQuery,
+            query: prompt,
             memoryIds: [],
             namespace: selfNamespace,
             traceId,
@@ -5230,7 +5230,7 @@ export class RecallInternalCoordinator {
       this.deps.trackRecallBackgroundWrite(
         this.deps.lastRecall.record({
           sessionKey,
-          query: retrievalQuery,
+          query: prompt,
           memoryIds: recalledMemoryIds,
           namespace: selfNamespace,
           recallNamespaces,
