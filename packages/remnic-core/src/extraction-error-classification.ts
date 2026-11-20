@@ -88,14 +88,25 @@ export function formatExtractionParseFailureLog(input: {
 
 /**
  * The local endpoint answered, and what it said rejects this input (unusable content, or a client error that is not
- * auth, timeout or rate limiting): the chunk's problem, not an outage. Retried like an empty parse, and a trigger-drain
+ * auth, timeout or rate limiting): the chunk's problem, not an outage. A `finish_reason=length` reply classifies as
+ * `output_truncated` (#3521); every other rejection retries like an empty parse, and a trigger-drain
  * chunk that keeps drawing it is dropped after its recovery copy is saved.
  */
 export class LocalLlmRejectedError extends Error {
-  constructor(readonly httpStatus?: number) {
+  constructor(readonly httpStatus?: number, readonly finishReason?: string) {
     super(httpStatus === undefined ? "local LLM answered with unusable content" : `local LLM rejected the input (HTTP ${httpStatus})`);
     this.name = "LocalLlmRejectedError";
   }
+}
+
+/**
+ * Map a local-endpoint rejection to its failure class: a reply cut off at the
+ * output ceiling (`finish_reason=length`) is `output_truncated` — retries at
+ * the same `maxOutputTokens` can never complete (#3521). Every other unusable
+ * or refused reply stays `parse_empty`.
+ */
+export function classifyLocalLlmRejected(err: LocalLlmRejectedError): ExtractionFailureClass {
+  return err.finishReason === "length" ? "output_truncated" : "parse_empty";
 }
 
 /** What the local client recorded about a failed call (`failureDiag`). */
