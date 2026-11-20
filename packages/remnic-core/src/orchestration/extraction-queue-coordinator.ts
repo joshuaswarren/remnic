@@ -218,13 +218,37 @@ export class ExtractionQueueCoordinator {
     this.accepting = true;
   }
 
-  /** Stop new producers and wait for all accepted work to finish. */
-  async pauseAndDrain(timeoutMs: number = 60_000): Promise<boolean> {
+  /**
+   * Stop new producers and wait for all accepted work to finish. `timeoutMs`
+   * is the nominal budget; `tailBudgetMs` bounds the grace wait past it so a
+   * task that never settles cannot stall shutdown indefinitely. The flag is
+   * honest: false when the tail expired with work outstanding, so the
+   * caller's "did not drain" path is live. Callers persist buffered turns
+   * before this drain runs, so an abandoned tail loses nothing durable.
+   */
+  async pauseAndDrain(timeoutMs: number = 60_000, tailBudgetMs: number = 15_000): Promise<boolean> {
     this.stopAccepting();
+    const startedMs = Date.now();
     if (await this.waitForIdle(timeoutMs)) return true;
-    log.warn("extraction queue drain exceeded timeout; waiting for accepted work to settle");
-    await this.waitForIdle(Number.POSITIVE_INFINITY);
-    return true;
+    log.warn(
+      `extraction queue drain exceeded ${timeoutMs}ms; waiting up to ` +
+        `${tailBudgetMs}ms more for accepted work to settle (${this.describeOutstanding()})`,
+    );
+    if (await this.waitForIdle(tailBudgetMs)) return true;
+    log.warn(
+      `extraction queue drain abandoned after ${Date.now() - startedMs}ms; ` +
+        `${this.describeOutstanding()} still outstanding`,
+    );
+    return false;
+  }
+
+  /** Name what the drain is still waiting on, for timeout diagnostics. */
+  private describeOutstanding(): string {
+    const names = [
+      ...[...this.preemptSlots.values()].map((s) => `in-flight '${s.key ?? "(unkeyed)"}'`),
+      ...this.queue.map((e) => `queued '${e.key ?? "(unkeyed)"}'`),
+    ];
+    return names.length > 0 ? `outstanding: ${names.join(", ")}` : "outstanding: (none)";
   }
 
   /**
