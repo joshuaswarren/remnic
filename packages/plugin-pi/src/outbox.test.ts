@@ -602,6 +602,23 @@ test("a drain only sends entries queued for its own daemon and leaves the rest f
   assert.ok(!left.includes("own-capture"));
 });
 
+test("a drain with no destination delivers every queued entry, including bound ones", async () => {
+  // The DrainOptions contract: omitting destination makes every entry
+  // eligible, same as before the field existed (coderabbit on #3504).
+  const filePath = tmpOutboxPath("destination-omitted");
+  const outbox = new ObserveOutbox(filePath);
+  await outbox.enqueue({ ...entryInput("bound-capture"), destination: "http://daemon-a:4318" });
+  await outbox.enqueue(entryInput("legacy-capture"));
+
+  const sent: string[] = [];
+  const result = await outbox.drain(async (entry) => {
+    sent.push(entry.messages[0].content);
+  });
+  assert.deepEqual(sent, ["bound-capture", "legacy-capture"], "an omitted destination makes every entry eligible");
+  assert.equal(result.foreign ?? 0, 0, "nothing is foreign to a drain that accepts every destination");
+  assert.equal(result.pending, 0);
+});
+
 test("enqueue bounds a large rawContent so the durable replay stays small but keeps its identity", async () => {
   // #3381 item 11: rawContent is the original Pi message and can be megabytes;
   // a 200-entry bound is not a byte bound, so the persisted representation is

@@ -381,15 +381,19 @@ export class ObserveOutbox {
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
-    let foreign = 0;
+    // An omitted destination makes every entry eligible per the DrainOptions
+    // contract; a destination-bound entry only runs on its own drainer (#3381).
+    const eligible = (entry: ObserveOutboxEntry): boolean =>
+      options.destination === undefined ||
+      entry.destination === undefined ||
+      entry.destination === options.destination;
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
         // Entries bound to another daemon are skipped, never sent: the file is
         // shared per machine and a pane repointed elsewhere must not replay
         // someone else's conversations to the wrong destination (#3381).
-        const entry = this.entries.find((e) => e.destination === undefined || e.destination === options.destination);
-        foreign = this.entries.filter((e) => e.destination !== undefined && e.destination !== options.destination).length;
+        const entry = this.entries.find(eligible);
         if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
@@ -460,6 +464,7 @@ export class ObserveOutbox {
     } finally {
       this.drainInProgress = false;
     }
+    const foreign = this.entries.filter((entry) => !eligible(entry)).length;
     const summary = { delivered, dropped, pending: this.entries.length };
     return foreign > 0 ? { ...summary, foreign } : summary;
   }
