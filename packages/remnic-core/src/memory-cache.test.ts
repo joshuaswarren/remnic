@@ -6,7 +6,6 @@ import {
   clearMemoryCache,
   getCachedQmdSearch,
   invalidateAllForDir,
-  peekQmdSearchCacheRecallScopeDepth,
   runInQmdSearchCacheRecallScope,
   setCachedQmdSearch,
 } from "./memory-cache.js";
@@ -50,27 +49,55 @@ test("ALL_CACHE_LAYERS registers the QMD recall layer alongside the QMD search l
   assert.ok(names.includes("qmd-recall"));
 });
 
-test("runInQmdSearchCacheRecallScope refcounts nested positive TTL", async () => {
-  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
-  await runInQmdSearchCacheRecallScope(60_000, async () => {
-    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
-    await runInQmdSearchCacheRecallScope(90_000, async () => {
-      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 2);
-    });
-    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
+test("overlapping QMD recalls enforce their own TTL without evicting each other's entries", async (t) => {
+  let now = 1_000;
+  t.mock.method(Date, "now", () => now);
+  clearMemoryCache();
+  const hits = [{ path: "facts/current.md" }];
+  const key = "shared-recall-cache-entry";
+  setCachedQmdSearch(key, hits);
+  now += 70_000;
+
+  const release = Promise.withResolvers<void>();
+  const long = runInQmdSearchCacheRecallScope(120_000, async () => {
+    await release.promise;
+    return getCachedQmdSearch(key);
   });
-  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
+  try {
+    const short = await runInQmdSearchCacheRecallScope(60_000, async () => getCachedQmdSearch(key));
+    assert.equal(short, null);
+    assert.equal(getCachedQmdSearch(key), null);
+  } finally {
+    release.resolve();
+    await long;
+  }
+  assert.deepEqual(await long, hits);
 });
 
-test("non-positive TTL scope does not decrement an outer recall scope", async () => {
+test("QMD search cache evicts the oldest write at capacity", () => {
+  clearMemoryCache();
+  const hits = [{ path: "facts/current.md" }];
+  for (let i = 0; i < 200; i++) setCachedQmdSearch(`qmd-cache-${i}`, hits);
+  setCachedQmdSearch("qmd-cache-new", hits);
+  assert.equal(getCachedQmdSearch("qmd-cache-0"), null);
+  assert.deepEqual(getCachedQmdSearch("qmd-cache-1"), hits);
+  assert.deepEqual(getCachedQmdSearch("qmd-cache-new"), hits);
+});
+
+test("nested QMD scopes restore the outer TTL even if the inner callback fails", async (t) => {
+  const clock = t.mock.method(Date, "now", () => 1_000);
+  clearMemoryCache();
+  const key = "nested-recall-cache-entry";
+  const hits = [{ path: "facts/current.md" }];
+  setCachedQmdSearch(key, hits);
+  clock.mock.mockImplementation(() => 71_000);
+
   await runInQmdSearchCacheRecallScope(120_000, async () => {
-    assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
-    await runInQmdSearchCacheRecallScope(0, async () => {
-      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
-    });
-    await runInQmdSearchCacheRecallScope(Number.NaN, async () => {
-      assert.equal(peekQmdSearchCacheRecallScopeDepth(), 1);
-    });
+    await assert.rejects(runInQmdSearchCacheRecallScope(Number.NaN, async () => {
+      assert.equal(getCachedQmdSearch(key), null);
+      throw new Error("inner recall failed");
+    }), /inner recall failed/);
+    assert.deepEqual(getCachedQmdSearch(key), hits);
   });
-  assert.equal(peekQmdSearchCacheRecallScopeDepth(), 0);
+  assert.equal(getCachedQmdSearch(key), null);
 });
