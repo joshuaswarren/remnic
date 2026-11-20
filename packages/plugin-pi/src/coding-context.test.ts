@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { GitContext } from "@remnic/core/coding/git-context";
+import type { GitContext, GitContextProbeResult } from "@remnic/core/coding/git-context";
 
 import {
   maybeSyncSessionCodingContext,
@@ -43,7 +43,7 @@ function fakeClient() {
 test("posts the client-resolved context once, then stays quiet while unchanged", async () => {
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
-  const resolve = async () => CTX_A;
+  const resolve = async () => ({ context: CTX_A, conclusive: true });
   await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve });
   await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve });
   assert.deepEqual(client.posts, [{ sessionKey: "s1", codingContext: CTX_A }]);
@@ -52,9 +52,9 @@ test("posts the client-resolved context once, then stays quiet while unchanged",
 test("re-posts when the resolved root or branch changes", async () => {
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => CTX_A });
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => CTX_A_BRANCH });
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/b", state, client, resolve: async () => CTX_B });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A_BRANCH, conclusive: true }) });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/b", state, client, resolve: async () => ({ context: CTX_B, conclusive: true }) });
   assert.equal(client.posts.length, 3);
   assert.deepEqual(client.posts[1].codingContext, CTX_A_BRANCH);
   assert.deepEqual(client.posts[2].codingContext, CTX_B);
@@ -63,10 +63,10 @@ test("re-posts when the resolved root or branch changes", async () => {
 test("a cwd outside git posts nothing, and a later non-repo clears a posted context", async () => {
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => null });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => ({ context: null, conclusive: true }) });
   assert.equal(client.posts.length, 0);
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => CTX_A });
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => null });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => ({ context: null, conclusive: true }) });
   assert.deepEqual(client.posts, [
     { sessionKey: "s1", codingContext: CTX_A },
     { sessionKey: "s1", codingContext: null },
@@ -77,10 +77,10 @@ test("a failed post does not latch the signature, so the next sync retries", asy
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
   client.fail = true;
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => CTX_A });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
   assert.equal(state.lastCodingContextSignature, null);
   client.fail = false;
-  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => CTX_A });
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
   assert.equal(client.posts.length, 1);
 });
 
@@ -88,7 +88,7 @@ test("a daemon outage marks the latch untrusted, so recovery re-posts the contex
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
   const ctx = { session: { sessionKey: "s1", cwd: "/repo/a" }, state, client, config: { authToken: "t" } };
-  const resolve = async () => CTX_A;
+  const resolve = async () => ({ context: CTX_A, conclusive: true });
   await maybeSyncSessionCodingContext({ ...ctx, resolve });
   assert.equal(client.posts.length, 1);
   client.reachable = false;
@@ -123,15 +123,29 @@ test("concurrent syncs serialize so the newest resolution posts last", async () 
   const client = fakeClient();
   const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
   const ctx = { session: { sessionKey: "s1", cwd: "/repo/a" }, state, client, config: { authToken: "t" } };
-  let releaseFirst: (v: GitContext) => void = () => {};
-  const firstResolve = new Promise<GitContext>((res) => { releaseFirst = res; });
-  const secondResolve = async () => CTX_B;
+  let releaseFirst: (v: GitContextProbeResult) => void = () => {};
+  const firstResolve = new Promise<GitContextProbeResult>((res) => { releaseFirst = res; });
+  const secondResolve = async () => ({ context: CTX_B, conclusive: true });
   const first = maybeSyncSessionCodingContext({ ...ctx, resolve: () => firstResolve });
   const second = maybeSyncSessionCodingContext({ ...ctx, resolve: secondResolve });
-  releaseFirst(CTX_A);
+  releaseFirst({ context: CTX_A, conclusive: true });
   await Promise.all([first, second]);
   assert.deepEqual(client.posts, [
     { sessionKey: "s1", codingContext: CTX_A },
     { sessionKey: "s1", codingContext: CTX_B },
   ]);
+});
+
+test("an inconclusive probe retains the posted binding — only a confirmed non-repo clears", async () => {
+  const client = fakeClient();
+  const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  assert.equal(client.posts.length, 1);
+  // A transient probe failure (timeout/spawn) must not clear the valid binding.
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: null, conclusive: false }) });
+  assert.equal(client.posts.length, 1, "inconclusive probe must not post a clear");
+  assert.notEqual(state.lastCodingContextSignature, null, "signature stays latched for retry");
+  // A confirmed non-repo still clears.
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => ({ context: null, conclusive: true }) });
+  assert.equal(client.posts.at(-1)?.codingContext, null);
 });

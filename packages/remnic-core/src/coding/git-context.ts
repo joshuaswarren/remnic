@@ -573,3 +573,45 @@ export const sharedGitContextCache = new GitContextCache();
  * read a repo fresh; they only skip repeat probes of non-repo directories.
  */
 export const sharedNonRepoGitContextCache = new GitContextCache({ cacheRepos: false });
+
+/**
+ * A probe verdict: `context` is the resolved context or `null`, and
+ * `conclusive` tells the two nulls apart. `conclusive: true` means git
+ * answered (a real repo or a confirmed non-repo); `conclusive: false` means
+ * the probe itself failed — spawn error, timeout, or an invoker throw —
+ * so the null carries no evidence about the directory.
+ */
+export interface GitContextProbeResult {
+  context: GitContext | null;
+  conclusive: boolean;
+}
+
+/**
+ * `resolveGitContext` with the inconclusive distinction surfaced: the
+ * existing cache path already refuses to cache timeout/spawn-failure
+ * results, so a cached `null` is conclusive by construction. Callers that
+ * clear state on `null` (the plugin's coding-context sync) must only do so
+ * on a conclusive verdict.
+ */
+export async function probeGitContext(
+  cwd: string,
+  options: ResolveGitContextOptions = {},
+): Promise<GitContextProbeResult> {
+  let inconclusive = false;
+  const inner = options.invoker ?? defaultGitInvoker();
+  const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
+    let result: GitInvokeResult;
+    try {
+      result = await inner(probeCwd, args, invokeOptions);
+    } catch (err) {
+      inconclusive = true;
+      throw err;
+    }
+    if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) {
+      inconclusive = true;
+    }
+    return result;
+  };
+  const context = await resolveGitContext(cwd, { ...options, invoker });
+  return { context, conclusive: !inconclusive };
+}

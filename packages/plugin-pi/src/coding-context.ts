@@ -6,7 +6,7 @@
  * locally and posts the result through `POST /engram/v1/coding-context`.
  * Server-side cwd resolution remains the fallback for same-host daemons.
  */
-import { resolveGitContext, type GitContext } from "@remnic/core/coding/git-context";
+import { probeGitContext, type GitContext, type GitContextProbeResult } from "@remnic/core/coding/git-context";
 
 import type { SetCodingContextResponse } from "./client.js";
 
@@ -32,8 +32,8 @@ export interface SyncCodingContextOptions {
   cwd: string;
   state: CodingContextSyncState;
   client: CodingContextCarrier;
-  /** Injectable for tests; defaults to the shared core resolver. */
-  resolve?: (cwd: string) => Promise<GitContext | null>;
+  /** Injectable for tests; defaults to the shared core probe. */
+  resolve?: (cwd: string) => Promise<GitContextProbeResult>;
 }
 
 export interface CodingContextSyncCtx {
@@ -41,8 +41,8 @@ export interface CodingContextSyncCtx {
   state: CodingContextSyncState & { startupEpoch?: number };
   client: CodingContextCarrier & { isReachable(): boolean };
   config: { authToken?: string };
-  /** Injectable for tests; defaults to the shared core resolver. */
-  resolve?: (cwd: string) => Promise<GitContext | null>;
+  /** Injectable for tests; defaults to the shared core probe. */
+  resolve?: (cwd: string) => Promise<GitContextProbeResult>;
 }
 
 /** Per-turn refresh: re-resolve off the turn path and post only on change. */
@@ -102,10 +102,14 @@ function signature(ctx: GitContext): string {
  */
 export async function syncSessionCodingContext(options: SyncCodingContextOptions): Promise<void> {
   const { sessionKey, cwd, state, client } = options;
-  const resolve = options.resolve ?? ((dir: string) => resolveGitContext(dir));
+  const resolve = options.resolve ?? ((dir: string) => probeGitContext(dir));
   let resolved: GitContext | null;
   try {
-    resolved = await resolve(cwd);
+    const probe = await resolve(cwd);
+    if (probe.context === null && !probe.conclusive) {
+      return; // probe failed (timeout/spawn) — keep the posted binding, retry next sync
+    }
+    resolved = probe.context;
   } catch {
     return; // inconclusive resolution is not "no repo" — retry next sync
   }
