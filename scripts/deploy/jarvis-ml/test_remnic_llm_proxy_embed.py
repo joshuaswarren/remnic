@@ -35,6 +35,14 @@ class _Embedder(BaseHTTPRequestHandler):
             time.sleep(delay)
         status = getattr(self.server, "status", 200)
         dims = getattr(self.server, "dims", 768)
+        raw = getattr(self.server, "raw_body", None)
+        if raw is not None:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         inputs = payload_in.get("input") or []
         if isinstance(inputs, str):
             inputs = [inputs]
@@ -81,6 +89,7 @@ class EmbedPoolTest(unittest.TestCase):
         cls.up_a, cls.base_a = _serve("a")
         cls.up_busy, cls.base_busy = _serve("busy", status=503)
         cls.up_wrong, cls.base_wrong = _serve("wrong-dims", dims=384)
+        cls.up_array, cls.base_array = _serve("array-body", raw_body=b"[]")
         cls.up_b, cls.base_b = _serve("b")
         cls.tmp = tempfile.TemporaryDirectory()
         cls.pool_file = os.path.join(cls.tmp.name, "embed-pool.json")
@@ -94,7 +103,7 @@ class EmbedPoolTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.mod.EMBED_POOL_FILE = cls.saved
         cls.proxy.shutdown()
-        for server in (cls.up_a, cls.up_busy, cls.up_wrong, cls.up_b):
+        for server in (cls.up_a, cls.up_busy, cls.up_wrong, cls.up_array, cls.up_b):
             server.shutdown()
         cls.tmp.cleanup()
 
@@ -180,6 +189,108 @@ class EmbedPoolTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self._post("ping")
         self.assertEqual(caught.exception.code, 503)
+        self.assertEqual(_Embedder.hits, [])
+
+
+
+
+    def test_embed_rows_ok_rejects_malformed_batches(self):
+        good = json.dumps({"data": [{"embedding": [0.0] * 768}]}).encode()
+        self.assertTrue(self.mod._embed_rows_ok(good, 768, 1))
+        self.assertFalse(self.mod._embed_rows_ok(b"[]", 768, 1))  # top-level array, not an error crash
+        self.assertFalse(self.mod._embed_rows_ok(b'{"data": []}', 768, 1))  # empty batch
+        self.assertFalse(self.mod._embed_rows_ok(good, 768, 2))  # one vector for two inputs
+        self.assertFalse(self.mod._embed_rows_ok(good, 384, 1))  # wrong dims
+        self.assertFalse(self.mod._embed_rows_ok(b'{"data": [{"embedding": "x"}]}', 768, 1))
+        self.assertFalse(self.mod._embed_rows_ok(b"not-json", 768, 1))
+
+    def test_top_level_array_body_fails_over(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m", "dimensions": 768,
+            "members": [
+                {"name": "array", "url": self.base_array, "weight": 100},
+                {"name": "b", "url": self.base_b, "weight": 1},
+            ],
+        })
+        saved_random = self.mod.random
+        self.mod.random = _PickFirst
+        self.addCleanup(lambda: setattr(self.mod, "random", saved_random))
+        with self._post("ping") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(sum(1 for k, _ in _Embedder.hits if k == "array-body"), 1)
+        self.assertEqual(sum(1 for k, _ in _Embedder.hits if k == "b"), 1)
+
+    def test_conflicting_requested_dimensions_rejected(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m", "dimensions": 768,
+            "members": [{"name": "a", "url": self.base_a}],
+        })
+        body = json.dumps({"model": "embeddinggemma-300m", "input": "x", "dimensions": 256}).encode()
+        req = urllib.request.Request(self.embed_url, data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 400)
+        self.assertEqual(_Embedder.hits, [])
+
+    def test_requested_dimensions_validated_against_response(self):
+        # Pool has no fixed dims; the caller's requested dims gate the answer.
+        # The 768 member is marked down; the 384 member matches and serves.
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m",
+            "members": [
+                {"name": "a", "url": self.base_a, "weight": 100},
+                {"name": "wrong", "url": self.base_wrong, "weight": 1},
+            ],
+        })
+        saved_random = self.mod.random
+        self.mod.random = _PickFirst
+        self.addCleanup(lambda: setattr(self.mod, "random", saved_random))
+        body = json.dumps({"model": "embeddinggemma-300m", "input": "x", "dimensions": 384}).encode()
+        req = urllib.request.Request(self.embed_url, data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+            data = json.loads(resp.read().decode())
+        self.assertEqual(len(data["data"][0]["embedding"]), 384)
+
+    def test_extra_model_does_not_override_pool_model(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m", "dimensions": 768,
+            "members": [{"name": "a", "url": self.base_a, "extra": {"model": "rogue-model"}}],
+        })
+        with self._post("ping") as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(_Embedder.hits[0][1]["model"], "embeddinggemma-300m")
+
+    def test_non_object_extra_refuses_the_pool(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m",
+            "members": [{"name": "a", "url": self.base_a, "extra": ["rogue"]}],
+        })
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post("ping")
+        self.assertEqual(caught.exception.code, 503)
+        self.assertEqual(_Embedder.hits, [])
+
+    def test_query_string_still_routes_to_pool(self):
+        self._write_pool({
+            "enabled": True, "model": "embeddinggemma-300m", "dimensions": 768,
+            "members": [{"name": "a", "url": self.base_a}],
+        })
+        body = json.dumps({"model": "embeddinggemma-300m", "input": "x"}).encode()
+        req = urllib.request.Request(self.embed_url + "?ignored=1", data=body,
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(len(_Embedder.hits), 1)  # pool served it, not the MiniMax passthrough
+
+    def test_missing_body_on_pool_endpoint_is_400(self):
+        req = urllib.request.Request(self.embed_url, data=b"",
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(req, timeout=10)
+        self.assertEqual(caught.exception.code, 400)
         self.assertEqual(_Embedder.hits, [])
 
 

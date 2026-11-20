@@ -186,5 +186,28 @@ class PoolTargetsTest(unittest.TestCase):
         self.assertNotIn("secret-b", json.dumps(payload))
 
 
+
+    def test_extra_model_does_not_override_pool_model(self):
+        self._write_pool({
+            "enabled": True,
+            "model": "remnic-core",
+            "targets": [{"base": self.base_a, "slots": 1, "extra": {"model": "rogue-model"}}],
+        })
+        with self._post() as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(_Target.hits[0][1]["model"], "remnic-core")
+
+    def test_non_object_extra_refuses_the_pool(self):
+        self._write_pool({
+            "enabled": True,
+            "model": "remnic-core",
+            "targets": [{"base": self.base_a, "slots": 1, "extra": ["rogue"]}],
+        })
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            self._post()
+        self.assertEqual(caught.exception.code, 503)
+        self.assertEqual(_Target.hits, [])
+
+
 if __name__ == "__main__":
     unittest.main()

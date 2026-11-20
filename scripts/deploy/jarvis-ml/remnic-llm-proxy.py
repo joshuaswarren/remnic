@@ -45,6 +45,7 @@ import os
 import random
 import select
 import socket
+import ssl
 import sys
 import urllib.parse
 import threading
@@ -231,7 +232,24 @@ class _HTTPSHandler(urllib.request.HTTPSHandler):
         self._conn_factory = conn_factory
 
     def https_open(self, req):
-        return self.do_open(self._conn_factory, req, context=getattr(self, "_context", None))
+        # CPython 3.11 leaves _context None here (3.12+ fills it in), and a
+        # None context makes _UpstreamConnection skip TLS on port 443.
+        context = getattr(self, "_context", None) or ssl.create_default_context()
+        return self.do_open(self._conn_factory, req, context=context)
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that would carry Authorization to another origin or off TLS."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        old = urllib.parse.urlparse(req.full_url)
+        dest = urllib.parse.urlparse(new.full_url)
+        if (old.scheme, old.netloc) != (dest.scheme, dest.netloc) or dest.scheme != "https" and old.scheme == "https":
+            return None
+        return new
 
 
 def _tracked(conns, factory):
@@ -256,6 +274,7 @@ def _cancellable_open(req, timeout, downstream):
     opener = urllib.request.build_opener(
         _HTTPHandler(_tracked(conns, factory)),
         _HTTPSHandler(_tracked(conns, factory)),
+        _SafeRedirectHandler(),
     )
     cancel = threading.Event()
     watcher = None
@@ -265,8 +284,15 @@ def _cancellable_open(req, timeout, downstream):
     keep_response = False
     try:
         yield opener.open(req, timeout=timeout)
-    except urllib.error.HTTPError:
-        keep_response = True  # caller still needs err.read() on this response
+    except urllib.error.HTTPError as err:
+        # Drain and close the error body while the watcher is still active:
+        # after the finally joins the watcher, err.read() can hang or raise
+        # where sibling except clauses cannot route it to failover.
+        try:
+            err.drained_body = err.read()
+        finally:
+            err.close()
+        keep_response = False
         raise
     except CallerDisconnected:
         raise
@@ -352,14 +378,20 @@ def pool_targets(pool, default_slots):
         base = (entry.get("base") or entry.get("url")) if isinstance(entry, dict) else None
         if not base:
             return None, "a pool target has no base"
+        extra = entry.get("extra") or pool.get("extra") or {}
+        if not isinstance(extra, dict):
+            return None, "a pool target's extra must be an object"
+        key = entry.get("key") or pool.get("key")
+        if key is not None and not isinstance(key, str):
+            return None, "a pool target's key must be a string"
         targets.append({
             "base": base,
             "name": entry.get("name"),
-            "key": entry.get("key") or pool.get("key"),
+            "key": key,
             "model": entry.get("model") or required,
             "slots": int(entry.get("slots") or default_slots),
             "weight": int(entry.get("weight") or 1),
-            "extra": entry.get("extra") or pool.get("extra") or {},
+            "extra": extra,
         })
     declared = {t["model"] for t in targets if t["model"]}
     if len(declared) > 1:
@@ -394,8 +426,9 @@ def _acquire_target(pool_file, targets, downstream, deadline, queue_label):
             return None
         # Available targets tried in weighted-random order (weight: more free
         # capacity on a stronger box pulls proportionally more calls).
-        order = [t for t in targets
-                 if _target_down_until.get((pool_file, t["base"]), 0.0) <= now]
+        with _lock:
+            order = [t for t in targets
+                     if _target_down_until.get((pool_file, t["base"]), 0.0) <= now]
         ordered = []
         while order:
             total = sum(max(1, t["weight"]) for t in order)
@@ -410,17 +443,25 @@ def _acquire_target(pool_file, targets, downstream, deadline, queue_label):
         for target in ordered:
             sem = _target_semaphore(pool_file, target)
             if sem.acquire(blocking=False):
-                return target, sem
+                # Recheck under the lock: the failing request publishes the
+                # cooldown there before releasing its slot, so a target that
+                # went down while we waited is never claimed.
+                with _lock:
+                    still_up = _target_down_until.get((pool_file, target["base"]), 0.0) <= time.monotonic()
+                if still_up:
+                    return target, sem
+                sem.release()
         if _caller_eof(downstream, CANCEL_POLL):
             raise CallerDisconnected(f"downstream caller disconnected while queued for {queue_label}")
         # Bound the retry wait by the cancel cadence and the earliest wake
         # (cooldown end or deadline); a readable-but-not-EOF caller socket
         # makes the poll return instantly and would otherwise spin the CPU.
         wake = deadline
-        for t in targets:
-            until = _target_down_until.get((pool_file, t["base"]), 0.0)
-            if until > now:
-                wake = min(wake, until)
+        with _lock:
+            for t in targets:
+                until = _target_down_until.get((pool_file, t["base"]), 0.0)
+                if until > now:
+                    wake = min(wake, until)
         time.sleep(min(CANCEL_POLL, max(0.0, wake - now)))
 
 
@@ -446,15 +487,24 @@ def load_embed_pool():
     return pool if _pool_file_ok(pool) else None
 
 
-def _dimensions_ok(data, expected):
-    """True when every returned vector has the declared dimension count."""
-    if not expected:
-        return True
+def _embed_rows_ok(data, expected_dims, expected_count):
+    """True only for a well-formed embedding batch: an object with a `data`
+    list of exactly one vector per input, each matching the expected dims."""
     try:
-        rows = json.loads(data).get("data") or []
-    except ValueError:
+        parsed = json.loads(data)
+    except (ValueError, TypeError):
         return False
-    return all(len(row.get("embedding") or []) == expected for row in rows)
+    if not isinstance(parsed, dict):
+        return False
+    rows = parsed.get("data")
+    if not isinstance(rows, list) or len(rows) != expected_count:
+        return False
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("embedding"), list):
+            return False
+        if expected_dims and len(row["embedding"]) != expected_dims:
+            return False
+    return True
 
 
 def request_timeout_s(payload):
@@ -478,7 +528,7 @@ def post(base, path, payload, auth, downstream, timeout=CHAT_TIMEOUT_S):
         with _cancellable_open(req, timeout, downstream) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as err:
-        return err.code, err.read()
+        return err.code, getattr(err, "drained_body", b"")
     except CallerDisconnected:
         raise
     except (OSError, http.client.HTTPException) as err:
@@ -530,25 +580,34 @@ class Handler(BaseHTTPRequestHandler):
                     return 503, json.dumps({"error": busy_error}).encode()
                 target, sem = picked
                 target_key = (pool_file, target["base"])
-                auth = "Bearer " + target["key"] if target.get("key") else None
-                body = {**payload,
-                        "model": target["model"] or payload.get("model"),
-                        **target["extra"]}
-                with _lock:
-                    _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
-                    _health[active_field] += 1
+                mark_down = False
                 try:
-                    status, data = post(target["base"], self.path, body, auth, self.connection,
-                                        request_timeout_s(payload))
-                finally:
+                    auth = "Bearer " + target["key"] if target.get("key") else None
+                    body = {**payload,
+                            **target["extra"],
+                            "model": target["model"] or payload.get("model")}
                     with _lock:
-                        _target_in_flight[target_key] -= 1
-                        _health[active_field] -= 1
+                        _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
+                        _health[active_field] += 1
+                    try:
+                        # Cap the attempt by the pool deadline so a late attempt
+                        # cannot hold the slot past the aggregate budget.
+                        status, data = post(target["base"], self.path, body, auth, self.connection,
+                                            min(request_timeout_s(payload), max(0.0, deadline - time.monotonic())))
+                        mark_down = status in BUSY_STATUSES
+                    finally:
+                        with _lock:
+                            _target_in_flight[target_key] -= 1
+                            _health[active_field] -= 1
+                            # Publish the cooldown before the slot is released
+                            # so a queued waiter cannot claim a known-bad target.
+                            if mark_down:
+                                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
+                finally:
                     sem.release()
-                if status not in BUSY_STATUSES:
+                if not mark_down:
                     return status, data
-                # Failing target: skip it for the cooldown, try the next one.
-                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
+                # Failing target: skipped for the cooldown, try the next one.
                 if time.monotonic() >= deadline:
                     with _lock:
                         _health[last_503_field] = time.time()
@@ -576,7 +635,13 @@ class Handler(BaseHTTPRequestHandler):
             with _lock:
                 _health["embed_last_503_unix"] = time.time()
             return 503, json.dumps({"error": f"embed pool missing or disabled ({refuse_reason})"}).encode()
-        dimensions = pool.get("dimensions")
+        pool_dims = pool.get("dimensions")
+        req_dims = payload.get("dimensions")
+        if pool_dims and req_dims and req_dims != pool_dims:
+            return 400, json.dumps({"error": "requested dimensions conflict with the pool's fixed dimensions"}).encode()
+        expected_dims = req_dims or pool_dims
+        inputs = payload.get("input")
+        expected_count = len(inputs) if isinstance(inputs, list) else 1
         deadline = time.monotonic() + EMBED_DEADLINE_S
         with _lock:
             _health["embed_in_flight"] += 1
@@ -588,25 +653,36 @@ class Handler(BaseHTTPRequestHandler):
                         _health["embed_last_503_unix"] = time.time()
                     return 503, json.dumps({"error": "embed pool members unavailable; no fallback"}).encode()
                 target, sem = picked
-                auth = "Bearer " + target["key"] if target.get("key") else None
-                body = {**payload,
-                        "model": target["model"] or payload.get("model"),
-                        **target["extra"]}
                 target_key = (EMBED_POOL_FILE, target["base"])
-                with _lock:
-                    _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
+                mark_down = False
                 try:
-                    status, data = post(target["base"], self.path, body, auth, self.connection,
-                                        EMBED_TIMEOUT_S)
-                finally:
+                    auth = "Bearer " + target["key"] if target.get("key") else None
+                    body = {**payload,
+                            **target["extra"],
+                            "model": target["model"] or payload.get("model")}
                     with _lock:
-                        _target_in_flight[target_key] -= 1
+                        _target_in_flight[target_key] = _target_in_flight.get(target_key, 0) + 1
+                    try:
+                        # Per-attempt timeout is capped by the pool deadline so
+                        # a late attempt cannot hold the slot past the budget.
+                        status, data = post(target["base"], self.path, body, auth, self.connection,
+                                            min(EMBED_TIMEOUT_S, max(0.0, deadline - time.monotonic())))
+                        ok200 = status == 200 and _embed_rows_ok(data, expected_dims, expected_count)
+                        mark_down = (status in BUSY_STATUSES or status == TIMEOUT_STATUS
+                                     or (status == 200 and not ok200))
+                    finally:
+                        with _lock:
+                            _target_in_flight[target_key] -= 1
+                            # Publish cooldown before the slot is released so a
+                            # queued waiter cannot claim a known-bad target.
+                            if mark_down:
+                                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
+                finally:
                     sem.release()
-                if status == 200 and _dimensions_ok(data, dimensions):
+                if ok200:
                     return status, data
-                if status not in BUSY_STATUSES and status != TIMEOUT_STATUS and not (status == 200 and dimensions):
+                if not mark_down:
                     return status, data  # client errors (4xx) pass through unretried
-                _target_down_until[target_key] = time.monotonic() + FAIL_COOLDOWN_S
                 if time.monotonic() >= deadline:
                     with _lock:
                         _health["embed_last_503_unix"] = time.time()
@@ -667,10 +743,23 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else None
         try:
-            if method == "POST" and body and self.path.endswith("/chat/completions"):
-                status, data = self._route_chat(json.loads(body))
-            elif method == "POST" and body and self.path.endswith("/embeddings"):
-                status, data = self._embed_via_pool(json.loads(body))
+            # Match pool endpoints on the parsed path: a query string or an
+            # empty/invalid body must not fall through to the MiniMax
+            # passthrough, which would forward the caller's Authorization.
+            route_path = urllib.parse.urlparse(self.path).path
+            chat_op = method == "POST" and route_path.endswith("/chat/completions")
+            embed_op = method == "POST" and route_path.endswith("/embeddings")
+            if chat_op or embed_op:
+                try:
+                    payload = json.loads(body) if body else None
+                except ValueError:
+                    payload = None
+                if not isinstance(payload, dict):
+                    status, data = 400, json.dumps({"error": "pool endpoint requires a JSON object body"}).encode()
+                elif chat_op:
+                    status, data = self._route_chat(payload)
+                else:
+                    status, data = self._embed_via_pool(payload)
             else:
                 status, data = self._passthrough(method, body)
         except CallerDisconnected:
@@ -685,7 +774,7 @@ class Handler(BaseHTTPRequestHandler):
             with _cancellable_open(req, 60, self.connection) as resp:
                 return resp.status, resp.read()
         except urllib.error.HTTPError as err:
-            return err.code, err.read()
+            return err.code, getattr(err, "drained_body", b"")
         except (OSError, http.client.HTTPException) as err:
             return 502, json.dumps({"error": str(err)}).encode()
 

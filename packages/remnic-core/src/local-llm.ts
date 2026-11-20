@@ -24,6 +24,7 @@ import {
   SingleFlightProbe,
   type LocalLlmChatCompletionOptions,
   type LocalLlmChatCompletionResult,
+  buildLocalLlmRoutingHeaders,
 } from "./local-llm-helpers.js";
 import { NativeSchemaGate, type LocalLlmChatRequestBody } from "./local-llm-native-schema.js";
 import {
@@ -434,9 +435,7 @@ export class LocalLlmClient {
             continue;
           }
 
-          const authConfigured =
-            Boolean(this.config.localLlmApiKey) &&
-            this.config.localLlmAuthHeader !== false;
+          const authConfigured = Boolean(this.config.localLlmApiKey) && this.config.localLlmAuthHeader !== false;
           if (!sawLlamaCppSignal || (authConfigured && !modelsProbe.ok)) {
             continue;
           }
@@ -1005,13 +1004,7 @@ export class LocalLlmClient {
           }
         }
         const attemptTimeout = setTimeout(() => attemptAbort.abort(), effectiveTimeoutMs);
-        const routingHeaders: Record<string, string> = { "Content-Type": "application/json" };
-        if (operation !== "unspecified") {
-          routingHeaders["X-Remnic-Operation"] = operation;
-        }
-        if (options.priority) {
-          routingHeaders["X-Remnic-Priority"] = options.priority;
-        }
+        const routingHeaders = buildLocalLlmRoutingHeaders(operation, options.priority);
         const postAttempt = (bodyJson: string): Promise<Response> => this.chatTransport.post({
           url: chatUrl,
           headers: this.buildRequestHeaders(routingHeaders),
@@ -1068,8 +1061,7 @@ export class LocalLlmClient {
           break;
         }
         if (response.status >= 500 && attempt < maxAttempts) {
-          const nonRecoverableReason =
-            extractNonRecoverableBackendReasonFromErrorText(responseBody);
+          const nonRecoverableReason = extractNonRecoverableBackendReasonFromErrorText(responseBody);
           if (nonRecoverableReason) {
             this.markBackendUnavailable(
               nonRecoverableReason,

@@ -132,5 +132,27 @@ class ProxyRoutingTest(unittest.TestCase):
                 self.assertNotIn("base", block)
                 self.assertIn("base_host", block)
 
+
+    def test_chat_query_string_still_routes_to_pool(self):
+        url = self.proxy_url + "?ignored=1"
+        body = json.dumps({"messages": [{"role": "user", "content": "ping"}], "max_tokens": 8}).encode()
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json",
+                                              "X-Remnic-Operation": "extraction"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        self.assertEqual(len(_Recorder.hits), 1)
+        self.assertEqual(_Recorder.hits[0][0], "extraction")  # pool served, not MiniMax passthrough
+
+    def test_redirect_handler_refuses_credential_leaks(self):
+        handler = self.mod._SafeRedirectHandler()
+        req = urllib.request.Request("https://a.example/v1", data=b"{}",
+                                     headers={"Authorization": "Bearer secret"})
+        self.assertIsNone(handler.redirect_request(req, None, 302, "Found", {}, "https://b.example/v1"))
+        self.assertIsNone(handler.redirect_request(req, None, 302, "Found", {}, "http://a.example/v1"))
+        same = handler.redirect_request(req, None, 302, "Found", {}, "https://a.example/other")
+        self.assertIsNotNone(same)
+
+
 if __name__ == "__main__":
     unittest.main()
