@@ -41,7 +41,7 @@ export interface RemnicPiConfig {
   /**
    * A positive value limits the first turn's wait for semantic recall in ms.
    * If the budget expires, recall continues for the next turn.
-   * Zero waits for recall under the normal turn request timeout.
+   * Zero waits for recall within the turn request budget left after the startup probe join.
    */
   firstTurnRecallBudgetMs: number;
   /**

@@ -230,12 +230,16 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       // populated, the cached context is appended to the system prompt on
       // every turn for KV cache prefix stability (PR #2208).
       // Join the in-flight startup probe (bounded) so an unreachable daemon is skipped, not recalled.
+      const deadline = performance.now() + config.turnRequestTimeoutMs;
       if (!state.recallCompleted && config.recallEnabled && config.authToken) {
         await joinStartupProbe(state, config);
       }
       if (!state.recallCompleted && config.recallEnabled && config.authToken && client.isReachable()) {
         const promptText = typeof event.prompt === "string" && event.prompt.trim().length > 0 ? event.prompt : "";
-        if (promptText) {
+        const remainingMs = Math.floor(deadline - performance.now());
+        const waitForRecall = config.firstTurnRecallBudgetMs === 0;
+        const recallTimeoutMs = waitForRecall ? remainingMs : config.turnRequestTimeoutMs;
+        if (promptText && recallTimeoutMs > 0) {
           state.recallCompleted = true;
           // Capture the epoch now: a session_start during the in-flight recall
           // bumps startupEpoch and resets context, so a stale recall must not
@@ -250,7 +254,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               const recalled = await executeRecallWithBreaker(
                 (signal) =>
                   client.recall(promptText, session.sessionKey, session.cwd, {
-                    timeoutMs: config.turnRequestTimeoutMs,
+                    timeoutMs: recallTimeoutMs,
                     signal,
                   }),
                 recallTimeoutBreaker,
@@ -275,7 +279,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
               session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
             }
           })();
-          if (config.firstTurnRecallBudgetMs === 0) {
+          if (waitForRecall) {
             await recallPromise;
           } else {
             await settleWithinBudget(recallPromise, config.firstTurnRecallBudgetMs);
