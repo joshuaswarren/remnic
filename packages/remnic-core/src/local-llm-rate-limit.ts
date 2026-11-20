@@ -71,11 +71,20 @@ export function resolveRateLimitSettings(config: {
 }
 
 /**
+ * Pool-side refusals carry "pool missing or disabled" — a config failure,
+ * not endpoint saturation. Recording backoff for one would throttle every
+ * operation sharing the endpoint URL (e.g. extraction waits on a missing
+ * recall pool).
+ */
+const POOL_MISSING_PATTERN = /pool missing or disabled/i;
+
+/**
  * True for responses that mean "the endpoint is saturated, slow down":
  * 408/429/503, or a 5xx whose body carries LiteLLM's cooldown wording.
  * 400s are never rate limits (context-window errors mention fallbacks).
  */
 export function isRateLimitedResponse(status: number, bodyText: string): boolean {
+  if (POOL_MISSING_PATTERN.test(bodyText)) return false;
   if (RATE_LIMIT_STATUSES.has(status)) return true;
   return status >= 500 && RATE_LIMIT_BODY_PATTERN.test(bodyText);
 }

@@ -273,3 +273,22 @@ export class SingleFlightProbe {
     });
   }
 }
+
+/** Routing headers sent to the LLM proxy; named so the known Content-Type
+ * key survives alongside the optional operation/priority markers. */
+export type LocalLlmRoutingHeaders = Record<string, string> & {
+  "Content-Type": string;
+  "X-Remnic-Operation"?: string;
+  "X-Remnic-Priority"?: string;
+};
+
+/** Routing headers for the LLM proxy: operation marker and priority hint. */
+export function buildLocalLlmRoutingHeaders(
+  operation: string,
+  priority: string | undefined,
+): LocalLlmRoutingHeaders {
+  const headers: LocalLlmRoutingHeaders = { "Content-Type": "application/json" };
+  if (operation !== "unspecified") headers["X-Remnic-Operation"] = operation;
+  if (priority) headers["X-Remnic-Priority"] = priority;
+  return headers;
+}

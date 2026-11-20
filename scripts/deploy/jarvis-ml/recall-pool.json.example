@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "base": "http://127.0.0.1:REPLACE_RECALL_PORT",
+  "model": "REPLACE_WITH_RECALL_MODEL_ID",
+  "key": "",
+  "extra": {
+    "chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  }
+}

@@ -115,6 +115,13 @@ test("classifies 429/503/408 and LiteLLM cooldown bodies as rate limits, not 400
   assert.equal(isRateLimitedResponse(502, ""), false);
 });
 
+test("a pool-missing 503 is a config failure, not endpoint saturation (#3475)", () => {
+  assert.equal(isRateLimitedResponse(503, "recall pool missing or disabled; recall ops must not use the trained extraction pool (no fallback)"), false);
+  assert.equal(isRateLimitedResponse(503, "trained pool missing or disabled; trained-model-only policy forbids fallback (pool missing or disabled)"), false);
+  assert.equal(isRateLimitedResponse(503, "embed pool missing or disabled (pool missing or disabled)"), false);
+  assert.equal(isRateLimitedResponse(503, "embed pool members unavailable; no fallback"), true);
+});
+
 test("parses Retry-After as delta-seconds or HTTP-date", () => {
   assert.equal(parseRetryAfterMs("5"), 5_000);
   assert.equal(parseRetryAfterMs(" 1.5 "), 1_500);
