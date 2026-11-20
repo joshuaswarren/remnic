@@ -73,7 +73,7 @@ test("outbox survives a process restart: entries reload and drain in order", asy
   assert.equal(await after.size(), 0);
 });
 
-test("bounded outbox evicts the oldest entry with a visible notification, never silently", async () => {
+test("bounded outbox spills the oldest entry to disk with a visible notification, never silently", async () => {
   const outbox = new ObserveOutbox(tmpOutboxPath("bound"), { maxEntries: 2 });
   const notifications: Array<{ message: string; level: string }> = [];
   const notify = (message: string, level: "info" | "warning" | "error") => notifications.push({ message, level });
@@ -87,9 +87,9 @@ test("bounded outbox evicts the oldest entry with a visible notification, never 
   await outbox.drain(async (entry) => {
     delivered.push(entry.messages[0].content);
   });
-  assert.deepEqual(delivered, ["two", "three"]);
+  assert.deepEqual(delivered, ["one", "two", "three"], "the overflowed capture survives in the spill and replays last");
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].message, /dropped 1 oldest/);
+  assert.match(notifications[0].message, /parked 1 incoming capture\(s\) in the durable spill/);
   assert.equal(notifications[0].level, "warning");
 });
 
@@ -456,17 +456,17 @@ test("a drain that finds another drain running reports skipped so callers do not
   assert.equal(done.skipped, undefined, "the real drain is not marked skipped");
 });
 
-test("every eviction warns with the count of captures dropped, not just the first", async () => {
+test("every spill warns with the count of captures moved, not just the first", async () => {
   const outbox = new ObserveOutbox(tmpOutboxPath("evict-each"), { maxEntries: 2 });
   const warnings: string[] = [];
   const notify = (message: string, level: "info" | "warning" | "error") => {
     if (level === "warning") warnings.push(message);
   };
   for (const c of ["a", "b", "c", "d", "e"]) await outbox.enqueue(entryInput(c), notify);
-  assert.equal(warnings.length, 3, "one warning for each of the three evictions");
+  assert.equal(warnings.length, 3, "one warning for each of the three spills");
   for (const warning of warnings) {
-    assert.match(warning, /dropped 1 oldest queued capture\(s\)/);
-    assert.match(warning, /2-entry bound/);
+    assert.match(warning, /parked 1 incoming capture\(s\) in the durable spill/);
+    assert.match(warning, /observe-outbox.*\.spill|\.spill/);
   }
 });
 
@@ -655,4 +655,118 @@ test("pendingHashes only suppresses captures a drain on this destination would d
   const forB = await outbox.pendingHashes("http://daemon-b:4318");
   assert.deepEqual([...forB].sort(), ["hash-legacy-capture", "hash-own-capture"], "own + unbound entries suppress; foreign do not");
   assert.equal((await outbox.pendingHashes()).size, 3, "no destination = general drainer: every queued capture suppresses");
+});
+
+function sessionInput(sessionKey: string, content: string, hash = `hash-${content}`) {
+  return { ...entryInput(content, hash), sessionKey };
+}
+
+test("#3520: overflow keeps the newest captures in a durable spill file instead of losing them", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill"), { maxEntries: 2 });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const notify = (message: string, level: "info" | "warning" | "error") => notifications.push({ message, level });
+  for (const c of ["one", "two", "three", "four"]) await outbox.enqueue(entryInput(c), notify);
+
+  assert.equal(await outbox.size(), 2, "the hot queue stays bounded");
+  const spillPath = `${outbox.filePath}.spill`;
+  const spilled = fs
+    .readFileSync(spillPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      // SAFETY: the lines were serialized by this outbox's own spill writer
+      // from the entry shape the test enqueued.
+      return (JSON.parse(line) as ObserveOutboxEntry).messages[0].content;
+    });
+  assert.deepEqual(spilled, ["three", "four"], "overflow arrivals park in the durable spill, in order");
+  assert.ok(
+    notifications.some((n) => n.level === "warning" && /spill/.test(n.message)),
+    "the move to spill is surfaced"
+  );
+  assert.ok(!notifications.some((n) => n.level === "error"), "nothing is dropped while the spill has room");
+
+  const delivered: string[] = [];
+  const result = await outbox.drain(async (entry) => {
+    delivered.push(entry.messages[0].content);
+  });
+  assert.deepEqual(delivered, ["one", "two", "three", "four"], "spilled entries replay after the hot window; global order preserved");
+  assert.equal(result.delivered, 4);
+  assert.equal(result.pending, 0);
+  assert.equal(
+    fs.existsSync(spillPath) ? fs.readFileSync(spillPath, "utf8").trim() : "",
+    "",
+    "an emptied spill leaves nothing behind"
+  );
+});
+
+test("#3520: spilled captures survive a process restart", async () => {
+  const filePath = tmpOutboxPath("spill-restart");
+  const before = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await before.enqueue(entryInput("old"));
+  await before.enqueue(entryInput("new"));
+
+  const after = new ObserveOutbox(filePath, { maxEntries: 1 });
+  const delivered: string[] = [];
+  await after.drain(async (entry) => {
+    delivered.push(entry.messages[0].content);
+  });
+  assert.deepEqual(delivered, ["old", "new"], "a fresh instance replays the spill in order");
+});
+
+test("#3520: captures drop only past the spill bound, with a loud count", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-bound"), { maxEntries: 1, maxSpillEntries: 2 });
+  const notifications: Array<{ message: string; level: string }> = [];
+  const notify = (message: string, level: "info" | "warning" | "error") => notifications.push({ message, level });
+  for (const c of ["a", "b", "c", "d", "e"]) await outbox.enqueue(entryInput(c), notify);
+
+  const errors = notifications.filter((n) => n.level === "error");
+  assert.equal(errors.length, 2, "one loud notice per drop");
+  for (const error of errors) {
+    assert.match(error.message, /dropped 1 incoming capture/);
+    assert.match(error.message, /spill/i);
+  }
+  const status = await outbox.status();
+  assert.equal(status.dropped, 2, "the loss is counted");
+
+  const delivered: string[] = [];
+  await outbox.drain(async (entry) => {
+    delivered.push(entry.messages[0].content);
+  });
+  assert.deepEqual(delivered, ["a", "b", "c"], "d,e dropped at the bound; the survivors still replay in order");
+});
+
+test("#3520: a session pinned at the daemon's cap cannot starve other sessions' replays", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("per-session"), { maxEntries: 10 });
+  await outbox.enqueue(sessionInput("sess-A", "a1"));
+  await outbox.enqueue(sessionInput("sess-B", "b1"));
+  await outbox.enqueue(sessionInput("sess-B", "b2"));
+
+  const sent: string[] = [];
+  let aAttempts = 0;
+  const result = await outbox.drain(
+    async (entry) => {
+      if (entry.sessionKey === "sess-A") {
+        aAttempts += 1;
+        throw new RemnicHttpError(503, "at capacity", "capture_capacity_exceeded");
+      }
+      sent.push(entry.messages[0].content);
+    },
+    { sleep: async () => {} }
+  );
+
+  assert.deepEqual(sent, ["b1", "b2"], "other sessions replay behind the pinned head");
+  assert.equal(result.delivered, 2);
+  assert.equal(result.pending, 1, "only the pinned session's capture remains");
+  assert.equal(aAttempts, 4, "the pinned session keeps its full per-drain retry budget (one attempt per pass)");
+});
+
+test("#3520: status reports captures parked in the spill file", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("spill-status"), { maxEntries: 1 });
+  await outbox.enqueue(entryInput("kept"));
+  await outbox.enqueue(entryInput("spilled-a"));
+  await outbox.enqueue(entryInput("spilled-b"));
+
+  const status = await outbox.status();
+  assert.equal(status.pending, 1);
+  assert.equal(status.spilled, 2);
 });

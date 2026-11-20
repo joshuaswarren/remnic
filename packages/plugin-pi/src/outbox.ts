@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, stat } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, unlink } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -128,6 +128,8 @@ function entryEligibleForDestination(entry: ObserveOutboxEntry, destination: str
 
 export type OutboxStatus = {
   pending: number;
+  /** Captures parked in the durable spill file; omitted when the file cannot be read. */
+  spilled?: number;
   /** Age of the oldest queued entry, or null when empty. */
   oldestAgeMs: number | null;
   queued: number;
@@ -147,6 +149,13 @@ export type DrainResult = {
 };
 
 const DEFAULT_MAX_ENTRIES = 200;
+/**
+ * Entries evicted from the hot queue are parked in `<file>.spill` (same lock,
+ * same durability) instead of being lost, and refill the queue as it drains
+ * (#3520). The spill is bounded too — only captures pushed past the disk bound
+ * actually drop, with a loud counted notice.
+ */
+const DEFAULT_MAX_SPILL_ENTRIES = 5_000;
 const DEFAULT_MAX_ATTEMPTS = 4;
 /** Failed deliveries after which a retry-ambiguous entry is dropped so a deterministic failure cannot pin the FIFO (#3381). */
 const MAX_ENTRY_FAILURES = 8;
@@ -183,20 +192,30 @@ const LOCK_MAX_WAIT_MS = 5_000;
 export class ObserveOutbox {
   readonly filePath: string;
   private readonly lockPath: string;
+  private readonly spillPath: string;
   private readonly maxEntries: number;
+  private readonly maxSpillEntries: number;
   private readonly lockMaxWaitMs: number;
   private entries: ObserveOutboxEntry[] = [];
   /** ino:size:mtime of the file as last read or written by this instance. */
   private diskSignature: string | null = null;
+  /** ino:size:mtime of the spill file at the last count this instance took. */
+  private spillSignature: string | null = null;
+  private spillCount: number | null = null;
   private writeChain: Promise<void> = Promise.resolve();
   private drainInProgress = false;
   private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
 
-  constructor(filePath: string, options: { maxEntries?: number; lockMaxWaitMs?: number } = {}) {
+  constructor(
+    filePath: string,
+    options: { maxEntries?: number; maxSpillEntries?: number; lockMaxWaitMs?: number } = {}
+  ) {
     this.filePath = filePath;
     this.lockPath = `${filePath}.lock`;
+    this.spillPath = `${filePath}.spill`;
     this.lockMaxWaitMs = options.lockMaxWaitMs ?? LOCK_MAX_WAIT_MS;
     this.maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    this.maxSpillEntries = options.maxSpillEntries ?? DEFAULT_MAX_SPILL_ENTRIES;
   }
 
   private async signature(): Promise<string | null> {
@@ -262,12 +281,153 @@ export class ObserveOutbox {
     await writeFileAtomically(this.filePath, data ? `${data}\n` : "", undefined, 0o600);
   }
 
+  private async spillSig(): Promise<string | null> {
+    const info = await stat(this.spillPath).catch(() => null);
+    return info ? `${info.ino}:${info.size}:${info.mtimeMs}` : null;
+  }
+
+  /**
+   * Parse the spill file: the parked captures and how many corrupt lines were
+   * skipped. Null when no spill exists. A present-but-unreadable file throws —
+   * the next append or refill would otherwise write over captures it cannot see,
+   * the same fail-closed rule as the queue file itself.
+   */
+  private async readSpill(): Promise<{ entries: ObserveOutboxEntry[]; skipped: number } | null> {
+    let raw: string;
+    try {
+      raw = await readFile(this.spillPath, "utf8");
+    } catch (err) {
+      // SAFETY: readFile rejects with a Node system error carrying `.code`;
+      // ENOENT is the only absence treated as an empty spill.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+    const entries: ObserveOutboxEntry[] = [];
+    let skipped = 0;
+    for (const line of raw.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const entry = parseOutboxEntry(trimmed);
+      if (entry) entries.push(entry);
+      else skipped += 1;
+    }
+    return { entries, skipped };
+  }
+
+  /**
+   * Parsed entries parked in the spill, signature-cached like the queue's
+   * diskSignature: a matching signature means no process touched the file since
+   * this instance last counted, so the cached count is authoritative. Runs
+   * inside the file lock on every mutating path, so the count and the write it
+   * guards cannot race another writer.
+   */
+  private async countSpill(): Promise<number> {
+    const signature = await this.spillSig();
+    if (signature === null) {
+      this.spillSignature = null;
+      this.spillCount = 0;
+      return 0;
+    }
+    if (signature !== this.spillSignature || this.spillCount === null) {
+      const spill = await this.readSpill();
+      this.spillCount = spill?.entries.length ?? 0;
+      this.spillSignature = signature;
+    }
+    return this.spillCount;
+  }
+
+  /** Replace the spill file atomically (0600); an empty remainder removes it. */
+  private async writeSpill(entries: ObserveOutboxEntry[]): Promise<void> {
+    if (entries.length === 0) {
+      await unlink(this.spillPath).catch(() => undefined);
+      this.spillSignature = null;
+      this.spillCount = 0;
+      return;
+    }
+    const data = entries.map((entry) => JSON.stringify(entry)).join("\n");
+    await writeFileAtomically(this.spillPath, `${data}\n`, undefined, 0o600);
+    this.spillSignature = await this.spillSig();
+    this.spillCount = entries.length;
+  }
+
+  /**
+   * Park incoming captures that cannot join the hot queue in the durable spill
+   * file instead of losing them (#3520). Spill entries are always NEWER than
+   * everything in the queue — arrivals spill whenever the queue is full or the
+   * spill is already non-empty — so a tail refill keeps global FIFO. The append
+   * happens under the same lock as every other mutation. Past maxSpillEntries
+   * the incoming capture itself drops — loudly, with the count.
+   */
+  private async appendToSpill(overflow: ObserveOutboxEntry[], notify?: OutboxNotify): Promise<void> {
+    if (overflow.length === 0) return;
+    const before = await this.countSpill();
+    const fits = Math.max(0, this.maxSpillEntries - before);
+    const parked = overflow.slice(0, fits);
+    const lost = overflow.length - parked.length;
+    if (parked.length > 0) {
+      const lines = parked.map((entry) => JSON.stringify(entry)).join("\n");
+      await appendFile(this.spillPath, `${lines}\n`, { mode: 0o600 });
+      this.spillCount = before + parked.length;
+      this.spillSignature = await this.spillSig();
+      notify?.(
+        `Remnic observe outbox full: parked ${parked.length} incoming capture(s) in the durable spill file ${path.basename(this.spillPath)}; they replay once the older backlog drains`,
+        "warning"
+      );
+    }
+    if (lost > 0) {
+      this.counters.dropped += lost;
+      notify?.(
+        `Remnic observe outbox spill bound exceeded: permanently dropped ${lost} incoming capture(s) to stay under the ${this.maxSpillEntries}-entry spill bound (${path.basename(this.spillPath)}); these captures are LOST`,
+        "error"
+      );
+    }
+  }
+
+  /**
+   * Pull parked captures back onto the hot queue's tail when it has room
+   * (#3520). Spilled entries are the arrivals that came AFTER the queued ones,
+   * so appending them preserves global FIFO. The queue file is persisted
+   * BEFORE the spill is rewritten: a crash between the two writes leaves the
+   * moved entries in both files (nonce-deduplicated) instead of dropping them.
+   */
+  private async refillFromSpill(notify?: OutboxNotify): Promise<void> {
+    if (this.entries.length >= this.maxEntries) return;
+    if ((await this.spillSig()) === null) return;
+    await this.mutate(async () => {
+      const room = this.maxEntries - this.entries.length;
+      if (room <= 0) return;
+      const spill = await this.readSpill();
+      if (!spill || spill.entries.length === 0) {
+        // A spill of only corrupt lines would otherwise linger forever: clear it
+        // under the lock and say so, matching the queue file's visible skip.
+        if (spill && spill.skipped > 0) {
+          await this.writeSpill([]);
+          notify?.(
+            `Remnic observe outbox: dropped ${spill.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the spill file held no valid captures`,
+            "warning"
+          );
+        }
+        return;
+      }
+      const moved = spill.entries.slice(0, room);
+      this.entries.push(...moved);
+      await this.persist();
+      await this.writeSpill(spill.entries.slice(room));
+      if (spill.skipped > 0) {
+        notify?.(
+          `Remnic observe outbox: skipped ${spill.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the remaining spilled captures were preserved`,
+          "warning"
+        );
+      }
+    }, notify);
+  }
+
   /**
    * Serialize in-process, then take the cross-process file lock, re-read what is on
    * disk and apply `update` to THAT before the atomic rewrite. A lock that cannot be
    * acquired fails the mutation rather than writing over another process's entries.
    */
-  private mutate(update: () => void, notify?: OutboxNotify): Promise<void> {
+  private mutate(update: () => void | Promise<void>, notify?: OutboxNotify): Promise<void> {
     const run = this.writeChain.then(async () => {
       // New parents are private from creation (#3381). A PRE-EXISTING directory keeps
       // its mode: observeOutboxPath may point into a shared directory, and chmod'ing it
@@ -283,7 +443,7 @@ export class ObserveOutbox {
           // an unreadable one keeps failing closed below instead of being repaired
           // into a silent empty.
           await this.refresh(notify, true);
-          update();
+          await update();
           await this.persist();
           this.diskSignature = await this.signature();
         },
@@ -302,6 +462,9 @@ export class ObserveOutbox {
    * Dedupe keys of everything currently queued that a drain on `destination`
    * would deliver. Entries bound to another daemon do not suppress the live
    * capture for this one — they are never delivered here (#3504 review).
+   * Entries parked in the spill file are not counted: reading the whole spill
+   * on every call is not worth it when the bound keeps any live duplicate of
+   * a spilled capture bounded too (#3520).
    */
   async pendingHashes(destination?: string): Promise<Set<string>> {
     await this.refreshOrKeepLastKnown();
@@ -316,30 +479,33 @@ export class ObserveOutbox {
   async status(now: () => number = Date.now): Promise<OutboxStatus> {
     await this.refreshOrKeepLastKnown();
     const oldest = this.entries[0] ? Date.parse(this.entries[0].queuedAt) : Number.NaN;
-    return {
+    const spilled = await this.countSpill().catch(() => undefined);
+    const status: OutboxStatus = {
       pending: this.entries.length,
       oldestAgeMs: Number.isFinite(oldest) ? Math.max(0, now() - oldest) : null,
       ...this.counters,
     };
+    if (spilled !== undefined) status.spilled = spilled;
+    return status;
   }
 
   async enqueue(input: ObserveOutboxEntryInput, notify?: OutboxNotify): Promise<void> {
-    await this.mutate(() => {
+    await this.mutate(async () => {
       const id = randomUUID();
       this.counters.queued += 1;
-      this.entries.push({
+      const entry: ObserveOutboxEntry = {
         id,
         queuedAt: new Date().toISOString(),
         ...input,
         messages: boundedReplayMessages(input.messages, notify),
         replayNonce: input.replayNonce ?? id,
-      });
-      if (this.entries.length > this.maxEntries) {
-        const evicted = this.entries.splice(0, this.entries.length - this.maxEntries).length;
-        notify?.(
-          `Remnic observe outbox full: dropped ${evicted} oldest queued capture(s) to stay under the ${this.maxEntries}-entry bound`,
-          "warning"
-        );
+      };
+      // FIFO across both files: a hot queue at bound, or any parked spill,
+      // means this capture is newer than the backlog — it must not jump ahead.
+      if (this.entries.length >= this.maxEntries || (await this.countSpill()) > 0) {
+        await this.appendToSpill([entry], notify);
+      } else {
+        this.entries.push(entry);
       }
     }, notify);
   }
@@ -371,6 +537,12 @@ export class ObserveOutbox {
    * and keep the whole queue. Permanent rejections are dropped with a visible
    * notification and never retried. The file is re-read before every send, so
    * entries queued by another process meanwhile are delivered or kept, never lost.
+   *
+   * Two additions for the process-global file (#3520): entries that overflow the
+   * hot bound are refilled from the durable spill as room appears, and a session
+   * whose entry fails retryably is skipped for the rest of that drain pass — one
+   * pinned session keeps its own retry budget (the passes still add up to
+   * `maxAttempts`) but can no longer starve every other session behind it.
    */
   async drain(send: (entry: ObserveOutboxEntry) => Promise<void>, options: DrainOptions = {}): Promise<DrainResult> {
     const notify = options.notify;
@@ -395,6 +567,8 @@ export class ObserveOutbox {
       });
     const now = options.now ?? Date.now;
     const warnedStale = new Set<string>();
+    /** Sessions whose head entry already failed this pass; retried on the next pass (#3520). */
+    const skippedSessions = new Set<string>();
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
@@ -405,11 +579,21 @@ export class ObserveOutbox {
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
+        await this.refillFromSpill(notify);
         // Entries bound to another daemon are skipped, never sent: the file is
         // shared per machine and a pane repointed elsewhere must not replay
-        // someone else's conversations to the wrong destination (#3381).
-        const entry = this.entries.find(eligible);
-        if (!entry) break;
+        // someone else's conversations to the wrong destination (#3381). An
+        // entry whose session already failed this pass is skipped too, so a
+        // pinned session cannot starve the others (#3520).
+        const entry = this.entries.find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
+        if (!entry) {
+          // Nothing else to try this pass. If every remaining entry belongs to a
+          // session that already failed, a new pass gives each of them one more
+          // attempt — the per-drain budget still bounds the total.
+          if (skippedSessions.size === 0) break;
+          skippedSessions.clear();
+          continue;
+        }
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
           warnedStale.add(entry.id);
@@ -444,6 +628,11 @@ export class ObserveOutbox {
           }
           failures += 1;
           this.counters.retried += 1;
+          // A retryable refusal parks this SESSION for the rest of the pass —
+          // the file is process-global, so one session pinned at the daemon's
+          // cap must not starve the entries queued behind it (#3520). The entry
+          // stays queued and gets another attempt on the next pass.
+          skippedSessions.add(entry.sessionKey);
           // Ambiguous failures accrue a persisted per-entry count: a daemon
           // that fails the same capture every time (a deterministic 500) must
           // not pin the FIFO forever, so the entry leaves the queue at the cap
