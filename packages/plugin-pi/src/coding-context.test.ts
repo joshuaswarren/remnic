@@ -144,6 +144,10 @@ test("an inconclusive probe retains the posted binding — only a confirmed non-
   // A transient probe failure (timeout/spawn) must not clear the valid binding.
   await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: null, conclusive: false }) });
   assert.equal(client.posts.length, 1, "inconclusive probe must not post a clear");
+  // A partially resolved probe (root found, origin timed out → degraded
+  // context) is still inconclusive and must not overwrite the binding either.
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_B, conclusive: false }) });
+  assert.equal(client.posts.length, 1, "degraded inconclusive context must not replace the binding");
   assert.notEqual(state.lastCodingContextSignature, null, "signature stays latched for retry");
   // A confirmed non-repo still clears.
   await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => ({ context: null, conclusive: true }) });

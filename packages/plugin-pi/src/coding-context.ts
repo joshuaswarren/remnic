@@ -106,8 +106,8 @@ export async function syncSessionCodingContext(options: SyncCodingContextOptions
   let resolved: GitContext | null;
   try {
     const probe = await resolve(cwd);
-    if (probe.context === null && !probe.conclusive) {
-      return; // probe failed (timeout/spawn) — keep the posted binding, retry next sync
+    if (!probe.conclusive) {
+      return; // probe failed or degraded (timeout/spawn) — keep the posted binding, retry next sync
     }
     resolved = probe.context;
   } catch {
