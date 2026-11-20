@@ -205,6 +205,87 @@ test("default Pi extension creates isolated state for each host invocation", asy
   assert.equal(recallBodies.length, 2);
 });
 
+test("default first turn includes recall context after more than one second", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-first-turn-default-"));
+  const configPath = path.join(root, "remnic.config.json");
+  fs.writeFileSync(configPath, JSON.stringify({
+    authToken: "test-token",
+    observeEnabled: false,
+    compactionEnabled: false,
+    mcpToolsEnabled: false,
+    statusEnabled: false,
+  }));
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  globalThis.fetch = async (input) => {
+    if (!String(input).endsWith("/engram/v1/recall")) {
+      return Response.json({ ok: true, status: "ok", namespace: "default" });
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 1200));
+    return Response.json({ context: "remembered context" });
+  };
+
+  const { pi, emit } = makePiHarness();
+  await createRemnicPiExtension({ configPath, env: {} })(pi);
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "slow-default-recall" },
+  };
+  await emit("session_start", {}, ctx);
+  const result = await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
+  assert.deepEqual(result, { systemPrompt: "\n\nremembered context" });
+});
+
+test("default first turn spends only the remaining turn budget on recall after startup", { timeout: 2000 }, async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  let live = Promise.withResolvers<Response>();
+  t.mock.method(globalThis, "fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/live")) return live.promise;
+    if (url.endsWith("/engram/v1/recall")) {
+      const signal = init?.signal;
+      assert.ok(signal, "recall has an abort signal");
+      return new Promise<Response>((_, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    }
+    return Response.json({ ok: true, status: "ok", namespace: "default" });
+  });
+  const { pi, emit } = makePiHarness();
+  await createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 100,
+      firstTurnRecallBudgetMs: 0,
+    },
+  })(pi);
+  const notifications: string[] = [];
+  for (const [startupMs, recallMs] of [[80, 20], [99, 1], [100, 0]] as const) {
+    const ctx = {
+      cwd: "/tmp/remnic-pi",
+      sessionManager: { getSessionId: () => `startup-and-recall-budget-${startupMs}` },
+      ui: { notify: (message: string) => notifications.push(message) },
+    };
+    live = Promise.withResolvers<Response>();
+    await emit("session_start", {}, ctx);
+    const firstTurn = emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx);
+    now += startupMs;
+    live.resolve(Response.json({ ok: true }));
+    assert.equal(await firstTurn, undefined);
+    assert.deepEqual(
+      notifications.splice(0),
+      recallMs === 0 ? [] : [`Remnic recall unavailable: Remnic request timed out after ${recallMs}ms`],
+    );
+  }
+});
+
 test("first turn is not blocked by a slow recall; context lands on a later turn (#3273)", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-first-turn-"));
   const configPath = path.join(root, "remnic.config.json");

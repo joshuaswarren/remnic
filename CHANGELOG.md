@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Pi waits for semantic recall on the first turn by default. A positive `firstTurnRecallBudgetMs` still lets the turn proceed before recall finishes (#3493).
+
 ## [v10.0.136] — 2026-11-17
 
 ### Fixed

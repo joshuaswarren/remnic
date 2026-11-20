@@ -89,7 +89,7 @@ Supported config keys:
 | `statusEnabled` | `true` | Set Pi UI status from daemon health |
 | `requestTimeoutMs` | `60000` | HTTP/MCP request timeout for recall/observe/compaction/commands |
 | `startupRequestTimeoutMs` | `1000` | Shorter timeout for startup-sensitive probes (MCP `tools/list` registration and the `session_start` health/status check) so a slow or offline daemon can't stall Pi boot |
-| `firstTurnRecallBudgetMs` | `1000` | How long the first turn may wait on semantic recall before proceeding without context; a slower recall finishes in the background and is injected from the next turn |
+| `firstTurnRecallBudgetMs` | `0` | By default, the startup probe join and recall share the turn request timeout. Set a positive budget in ms to wait less and let recall continue in the background for the next turn. |
 | `recallTimeoutThreshold` | `7` | Permanently disable recall after this many explicit recall timeouts within the rolling window; must be a positive integer no greater than `recallTimeoutWindow` |
 | `recallTimeoutWindow` | `10` | Number of most recent recall calls included in the rolling timeout window; must be a positive integer at least `recallTimeoutThreshold`. Invalid settings fail config loading. |
 
@@ -113,7 +113,7 @@ Example:
   "statusEnabled": true,
   "requestTimeoutMs": 60000,
   "startupRequestTimeoutMs": 1000,
-  "firstTurnRecallBudgetMs": 1000,
+  "firstTurnRecallBudgetMs": 0,
   "recallTimeoutThreshold": 7,
   "recallTimeoutWindow": 10
 }
