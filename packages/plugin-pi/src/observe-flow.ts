@@ -84,7 +84,11 @@ export async function drainObserveOutbox(
   bounded = false,
   stateForSession?: (sessionKey: string) => OutboxDrainTarget | undefined,
 ): Promise<void> {
-  const drainOptions: DrainOptions = { notify: (message, level) => session.notify(message, level) };
+  const drainOptions: DrainOptions = {
+    notify: (message, level) => session.notify(message, level),
+    // Entries enqueued for a different daemon stay queued for it (#3381).
+    destination: config.remnicDaemonUrl,
+  };
   if (bounded) drainOptions.maxAttempts = 1;
   // Why the drain stopped, from the last send. The drain stops on the first
   // 401/403 and already tells the user to fix the credentials (#3381).
@@ -128,9 +132,11 @@ export async function drainObserveOutbox(
       }
     }
   }, drainOptions);
-  if (result.pending > 0 && !result.skipped && stopReason !== "blocked") {
+  // Entries bound to another daemon are pending for IT, not saturation here.
+  const pendingForUs = result.pending - (result.foreign ?? 0);
+  if (pendingForUs > 0 && !result.skipped && stopReason !== "blocked") {
     session.notify(
-      `Remnic observe outbox: ${result.pending} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
+      `Remnic observe outbox: ${pendingForUs} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
       "warning",
     );
   }

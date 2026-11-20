@@ -77,15 +77,18 @@ test("a live observe returns without waiting for a refused queued replay", async
     globalThis.fetch = originalFetch;
   });
   let replayAttempts = 0;
+  const releaseReplay = Promise.withResolvers<void>();
   globalThis.fetch = async (_input, init) => {
     // SAFETY: this test's own fetch mock serialized the request body; only messages[0].content is read.
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: Array<{ content?: string }> };
     if (body.messages?.[0]?.content === "live turn") return new Response(JSON.stringify({ ok: true }), { status: 200 });
     replayAttempts += 1;
-    return new Response(JSON.stringify({ error: "busy", code: "buffer_admission_refused" }), {
-      status: 503,
-      headers: { "retry-after": "5" },
-    });
+    // The first replay is held open until the test's assertions are done: the
+    // live hook cannot wait even on a replay that never answers. Releasing it
+    // answers 401 so the drain stops on a blocked refusal — a 503 would park on
+    // its unref'd retry sleep and leave this test awaiting an empty event loop.
+    if (replayAttempts === 1) await releaseReplay.promise;
+    return new Response(JSON.stringify({ error: "token rejected" }), { status: 401 });
   };
 
   const notifications: Array<{ message: string; level: string }> = [];
@@ -105,6 +108,14 @@ test("a live observe returns without waiting for a refused queued replay", async
   assert.equal(await outbox.size(), 1, "the refused entry is still queued, never dropped");
   assert.ok(!notifications.some((n) => n.level === "error"), "no error for a successful live observe");
   assert.ok(replayAttempts <= 4, "the background drain stays bounded");
+
+  // Finish the background drain under this test's own mock before fetch is
+  // restored (#3381 item 9): the released attempt's 401 stops the drain on the
+  // blocked path, which keeps the queue and does not sleep.
+  releaseReplay.resolve();
+  await settleObserveOutboxDrain(outbox);
+  assert.equal(await outbox.size(), 1, "a blocked refusal keeps the capture queued");
+  assert.ok(replayAttempts <= 4, "the drain made at most its bounded attempts");
 });
 
 test("a drain failure never reports the delivered live turn as failed or re-queues it", async (t) => {

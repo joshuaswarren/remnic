@@ -37,11 +37,23 @@ export type ObserveOutboxEntryInput = {
    * existed — those replay under the drainer's principal, same as today.
    */
   principal?: string;
+  /**
+   * The daemon URL this capture was enqueued for (#3381): the outbox file is
+   * shared per machine, so a pane repointed at a second daemon must not replay
+   * another destination's conversations to it. Absent on pre-field entries —
+   * those replay under any destination, same as today.
+   */
+  destination?: string;
 };
 
 export type ObserveOutboxEntry = ObserveOutboxEntryInput & {
   id: string;
   queuedAt: string;
+  /**
+   * Failed delivery attempts, persisted so a deterministic retry-ambiguous
+   * failure still leaves the FIFO once it crosses MAX_ENTRY_FAILURES (#3381).
+   */
+  failedAttempts?: number;
 };
 
 export type OutboxNotify = (message: string, level: "info" | "warning" | "error") => void;
@@ -62,9 +74,13 @@ export function classifyObserveFailure(err: Error): ObserveFailureClass {
     // 503 is server backpressure (capacity admission or not-ready) and 429 a write
     // quota (observe counts against it); the capture was never executed, so a keyed
     // retry is safe. 401/403 park the queue. Any other HTTP answer is a semantic
-    // rejection (bad payload, storage-target 400) that no retry can fix.
+    // rejection (bad payload, storage-target 400) that no retry can fix — except
+    // an unrecognized 5xx, which is far more often a transient internal_error
+    // than a verdict on the payload (#3381): it is retry-ambiguous, and the
+    // per-entry failure cap is what keeps a deterministic 5xx from pinning the FIFO.
     if (RETRYABLE_HTTP_STATUSES.has(err.status)) return "retry-capacity";
     if (AUTH_HTTP_STATUSES.has(err.status)) return "blocked";
+    if (err.status >= 500) return "retry-ambiguous";
     return "permanent";
   }
   if (err instanceof RemnicRequestTimeoutError) return "retry-ambiguous";
@@ -87,6 +103,12 @@ export type DrainOptions = {
   notify?: OutboxNotify;
   /** Clock seam for the stale-replay warning (default Date.now). */
   now?: () => number;
+  /**
+   * Only entries enqueued for this daemon URL are delivered; entries bound to
+   * another destination stay queued for their own drainer (#3381). Absent:
+   * every entry is eligible, same as before the field existed.
+   */
+  destination?: string;
 };
 
 /** The daemon remembers observe idempotency keys for about this long (512-entry record). */
@@ -106,15 +128,46 @@ export type DrainResult = {
   delivered: number;
   dropped: number;
   pending: number;
+  /** Queued entries bound to another daemon destination; never sent here, so they must not count as saturation. */
+  foreign?: number;
   /** True when this call did nothing because another drain on this instance was already running. */
   skipped?: boolean;
 };
 
 const DEFAULT_MAX_ENTRIES = 200;
 const DEFAULT_MAX_ATTEMPTS = 4;
+/** Failed deliveries after which a retry-ambiguous entry is dropped so a deterministic failure cannot pin the FIFO (#3381). */
+const MAX_ENTRY_FAILURES = 8;
+/** Serialized bytes of rawContent kept per message in the durable replay; larger bodies are omitted, not persisted whole (#3381). */
+const MAX_RAW_CONTENT_BYTES = 32 * 1024;
 const DEFAULT_BACKOFF_BASE_MS = 500;
 const DEFAULT_MAX_RETRY_AFTER_MS = 30_000;
 const DEFAULT_JITTER_RATIO = 0.2;
+
+/**
+ * The entry bound (200) caps count, not bytes: a single tool result can be
+ * megabytes of rawContent, and every mutate rewrites the whole file (#3381).
+ * Oversized rawContent is omitted from the durable replay — the daemon
+ * extracts from the rendered `content`, and hashes + replay nonce keep the
+ * capture's identity. Small bodies persist untouched.
+ */
+function boundedReplayMessages(messages: ObserveMessage[], notify?: OutboxNotify): ObserveMessage[] {
+  let omitted = 0;
+  const bounded = messages.map((message) => {
+    if (message.rawContent === undefined) return message;
+    if (Buffer.byteLength(JSON.stringify(message.rawContent)) <= MAX_RAW_CONTENT_BYTES) return message;
+    omitted += 1;
+    const { rawContent: _oversized, ...rest } = message;
+    return rest;
+  });
+  if (omitted > 0) {
+    notify?.(
+      `Remnic observe outbox: omitted ${omitted} raw message bod${omitted === 1 ? "y" : "ies"} over ${MAX_RAW_CONTENT_BYTES / 1024} KiB from the durable replay so the queue stays small; the rendered text of the turn still replays`,
+      "warning"
+    );
+  }
+  return bounded;
+}
 
 function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   let parsed: unknown;
@@ -287,6 +340,7 @@ export class ObserveOutbox {
         id,
         queuedAt: new Date().toISOString(),
         ...input,
+        messages: boundedReplayMessages(input.messages, notify),
         replayNonce: input.replayNonce ?? id,
       });
       if (this.entries.length > this.maxEntries) {
@@ -303,6 +357,19 @@ export class ObserveOutbox {
     await this.mutate(() => {
       this.entries = this.entries.filter((entry) => entry.id !== id);
     });
+  }
+
+  /** Bump the entry's persisted ambiguous-failure count; 0 when another process already removed it. */
+  private async recordFailure(id: string): Promise<number> {
+    let attempts = 0;
+    await this.mutate(() => {
+      const entry = this.entries.find((e) => e.id === id);
+      if (entry) {
+        entry.failedAttempts = (entry.failedAttempts ?? 0) + 1;
+        attempts = entry.failedAttempts;
+      }
+    });
+    return attempts;
   }
 
   /**
@@ -340,10 +407,15 @@ export class ObserveOutbox {
     let delivered = 0;
     let dropped = 0;
     let failures = 0;
+    let foreign = 0;
     try {
       while (failures < maxAttempts) {
         await this.refreshOrKeepLastKnown(notify);
-        const entry = this.entries[0];
+        // Entries bound to another daemon are skipped, never sent: the file is
+        // shared per machine and a pane repointed elsewhere must not replay
+        // someone else's conversations to the wrong destination (#3381).
+        const entry = this.entries.find((e) => e.destination === undefined || e.destination === options.destination);
+        foreign = this.entries.filter((e) => e.destination !== undefined && e.destination !== options.destination).length;
         if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
@@ -379,6 +451,25 @@ export class ObserveOutbox {
           }
           failures += 1;
           this.counters.retried += 1;
+          // Ambiguous failures accrue a persisted per-entry count: a daemon
+          // that fails the same capture every time (a deterministic 500) must
+          // not pin the FIFO forever, so the entry leaves the queue at the cap
+          // with a visible reason (#3381). Capacity refusals are the daemon
+          // asking us to come back, so they are not counted.
+          if (failureClass === "retry-ambiguous") {
+            const attempts = await this.recordFailure(entry.id);
+            if (attempts >= MAX_ENTRY_FAILURES) {
+              dropped += 1;
+              this.counters.dropped += 1;
+              await this.remove(entry.id);
+              const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
+              notify?.(
+                `Remnic observe outbox: gave up on a queued capture after ${attempts} failed attempts (${status}${err instanceof Error ? err.message : String(err)}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); the daemon kept failing it, so it was dropped rather than blocking the queue`,
+                "warning"
+              );
+              continue;
+            }
+          }
           if (failures >= maxAttempts) break;
           const hint = err instanceof RemnicHttpError ? err.retryAfterMs : undefined;
           const hinted = hint !== undefined && Number.isFinite(hint) ? hint : undefined;
@@ -395,6 +486,6 @@ export class ObserveOutbox {
     } finally {
       this.drainInProgress = false;
     }
-    return { delivered, dropped, pending: this.entries.length };
+    return { delivered, dropped, pending: this.entries.length, ...(foreign > 0 ? { foreign } : {}) };
   }
 }

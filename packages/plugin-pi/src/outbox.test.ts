@@ -218,9 +218,11 @@ test("classifyObserveFailure separates retryable backpressure from permanent rej
   assert.ok(isTransientNetworkError(networkErr));
   assert.equal(classifyObserveFailure(networkErr), "retry-ambiguous");
   assert.equal(classifyObserveFailure(new RemnicHttpError(400, "bad request", "invalid_request")), "permanent");
+  // #3381: an unrecognized 5xx is ambiguous, not a verdict on the payload; the
+  // per-entry failure cap is what drops a deterministic 5xx like this one.
   assert.equal(
     classifyObserveFailure(new RemnicHttpError(500, "storage target missing", "storage_target_missing")),
-    "permanent"
+    "retry-ambiguous"
   );
   // Unknown failures are ambiguous: bounded retry with a stable idempotency key is safe.
   assert.equal(classifyObserveFailure(new Error("something unexpected")), "retry-ambiguous");
@@ -551,4 +553,75 @@ test("#3381: a looser file is tightened on write; a pre-existing directory keeps
   // observeOutboxPath may point into a shared directory; the outbox must not
   // chmod a parent it did not create (Codex P2 on #3503).
   assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o755, "a directory the outbox did not create is left alone");
+});
+
+test("a transient 500 is retried, not dropped, but a deterministic one cannot block the queue forever", async () => {
+  // #3381 item 4: an internal_error answer is transient far more often than it
+  // is semantic; classify it retry-ambiguous and cap each entry's failures so a
+  // deterministic 500 still falls out of the FIFO instead of pinning it.
+  assert.equal(classifyObserveFailure(new RemnicHttpError(500, "internal_error", "internal_error")), "retry-ambiguous");
+  assert.equal(classifyObserveFailure(new RemnicHttpError(599, "x", "x")), "retry-ambiguous");
+  assert.equal(classifyObserveFailure(new RemnicHttpError(400, "x", "x")), "permanent");
+
+  const outbox = new ObserveOutbox(tmpOutboxPath("five-hundred"));
+  await outbox.enqueue(entryInput("server-erroring"));
+  const notifications: string[] = [];
+  const fail = async () => {
+    throw new RemnicHttpError(500, "internal_error", "internal_error");
+  };
+  const options = { sleep: async () => {}, notify: (message: string) => notifications.push(message) };
+  const first = await outbox.drain(fail, options);
+  assert.equal(await outbox.size(), 1, "a 500 keeps the capture queued for replay");
+  assert.equal(first.dropped, 0);
+  const second = await outbox.drain(fail, options);
+  assert.equal(second.dropped, 1, "the per-entry cap drops a deterministic 500");
+  assert.equal(await outbox.size(), 0);
+  assert.ok(notifications.some((m) => /gave up|dropped/i.test(m)), "the drop is surfaced, not silent");
+});
+
+test("a drain only sends entries queued for its own daemon and leaves the rest for their destination", async () => {
+  // #3381 item 6: the outbox file is shared per machine; a pane repointed at a
+  // second daemon must not replay the first daemon's conversations to it.
+  const filePath = tmpOutboxPath("destination");
+  const outbox = new ObserveOutbox(filePath);
+  await outbox.enqueue({ ...entryInput("foreign-capture"), destination: "http://daemon-a:4318" });
+  await outbox.enqueue({ ...entryInput("own-capture"), destination: "http://daemon-b:4318" });
+  await outbox.enqueue(entryInput("legacy-capture")); // no destination: written before the field existed
+
+  const sent: string[] = [];
+  const result = await outbox.drain(
+    async (entry) => {
+      sent.push(entry.messages[0].content);
+    },
+    { destination: "http://daemon-b:4318" }
+  );
+  assert.deepEqual(sent, ["own-capture", "legacy-capture"], "foreign entries are never sent to a different daemon");
+  assert.equal(result.foreign, 1);
+  const left = fs.readFileSync(filePath, "utf8");
+  assert.ok(left.includes("foreign-capture"), "the foreign entry stays queued for its own daemon");
+  assert.ok(!left.includes("own-capture"));
+});
+
+test("enqueue bounds a large rawContent so the durable replay stays small but keeps its identity", async () => {
+  // #3381 item 11: rawContent is the original Pi message and can be megabytes;
+  // a 200-entry bound is not a byte bound, so the persisted representation is
+  // bounded while the replay identity (hashes + nonce) survives.
+  const filePath = tmpOutboxPath("bounded");
+  const outbox = new ObserveOutbox(filePath);
+  const notifications: string[] = [];
+  const bigRaw = { tool: "read", output: "x".repeat(512 * 1024) };
+  await outbox.enqueue(
+    {
+      sessionKey: "sess-1",
+      cwd: "/tmp/work",
+      messages: [{ role: "user", content: "a turn with a huge tool result", rawContent: bigRaw }],
+      messageHashes: ["hash-big"],
+    },
+    (message) => notifications.push(message)
+  );
+  const persisted = JSON.parse(fs.readFileSync(filePath, "utf8").trim()) as { messages: ObserveMessage[]; messageHashes: string[] };
+  assert.equal(persisted.messageHashes[0], "hash-big", "the replay identity is preserved");
+  assert.equal(persisted.messages[0].content, "a turn with a huge tool result", "the rendered text still replays");
+  assert.ok(fs.statSync(filePath).size < 64 * 1024, `the persisted entry is bounded (got ${fs.statSync(filePath).size} bytes)`);
+  assert.ok(notifications.some((m) => /bounded|omitted|too large/i.test(m)), "the bound is surfaced, not silent");
 });
