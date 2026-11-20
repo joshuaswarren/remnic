@@ -5,3 +5,5 @@
 Stability: stable
 
 `truncateGraphemeSafe` stops segmenting once its budget is reached instead of splitting the whole string into grapheme clusters first (#3427).
+
+Lazy grapheme truncation (#3427): first proposed by @hanming5 in #3448.
