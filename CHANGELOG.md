@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 
 - Retaining failed extractions when retry scheduling is disabled (#3415): first proposed by @earlvanze in #3416; shipped in #3437.
+- Sizing LCM summarization budgets from the text actually sent (#3407): first proposed by @RichardHojunJang in #3408; shipped in #3486.
 
 ## [v10.0.155] — 2026-11-20
 
