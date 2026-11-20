@@ -38,7 +38,6 @@ function makeOrchestrator(
   overrides: Partial<ConsoleStateOrchestratorLike> = {},
 ): ConsoleStateOrchestratorLike {
   return {
-    config: { memoryDir: "/nonexistent" },
     buffer: { getTurns: () => [] },
     qmd: {
       isAvailable: () => true,
@@ -136,7 +135,6 @@ test("runConsoleTui repaints once on start and survives a snapshot failure", asy
   // defensive readers), second call throws when the buffer accessor
   // is invoked. The loop must NOT crash.
   const orchestrator: ConsoleStateOrchestratorLike = {
-    config: { memoryDir: "/nonexistent" },
     qmd: {
       isAvailable: () => true,
       isDaemonMode: () => false,
@@ -307,7 +305,7 @@ test("slow trace writes do not block render ticks (Codex P2 #732)", async () => 
   );
 });
 
-test("trace backpressure drops frames while a previous append is pending (Codex P2 #732)", async () => {
+test("trace backpressure drops frames while a previous append is pending (Codex P2 #732)", async (t) => {
   // Regression: a wedged filesystem must not let the recorder's
   // writeChain grow unboundedly. While one append is pending, the
   // next tick's append is dropped instead of enqueued.
@@ -331,6 +329,11 @@ test("trace backpressure drops frames while a previous append is pending (Codex 
       },
     },
   });
+  t.after(() => {
+    resolveFirst();
+    handle.stop();
+    return handle.done;
+  });
   // Let the loop tick several times while the first append blocks.
   await new Promise((resolve) => setTimeout(resolve, 150));
   // Backpressure should have prevented additional appends from
@@ -348,11 +351,9 @@ test("trace backpressure drops frames while a previous append is pending (Codex 
     appendCalls >= 2,
     `expected appends to resume after pending one drained, saw ${appendCalls}`,
   );
-  handle.stop();
-  await handle.done;
 });
 
-test("getDroppedTraceFrames starts at zero and increases under backpressure (Codex P2 #732 round 5)", async () => {
+test("getDroppedTraceFrames starts at zero and increases under backpressure (Codex P2 #732 round 5)", async (t) => {
   // Codex P2 round 5: `traceFramesDropped` was incremented on every
   // backpressure drop but never exposed, making the counter a dead
   // store. Now it is surfaced via `handle.getDroppedTraceFrames()` so
@@ -380,6 +381,11 @@ test("getDroppedTraceFrames starts at zero and increases under backpressure (Cod
       },
     },
   });
+  t.after(() => {
+    resolveFirst();
+    handle.stop();
+    return handle.done;
+  });
 
   // Initially zero — nothing has been dropped yet.
   assert.equal(
@@ -397,11 +403,6 @@ test("getDroppedTraceFrames starts at zero and increases under backpressure (Cod
     droppedWhileBlocked > 0,
     `expected > 0 dropped frames while append was blocked, got ${droppedWhileBlocked}`,
   );
-
-  // Release and stop cleanly.
-  resolveFirst();
-  handle.stop();
-  await handle.done;
 });
 
 test("stop() clears the interval and resolves done", async () => {
@@ -435,7 +436,7 @@ test("stop() clears the interval and resolves done", async () => {
 
 test(
   "stop() awaits in-flight tick body before resolving done (Codex P2 #732 round 4)",
-  async () => {
+  async (t) => {
     // Regression: prior to this fix, `stop()` resolved `done`
     // synchronously after clearing the interval, even if a tick was
     // mid-flight. If the tick had already passed its `if (stopped)
@@ -487,6 +488,10 @@ test(
         },
       },
     });
+    t.after(() => {
+      handle.stop();
+      return handle.done;
+    });
 
     // Let the loop tick at least once so `append` has been called.
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -529,7 +534,6 @@ test(
     let entered = 0;
     let exited = 0;
     const orchestrator: ConsoleStateOrchestratorLike = {
-      config: { memoryDir: "/nonexistent" },
       qmd: {
         isAvailable: () => true,
         isDaemonMode: () => false,
