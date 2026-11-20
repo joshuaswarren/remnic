@@ -181,8 +181,7 @@ export class LocalLlmClient {
   private config: PluginConfig;
   private isAvailable: boolean | null = null;
   private lastHealthCheck: number = 0;
-  /** Pool key → lapsed-circuit instant this client already invalidated for. */
-  private poolExpirySeenMs = new Map<string, number>();
+  private poolExpirySeenMs = new Map<string, number>(); // pool key → lapsed-circuit instant already invalidated
   private readonly availabilityProbe = new SingleFlightProbe();
   private detectedType: LocalLlmType | null = null;
   private cachedModelInfo: LocalModelInfo | null = null;
@@ -326,16 +325,12 @@ export class LocalLlmClient {
     operation?: string,
   ): Promise<boolean> {
     if (signal?.aborted) return false;
-    // Cache health check results for 1 minute
-    const now = Date.now();
+    const now = Date.now(); // cache health check results for 1 minute
     if (chatUrl) {
-      // An empty label is a real pool key — callers that pass "" must still
-      // see the circuit that a refusal recorded under it (wAN on #3474).
+      // An empty label is a real pool key: a "" caller still sees a recorded circuit (wAN on #3474).
       const poolOperation = operation ?? "unspecified";
       const poolKey = formatLocalLlmPoolKey(chatUrl, poolOperation);
-      // A lapsed circuit stays visible as a tombstone; each client clears its
-      // cached verdict once, or a stale "unavailable" survives the rest of the
-      // cache interval.
+      // A lapsed circuit stays visible as a tombstone; each client clears its cached verdict once.
       const expiredAtMs = localLlmBackendPoolExpiredAtMs(now, chatUrl, poolOperation);
       if (expiredAtMs !== null && expiredAtMs > (this.poolExpirySeenMs.get(poolKey) ?? 0)) {
         this.poolExpirySeenMs.set(poolKey, expiredAtMs);
