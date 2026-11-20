@@ -2552,6 +2552,12 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     if (!this.orchestrator.config.codingMode?.projectScope) return;
     // Don't overwrite an already-attached context.
     if (this.orchestrator.getCodingContextForSession(sessionKey)) return;
+    // The daemon is the caller on this internal attach: when the transport
+    // carried no principal, resolve the session-derived one (the same
+    // fallback observe/recall use) so the setCodingContext ownership check
+    // self-binds instead of silently rejecting the daemon's own attach.
+    const callerPrincipal =
+      options.authenticatedPrincipal ?? resolvePrincipal(sessionKey, this.orchestrator.config);
     // projectTag takes priority over cwd.
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
       const projectId = projectTagProjectId(options.projectTag);
@@ -2564,7 +2570,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
             rootPath: projectId,
             defaultBranch: null,
           },
-          authenticatedPrincipal: options.authenticatedPrincipal,
+          authenticatedPrincipal: callerPrincipal,
         });
       } catch {
         // Session owned by another principal — never attach (never throws).
@@ -2584,7 +2590,7 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
               rootPath: gitCtx.rootPath,
               defaultBranch: gitCtx.defaultBranch,
             },
-            authenticatedPrincipal: options.authenticatedPrincipal,
+            authenticatedPrincipal: callerPrincipal,
           });
         }
       } catch {
