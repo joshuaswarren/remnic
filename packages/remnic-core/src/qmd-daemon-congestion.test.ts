@@ -219,7 +219,7 @@ test("an already slow in-flight hybrid query degrades a sibling on the same daem
   try {
     await started.promise;
     assert.deepEqual(legTypes(calls[0]!), ["lex", "vec", "hyde"]);
-    now += first.internals.daemonSlowQueryMs + 1;
+    now += first.internals.daemonSlowQueryMs;
     const results = await sibling.client.search("second recall", "memories", 3);
     assert.equal(results.length, 1);
     assert.deepEqual(calls[1]!.args.collections, ["memories"]);
@@ -229,6 +229,155 @@ test("an already slow in-flight hybrid query degrades a sibling on the same daem
     release.resolve();
     await pending;
   }
+});
+
+test("a fresh in-flight call does not gate siblings yet (#3499)", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sessionCallTool: CallToolFn = async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      await release.promise;
+    }
+    return mcpOk([{ path: "r.md" }]);
+  };
+  const first = makeClient(sessionCallTool);
+  const sibling = makeClient(sessionCallTool);
+  sibling.internals.daemonSession = first.internals.daemonSession;
+
+  const pending = first.client.search("first young recall", "memories", 3);
+  try {
+    await started.promise;
+    now += first.internals.daemonSlowQueryMs - 1;
+    const results = await sibling.client.search("second young recall", "memories", 3);
+    assert.deepEqual(legTypes(calls[1]!), ["lex", "vec", "hyde"]);
+    assert.equal(results.length, 1);
+  } finally {
+    release.resolve();
+    await pending;
+  }
+});
+
+test("a slow success clears the marker; hybrid returns only after the window also clears (#3499)", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sessionCallTool: CallToolFn = async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      await release.promise;
+    }
+    return mcpOk([{ path: "r.md" }]);
+  };
+  const first = makeClient(sessionCallTool);
+  const sibling = makeClient(sessionCallTool);
+  sibling.internals.daemonSession = first.internals.daemonSession;
+
+  const pending = first.client.search("first success recall", "memories", 3);
+  await started.promise;
+  now += first.internals.daemonSlowQueryMs + 1;
+  release.resolve();
+  await pending; // a slow success still opens the congestion window (#3476)
+  assert.equal(
+    daemonCongestionForTest.inflightCalls(first.internals.daemonSession),
+    0,
+    "the marker is removed on success",
+  );
+  assert.ok(
+    daemonCongestionForTest.get(first.internals.daemonSession) > now,
+    "the slow success opened the congestion window",
+  );
+  now += first.internals.daemonCongestionWindowMs + 1;
+  const results = await sibling.client.search("second success recall", "memories", 3);
+  assert.deepEqual(legTypes(calls[1]!), ["lex", "vec", "hyde"]);
+  assert.equal(results.length, 1);
+});
+
+test("a failed slow call clears the marker and opens no window (#3499)", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const sessionCallTool: CallToolFn = async (name, args) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      await release.promise;
+      throw new Error("fetch failed");
+    }
+    return mcpOk([{ path: "r.md" }]);
+  };
+  const first = makeClient(sessionCallTool);
+  const sibling = makeClient(sessionCallTool);
+  sibling.internals.daemonSession = first.internals.daemonSession;
+
+  const pending = first.client.search("first failure recall", "memories", 3);
+  await started.promise;
+  now += first.internals.daemonSlowQueryMs + 1;
+  release.resolve();
+  const results = await pending; // transient failure degrades to [] without a window
+  assert.deepEqual(results, []);
+  assert.equal(
+    daemonCongestionForTest.inflightCalls(first.internals.daemonSession),
+    0,
+    "the marker is removed on failure",
+  );
+  assert.equal(
+    daemonCongestionForTest.get(first.internals.daemonSession),
+    0,
+    "a transient failure opens no congestion window",
+  );
+  await sibling.client.search("second failure recall", "memories", 3);
+  assert.deepEqual(legTypes(calls[1]!), ["lex", "vec", "hyde"]);
+});
+
+test("a cancelled slow call clears the marker; the existing slow-cancel window still applies (#3499)", async (t) => {
+  let now = 1000;
+  t.mock.method(performance, "now", () => now);
+  const calls: CapturedCall[] = [];
+  const started = Promise.withResolvers<void>();
+  const sessionCallTool: CallToolFn = async (name, args, _timeout, signal) => {
+    calls.push({ name, args });
+    if (calls.length === 1) {
+      started.resolve();
+      return new Promise<McpToolResult>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      });
+    }
+    return mcpOk([{ path: "r.md" }]);
+  };
+  const first = makeClient(sessionCallTool);
+  const sibling = makeClient(sessionCallTool);
+  sibling.internals.daemonSession = first.internals.daemonSession;
+  const ac = new AbortController();
+
+  const pending = first.client.search("first cancel recall", "memories", 3, undefined, { signal: ac.signal });
+  await started.promise;
+  now += first.internals.daemonSlowQueryMs + 1;
+  ac.abort();
+  await assert.rejects(pending, /aborted/);
+  assert.equal(
+    daemonCongestionForTest.inflightCalls(first.internals.daemonSession),
+    0,
+    "the marker is removed on cancellation",
+  );
+  assert.ok(
+    daemonCongestionForTest.get(first.internals.daemonSession) > now,
+    "a cancellation after the slow mark keeps the existing window",
+  );
+  await sibling.client.search("second cancel recall", "memories", 3);
+  assert.deepEqual(legTypes(calls[1]!), ["lex"]);
+  now += first.internals.daemonCongestionWindowMs + 1;
+  await sibling.client.search("third cancel recall", "memories", 3);
+  assert.deepEqual(legTypes(calls[2]!), ["lex", "vec", "hyde"]);
 });
 
 test("a daemon call cancelled after the slow mark still opens the window", async () => {

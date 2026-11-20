@@ -848,12 +848,20 @@ export { releaseSharedDaemonSession as releaseSharedDaemonSessionForTest };
 // from any sibling gates them all (#3476).
 const DAEMON_CONGESTED_UNTIL = new WeakMap<QmdDaemonSession, number>();
 
+// In-flight slow-call markers (#3499): a hybrid/vector daemon call that is
+// already past the slow-query threshold gates siblings on the same session
+// even before its result opens the congestion window above. Handles carry the
+// mocked-clock-friendly start time; the gate is a pure clock comparison.
+const DAEMON_INFLIGHT_CALLS = new WeakMap<QmdDaemonSession, Array<{ since: number }>>();
+
 // Test-only seam: congestion tests drive a stub session object directly.
 export const daemonCongestionForTest = {
   get: (session: QmdDaemonSession): number => DAEMON_CONGESTED_UNTIL.get(session) ?? 0,
   set: (session: QmdDaemonSession, untilMs: number): void => {
     DAEMON_CONGESTED_UNTIL.set(session, untilMs);
   },
+  inflightCalls: (session: QmdDaemonSession): number =>
+    (DAEMON_INFLIGHT_CALLS.get(session) ?? []).length,
 };
 
 // The `query`/`search` MCP tools take this shape; the daemon serializes it verbatim.
@@ -944,6 +952,17 @@ export class QmdClient implements SearchBackend {
   private isDaemonCongested(): boolean {
     return performance.now() < this.daemonCongestedUntilMs();
   }
+
+  /** A hybrid/vector call on this session is already past the slow threshold (#3499). */
+  private hasInflightSlowQuery(): boolean {
+    const session = this.daemonSession;
+    if (!session) return false;
+    const now = performance.now();
+    return (DAEMON_INFLIGHT_CALLS.get(session) ?? []).some(
+      (call) => now - call.since >= this.daemonSlowQueryMs,
+    );
+  }
+
   private daemonSlowQueryMs = QMD_DAEMON_SLOW_QUERY_MS;
   private daemonCongestionWindowMs = QMD_DAEMON_CONGESTION_WINDOW_MS;
   private static readonly DAEMON_MAX_TRANSIENT_FAILURES = 3;
@@ -1524,6 +1543,26 @@ export class QmdClient implements SearchBackend {
   }
 
   /**
+   * Watch one daemon call (#3499): register the call's start time on the
+   * session so siblings see an in-flight slow call once it passes the
+   * threshold. `settle` removes the handle on success, failure, and
+   * cancellation; call it in a `finally`.
+   */
+  private watchDaemonCall(session: QmdDaemonSession): { settle: () => void } {
+    const handle = { since: performance.now() };
+    const calls = DAEMON_INFLIGHT_CALLS.get(session) ?? [];
+    calls.push(handle);
+    DAEMON_INFLIGHT_CALLS.set(session, calls);
+    return {
+      settle: () => {
+        const live = DAEMON_INFLIGHT_CALLS.get(session);
+        const index = live ? live.indexOf(handle) : -1;
+        if (live && index >= 0) live.splice(index, 1);
+      },
+    };
+  }
+
+  /**
    * Handle a non-timeout, non-cancellation daemon error.
    * Tolerates up to DAEMON_MAX_TRANSIENT_FAILURES consecutive failures
    * before invalidating the session. This prevents a single transient
@@ -1998,14 +2037,19 @@ export class QmdClient implements SearchBackend {
     // waits on it serially. While the congestion window is open, serve
     // lex-only FTS — no embed legs — so recall stays responsive instead of
     // stacking multi-second hybrid calls. The collection scope is preserved:
-    // a global search stays global while degraded.
-    if (this.isDaemonCongested()) {
+    // a global search stays global while degraded. #3499 extends the gate to
+    // an in-flight call that is already slow, so siblings degrade before its
+    // result opens the window.
+    if (this.isDaemonCongested() || this.hasInflightSlowQuery()) {
       const degraded = await this.bm25SearchViaDaemon(query, collection, maxResults, signal, options);
       return degraded === null ? null : { results: degraded, degraded: true };
     }
 
     const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
+    // Mark the session while this call stays pending past the slow threshold;
+    // settle removes the marker on success, failure, and cancellation (#3499).
+    const watch = this.watchDaemonCall(this.daemonSession);
     try {
       let args: Record<string, unknown>;
       if (v2) {
@@ -2068,6 +2112,8 @@ export class QmdClient implements SearchBackend {
       // Transient error: tolerate a few before invalidating.
       this.handleDaemonTransientError("search", err, durationMs);
       return null;
+    } finally {
+      watch.settle();
     }
   }
 
@@ -2138,12 +2184,15 @@ export class QmdClient implements SearchBackend {
     // Congestion degradation (#3476): the vec leg is an embed call on the same
     // contended backend — while the window is open, serve the lex leg instead
     // so hybridSearch/vectorSearch callers keep working without embedding.
-    if (this.isDaemonCongested()) {
+    // #3499 adds the same gate for an in-flight call already past the slow
+    // threshold, before its result opens the window.
+    if (this.isDaemonCongested() || this.hasInflightSlowQuery()) {
       return this.bm25SearchViaDaemon(query, collection, maxResults, signal);
     }
 
     const startedAtMs = performance.now();
     const v2 = this.isQmdV2();
+    const watch = this.watchDaemonCall(this.daemonSession);
     try {
       let result: unknown;
       if (v2) {
@@ -2191,6 +2240,8 @@ export class QmdClient implements SearchBackend {
       }
       this.handleDaemonTransientError("vsearch", err, durationMs);
       return null;
+    } finally {
+      watch.settle();
     }
   }
 
