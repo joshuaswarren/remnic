@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, stat } from "node:fs/promises";
+import { mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -231,18 +231,19 @@ export class ObserveOutbox {
    */
   private mutate(update: () => void, notify?: OutboxNotify): Promise<void> {
     const run = this.writeChain.then(async () => {
-      await mkdir(path.dirname(this.filePath), { recursive: true });
+      // New parents are private from creation (#3381). A PRE-EXISTING directory keeps
+      // its mode: observeOutboxPath may point into a shared directory, and chmod'ing it
+      // would remove other users' access to every sibling (Codex P2 on #3503).
+      await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
       await withHeldFileLock(
         this.lockPath,
         { staleMs: LOCK_STALE_MS, maxWaitMs: this.lockMaxWaitMs },
         async (acquired) => {
           if (!acquired) throw new Error(`observe outbox is locked by another process (${this.lockPath})`);
-          // The dedicated directory is tightened once per write (#3381): mkdir's
-          // mode only applies to newly created parents. The FILE needs no chmod:
-          // persist() replaces it through a 0600 temp on every write, so a looser
-          // file is tightened by the write itself - and an unreadable one keeps
-          // failing closed below instead of being repaired into a silent empty.
-          await chmod(path.dirname(this.filePath), 0o700).catch(() => undefined);
+          // The FILE needs no chmod: persist() replaces it through a 0600 temp on
+          // every write, so a looser file is tightened by the write itself - and
+          // an unreadable one keeps failing closed below instead of being repaired
+          // into a silent empty.
           await this.refresh(notify, true);
           update();
           await this.persist();

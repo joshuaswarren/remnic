@@ -529,23 +529,26 @@ test("two drains started back to back on one instance send the head entry once (
   assert.equal([a, b].filter((r) => r.skipped).length, 1, "exactly one drain was skipped");
 });
 
-test("#3381: queued captures stay private: file 0600 and directory 0700", async () => {
+test("#3381: queued captures stay private: file 0600 and a created directory 0700", async () => {
   const filePath = tmpOutboxPath("private");
-  const outbox = new ObserveOutbox(filePath);
+  const nested = path.join(path.dirname(filePath), "remnic", path.basename(filePath));
+  const outbox = new ObserveOutbox(nested);
   await outbox.enqueue(entryInput("secret"));
 
   // Entries carry rawContent of tool results - private to the owner's account.
-  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600, "the queue file must not be group/world readable");
-  assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o700, "the queue directory must not be group/world readable");
+  assert.equal(fs.statSync(nested).mode & 0o777, 0o600, "the queue file must not be group/world readable");
+  assert.equal(fs.statSync(path.dirname(nested)).mode & 0o777, 0o700, "a directory the outbox creates is private");
 });
 
-test("#3381: a pre-existing looser file and directory are tightened on the next write", async () => {
+test("#3381: a looser file is tightened on write; a pre-existing directory keeps its mode", async () => {
   const filePath = tmpOutboxPath("tighten");
   fs.chmodSync(path.dirname(filePath), 0o755);
   fs.writeFileSync(filePath, entryLine("old"), { mode: 0o644 });
   const outbox = new ObserveOutbox(filePath);
   await outbox.enqueue(entryInput("new"));
 
-  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
-  assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(filePath).mode & 0o777, 0o600, "the rewritten queue file is owner-only");
+  // observeOutboxPath may point into a shared directory; the outbox must not
+  // chmod a parent it did not create (Codex P2 on #3503).
+  assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o755, "a directory the outbox did not create is left alone");
 });
