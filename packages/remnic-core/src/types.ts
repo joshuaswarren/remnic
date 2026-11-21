@@ -724,7 +724,7 @@ export interface PluginConfig
   /** Retained turns admitted per session before live backpressure (#3415 bound). */
   bufferMaxTurnsPerSession: number;
   bufferMaxMinutes: number;
-  /** Queue depth cap; default 1 = serial queue, same-buffer tasks never overlap. Applies at daemon start. */
+  /** Background extraction concurrency; defaults to 2. Same-buffer tasks never overlap. Applies at daemon start. */
   extractionQueueConcurrency: number;
   /**
    * Debounce window (ms) for persisting the smart buffer to `state/buffer.json`

@@ -137,7 +137,13 @@ async function wedgeExtractionQueue(orchestrator: Orchestrator): Promise<() => v
 
 test("#3251 accepted observe capture survives queue cancellation and drains after restart", async () => {
   const memoryDir = await mkTempMemoryDir("observe-durable");
-  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, { bufferMaxTurns: 1, bufferSaveDebounceMs: 0 }));
+  const orchestrator = new Orchestrator(
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1,
+      bufferSaveDebounceMs: 0,
+      extractionQueueConcurrency: 1,
+    }),
+  );
   let restarted: Orchestrator | null = null;
   let release: (() => void) | undefined;
   try {
@@ -212,6 +218,7 @@ test("#3251 same session+owner observes under different namespaces stay isolated
     makeLifecycleConfig(memoryDir, {
       bufferMaxTurns: 1,
       bufferSaveDebounceMs: 0,
+      extractionQueueConcurrency: 1,
       namespacesEnabled: true,
       defaultNamespace: "default",
       sharedNamespace: "shared",
@@ -332,7 +339,10 @@ test("#3251 same session+owner observes under different namespaces stay isolated
 
 test("#3251 buffered observe append is durable before accept: a failed save rejects instead of acking", async () => {
   const memoryDir = await mkTempMemoryDir("observe-save-failure");
-  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, { bufferSaveDebounceMs: 0 }));
+  const orchestrator = new Orchestrator(makeLifecycleConfig(memoryDir, {
+    bufferSaveDebounceMs: 0,
+    extractionQueueConcurrency: 1,
+  }));
   let release: (() => void) | undefined;
   try {
     release = await wedgeExtractionQueue(orchestrator);
@@ -514,6 +524,7 @@ test("#3251 same session+owner across scope profiles never combine; sourceValidA
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     });
   const orchestrator = new Orchestrator(makeConfig());
   let restarted: Orchestrator | null = null;
@@ -649,7 +660,11 @@ test("#3251 same session+owner across scope profiles never combine; sourceValidA
 test("#3251 cancellation before admission still leaves the capture durably pending", async () => {
   const memoryDir = await mkTempMemoryDir("observe-cancelled");
   const orchestrator = new Orchestrator(
-    makeLifecycleConfig(memoryDir, { bufferMaxTurns: 1, bufferSaveDebounceMs: 0 }),
+    makeLifecycleConfig(memoryDir, {
+      bufferMaxTurns: 1,
+      bufferSaveDebounceMs: 0,
+      extractionQueueConcurrency: 1,
+    }),
   );
   let release: (() => void) | undefined;
   try {
@@ -744,6 +759,7 @@ test("#3251 a pinned capture whose scope profile is revoked stays pending instea
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     }),
   );
   activateProfile(orchestrator.config, "profile-team");
@@ -808,6 +824,7 @@ test("#3251 a pinned capture outlives a namespaces-disabled config without flatt
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     }),
   );
   const drainCalls = stubExtraction(orchestrator, (turns) =>
@@ -970,6 +987,7 @@ test("#3251 a project-profile capture survives restart and extracts under its or
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     });
   const orchestrator = new Orchestrator(makeConfig());
   activateProfile(orchestrator.config, "profile-project");
@@ -1118,6 +1136,7 @@ test("#3251 a revoked namespace write grant preserves the accepted capture witho
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     }),
   );
   const drainCalls = stubExtraction(orchestrator, (turns) =>
@@ -1319,6 +1338,7 @@ test("#3251 policy-revoked retained capture: forceflush rejects before clearing,
       defaultNamespace: "default",
       sharedNamespace: "shared",
       namespacePolicies: [{ name: "ns-a", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+      extractionQueueConcurrency: 1,
     }),
   );
   activateProfile(orchestrator.config, "profile-global");

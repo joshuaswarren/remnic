@@ -887,12 +887,12 @@ async function observeMessagesForSession(
   } catch (err) {
     if (config && isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     const failureClass = outbox && config && err instanceof Error ? classifyObserveFailure(err) : "permanent";
-    if (failureClass === "permanent") {
+    if (failureClass === "permanent" && (!outbox || !config)) {
       session.notify(`Remnic observe failed: ${errorMessage(err)}`, "warning");
       return;
     }
-    // Capacity backpressure or ambiguous failure: the turns are not lost —
-    // queue them durably for replay on the next successful contact.
+    // Rejected captures and ambiguous failures stay durable until the cause is
+    // fixed or the daemon accepts the replay.
     try {
       await outbox?.enqueue(
         { sessionKey: session.sessionKey, cwd: session.cwd, messages: sendMessages, messageHashes, replayNonce, principal: config?.principal, destination: config?.remnicDaemonUrl },
@@ -907,7 +907,7 @@ async function observeMessagesForSession(
       return;
     }
     session.notify(
-      `Remnic observe deferred (daemon refused or unreachable): ${messages.length} message(s) queued durably for retry — ${errorMessage(err)}`,
+      `Remnic observe deferred: ${messages.length} message(s) queued durably for retry — ${errorMessage(err)}`,
       "warning",
     );
   }

@@ -92,7 +92,7 @@ export class ExtractionQueueCoordinator {
   /** Resolves the processor's park while a new task arrives mid-drain. */
   private wake?: () => void;
 
-  constructor(concurrency = 1) {
+  constructor(concurrency = 2) {
     this.concurrency = Number.isInteger(concurrency) && concurrency >= 1 ? concurrency : 1;
   }
 
