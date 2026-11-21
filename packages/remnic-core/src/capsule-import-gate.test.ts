@@ -30,7 +30,7 @@ test("capsule import gate: an archive outside the store is refused with the shar
 
   await assert.rejects(
     validateCapsuleImportArchive(outside, storageDir),
-    (err: unknown) =>
+    (err: Error) =>
       err instanceof EngramAccessInputError &&
       /existing file inside the namespace capsule store/.test(err.message),
   );

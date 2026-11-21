@@ -5,11 +5,14 @@ import { log } from "@remnic/core";
 
 import { initCliLogger } from "./cli-logger.js";
 
-function capture(methods: ("info" | "warn" | "error")[]): { lines: Record<string, string[]>; restore(): void } {
-  const lines: Record<string, string[]> = { info: [], warn: [], error: [] };
+type LogLines = { info: string[]; warn: string[]; error: string[] };
+
+function capture(methods: ("info" | "warn" | "error")[]) {
+  const lines: LogLines = { info: [], warn: [], error: [] };
   const originals = methods.map((m) => [m, console[m]] as const);
   for (const m of methods) {
-    console[m] = ((msg: unknown) => lines[m].push(String(msg))) as typeof console[typeof m];
+    // SAFETY: the stub keeps console's variadic signature through the assertion.
+    console[m] = ((...args: Parameters<typeof console.info>) => lines[m].push(String(args[0]))) as typeof console[typeof m];
   }
   return { lines, restore: () => originals.forEach(([m, fn]) => (console[m] = fn)) };
 }

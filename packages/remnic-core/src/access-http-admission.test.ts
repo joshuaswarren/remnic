@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import type { ServerResponse } from "node:http";
+import { ServerResponse } from "node:http";
 import test from "node:test";
 
 import {
@@ -9,12 +9,12 @@ import {
 } from "./buffer-admission.js";
 import { respondBufferAdmissionError } from "./access-http-admission.js";
 
-function fakeRes(): { res: ServerResponse; headers: Record<string, string> } {
+function fakeRes() {
   const headers: Record<string, string> = {};
-  return {
-    headers,
-    res: { setHeader: (k: string, v: string) => (headers[k] = v) } as unknown as ServerResponse,
-  };
+  const res = Object.assign(Object.create(ServerResponse.prototype), {
+    setHeader: (k: string, v: string) => (headers[k] = v),
+  });
+  return { headers, res };
 }
 
 type Answer = { status: number; body: { error: string; code: string } };
