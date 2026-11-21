@@ -821,6 +821,42 @@ test("a fired client deadlineMs degrades as a timeout, not caller abort (#3499)"
   );
 });
 
+test("a caller abort stays a cancellation even when teardown outlives the deadline timer (#3514)", async () => {
+  await withOrchestrator(
+    "remnic-entry-abort-clear-",
+    false,
+    async (orchestrator) => {
+      // The abort listener inside recallInternal settles ~80ms AFTER the
+      // caller's abort lands. The client deadline timer fires at ~30ms — the
+      // onAbort path must clear it, or clientDeadlineFired flips and the
+      // catch misclassifies the caller abort as a deadline timeout.
+      Object.assign(orchestrator, {
+        recallInternal: (_prompt: string, _session: string, o: { abortSignal?: AbortSignal }) =>
+          new Promise<string>((_resolve, reject) => {
+            o.abortSignal?.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                setTimeout(() => reject(err), 80);
+              },
+              { once: true },
+            );
+          }),
+      });
+      const controller = new AbortController();
+      const resultPromise = orchestrator.recall(QUERY, "abort-clear", {
+        deadlineMs: 30,
+        abortSignal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 10);
+      const result = await resultPromise;
+      assert.equal(result, "", "caller abort must return empty, not the degraded timeout note");
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
 test("a timed-out recall does not serve the previous query's snapshot (#3499)", async () => {
   await withOrchestrator(
     "remnic-stale-snapshot-",

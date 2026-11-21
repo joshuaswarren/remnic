@@ -1988,3 +1988,55 @@ test("a keyed follower joining an UNKEYED leader's flight rejects with AbortErro
   assert.equal(pipelineRuns, 1, "both callers shared one pipeline");
   assert.equal(h.liveBudget(), 1, "the aborted follower's reservation was released; only the leader's stands");
 });
+
+test("a queued recall expires on its client deadline — as a timeout, not abort (#3514)", async () => {
+  const leaderStarted = deferred<void>();
+  const releaseLeader = deferred<void>();
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    limit: 1,
+    singleFlight: false,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "leader") {
+        leaderStarted.resolve();
+        await releaseLeader.promise;
+      }
+      return stubResponse([]);
+    },
+  });
+  const leader = service.recall({ query: "leader" });
+  await leaderStarted.promise;
+
+  const queued = service.recall({ query: "queued", deadlineMs: 25 });
+  const outcome = await Promise.race([
+    queued.then(() => "resolved", (error: unknown) => error),
+    new Promise<string>((resolve) => setTimeout(() => resolve("still-queued"), 200)),
+  ]);
+  assert.ok(
+    outcome instanceof Error && outcome.constructor.name === "EngramAccessDeadlineExceededError",
+    `queued recall must expire as a timeout, got ${String(outcome)}`,
+  );
+  assert.equal(pipelineRuns, 1, "the expired queued recall never started a pipeline");
+
+  releaseLeader.resolve();
+  await leader;
+});
+
+test("identical concurrent recalls coalesce across per-call client deadlines (#3514)", async () => {
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  const now = Date.now();
+  const [a, b] = await Promise.all([
+    service.recall({ query: "same", deadlineMs: now + 60_000 }),
+    service.recall({ query: "same", deadlineMs: now + 90_000 }),
+  ]);
+  assert.ok(a && b);
+  assert.equal(pipelineRuns, 1, "per-call deadline values must not split the flight");
+});

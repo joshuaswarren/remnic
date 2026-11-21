@@ -16,10 +16,12 @@
 import { abortError, raceAbort, throwIfAborted } from "./abort-error.js";
 import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import {
+  EngramAccessDeadlineExceededError,
   EngramAccessInputError,
   type EngramAccessRecallRequest,
   type EngramAccessRecallResponse,
 } from "./access-service.js";
+import { clientDeadlineTimerMs, resolveClientDeadlineAtMs } from "./recall-qos.js";
 import {
   type BudgetDecision,
   type BudgetReservation,
@@ -121,6 +123,7 @@ function acquireRecallSlot(
   key: string,
   limit: number,
   signal?: AbortSignal,
+  deadlineAtMs?: number | null,
 ): Promise<{ release: () => void; waitedMs: number }> {
   const cap = Number.isFinite(limit) && limit > 0 ? limit : Infinity;
   const sem = host.recallSemaphores.get(key) ?? { active: 0, waiters: [] };
@@ -136,6 +139,13 @@ function acquireRecallSlot(
       host.recallSemaphores.delete(key);
     }
   };
+  // A deadline already past fails as a timeout, not a cancellation — before
+  // any semaphore state is touched (issue #3514 review).
+  if (deadlineAtMs != null && deadlineAtMs <= Date.now()) {
+    return Promise.reject(
+      new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+    );
+  }
   if (sem.active < cap) {
     // Slot free — acquired immediately, NO queue wait. (Measuring wall-clock
     // here would count event-loop scheduling jitter under load and wrongly
@@ -146,18 +156,33 @@ function acquireRecallSlot(
   // Contended — measure the real time spent blocked for a slot.
   const startedWaiting = Date.now();
   return new Promise<{ release: () => void; waitedMs: number }>((resolve, reject) => {
+    let deadlineHandle: NodeJS.Timeout | null = null;
+    const removeWaiter = () => {
+      const i = sem.waiters.indexOf(waiter);
+      if (i >= 0) sem.waiters.splice(i, 1);
+      if (deadlineHandle) clearTimeout(deadlineHandle);
+      if (sem.active === 0 && sem.waiters.length === 0) {
+        host.recallSemaphores.delete(key);
+      }
+    };
     const waiter = {
       take: () => {
+        if (deadlineHandle) clearTimeout(deadlineHandle);
         signal?.removeEventListener("abort", waiter.drop);
         resolve({ release, waitedMs: Date.now() - startedWaiting });
       },
       drop: () => {
-        const i = sem.waiters.indexOf(waiter);
-        if (i >= 0) sem.waiters.splice(i, 1);
-        if (sem.active === 0 && sem.waiters.length === 0) {
-          host.recallSemaphores.delete(key);
-        }
+        removeWaiter();
         reject(abortError("operation aborted"));
+      },
+      // A client deadline expiring mid-queue degrades as a timeout, not
+      // caller cancellation (#3514 review).
+      expire: () => {
+        removeWaiter();
+        signal?.removeEventListener("abort", waiter.drop);
+        reject(
+          new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+        );
       },
     };
     if (signal?.aborted) {
@@ -165,6 +190,9 @@ function acquireRecallSlot(
       return;
     }
     signal?.addEventListener("abort", waiter.drop, { once: true });
+    if (deadlineAtMs != null) {
+      deadlineHandle = setTimeout(waiter.expire, clientDeadlineTimerMs(deadlineAtMs, startedWaiting));
+    }
     sem.waiters.push(waiter);
   });
 }
@@ -182,11 +210,12 @@ export async function withRecallConcurrency<T>(
   principal: string,
   signal: AbortSignal | undefined,
   fn: (queueWaitMs: number) => Promise<T>,
+  deadlineAtMs?: number | null,
 ): Promise<T> {
   const key = principal || "__anonymous__";
   const limit = host.orchestrator.config.recallMaxConcurrentPerPrincipal;
   throwIfAborted(signal);
-  const { release, waitedMs } = await acquireRecallSlot(host, key, limit, signal);
+  const { release, waitedMs } = await acquireRecallSlot(host, key, limit, signal, deadlineAtMs);
   try {
     // The signal may have fired while queued: `take()` already removed the
     // abort listener when granting this slot, so re-check before entering `fn`.
@@ -502,6 +531,9 @@ export function createAndStartFlight(
     ...(persisted ? { persisted } : {}),
   };
   host.recallInFlight.set(flightKey, flight);
+  // The client's absolute deadline bounds the slot wait itself (#3514
+  // review): a queued flight expires as a timeout, not a cancellation, and
+  // a relative budget cannot restart after admission.
   withRecallConcurrency(host, principalKey, controller.signal, async (queueWaitMs) => {
     // A slot was granted and the abort re-check in withRecallConcurrency passed
     // — the pipeline is now committing to execution. Past this point a keyed
@@ -514,7 +546,7 @@ export function createAndStartFlight(
       abortSignal: controller.signal,
       queueWaitMs,
     });
-  }).then(settleExec, failExec);
+  }, resolveClientDeadlineAtMs(normalizedRequest.deadlineMs, Date.now())).then(settleExec, failExec);
   return flight;
 }
 
@@ -683,18 +715,21 @@ export function coordinateRecall(
   host: RecallCoordinatorHost,
   request: EngramAccessRecallRequest,
   normalizedRequest: EngramAccessRecallRequest,
-  requestFingerprint: Omit<EngramAccessRecallRequest, "abortSignal">,
+  requestFingerprint: Omit<EngramAccessRecallRequest, "abortSignal" | "deadlineMs">,
   principalKey: string,
   singleFlight: boolean,
 ): Promise<EngramAccessRecallResponse> {
   if (!singleFlight) {
-    // No coalescing: per-request execution under a concurrency slot.
+    // No coalescing: per-request execution under a concurrency slot. The
+    // resolved absolute deadline also bounds the queue wait itself (#3514
+    // review) so a saturated semaphore cannot hold a recall past expiry.
     return withRecallConcurrency(
       host,
       principalKey,
       request.abortSignal,
       (queueWaitMs) =>
         runRecallDirect(host, request, normalizedRequest, requestFingerprint, queueWaitMs),
+      resolveClientDeadlineAtMs(normalizedRequest.deadlineMs, Date.now()),
     );
   }
 

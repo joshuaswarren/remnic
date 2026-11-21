@@ -89,7 +89,17 @@ export class RecallEntryCoordinator {
     const caps = resolveCapabilities(this.deps.config);
     const graphCaps = resolveGraphConstructionCapabilities(this.deps.config); // #1566 Cluster A
     const abortController = new AbortController();
+    let clientDeadlineFired = false;
+    let clientDeadlineHandle: NodeJS.Timeout | null = null;
+    let outerTimeoutFired = false;
     const onAbort = () => {
+      // Real caller cancellation retires the deadline timer too: a late fire
+      // must not flip clientDeadlineFired and reclassify the abort as a
+      // timeout (#3514 review).
+      if (clientDeadlineHandle) {
+        clearTimeout(clientDeadlineHandle);
+        clientDeadlineHandle = null;
+      }
       abortController.abort();
     };
     if (options.abortSignal?.aborted) {
@@ -113,10 +123,9 @@ export class RecallEntryCoordinator {
     // timer bounds the init gate, standing reads, and the inner race. It is
     // armed after validation so a rejecting call never leaks the timer.
     const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
-    let clientDeadlineFired = false;
-    let clientDeadlineHandle: NodeJS.Timeout | null = null;
     if (clientDeadlineAtMs !== null) {
       clientDeadlineHandle = setTimeout(() => {
+        if (options.abortSignal?.aborted) return;
         clientDeadlineFired = true;
         abortController.abort();
       }, clientDeadlineTimerMs(clientDeadlineAtMs, Date.now()));
@@ -207,6 +216,10 @@ export class RecallEntryCoordinator {
     recallOptions = {
       ...options,
       abortSignal: abortController.signal,
+      // Forward the RESOLVED absolute deadline: a relative deadlineMs re-read
+      // from recallStart downstream would restart the budget after the init
+      // gate and standing reads already consumed part of it (#3514 review).
+      ...(clientDeadlineAtMs !== null ? { deadlineMs: clientDeadlineAtMs } : {}),
       budgetCharsOverride: innerBudget,
       onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
         ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
@@ -254,6 +267,12 @@ export class RecallEntryCoordinator {
       let timeoutHandle: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise<string>((_, reject) => {
         timeoutHandle = setTimeout(() => {
+          // Mark BEFORE the synchronous abort(): abort-aware code rejecting
+          // inside abort() reaches the catch with an AbortError, and only
+          // this flag keeps it classified as a timeout. A caller abort that
+          // already landed keeps its cancellation meaning — the late-firing
+          // race timer must not reclassify it (#3514 review).
+          if (!options.abortSignal?.aborted) outerTimeoutFired = true;
           abortController.abort();
           reject(new Error("recall timeout"));
         }, RECALL_TIMEOUT_MS);
@@ -290,10 +309,11 @@ export class RecallEntryCoordinator {
       this.deps.profiler.endTrace();
       // A fired client deadline is a timeout, not caller cancellation: the
       // caller still expects the degraded response, not "" (issue #3499).
-      const missing = options.abortSignal?.aborted && !clientDeadlineFired
+      const deadlineFired = clientDeadlineFired || outerTimeoutFired;
+      const missing = options.abortSignal?.aborted && !deadlineFired
         ? null
         : recallFailureComposition(
-            clientDeadlineFired && isAbortError(err) ? new Error("recall timeout") : err,
+            deadlineFired && isAbortError(err) ? new Error("recall timeout") : err,
           );
       if (!missing) return "";
       if (standingText.length > 0) {
