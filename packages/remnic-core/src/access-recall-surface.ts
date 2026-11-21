@@ -257,9 +257,15 @@ export class AccessRecallSurface {
       {
         query: options.query,
         ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
-        ...(options.rawExcerptNamespace ? { rawExcerptNamespace: options.rawExcerptNamespace } : {}),
-        ...(options.rawExcerptSessionIds !== undefined ? { rawExcerptSessionIds: options.rawExcerptSessionIds } : {}),
-        ...(options.rawExcerptsSuppressed ? { rawExcerptsSuppressed: options.rawExcerptsSuppressed } : {}),
+        ...(options.rawExcerptNamespace
+          ? { rawExcerptNamespace: options.rawExcerptNamespace }
+          : {}),
+        ...(options.rawExcerptSessionIds !== undefined
+          ? { rawExcerptSessionIds: options.rawExcerptSessionIds }
+          : {}),
+        ...(options.rawExcerptsSuppressed
+          ? { rawExcerptsSuppressed: options.rawExcerptsSuppressed }
+          : {}),
       },
     );
     const context = results
@@ -374,9 +380,7 @@ export class AccessRecallSurface {
       const parts = qmdCollectionPathParts(memoryPath);
       const coldCollection =
         this.deps.orchestrator.config.qmdColdCollection ?? "openclaw-engram-cold";
-      const collectionNamespace = parts
-        ? collectionNamespaceFromPrefix(parts.collection)
-        : null;
+      const collectionNamespace = parts ? collectionNamespaceFromPrefix(parts.collection) : null;
       const preferredAttempted = Boolean(
         preferredNamespace &&
           (!parts ||
@@ -608,10 +612,7 @@ export class AccessRecallSurface {
         context.namespace !== this.deps.orchestrator.config.defaultNamespace
           ? `${context.namespace}:${context.sessionKey}`
           : context.sessionKey;
-      const lcmSessionIds =
-        context.lcmSessionIds !== undefined
-          ? context.lcmSessionIds
-          : [legacyKey];
+      const lcmSessionIds = context.lcmSessionIds !== undefined ? context.lcmSessionIds : [legacyKey];
       // Cap the excerpt fanout so recall responses stay bounded.  Five matches
       // is enough to anchor the model in the raw transcript without ballooning
       // token spend; raw is meant as the escape hatch, not the default. The cap
@@ -999,9 +1000,7 @@ export class AccessRecallSurface {
     }
 
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.orchestrator.config).namespaces;
-    const requestedNamespace = request.namespace?.trim()
-      ? this.deps.resolveNamespace(request.namespace)
-      : undefined;
+    const requestedNamespace = request.namespace?.trim() ? this.deps.resolveNamespace(request.namespace) : undefined;
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal =
       authenticatedPrincipal
