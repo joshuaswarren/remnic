@@ -232,7 +232,12 @@ export async function assembleRecallResponse(
     // than the orchestrator's native context, but a strict subset
     // safe to inject.
     const admittedIds = new Set(results.map((r) => r.id));
-    const droppedAny = beforeIds.some((id) => !admittedIds.has(id));
+    // A rejected/absent snapshot serializes to zero results, so `beforeIds` is
+    // empty and nothing in `context` is tag-verified — a nonempty tag filter
+    // must still suppress that unverified memory text (#3514 review).
+    const droppedAny =
+      beforeIds.some((id) => !admittedIds.has(id)) ||
+      (snapshot === null && effectiveComposition.context.trim().length > 0);
     if (droppedAny) {
       const priorDegradation = effectiveComposition.degradation;
       const filteredContext = results

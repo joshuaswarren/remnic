@@ -898,3 +898,31 @@ test("a client deadlineMs does not swallow the namespace auth rejection (#3499)"
     { namespacesEnabled: true },
   );
 });
+
+test("a tag-filtered recall with no validated snapshot suppresses unverified memory text (#3514 review)", async () => {
+  await withOrchestrator(
+    "remnic-tagfilter-nosnap-",
+    false,
+    async (orchestrator) => {
+      // The pipeline produced real context, but no session snapshot attests to
+      // it (e.g. a concurrent recall on this session replaced it, so the hash
+      // check rejects it): the tag filter has zero tag-verified results, so NO
+      // memory text may survive into the response context.
+      Object.assign(orchestrator, {
+        recallInternal: () =>
+          Promise.resolve("draft note contents and an untagged secret"),
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "what did I write",
+        sessionKey: "tag-session",
+        tags: ["draft"],
+      });
+      assert.equal(response.results.length, 0);
+      assert.ok(
+        !response.context.includes("untagged secret"),
+        "unverified memory text must not survive a tag filter with no validated snapshot",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});

@@ -145,7 +145,10 @@ export function resolveClientDeadlineAtMs(
 const CLIENT_DEADLINE_TIMER_MAX_MS = 2_147_483_647;
 
 export function clientDeadlineTimerMs(clientDeadlineAtMs: number, now: number): number {
-  return Math.max(1, Math.min(clientDeadlineAtMs - now, CLIENT_DEADLINE_TIMER_MAX_MS));
+  // Floor before clamping: a fractional deadlineMs produces a fractional
+  // delay, which AbortSignal.timeout rejects with ERR_OUT_OF_RANGE — flooring
+  // also keeps the abort at or before the deadline (#3514 review).
+  return Math.max(1, Math.min(Math.floor(clientDeadlineAtMs - now), CLIENT_DEADLINE_TIMER_MAX_MS));
 }
 
 export function recallDeadlineSignal(

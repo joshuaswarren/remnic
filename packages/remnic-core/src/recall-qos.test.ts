@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { throwIfAborted } from "./abort-error.js";
 import { createEnrichmentAbortHandle } from "./recall-enrichment-promise.js";
 import {
+  clientDeadlineTimerMs,
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
   resolveRecallCoreSectionDeadlineMs,
@@ -447,4 +448,13 @@ test("client deadlineMs clamps the outer recall deadline to the smaller budget (
       start + 75_000,
     );
   }
+});
+
+test("clientDeadlineTimerMs yields an integer delay that AbortSignal.timeout accepts (#3514 review)", () => {
+  const now = Date.now();
+  const delay = clientDeadlineTimerMs(now + 50.5, now);
+  assert.equal(Number.isInteger(delay), true, "a fractional deadline must floor to an integer delay");
+  // AbortSignal.timeout rejects non-integer delays with ERR_OUT_OF_RANGE; the
+  // floored value must always be acceptable.
+  assert.doesNotThrow(() => AbortSignal.timeout(delay));
 });

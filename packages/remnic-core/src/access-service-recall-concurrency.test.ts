@@ -2008,14 +2008,10 @@ test("a queued recall expires on its client deadline — as a timeout, not abort
   const leader = service.recall({ query: "leader" });
   await leaderStarted.promise;
 
-  const queued = service.recall({ query: "queued", deadlineMs: 25 });
-  const outcome = await Promise.race([
-    queued.then(() => "resolved", (error: Error) => error),
-    new Promise<string>((resolve) => setTimeout(() => resolve("still-queued"), 200)),
-  ]);
+  const queued = await service.recall({ query: "queued", deadlineMs: 25 });
   assert.ok(
-    outcome instanceof Error && outcome.constructor.name === "EngramAccessDeadlineExceededError",
-    `queued recall must expire as a timeout, got ${String(outcome)}`,
+    queued.retrievalFailure,
+    "a deadline-expired queued recall must degrade to the missing-note response, not reject",
   );
   assert.equal(pipelineRuns, 1, "the expired queued recall never started a pipeline");
 
@@ -2039,4 +2035,92 @@ test("identical concurrent recalls coalesce across per-call client deadlines (#3
   ]);
   assert.ok(a && b);
   assert.equal(pipelineRuns, 1, "per-call deadline values must not split the flight");
+});
+
+test("an already-expired recall degrades and leaves no semaphore entry (#3514 review)", async () => {
+  const { service, recallSemaphores } = makeService({
+    limit: 1,
+    singleFlight: false,
+    pipeline: async () => stubResponse([]),
+  });
+  // A deadline already past must degrade at the recall boundary (no retrieval
+  // starts) and must NOT leave an idle {active:0,waiters:[]} entry behind —
+  // each leaked entry would grow recallSemaphores per distinct principal.
+  const outcome = await service
+    .recall({ query: "expired", deadlineMs: Date.now() - 1 })
+    .then((r) => r, (e) => e);
+  assert.ok(
+    !(outcome instanceof Error) && outcome.retrievalFailure,
+    `expired admission must degrade, not reject — got ${String(outcome)}`,
+  );
+  assert.equal(recallSemaphores.size, 0, "the rejected acquire must leave no semaphore entry");
+});
+
+test("a queued shared flight survives its leader's deadline while a follower has budget (#3514 review)", async () => {
+  const holderStarted = deferred<void>();
+  const releaseHolder = deferred<void>();
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    limit: 1,
+    singleFlight: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") {
+        holderStarted.resolve();
+        await releaseHolder.promise;
+      }
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const holder = service.recall({ query: "holder" });
+  await holderStarted.promise;
+
+  // Leader (25ms) and identical follower (500ms) share the queued flight.
+  const leader = service.recall({ query: "shared", deadlineMs: 25 });
+  const follower = service.recall({ query: "shared", deadlineMs: 500 });
+  const leaderOutcome = await leader.then((r) => r, (e) => e);
+  assert.ok(
+    !(leaderOutcome instanceof Error) && leaderOutcome.retrievalFailure,
+    "the leader must degrade on its own deadline",
+  );
+
+  setTimeout(() => releaseHolder.resolve(), 60);
+  const followerResp = await follower;
+  assert.equal(
+    readResults(followerResp).length,
+    1,
+    "the follower still had budget when the slot freed — it must get the shared result",
+  );
+  assert.equal(pipelineRuns, 2, "holder + the one shared pipeline");
+  await holder;
+});
+
+test("a coalesced follower's own deadline bounds its wait on a running flight (#3514 review)", async () => {
+  const pipelineStarted = deferred<void>();
+  const releasePipeline = deferred<void>();
+  const { service } = makeService({
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineStarted.resolve();
+      await releasePipeline.promise;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const leader = service.recall({ query: "shared", deadlineMs: 5_000 });
+  await pipelineStarted.promise;
+  // The follower joins the RUNNING flight with a 30ms budget: it must degrade
+  // on its own deadline and must not cancel the flight the leader still uses.
+  const follower = service.recall({ query: "shared", deadlineMs: 30 });
+  setTimeout(() => releasePipeline.resolve(), 150);
+  const followerOutcome = await follower.then((r) => r, (e) => e);
+  assert.ok(
+    !(followerOutcome instanceof Error) && followerOutcome.retrievalFailure,
+    `the follower must degrade on its own deadline, got ${String(followerOutcome)}`,
+  );
+  const leaderResp = await leader;
+  assert.equal(
+    readResults(leaderResp).length,
+    1,
+    "the follower's deadline must not cancel the flight the leader still consumes",
+  );
 });
