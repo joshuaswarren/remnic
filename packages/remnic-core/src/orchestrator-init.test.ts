@@ -1729,3 +1729,63 @@ test("destroy persists a buffered turn before it waits on a running fact-hash wa
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
 });
+
+test("an unverified collection ensure does not complete the maintenance-off sync", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-unknown-ensure-qmd-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: true,
+      qmdMaintenanceEnabled: false,
+      namespacesEnabled: true,
+      namespaceCatalogEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  // SAFETY: the test stubs the same private orchestrator seams the neighbouring
+  // lifecycle tests do (qmd, passiveCorrectionService, maintenanceNamespaces,
+  // namespaceSearchRouter, deferredReady, deferredSyncSucceeded).
+  const orch = orchestrator as any;
+  try {
+    orch.qmd = {
+      probe: async () => true,
+      debugStatus: () => "fake-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+    };
+    orch.passiveCorrectionService = () => ({
+      recoverStaleApplyingPlans: async () => 0,
+    });
+    orch.maintenanceNamespaces = () => Promise.resolve(orch.configuredNamespaceList());
+    orch.namespaceSearchRouter.ensureNamespaceCollection = async () => "unknown";
+
+    const initialized = await withTestDeadline(orchestrator.initialize().then(() => "settled" as const));
+    assert.equal(initialized, "settled", "initialize must settle before the deferred stamp check");
+    const deferred = await withTestDeadline(
+      orch.deferredReady.then(() => "settled" as const),
+    );
+    assert.equal(deferred, "settled", "deferredInitialize must settle for the stamp check to run");
+    assert.equal(
+      orch.deferredSyncSucceeded,
+      false,
+      "maintenance-off must not record sync success while the default collection ensure is unverified",
+    );
+    assert.equal(
+      await orchestrator.startupSearchReadySync(new AbortController().signal),
+      false,
+      "the readiness sync must re-verify an unverified collection ensure as degraded",
+    );
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});

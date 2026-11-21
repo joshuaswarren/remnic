@@ -47,6 +47,7 @@ import type { PluginConfig } from "../types.js";
 import { type UtilityRuntimeValues, loadUtilityRuntimeValues } from "../utility-runtime.js";
 import { WearablesService } from "../wearables/service.js";
 import { startupDiscoveryWithTimeout } from "./startup-collection-checks.js";
+import type { SearchCollectionState } from "./orchestrator-helpers.js";
 import type { MeetingsService } from "../meetings/service.js";
 import {
   COMPACTION_SIGNAL_MAX_AGE_MS,
@@ -134,6 +135,11 @@ export class OrchestratorInitCoordinator {
     | undefined;
   private readonly startupStorageWrites = new Set<Promise<void>>();
   private readonly startupWarmups = new Set<Promise<void>>();
+  /** Default-namespace collection state from the initialize() check, kept
+   *  epoch-scoped so a retired lifecycle's outcome cannot leak into the next. */
+  private startupDefaultCollection:
+    | { epoch: number; state: SearchCollectionState }
+    | undefined;
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -186,6 +192,7 @@ export class OrchestratorInitCoordinator {
     this.startupClosed = false;
     this.maintenanceNamespacesFlight = undefined;
     this.correctionCatalogFlight = undefined;
+    this.startupDefaultCollection = undefined;
     this.recoveredCorrectionNamespaces = new Set<string>();
     this.correctionRecoveryChain = Promise.resolve();
     return epoch;
@@ -541,6 +548,7 @@ export class OrchestratorInitCoordinator {
                 states.find(
                   (entry) => entry.namespace === this.deps.config.defaultNamespace,
                 )?.state ?? "unknown";
+              this.startupDefaultCollection = { epoch, state: defaultState };
               if (defaultState === "missing") {
                 await this.deps.disposeSearchBackendIfNeeded();
                 if (!this.isCurrentStartupEpoch(epoch)) {
@@ -653,8 +661,19 @@ export class OrchestratorInitCoordinator {
     // commits rather than holding readiness for a full reindex.
     if (this.deps.qmd.isAvailable() && !resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
       // Available backend with maintenance disabled — no corpus update is
-      // owed; consider sync done.
-      this.deps.deferredSyncSucceeded = true;
+      // owed, but probe availability alone is not sync-done: the initialize()
+      // ensure may have answered "unknown", and claiming success here would
+      // let ensureSearchReady skip collection re-verification and open the
+      // readiness gate as warmed. Only a verified ensure — "present", or
+      // explicit "skipped" — disarms the retry loop; anything else leaves
+      // the flag false so startupSearchReadySync re-ensures.
+      const collection = this.startupDefaultCollection;
+      if (
+        collection?.epoch === epoch &&
+        (collection.state === "present" || collection.state === "skipped")
+      ) {
+        this.deps.deferredSyncSucceeded = true;
+      }
     }
     // Otherwise the flag stays false and the server retry loop owns the
     // sync: the corpus update when maintenance is on, backend recovery when
