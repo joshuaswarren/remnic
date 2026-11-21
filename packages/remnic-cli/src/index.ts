@@ -185,6 +185,7 @@ import {
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { initCliLogger } from "./cli-logger.js";
+import { joinStartupSyncOrWarn } from "./startup-sync-join.js";
 import { BUFFER_DRAIN_USAGE, runBufferDrain } from "./buffer-drain-cmd.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
@@ -5059,7 +5060,7 @@ async function cmdXray(rest: string[]): Promise<void> {
   // Freshness-dependent: join the shared post-ready startup sync so the
   // recall lands after the corpus update instead of reading a stale index
   // and aborting the update in flight (#3525).
-  await orchestrator.joinStartupSearchSync();
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
 
   try {
@@ -5181,7 +5182,7 @@ async function cmdWhy(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
-  await orchestrator.joinStartupSearchSync();
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
   try {
     await runWhyCommand(rest, whyCliIo((request) => service.recallWhy(request)));
@@ -5228,7 +5229,7 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
-  await orchestrator.joinStartupSearchSync();
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
   try {
     return await fn(service, orchestrator);

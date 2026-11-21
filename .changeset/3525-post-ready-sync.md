@@ -1,8 +1,7 @@
 ---
 "@remnic/core": patch
+"@remnic/cli": patch
 Stability: stable
 ---
 
-Run the post-ready QMD corpus update for every runtime, not only remnic-server (#3525).
-
-#3518 moved the update out of the awaited `deferredReady` path and left the server retry loop as its sole driver, so runtimes that drive `Orchestrator` without `@remnic/server` — the OpenClaw service, `remnic` CLI invocations, and the bench adapter — served the startup index as last written until an unrelated sync reconciled it. `deferredInitialize` now schedules `startupSearchSync` once the ready mark settles (not awaited, so readiness semantics stay unchanged) and records the result in the same `deferredSyncSucceeded` flag the retry loop reads. `startupSearchSync` itself joins a concurrent in-flight call from the same startup epoch, so the post-ready fire and the server retry cannot spawn a second `qmd update` over the same index.
+Run the post-ready QMD corpus sync without remnic-server: the deferred path fires `startupSearchSync` once `deferredReady` settles, and freshness-dependent one-shot commands (`xray`, `why`, local-service commands) join the same shared flight instead of querying a stale index. The flight is owned by a shared controller so a joiner's abort settles its own wait without cancelling the run for live callers, a completed run publishes `deferredSyncSucceeded` for its epoch directly, and a `false` join warns rather than silently querying stale data.
