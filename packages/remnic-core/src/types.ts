@@ -7,6 +7,7 @@ import type { ActivityConfig } from "./activity/types.js";
 import type { WearablesConfig } from "./wearables/types.js";
 import type { ExtractionSpanConfig, ExtractedFactSpanRef } from "./extraction-span-config.js";
 import type { ExtractionLivenessConfig } from "./extraction-liveness.js";
+import type { ExtractionFailureClass } from "./types-extraction-failure.js";
 import type { ReplicaPeersConfig } from "./replica-peers-config.js";
 import type { ExternalWikiRoot } from "./external-wiki-config.js";
 import type { StateViewResult } from "./recall-state-view.js";
@@ -3334,14 +3335,7 @@ export interface QuestionEntry {
   resolvedAt?: string;
 }
 
-/**
- * Coarse failure class consumed by the extraction retry/backoff + circuit
- * breaker layer (extraction hot-loop hardening). Kept deliberately small:
- * - `provider_retryable`: transient provider failure (429/5xx/network) — back off and retry.
- * - `parse_empty`: provider responded but produced no parseable output — retry with a low attempt cap.
- * - `auth_config`: auth/config failure (401/403/"no models configured") — open the breaker immediately.
- */
-export type ExtractionFailureClass = "provider_retryable" | "parse_empty" | "auth_config";
+export type { ExtractionFailureClass };
 
 export interface ExtractionResult {
   facts: ExtractedFact[];

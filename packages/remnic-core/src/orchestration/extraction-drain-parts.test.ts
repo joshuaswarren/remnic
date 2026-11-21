@@ -23,6 +23,14 @@ const DEFERRED: ExtractionRunResult = {
   persistedCount: 0,
   durableOutputCount: 0,
 };
+const TRUNCATED: ExtractionRunResult = {
+  status: "skipped",
+  reason: "empty_extraction_result",
+  retainedBuffer: true,
+  failureClass: "output_truncated",
+  persistedCount: 0,
+  durableOutputCount: 0,
+};
 const FAILED: ExtractionRunResult = {
   status: "skipped",
   reason: "empty_extraction_result",
@@ -257,4 +265,29 @@ test("a window of exact duplicates that is also oversized extracts every copy's 
     results: Array.from({ length: 8 }, () => DONE),
   });
   assert.deepEqual(buffer.getTurns("s1"), [], "both buffered identities drain");
+});
+
+test("output_truncated never counts toward chunk drops: the run layer already long-parks", async () => {
+  // finish_reason=length retries at the same ceiling can never complete, so
+  // the run layer long-parks the fingerprint on the first failure. The drain
+  // keeps the chunk like a provider failure — it must not count toward a drop.
+  // Two 60-char turns at a 100-char budget force the multi-chunk path, where
+  // settleVerdict counts failures; the single-run path skips it entirely.
+  const first = makeTurn("a".repeat(60));
+  const second = makeTurn("b".repeat(60));
+  const saveCopies: { reason: string; contents: string }[] = [];
+  const { buffer, calls } = await withDrain({
+    turns: [first, second],
+    results: [TRUNCATED, TRUNCATED, TRUNCATED],
+    runs: 3,
+    dropAfter: 2,
+    saveCopies,
+  });
+  assert.equal(calls.length, 3, "each run attempts the truncated chunk and returns");
+  assert.deepEqual(
+    buffer.getTurns("s1").map((seen) => seen.content),
+    [first.content, second.content],
+    "three truncated runs keep the chunk buffered",
+  );
+  assert.equal(saveCopies.length, 0, "no recovery copy — nothing was dropped");
 });

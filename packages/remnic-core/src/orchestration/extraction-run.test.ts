@@ -905,15 +905,38 @@ test("parse_empty: long-parks a fingerprint after extractionParseEmptyMaxAttempt
   }
 });
 
-// ---------------------------------------------------------------------------
-// Invariant guard (regression): never mark processed on failure
-// ---------------------------------------------------------------------------
+test("output_truncated: long-parks on the first failure — a retry at the same ceiling can never succeed", async () => {
+  const h = await makeHarness({
+    extractionRetryScheduleMs: [1000],
+    extractionRetryMaxBackoffMs: 9_000_000,
+    extractionParseEmptyMaxAttempts: 2,
+    extractionBreakerFailureThreshold: 100,
+    extractionRetryJitterRatio: 0,
+  });
+  try {
+    const coord = h.newCoordinator();
+    h.setRespond(() => failureResult("output_truncated"));
+    await h.run(coord, "fp-1", { force: true }); // attempt 1 → long-park immediately
+
+    const storage = await h.storageForNs("default");
+    const meta = await storage.loadMeta();
+    const entry = (meta.extractionRetryState ?? [])[0];
+    assert.ok(entry, "retry state entry exists");
+    assert.equal(entry.attempts, 1);
+    assert.equal(entry.lastFailureClass, "output_truncated");
+    const parkMs = Date.parse(entry.nextEligibleAt) - Date.now();
+    assert.ok(parkMs > 8_000_000, `long-parked to ~maxBackoff (got ${parkMs}ms)`);
+    assert.equal(h.recordedProcessedCount(), 0, "output_truncated fingerprint is never marked processed");
+  } finally {
+    await h.cleanup();
+  }
+});
 
 test("invariant: a failing extraction never records a processed fingerprint", async () => {
   const h = await makeHarness({ extractionBreakerFailureThreshold: 100 });
   try {
     const coord = h.newCoordinator();
-    for (const cls of ["provider_retryable", "parse_empty", "auth_config"] as ExtractionFailureClass[]) {
+    for (const cls of ["provider_retryable", "parse_empty", "output_truncated", "auth_config"] as const) {
       h.setRespond(() => failureResult(cls));
       await h.run(coord, `fp-${cls}`, { force: true });
     }
@@ -1346,7 +1369,7 @@ test("#3140: a successful flush heals the recorded LLM health", async () => {
 // ---------------------------------------------------------------------------
 
 test("a retained failure carries the extraction's failure class, so the drain can tell an outage from a bad chunk", async () => {
-  for (const cls of ["provider_retryable", "auth_config", "parse_empty"] as const) {
+  for (const cls of ["provider_retryable", "auth_config", "parse_empty", "output_truncated"] as const) {
     const h = await makeHarness({ extractionRetryScheduleMs: [3_600_000], extractionBreakerFailureThreshold: 100 });
     try {
       h.setRespond(() => failureResult(cls));

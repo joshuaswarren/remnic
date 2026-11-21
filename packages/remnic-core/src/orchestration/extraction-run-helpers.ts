@@ -132,6 +132,20 @@ export function computeExtractionRetryNextEligibleMs(
 }
 
 /**
+ * Whether a recorded failure long-parks the fingerprint: `output_truncated`
+ * can never succeed at the same output ceiling, and `parse_empty` past its
+ * attempt cap has shown this window unparseable — both park to max backoff.
+ * The retained window still drains under a raised ceiling (#3521).
+ */
+export function extractionFailureLongParks(
+  cls: ExtractionFailureClass,
+  attempts: number,
+  parseEmptyMaxAttempts: number,
+): boolean {
+  return cls === "output_truncated" || (cls === "parse_empty" && attempts > parseEmptyMaxAttempts);
+}
+
+/**
  * Cap the persisted retry-state array to the newest `maxEntries` by
  * firstFailedAt. Guards invalid caps so they cannot turn `slice(-maxEntries)`
  * into an unbounded copy (AGENTS.md rule 17).

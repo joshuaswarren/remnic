@@ -32,6 +32,7 @@ test("commentary: no braces, nothing parses (the whole reply is the one candidat
     unrecognizedPayloads: 0,
     topLevelKeys: [],
     partialFacts: 0,
+    maxOutputTokens: undefined,
   });
   assertNoContent(reply, [SECRET, "durable facts", "conversation"]);
 });
@@ -97,6 +98,7 @@ test("empty reply", () => {
     unrecognizedPayloads: 0,
     topLevelKeys: [],
     partialFacts: 0,
+    maxOutputTokens: undefined,
   });
 });
 
@@ -125,6 +127,6 @@ test("rendered line has a stable greppable shape", () => {
   );
   assert.equal(
     line,
-    "extractWithLocalLlm: unusable local reply replyChars=14 finishReason=stop startsWithBrace=true jsonCandidates=1 parsedAnyJson=true unrecognizedPayloads=1 topLevelKeys=answer partialFacts=0",
+    "extractWithLocalLlm: unusable local reply replyChars=14 finishReason=stop startsWithBrace=true jsonCandidates=1 parsedAnyJson=true unrecognizedPayloads=1 topLevelKeys=answer partialFacts=0 maxOutputTokens=none",
   );
 });
