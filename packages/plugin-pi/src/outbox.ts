@@ -573,7 +573,8 @@ export class ObserveOutbox {
   /**
    * Deliver queued entries in FIFO order, scanning the disk-backed spill before
    * the bounded hot file. Retryable failures keep the head queued; permanent
-   * rejections also stay queued and stop this drain until the cause is fixed.
+   * rejections stay queued and set that session aside for the rest of this
+   * drain, so a refused capture cannot block later captures from other sessions.
    */
   async drain(send: (entry: ObserveOutboxEntry) => Promise<void>, options: DrainOptions = {}): Promise<DrainResult> {
     const notify = options.notify;
@@ -601,11 +602,18 @@ export class ObserveOutbox {
     const maxSends = options.maxSends ?? Number.POSITIVE_INFINITY;
     const eligible = (entry: ObserveOutboxEntry): boolean =>
       entryEligibleForDestination(entry, options.destination);
+    /**
+     * A session whose head capture was permanently rejected is set aside for
+     * the rest of this drain: its entries stay queued in order, but captures
+     * from other sessions are still attempted (#3520).
+     */
+    const refusedSessions = new Set<string>();
+    const deliverable = (entry: ObserveOutboxEntry): boolean => eligible(entry) && !refusedSessions.has(entry.sessionKey);
     try {
       while (failures < maxAttempts && delivered < maxSends) {
         await this.refreshOrKeepLastKnown(notify);
-        const spilled = await this.firstSpillEntry(eligible);
-        const entry = spilled ?? this.entries.find(eligible);
+        const spilled = await this.firstSpillEntry(deliverable);
+        const entry = spilled ?? this.entries.find(deliverable);
         if (!entry) break;
         const queuedAtMs = Date.parse(entry.queuedAt);
         if (Number.isFinite(queuedAtMs) && now() - queuedAtMs > SERVER_IDEMPOTENCY_WINDOW_MS && !warnedStale.has(entry.id)) {
@@ -623,10 +631,11 @@ export class ObserveOutbox {
             const reason = err instanceof Error ? err.message : String(err);
             const status = err instanceof RemnicHttpError ? `HTTP ${err.status}: ` : "";
             notify?.(
-              `Remnic observe outbox: the daemon permanently rejected the head capture (${status}${reason}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); it remains queued for retry on the next successful daemon contact after the cause is fixed, and later captures wait behind it`,
+              `Remnic observe outbox: the daemon permanently rejected the head capture (${status}${reason}; entry ${entry.id}, replay key ${entry.replayNonce ?? entry.id}); it remains queued for retry on the next successful daemon contact after the cause is fixed, and captures from other sessions still run this drain`,
               "warning"
             );
-            break;
+            refusedSessions.add(entry.sessionKey);
+            continue;
           }
           if (failureClass === "blocked") {
             const status = err instanceof RemnicHttpError ? err.status : "auth";
