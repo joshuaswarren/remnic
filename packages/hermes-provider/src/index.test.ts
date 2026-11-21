@@ -340,3 +340,35 @@ test("non-JSON client errors preserve HTTP status and are not retried", async ()
     globalThis.fetch = originalFetch;
   }
 });
+
+test("recall times out when the daemon sends headers and then stalls the body (#3534)", async () => {
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"context":');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  try {
+    const client = new HermesClient({
+      baseUrl: `http://127.0.0.1:${port}`,
+      authToken: "test-token",
+      maxRetries: 0,
+      timeoutMs: 300,
+    });
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      client.recall("what matters?").then(
+        () => "resolved",
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still waiting"), 3000).unref()),
+    ]);
+    assert.match(outcome, /request timed out after 300ms/);
+    assert.ok(Date.now() - startedAt < 2000, `recall took ${Date.now() - startedAt}ms against a 300ms timeout`);
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});

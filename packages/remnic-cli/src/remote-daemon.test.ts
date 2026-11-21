@@ -403,3 +403,33 @@ test("a non-loopback remote origin refuses the local daemon lifecycle; loopback 
   delete process.env.REMNIC_DAEMON_URL;
   assert.equal(resolveHostedOnlyDaemonRefusal("/nonexistent/remnic.config.json"), undefined);
 });
+
+test("daemon reads stay bounded when the body stalls after the headers (#3534)", async () => {
+  const http = await import("node:http");
+  const server = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { "content-type": "application/json" });
+    res.write('{"status":');
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  const lines: string[] = [];
+  const originalLog = console.log;
+  console.log = (line: unknown) => {
+    lines.push(String(line));
+  };
+  try {
+    const startedAt = Date.now();
+    const outcome = await Promise.race([
+      printHealthCheck(`http://127.0.0.1:${port}`, "tok", 300).then(() => "returned"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still waiting"), 3000).unref()),
+    ]);
+    assert.equal(outcome, "returned");
+    assert.ok(Date.now() - startedAt < 2000, `health check took ${Date.now() - startedAt}ms against a 300ms timeout`);
+    assert.deepEqual(lines, ["Health: unable to reach server"]);
+  } finally {
+    console.log = originalLog;
+    server.closeAllConnections();
+    server.close();
+  }
+});
