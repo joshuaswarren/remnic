@@ -2871,21 +2871,20 @@ test("runExtraction still clears the session buffer after persistence even if re
   );
 });
 
-// ── NHZEV (codex P2): the QMD STARTUP sync in deferredInitialize() must cover
-// cataloged dynamic namespaces too, not only configuredNamespaces(). A dynamic
-// namespace written before a daemon restart exists ONLY in the persisted catalog;
-// if the boot-time "sync current disk state" pass embeds only the configured set,
-// that namespace's QMD collection stays stale after restart. We drive
-// deferredInitialize() with stubbed internals and abort the signal right after the
-// sync (the next `if (signal.aborted) return;` bails before warmup), then assert the
-// startup updateNamespaces() received the UNION of configured + cataloged namespaces.
-test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV)", async () => {
+// ── NHZEV (codex P2): the QMD STARTUP sync must cover cataloged dynamic
+// namespaces too, not only configuredNamespaces(). A dynamic namespace written
+// before a daemon restart exists ONLY in the persisted catalog; if the boot-time
+// "sync current disk state" pass embeds only the configured set, that
+// namespace's QMD collection stays stale after restart. Since #3518 the corpus
+// update lives in startupSearchSync (the post-ready retry entry point), so we
+// drive that with stubbed internals and assert updateNamespaces() received the
+// UNION of configured + cataloged namespaces.
+test("startupSearchSync covers cataloged dynamic namespaces (NHZEV)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
-  const abortController = new AbortController();
-  // #2980 fences startup work by lifecycle epoch: deferredInitialize() now
-  // begins an epoch that resets the gate fields the selfDeps seam fail-fasts
-  // on (PR #1801 set-trap contract). Prototype fakes must declare them.
+  // #2980 fences startup work by lifecycle epoch: the first sync begins an
+  // epoch that resets the gate fields the selfDeps seam fail-fasts on (PR
+  // #1801 set-trap contract). Prototype fakes must declare them.
   orchestrator.deferredInitAbort = null;
   orchestrator.deferredSyncSucceeded = false;
   const memoryDir = path.join(os.tmpdir(), "remnic-startup-maintenance-nhzev");
@@ -2907,7 +2906,10 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
     maintenanceMaxNamespacesPerCycle: 2,
   };
   orchestrator.qmd = {
+    probe: async () => true,
+    debugStatus: () => "synthetic-qmd",
     isAvailable: () => true,
+    search: async () => [],
     async update() {},
   };
   orchestrator.namespaceCatalog = {
@@ -2927,17 +2929,19 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
     },
   };
   orchestrator.namespaceSearchRouter = {
+    clearCache() {},
+    async ensureNamespaceCollection() {
+      return "present";
+    },
     async updateNamespaces(ns: string[]) {
       updateArg = ns;
-      // Abort AFTER the startup sync records its arg so deferredInitialize bails
-      // at the next `if (signal.aborted) return;` before warmup/caches run.
-      abortController.abort();
       return ns.length;
     },
   };
 
-  await orchestrator.deferredInitialize(abortController.signal);
+  const synced = await orchestrator.startupSearchSync();
 
+  assert.ok(synced, "the complete discovery sync must succeed");
   assert.ok(updateArg, "startup updateNamespaces must be called");
   assert.ok(
     updateArg!.includes(dynamicNamespace),
@@ -2950,12 +2954,11 @@ test("deferredInitialize startup sync covers cataloged dynamic namespaces (NHZEV
 });
 
 // NHZEV fallback: a catalog read failure during startup sync must degrade to the
-// configured set rather than breaking deferredInitialize — same failure-tolerance
+// configured set rather than breaking the sync — same failure-tolerance
 // contract as runQmdMaintenance (maintenanceNamespaces swallows the read error).
-test("deferredInitialize startup sync falls back to configured set on catalog read failure (NHZEV)", async () => {
+test("startupSearchSync falls back to configured set on catalog read failure (NHZEV)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   let updateArg: string[] | undefined;
-  const abortController = new AbortController();
   orchestrator.deferredInitAbort = null;
   orchestrator.deferredSyncSucceeded = false;
 
@@ -2967,7 +2970,10 @@ test("deferredInitialize startup sync falls back to configured set on catalog re
     qmdMaintenanceEnabled: true,
   };
   orchestrator.qmd = {
+    probe: async () => true,
+    debugStatus: () => "synthetic-qmd",
     isAvailable: () => true,
+    search: async () => [],
     async update() {},
   };
   orchestrator.namespaceCatalog = {
@@ -2977,14 +2983,17 @@ test("deferredInitialize startup sync falls back to configured set on catalog re
     },
   };
   orchestrator.namespaceSearchRouter = {
+    clearCache() {},
+    async ensureNamespaceCollection() {
+      return "present";
+    },
     async updateNamespaces(ns: string[]) {
       updateArg = ns;
-      abortController.abort();
       return ns.length;
     },
   };
 
-  await orchestrator.deferredInitialize(abortController.signal);
+  await orchestrator.startupSearchSync();
 
   assert.ok(updateArg, "startup updateNamespaces must be called");
   assert.deepEqual(

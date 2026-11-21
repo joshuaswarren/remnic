@@ -958,11 +958,13 @@ export class Orchestrator {
   private resolveInit: (() => void) | null = null;
 
   /**
-   * Resolves when deferred initialization (QMD probe, warmup, caches, cron)
-   * completes. CLI and http-serve callers that need `qmd.isAvailable()` to
-   * reflect reality should `await orchestrator.deferredReady` after
-   * `initialize()`. Gateway callers can ignore it — recall() degrades
-   * gracefully when QMD isn't ready yet.
+   * Resolves when deferred initialization (warmup, caches, cron) completes.
+   * CLI and http-serve callers that need `qmd.isAvailable()` to reflect
+   * reality should `await orchestrator.deferredReady` after `initialize()`.
+   * The corpus-wide QMD update is deliberately NOT part of this gate (#3518):
+   * it runs after ready under the server retry loop, so `deferredReady` no
+   * longer implies a synced index. Gateway callers can ignore it — recall()
+   * degrades gracefully when QMD isn't ready yet.
    *
    * Also resolves (without error) when `initialize()` throws before reaching
    * the deferred-init phase, so callers never hang on a permanently-pending
@@ -977,10 +979,11 @@ export class Orchestrator {
   private deferredInitAbort: AbortController | null = null;
 
   /**
-   * Whether the deferred init's QMD startup sync completed successfully.
-   * When false after deferredReady resolves, the server retry loop should
-   * attempt startupSearchSync() even if `qmd.isAvailable()` is true —
-   * availability only means probe succeeded, not that the index is current.
+   * Whether the startup corpus update completed successfully. The deferred
+   * init no longer runs it (#3518), so this stays false until the server
+   * retry loop's startupSearchSync() lands — including when
+   * `qmd.isAvailable()` is true, because availability only means the probe
+   * and collection ensure succeeded, not that the index is current.
    */
   deferredSyncSucceeded = false;
 
@@ -2029,6 +2032,12 @@ export class Orchestrator {
 
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
     return this.orchestratorInitCoordinator.startupSearchSync(
+      signal,
+    );
+  }
+
+  async startupSearchReadySync(signal?: AbortSignal): Promise<boolean> {
+    return this.orchestratorInitCoordinator.startupSearchReadySync(
       signal,
     );
   }

@@ -7,7 +7,7 @@
  * warm-up cannot complete. Keeps index.ts under its structural size ceiling.
  */
 
-import { log } from "@remnic/core";
+import { log, type Orchestrator } from "@remnic/core";
 
 interface PromiseResolvers<T> {
   promise: Promise<T>;
@@ -241,4 +241,58 @@ export async function completeStartupReadiness(options: {
  *  into "listener late" vs "listener up but requests starved". */
 export function logListenerBound(host: string, port: number): void {
   log.info(`listener bound on ${host}:${port} ${Math.round(process.uptime() * 1000)}ms after process start`);
+}
+
+/**
+ * The two levels of the startup search sync (#3518), each deduped so
+ * concurrent callers share one in-flight attempt:
+ *
+ * - `ensureSearchReady`: probe + collection ensure only — what the readiness
+ *   warm-up gate waits on. Never runs the corpus-wide index update; the ready
+ *   mark must not hold on a reindex.
+ * - `ensureStartupSync`: the full startupSearchSync (probe + ensure + corpus
+ *   update + warm-up search) — the post-ready retry loop's job. Its success
+ *   records `deferredSyncSucceeded`, which is also the flag that disarms the
+ *   retry loop, so it is the only place that may write `true`.
+ */
+export function createStartupSyncEnsurers(orchestrator: Orchestrator) {
+  let startupSyncInFlight: Promise<boolean> | undefined;
+  let searchReadyInFlight: Promise<boolean> | undefined;
+
+  const ensureStartupSync = async (signal: AbortSignal): Promise<boolean> => {
+    if (orchestrator.deferredSyncSucceeded) return true;
+    if (startupSyncInFlight) return startupSyncInFlight;
+    const attempt = orchestrator.startupSearchSync(signal).then((synced) => {
+      if (synced) orchestrator.deferredSyncSucceeded = true;
+      return synced;
+    });
+    startupSyncInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (startupSyncInFlight === attempt) startupSyncInFlight = undefined;
+    }
+  };
+
+  const ensureSearchReady = async (signal: AbortSignal): Promise<boolean> => {
+    if (orchestrator.deferredSyncSucceeded) return true;
+    // Join an in-flight readiness run first — the dedup must precede any
+    // availability reasoning, because isAvailable() flips inside probe()
+    // BEFORE the collection ensure and noop swap finish (qmd.ts
+    // recordProbeSuccess). A probe-only-true backend is not proof the
+    // collection work completed, so readiness always runs the readiness-level
+    // sync; concurrent full-sync runs share its backend phase inside the
+    // orchestrator rather than blocking this gate on the corpus update
+    // (#3518 second read).
+    if (searchReadyInFlight) return searchReadyInFlight;
+    const attempt = orchestrator.startupSearchReadySync(signal);
+    searchReadyInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (searchReadyInFlight === attempt) searchReadyInFlight = undefined;
+    }
+  };
+
+  return { ensureSearchReady, ensureStartupSync };
 }
