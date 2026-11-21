@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-devin",
-  "version": "10.0.166",
+  "version": "10.0.167",
   "description": "Remnic memory plugin for Devin CLI — hooks, skills, MCP integration",
   "type": "module",
   "license": "MIT",
