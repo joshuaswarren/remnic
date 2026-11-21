@@ -547,7 +547,11 @@ export class MemoryControllerCoordinator {
       // Unknown receipt health keeps the gate closed.
       recorded = 1;
     }
-    if (Number.isFinite(recorded) && recorded > this.consecutiveReceiptFailures) {
+    if (!Number.isFinite(recorded)) {
+      // A count that is not a real number is unreadable history too.
+      recorded = 1;
+    }
+    if (recorded > this.consecutiveReceiptFailures) {
       this.consecutiveReceiptFailures = recorded;
     }
   }
