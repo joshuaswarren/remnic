@@ -497,7 +497,13 @@ export class ExtractionDrain {
     // Provider breaker/backoff retention: keep everything for retry.
     if (verdict === "deferred") return { action: "return", result: mergeDrainResults(aggregate, result), aggregate };
     // An outage or a bad key is not the chunk's fault: keep the chunk and do not count toward dropping it.
-    if (result.failureClass === "provider_retryable" || result.failureClass === "auth_config") {
+    // A reply cut at the output ceiling long-parks in the run layer on the first failure — the chunk
+    // stays buffered so a raised ceiling can drain it, and retries never count toward a drop (#3521).
+    if (
+      result.failureClass === "provider_retryable" ||
+      result.failureClass === "auth_config" ||
+      result.failureClass === "output_truncated"
+    ) {
       return { action: "return", result: mergeDrainResults(aggregate, result), aggregate };
     }
     return { action: "failed", result, aggregate };

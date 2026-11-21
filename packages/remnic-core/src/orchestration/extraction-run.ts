@@ -134,6 +134,7 @@ import {
   countRequestedDurableOutputs,
   deriveSourceConnector,
   deriveTopicsFromExtraction, emptyExtractionResult,
+  extractionFailureLongParks,
   runExtractionPostPersist,
   runExtractionPostPersistBestEffort,
   EXTRACTION_RETRY_STATE_MAX_ENTRIES,
@@ -351,19 +352,16 @@ export class ExtractionRunCoordinator {
     const prev = nsMap.get(fingerprint);
     const attempts = (prev?.attempts ?? 0) + 1;
     const firstFailedAtMs = prev?.firstFailedAtMs ?? now;
-    let nextEligibleAtMs: number;
-    if (cls === "parse_empty" && attempts > this.config.extractionParseEmptyMaxAttempts) {
-      // parse_empty budget exhausted → long-park (still never marked processed).
-      nextEligibleAtMs = now + Math.max(0, this.config.extractionRetryMaxBackoffMs);
-    } else {
-      nextEligibleAtMs = computeExtractionRetryNextEligibleMs(
-        attempts,
-        this.config.extractionRetryScheduleMs,
-        this.config.extractionRetryMaxBackoffMs,
-        this.config.extractionRetryJitterRatio,
-        now,
-      );
-    }
+    // output_truncated or parse_empty past its cap → long-park; the window survives a raised ceiling (#3521).
+    const nextEligibleAtMs = extractionFailureLongParks(cls, attempts, this.config.extractionParseEmptyMaxAttempts)
+      ? now + Math.max(0, this.config.extractionRetryMaxBackoffMs)
+      : computeExtractionRetryNextEligibleMs(
+          attempts,
+          this.config.extractionRetryScheduleMs,
+          this.config.extractionRetryMaxBackoffMs,
+          this.config.extractionRetryJitterRatio,
+          now,
+        );
     nsMap.set(fingerprint, { attempts, nextEligibleAtMs, firstFailedAtMs, lastFailureClass: cls });
     this.extractionRetryState.set(namespace, nsMap);
     this.providerBreaker.failure(cls, now, {
