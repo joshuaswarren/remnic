@@ -151,10 +151,11 @@ test("operational health refuses an unsupported advertised capability without CL
   assert.equal(fixture.statusCalls(), 0);
 });
 
-for (const marker of [
+const invalidMarkers: JsonValue[] = [
   null, "1", true, 1, {}, [], { schemaVersion: "1" }, { schemaVersion: null },
   { schemaVersion: true }, { schemaVersion: 0 }, { schemaVersion: 1, unsupported: true },
-]) {
+];
+for (const marker of invalidMarkers) {
   test(`operational health refuses malformed advertised marker ${JSON.stringify(marker)}`, { timeout: 2_000 }, async t => {
     const fixture = await operationalClient(t, packet, { marker });
     assert.equal(fixture.session.getHealthMetadataCapability(), "invalid");

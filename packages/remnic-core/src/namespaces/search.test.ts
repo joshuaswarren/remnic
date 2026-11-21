@@ -1687,7 +1687,7 @@ test("operational snapshot is revalidated at the public return boundary", async 
 });
 
 test("operational health preserves backlog and fresh removal instead of returning old readiness", async t => {
-  let snapshot = { ...operationalSnapshot, pendingEmbeddings: 50_000 };
+  let snapshot: OperationalSearchHealth = { ...operationalSnapshot, pendingEmbeddings: 50_000 };
   const live = new FakeBackend(false, [], { ensure: "present" }, true);
   Object.assign(live, { readOperationalHealth: async () => snapshot });
   const router = new NamespaceSearchRouter(config(),
