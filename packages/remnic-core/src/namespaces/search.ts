@@ -6,6 +6,8 @@ import type {
   SearchBackend,
   SearchExecutionOptions,
   SearchQueryOptions,
+  SearchBackendStatus,
+  OperationalSearchHealth,
 } from "../search/port.js";
 import { reportSearchDegradation } from "../search/port.js";
 import { createSearchBackend } from "../search/factory.js";
@@ -90,13 +92,15 @@ export function embeddingBacklogExceeds(pending: number | null, threshold: numbe
  * reports it, and `healthForNamespace` refuses to cache it.
  */
 export function isSearchHealthDegraded(
-  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings">,
+  health: Pick<NamespaceSearchHealth, "available" | "collectionState" | "pendingEmbeddings"> &
+    Partial<Pick<NamespaceSearchHealth, "supported">>,
   backlogThreshold: number,
 ): boolean {
   const active = health.available && health.collectionState !== "missing";
   return (
     !active ||
     health.collectionState === "unknown" ||
+    health.supported === false ||
     embeddingBacklogExceeds(health.pendingEmbeddings, backlogThreshold)
   );
 }
@@ -338,8 +342,18 @@ export class NamespaceSearchRouter {
     execution?: SearchExecutionOptions,
   ): Promise<NamespaceSearchHealth> {
     const key = namespace.trim() || this.config.defaultNamespace;
+    let pending = this.cache.get(key);
+    let operational = await this.operationalHealthForNamespace(key, execution);
+    if (operational) return operational;
+    if (this.cache.get(key) !== pending) {
+      pending = this.cache.get(key);
+      operational = await this.operationalHealthForNamespace(key, execution);
+      if (operational) return operational;
+    }
     const cached = this.healthResultCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) {
+    if (operational === undefined && this.cache.get(key) === pending &&
+      cached && cached.expiresAt > Date.now() &&
+      !execution?.signal?.aborted && this.config.qmdEnabled !== false) {
       return { ...cached.value };
     }
 
@@ -355,12 +369,6 @@ export class NamespaceSearchRouter {
     try {
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
       const diagnosticBackend = liveRecord?.backend ?? record.backend;
-      const versionStatus =
-        "getVersionStatus" in diagnosticBackend &&
-        typeof diagnosticBackend.getVersionStatus === "function"
-          ? diagnosticBackend.getVersionStatus()
-          : null;
-      const daemonMode = daemonModeForBackend(diagnosticBackend);
       const backendStatus =
         "status" in diagnosticBackend &&
         typeof diagnosticBackend.status === "function"
@@ -374,28 +382,19 @@ export class NamespaceSearchRouter {
           ? "missing"
           : record.collectionState;
 
-      const health: NamespaceSearchHealth = {
-        collection: record.collection,
-        memoryDir: record.memoryDir,
-        available: liveRecord?.available ?? record.available,
-        collectionState,
-        debugStatus: diagnosticBackend.debugStatus(),
-        installedVersion: versionStatus?.installedVersion ?? null,
-        supportedVersion: versionStatus?.supportedVersion ?? null,
-        supported: versionStatus?.supported ?? null,
-        upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
-        doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
-        daemonMode,
-        pendingEmbeddings: backendStatus?.pendingEmbeddings ?? null,
-        oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
-        embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
-      };
+      const health = this.describeHealth(
+        record, diagnosticBackend,
+        execution?.signal?.aborted ? "unknown" : collectionState,
+        execution?.signal?.aborted ? null : backendStatus,
+        liveRecord?.available ?? record.available,
+      );
 
       // Cache only a healthy answer that carries backlog data when the backend
       // reports status. A degraded or incomplete answer must re-probe so a
       // readiness poll sees recovery on the next call, not one TTL late.
-      const statusMissing = backendStatus === null && "status" in diagnosticBackend;
+      const statusMissing = backendStatus === null && typeof diagnosticBackend.status === "function";
       if (
+        operational === undefined && this.cache.get(key) === pending &&
         execution?.signal?.aborted !== true &&
         !statusMissing &&
         !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
@@ -410,6 +409,91 @@ export class NamespaceSearchRouter {
       const dispose = (record.backend as { dispose?: () => void | Promise<void> }).dispose;
       await dispose?.call(record.backend);
     }
+  }
+
+  private describeHealth(
+    record: NamespaceBackendRecord,
+    diagnosticBackend: SearchBackend,
+    collectionState: CollectionState,
+    backendStatus: SearchBackendStatus | null,
+    available = record.available,
+  ): NamespaceSearchHealth {
+    const versionStatus =
+      "getVersionStatus" in diagnosticBackend &&
+      typeof diagnosticBackend.getVersionStatus === "function"
+        ? diagnosticBackend.getVersionStatus()
+        : null;
+    const statusFailed = typeof diagnosticBackend.status === "function" &&
+      (backendStatus === null || "error" in backendStatus ||
+        !Number.isSafeInteger(backendStatus.pendingEmbeddings) ||
+        backendStatus.pendingEmbeddings === null || backendStatus.pendingEmbeddings < 0);
+    return {
+      collection: record.collection,
+      memoryDir: record.memoryDir,
+      available,
+      collectionState: collectionState !== "missing" && (statusFailed || versionStatus?.supported === false)
+        ? "unknown" : collectionState,
+      debugStatus: diagnosticBackend.debugStatus(),
+      installedVersion: versionStatus?.installedVersion ?? null,
+      supportedVersion: versionStatus?.supportedVersion ?? null,
+      supported: versionStatus?.supported ?? null,
+      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
+      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
+      daemonMode: daemonModeForBackend(diagnosticBackend),
+      pendingEmbeddings: backendStatus?.pendingEmbeddings ?? null,
+      oldestPendingAgeMs: backendStatus?.oldestPendingAgeMs ?? null,
+      embeddingBacklogThreshold: this.config.qmdEmbeddingBacklogThreshold,
+    };
+  }
+
+  private async operationalHealthForNamespace(
+    key: string,
+    execution?: SearchExecutionOptions,
+  ): Promise<NamespaceSearchHealth | null | undefined> {
+    const pending = this.cache.get(key);
+    if (!pending) return undefined;
+    if (execution?.signal?.aborted || this.config.qmdEnabled === false) return null;
+    const record = await awaitWithAbort(pending, execution?.signal).catch(() => null);
+    if (!record) return null;
+    const backend = record.backend;
+    const daemonMode = daemonModeForBackend(backend);
+    const operationalIdentity = backend.operationalHealthIdentity?.();
+    const current = () => !execution?.signal?.aborted && this.cache.get(key) === pending &&
+      !record.disposed && this.config.qmdEnabled !== false && record.backend === backend &&
+      record.available && backend.isAvailable() && daemonModeForBackend(backend) === daemonMode &&
+      backend.operationalHealthIdentity?.() === operationalIdentity;
+    const refused = () => this.describeHealth(
+      record, backend, record.collectionState === "missing" ? "missing" : "unknown", null,
+      record.available && !record.disposed,
+    );
+    if (!current()) return refused();
+    if (!backend.readOperationalHealth) return undefined;
+    if (record.collectionState === "missing") return refused();
+    const storage = await awaitWithAbort(this.storageRouter.storageFor(key), execution?.signal).catch(() => null);
+    if (!current() || !storage) return refused();
+    const expectedCollection = () => namespaceCollectionName(this.config.qmdCollection, key, {
+      defaultNamespace: this.config.defaultNamespace,
+      useLegacyDefaultCollection: key === this.config.defaultNamespace && storage.dir === this.config.memoryDir,
+    });
+    if (record.memoryDir !== storage.dir || record.collection !== expectedCollection()) return refused();
+
+    let snapshot: OperationalSearchHealth | null | undefined;
+    try {
+      snapshot = await awaitWithAbort(
+        backend.readOperationalHealth(storage.dir, execution), execution?.signal,
+      );
+    } catch {
+      return refused();
+    }
+    if (snapshot === null) return refused();
+    const currentStorage = await awaitWithAbort(
+      this.storageRouter.storageFor(key), execution?.signal,
+    ).catch(() => null);
+    if (!current() || currentStorage?.dir !== storage.dir ||
+      record.memoryDir !== storage.dir || record.collection !== expectedCollection() ||
+      snapshot?.isCurrent?.() === false) return refused();
+    if (snapshot === undefined) return undefined;
+    return this.describeHealth(record, backend, snapshot.collectionState, snapshot);
   }
 
   private async liveCachedRecordForHealth(

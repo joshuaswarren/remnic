@@ -4,12 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { setImmediate } from "node:timers/promises";
-import { NamespaceSearchRouter, NAMESPACE_SEARCH_LEG_TIMEOUT_MS, normalizeQmdResultPath } from "./search.js";
+import { NamespaceSearchRouter, NAMESPACE_SEARCH_LEG_TIMEOUT_MS, normalizeQmdResultPath, isSearchHealthDegraded } from "./search.js";
 import { MaintenanceScheduler } from "../orchestration/maintenance.js";
 import type { NamespaceCatalog } from "./catalog.js";
 import type {
   SearchBackend,
   SearchBackendStatus,
+  OperationalSearchHealth,
   SearchDegradation,
   SearchExecutionOptions,
   SearchQueryOptions,
@@ -1261,6 +1262,8 @@ test("healthForNamespace does not cache an answer whose backend status failed", 
 
   const first = await router.healthForNamespace("shared");
   assert.equal(first.pendingEmbeddings, null);
+  assert.equal(first.collectionState, "unknown");
+  assert.equal(isSearchHealthDegraded(first, first.embeddingBacklogThreshold), true);
 
   const second = await router.healthForNamespace("shared");
   assert.equal(second.pendingEmbeddings, 10, "backlog data must be visible on the next probe");
@@ -1610,5 +1613,181 @@ test("namespace-mode maintenance is served only when a non-QMD backend's refresh
       await scheduler.dispose();
       await rm(memoryDir, { recursive: true, force: true });
     }
+  }
+});
+
+const operationalSnapshot: OperationalSearchHealth = {
+  collectionState: "present", pendingEmbeddings: 0, oldestPendingAgeMs: null,
+  totalFiles: 0, embeddedFiles: null,
+};
+
+test("operational health precedes an existing healthy result cache and never disposes the live backend", async t => {
+  let snapshot: OperationalSearchHealth | undefined;
+  let created = 0;
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  live.statusResult = { ...operationalSnapshot };
+  Object.assign(live, { readOperationalHealth: async () => snapshot });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => ++created === 1 ? live : new FakeBackend(false, [], { check: "present" }));
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  assert.equal(created, 2);
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  assert.equal(created, 2, "absent older capability must retain the guarded diagnostic TTL");
+  snapshot = { ...operationalSnapshot, collectionState: "unknown", pendingEmbeddings: null };
+  const drifted = await router.healthForNamespace("shared");
+  assert.equal(drifted.collectionState, "unknown");
+  assert.equal(isSearchHealthDegraded(drifted, drifted.embeddingBacklogThreshold), true);
+  assert.equal(created, 2);
+  assert.equal(live.disposed, 0);
+});
+
+test("operational health preserves backlog and fresh removal instead of returning old readiness", async t => {
+  let snapshot = { ...operationalSnapshot, pendingEmbeddings: 50_000 };
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  Object.assign(live, { readOperationalHealth: async () => snapshot });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => live);
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  const backlog = await router.healthForNamespace("shared");
+  assert.equal(backlog.pendingEmbeddings, 50_000);
+  assert.equal(isSearchHealthDegraded(backlog, backlog.embeddingBacklogThreshold), true);
+  snapshot = { ...operationalSnapshot, collectionState: "missing" };
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+});
+
+test("operational health does not heal a cached missing collection using a positive snapshot", async t => {
+  let created = 0;
+  let metadataReads = 0;
+  const live = new FakeBackend(false, [], { ensure: "missing" }, true);
+  Object.assign(live, { readOperationalHealth: async () => { metadataReads++; return operationalSnapshot; } });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => ++created === 1 ? live : new FakeBackend(false, [], { check: "present" }));
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  assert.equal(metadataReads, 0);
+});
+
+test("operational health refuses a failed RPC without creating a disposable CLI diagnostic", async t => {
+  let created = 0;
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  Object.assign(live, { readOperationalHealth: async () => { throw new Error("Synthetic RPC failure"); } });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => {
+      assert.equal(++created, 1, "No second diagnostic backend after an advertised capability fails");
+      return live;
+    });
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "unknown");
+});
+
+test("operational health refuses a result after abort, namespace path drift, or record replacement", async t => {
+  let directory = "/fixture/notes";
+  let afterRead = () => {};
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  Object.assign(live, { readOperationalHealth: async () => { afterRead(); return operationalSnapshot; } });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: directory }) }, () => live);
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  const controller = new AbortController();
+  afterRead = () => controller.abort();
+  assert.equal((await router.healthForNamespace("shared", { signal: controller.signal })).collectionState, "unknown");
+  afterRead = () => { directory = "/fixture/changed"; };
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "unknown");
+  directory = "/fixture/notes";
+  afterRead = () => router.clearCache();
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "unknown");
+});
+
+test("operational record creation during a cached-health read cannot return old green", async t => {
+  let created = 0;
+  const cold = new FakeBackend(false, [], { check: "present" });
+  cold.statusResult = { ...operationalSnapshot };
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  Object.assign(live, {
+    readOperationalHealth: async () => ({
+      ...operationalSnapshot, collectionState: "unknown", pendingEmbeddings: null,
+    }),
+  });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => ++created === 1 ? cold : live);
+  t.after(() => router.dispose());
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+  const preparing = router.ensureNamespaceCollection("shared");
+  const reading = router.healthForNamespace("shared");
+  await preparing;
+  const health = await reading;
+  assert.equal(health.collectionState, "unknown");
+  assert.equal(isSearchHealthDegraded(health, health.embeddingBacklogThreshold), true);
+});
+
+test("cold health refuses status errors, unknown backlog and unsupported versions without caching green", async () => {
+  const failures: Array<[string, (backend: FakeBackend) => void]> = [
+    ["null status", backend => {
+      Object.defineProperty(backend, "status", { value: async () => null });
+    }],
+    ["status error", backend => {
+      backend.statusResult = Object.assign({
+        pendingEmbeddings: null, oldestPendingAgeMs: null, totalFiles: null, embeddedFiles: null,
+      }, { error: "synthetic status failure" });
+    }],
+    ["unknown backlog", backend => {
+      backend.statusResult = {
+        pendingEmbeddings: null, oldestPendingAgeMs: null, totalFiles: 1, embeddedFiles: null,
+      };
+    }],
+    ["unsupported version", backend => {
+      Object.defineProperty(backend, "getVersionStatus", { value: () => ({
+        installedVersion: "1.0.0", supportedVersion: "2.8.3", supported: false,
+        newerThanSupported: false, upgradeAvailable: true, capabilities: qmdCapabilities(false),
+      }) });
+    }],
+  ];
+  for (const [name, fail] of failures) {
+    const created: FakeBackend[] = [];
+    const router = routerWithDegradedFirstProbe(created, "present", fail);
+    try {
+      const first = await router.healthForNamespace("shared");
+      assert.equal(first.collectionState, "unknown", name);
+      assert.equal(isSearchHealthDegraded(first, first.embeddingBacklogThreshold), true, name);
+      const recovered = await router.healthForNamespace("shared");
+      assert.equal(recovered.collectionState, "present", name);
+      assert.equal(recovered.pendingEmbeddings, 10, name);
+      assert.equal(created.length, 2, `${name} must not cache green`);
+    } finally {
+      await router.dispose();
+    }
+  }
+});
+
+test("a backend without a status capability retains legitimate readiness and its diagnostic TTL", async () => {
+  let created = 0;
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) },
+    () => {
+      created++;
+      const backend = new FakeBackend(false, [], { check: "present" });
+      Object.defineProperty(backend, "status", { value: undefined });
+      return backend;
+    });
+  try {
+    const health = await router.healthForNamespace("shared");
+    assert.equal(health.collectionState, "present");
+    assert.equal(health.pendingEmbeddings, null);
+    assert.equal(isSearchHealthDegraded(health, health.embeddingBacklogThreshold), false);
+    assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
+    assert.equal(created, 1);
+  } finally {
+    await router.dispose();
   }
 });
