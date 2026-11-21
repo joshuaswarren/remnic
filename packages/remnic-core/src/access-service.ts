@@ -2662,11 +2662,8 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // observes the same expiry the pipeline enforces, and a relative budget
     // cannot restart after admission via the surface's recallOptions copy.
     const deadlineAtMs = resolveClientDeadlineAtMs(request.deadlineMs, Date.now());
-    const normalizedRequest = {
-      ...request,
-      query,
-      ...(deadlineAtMs !== null ? { deadlineMs: deadlineAtMs } : {}),
-    };
+    const normalizedRequest = { ...request, query };
+    if (deadlineAtMs !== null) normalizedRequest.deadlineMs = deadlineAtMs;
     // `deadlineMs` is per-call QoS, not work identity: two identical recalls
     // carrying different client deadlines must still coalesce (#3514 review).
     const { abortSignal: _abortSignal, deadlineMs: _deadlineMs, ...requestFingerprint } = normalizedRequest;

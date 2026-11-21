@@ -2010,7 +2010,7 @@ test("a queued recall expires on its client deadline — as a timeout, not abort
 
   const queued = service.recall({ query: "queued", deadlineMs: 25 });
   const outcome = await Promise.race([
-    queued.then(() => "resolved", (error: unknown) => error),
+    queued.then(() => "resolved", (error: Error) => error),
     new Promise<string>((resolve) => setTimeout(() => resolve("still-queued"), 200)),
   ]);
   assert.ok(

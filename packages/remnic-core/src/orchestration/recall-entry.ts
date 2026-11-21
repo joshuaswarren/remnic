@@ -216,10 +216,6 @@ export class RecallEntryCoordinator {
     recallOptions = {
       ...options,
       abortSignal: abortController.signal,
-      // Forward the RESOLVED absolute deadline: a relative deadlineMs re-read
-      // from recallStart downstream would restart the budget after the init
-      // gate and standing reads already consumed part of it (#3514 review).
-      ...(clientDeadlineAtMs !== null ? { deadlineMs: clientDeadlineAtMs } : {}),
       budgetCharsOverride: innerBudget,
       onRecallPlanResolved: options.onRecallPlanResolved || shouldReadStandingBlock
         ? async (mode: RecallPlanMode, readNamespaces: readonly string[]) => {
@@ -247,6 +243,10 @@ export class RecallEntryCoordinator {
               })
           : innerObserver,
     };
+    // Forward the RESOLVED absolute deadline: a relative deadlineMs re-read
+    // from recallStart downstream would restart the budget after the init
+    // gate and standing reads already consumed part of it (#3514 review).
+    if (clientDeadlineAtMs !== null) recallOptions.deadlineMs = clientDeadlineAtMs;
     try {
       const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
       const configuredOuterMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
