@@ -2555,9 +2555,13 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     // The daemon is the caller on this internal attach: when the transport
     // carried no principal, resolve the session-derived one (the same
     // fallback observe/recall use) so the setCodingContext ownership check
-    // self-binds instead of silently rejecting the daemon's own attach.
+    // self-binds instead of silently rejecting the daemon's own attach. A
+    // live ownership claim outranks the config-derived default, so a session
+    // already claimed by a principal binds as that principal.
     const callerPrincipal =
-      options.authenticatedPrincipal ?? resolvePrincipal(sessionKey, this.orchestrator.config);
+      options.authenticatedPrincipal
+      ?? this.orchestrator.getCodingContextOwnerForSession?.(sessionKey)
+      ?? resolvePrincipal(sessionKey, this.orchestrator.config);
     // projectTag takes priority over cwd.
     if (typeof options.projectTag === "string" && options.projectTag.trim().length > 0) {
       const projectId = projectTagProjectId(options.projectTag);

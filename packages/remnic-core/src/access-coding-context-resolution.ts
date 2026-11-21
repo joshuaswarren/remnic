@@ -128,7 +128,7 @@ export function setSessionCodingContext(
     // A live claim outranks the config mapping: the first authenticated
     // writer to an unclaimed session owns it until the context is cleared
     // or the session ends, so another principal cannot take it over later.
-    const claimedOwner = orchestrator.getCodingContextOwnerForSession(sessionKey);
+    const claimedOwner = orchestrator.getCodingContextOwnerForSession?.(sessionKey);
     const sessionPrincipal = claimedOwner ?? resolvePrincipal(sessionKey, orchestrator.config);
     if (authenticatedPrincipal === undefined) {
       // No transport principal — internal callers (daemon attach, CLI) may
