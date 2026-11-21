@@ -1789,3 +1789,206 @@ test("an unverified collection ensure does not complete the maintenance-off sync
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
 });
+
+test("post-ready corpus sync fires for a runtime with no server retry loop (#3525)", async () => {
+  // Runtimes that drive Orchestrator without remnic-server (the OpenClaw
+  // service, `remnic` CLI invocations, the bench adapter) have no retry loop:
+  // #3518 moved the corpus update out of the awaited deferredReady path into
+  // startupSearchSync, so the update must be scheduled by the core lifecycle.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-post-ready-sync-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: true,
+      qmdMaintenanceEnabled: true,
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let updateCalls = 0;
+  try {
+    // SAFETY: the stub covers every qmd member startupSearchSync touches;
+    // the field is private so the test injects it through `any`.
+    (orchestrator as any).qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      ensureCollection: async () => "present",
+      update: async () => { updateCalls += 1; },
+      // SAFETY: the qmd timestamps are nullable number fields on the private
+      // backend shape; literal values keep the stub honest.
+      lastUpdateRanAtMs: 1 as number | null,
+      lastUpdateFailedAtMs: null as number | null,
+      resetUpdateThrottles: () => undefined,
+    };
+    await orchestrator.initialize();
+    const deferred = await withTestDeadline(
+      // SAFETY: deferredReady is a private promise the test awaits
+      // deliberately; `any` exposes it without widening the class API.
+      (orchestrator as any).deferredReady.then(() => "settled" as const),
+    );
+    assert.equal(deferred, "settled", "the deferred gate must settle");
+    // The post-ready fire lands on a later microtask, so poll rather than await
+    // a one-shot promise: a pending promise with no live handles reads as a
+    // runner cancellation instead of this assertion.
+    const deadlineAt = Date.now() + 5_000;
+    while (updateCalls === 0 && Date.now() < deadlineAt) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(
+      updateCalls, 1,
+      "the post-ready corpus update must fire without the server retry loop",
+    );
+    assert.equal(
+      // SAFETY: deferredSyncSucceeded is the private flag shared with the
+      // server retry loop; the test reads it through `any` on purpose.
+      (orchestrator as any).deferredSyncSucceeded, true,
+      "the post-ready success must share the retry loop's bookkeeping",
+    );
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+test("concurrent startupSearchSync calls join one in-flight update (#3525)", async () => {
+  // The post-ready fire and the server retry loop can both call
+  // startupSearchSync while one is already running: the second must join the
+  // in-flight call, not spawn a second `qmd update` over the same index.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sync-join-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: true,
+      qmdMaintenanceEnabled: true,
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let updateCalls = 0;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    // SAFETY: the stub covers every qmd member startupSearchSync touches;
+    // the field is private so the test injects it through `any`.
+    (orchestrator as any).qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      ensureCollection: async () => "present",
+      update: async () => { updateCalls += 1; await gate; },
+      // SAFETY: the qmd timestamps are nullable number fields on the private
+      // backend shape; literal values keep the stub honest.
+      lastUpdateRanAtMs: 1 as number | null,
+      lastUpdateFailedAtMs: null as number | null,
+      resetUpdateThrottles: () => undefined,
+    };
+    const first = orchestrator.startupSearchSync();
+    const second = orchestrator.startupSearchSync();
+    release?.();
+    const [a, b] = await Promise.all([first, second]);
+    assert.equal(updateCalls, 1, "the joiner must not spawn a second update");
+    assert.equal(a, true);
+    assert.equal(b, true);
+  } finally {
+    release?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+test("one-shot query joins the post-ready sync instead of reading a stale index (#3525)", async () => {
+  // cmdXray and the other one-shot diagnostic commands boot a local
+  // Orchestrator, await deferredReady, then query. Between the ready mark
+  // and the query the post-ready sync (#3525) holds a corpus update open;
+  // a freshness-dependent caller that skips the join reads the stale index
+  // and its finally-block abort cancels the update it wanted.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-one-shot-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: true,
+      qmdMaintenanceEnabled: true,
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      namespacePolicies: [],
+      embeddingFallbackEnabled: false,
+      identityContinuityEnabled: false,
+      transcriptEnabled: false,
+      hourlySummariesEnabled: false,
+      compoundingEnabled: false,
+      knowledgeIndexEnabled: false,
+    }),
+  );
+  let updateCalls = 0;
+  let indexFresh = false;
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    // SAFETY: the stub covers every qmd member startupSearchSync touches;
+    // the field is private so the test injects it through `any`.
+    (orchestrator as any).qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      ensureCollection: async () => "present",
+      update: async () => { updateCalls += 1; await gate; indexFresh = true; },
+      // SAFETY: the qmd timestamps are nullable number fields on the private
+      // backend shape; literal values keep the stub honest.
+      lastUpdateRanAtMs: 1 as number | null,
+      lastUpdateFailedAtMs: null as number | null,
+      resetUpdateThrottles: () => undefined,
+    };
+    await orchestrator.initialize();
+    // SAFETY: deferredReady is a private promise the test awaits
+    // deliberately; `any` exposes it without widening the class API.
+    await (orchestrator as any).deferredReady;
+    // The post-ready fire has started the shared sync and the update is held
+    // open. The one-shot caller joins before querying; on the pre-fix head
+    // no join point exists, the optional call is a no-op, and this query
+    // reads the stale index — the regression this test pins.
+    // SAFETY: joinStartupSearchSync is the #3525 API under test; `any`
+    // keeps the call a behavioral red where the method does not yet exist.
+    const join = (orchestrator as any).joinStartupSearchSync?.();
+    if (join) {
+      // The join holds the caller until the corpus update commits; release
+      // the held update and let it land.
+      release?.();
+      await join;
+    }
+    const sawFresh = indexFresh;
+    orchestrator.abortDeferredInit();
+    assert.equal(
+      sawFresh, true,
+      "the one-shot query must land after the committed corpus update",
+    );
+    assert.equal(updateCalls, 1, "the join must not spawn a second update");
+  } finally {
+    release?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});

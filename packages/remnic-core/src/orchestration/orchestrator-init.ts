@@ -138,6 +138,7 @@ export class OrchestratorInitCoordinator {
   /** Default-namespace collection state from the initialize() check,
    *  epoch-scoped so a retired lifecycle's outcome cannot leak into the next. */
   private startupDefaultCollection: { epoch: number; state: SearchCollectionState } | undefined;
+  private startupSyncInFlight: { epoch: number; promise: Promise<boolean> } | null = null;
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -671,9 +672,40 @@ export class OrchestratorInitCoordinator {
         this.deps.deferredSyncSucceeded = true;
       }
     }
-    // Otherwise the flag stays false and the server retry loop owns the
+    // Otherwise the flag stays false and the retry loop owns the
     // sync: the corpus update when maintenance is on, backend recovery when
     // the probe failed.
+
+    // But only remnic-server runs a retry loop (#3525): the OpenClaw service,
+    // `remnic` CLI invocations, and the bench adapter drive Orchestrator
+    // directly, so their index would go stale after the update left this
+    // awaited path. Fire the same startupSearchSync once the ready mark
+    // settles — registered now so a deferred-init failure still gets the
+    // update — and record the success in the shared flag, so a server retry
+    // that races in sees the same bookkeeping either direction. Only the
+    // sync run itself joins startupWarmups: the deferredReady-derived outer
+    // promise would make drainStartupWarmups() wait on the ready gate that
+    // destroy() must not touch, while the abort signal already cancels the
+    // run.
+    void this.deps.deferredReady.then(async () => {
+      if (signal.aborted
+          || !resolveQmdCapabilities(this.deps.config).qmdMaintenance
+          || this.deps.deferredSyncSucceeded) return;
+      try {
+        const sync = this.startupSearchSync(signal);
+        const tracked = sync.then(() => undefined, () => undefined);
+        this.startupWarmups.add(tracked);
+        void tracked.then(() => this.startupWarmups.delete(tracked));
+        const synced = await sync;
+        // A retired epoch's run can resolve after its abort landed: only a
+        // current, unaborted sync may publish success for this lifecycle.
+        if (synced && !signal.aborted && this.isCurrentStartupEpoch(epoch)) {
+          this.deps.deferredSyncSucceeded = true;
+        }
+      } catch (err) {
+        log.warn(`post-ready QMD sync failed (non-fatal): ${err}`);
+      }
+    });
 
     if (signal.aborted || !this.isCurrentStartupEpoch(epoch)) return;
 
@@ -897,6 +929,23 @@ export class OrchestratorInitCoordinator {
   }
 
   /**
+   * Freshness-dependent one-shot entry point (#3525): joins the shared
+   * startupSearchSync when this lifecycle still owes a corpus sync, so a
+   * caller that needs a fresh index — the `remnic` one-shot diagnostic
+   * commands, an OpenClaw boot — waits for the same update the post-ready
+   * fire started instead of querying a stale index and aborting the run in
+   * flight. Resolves true when the index is already synced or no sync is
+   * owed (maintenance disabled); false when the joined sync failed.
+   */
+  async joinStartupSearchSync(signal?: AbortSignal): Promise<boolean> {
+    if (
+      !resolveQmdCapabilities(this.deps.config).qmdMaintenance
+      || this.deps.deferredSyncSucceeded
+    ) return true;
+    return this.startupSearchSync(signal);
+  }
+
+  /**
    * Namespace-aware startup search sync. Re-probes QMD, ensures collections
    * (namespace-aware when namespacesEnabled), runs update, and warms up search.
    * Designed for server retry paths that run after the deferred init completes
@@ -911,6 +960,25 @@ export class OrchestratorInitCoordinator {
    * Returns true if the sync succeeded (QMD now available), false otherwise.
    */
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
+    const epoch = this.currentOrNewStartupEpoch();
+    if (epoch === null) return false;
+    // The post-ready fire (#3525) and the server retry loop can both arrive
+    // while a call is in flight: join it rather than spawn a second `qmd
+    // update` over the same index. Only the current epoch's flight joins — a
+    // retired cycle's dying call would hand the joiner its false. The joiner
+    // shares the in-flight caller's signal; a caller that needs its own window
+    // simply calls again when deferredSyncSucceeded stays false.
+    const flight = this.startupSyncInFlight;
+    if (flight && flight.epoch === epoch) return flight.promise;
+    const run = this.runStartupSearchSync(signal)
+      .finally(() => {
+        if (this.startupSyncInFlight?.promise === run) this.startupSyncInFlight = null;
+      });
+    this.startupSyncInFlight = { epoch, promise: run };
+    return run;
+  }
+
+  private async runStartupSearchSync(signal?: AbortSignal): Promise<boolean> {
     const ensured = await this.ensureStartupSearchBackend(signal);
     if (ensured.state !== "ready") return false;
     const { epoch, discovery } = ensured;
@@ -1003,6 +1071,10 @@ export class OrchestratorInitCoordinator {
       }
     }
 
+    // A retired epoch's warmup settles without throwing: re-check before
+    // publishing success, so a stale run cannot mark a replacement
+    // lifecycle as synced (#3527 review).
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) return false;
     return discovery.complete;
   }
 
