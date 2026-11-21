@@ -99,6 +99,12 @@ export interface MemoryControllerRecorder {
   record(event: MemoryControllerEvent): Promise<void>;
   /** Prior shadow choice records; active promotion requires shadow history. */
   countShadowRecords(): Promise<number>;
+  /**
+   * Failed outcomes (executor_error, bad_receipt, no_executor) at the end of
+   * the recorded stream, newest first, stopping at the first success. A new
+   * coordinator seeds its receipt-failure gate from this count.
+   */
+  trailingReceiptFailures?(): Promise<number>;
 }
 
 export interface MemoryControllerConfig {
@@ -338,6 +344,7 @@ export class MemoryControllerCoordinator {
   private readonly deps: MemoryControllerDeps;
   private readonly clock: () => Date;
   private consecutiveReceiptFailures = 0;
+  private receiptFailuresSeeded = false;
 
   constructor(deps: MemoryControllerDeps) {
     this.deps = deps;
@@ -379,6 +386,7 @@ export class MemoryControllerCoordinator {
     let demotionReasons: string[] = [];
     let effectiveMode = requestedMode;
     if (requestedMode === "active") {
+      await this.seedReceiptFailures();
       demotionReasons = await evaluateActiveGates({
         config: this.deps.config,
         reportReader: this.deps.reportReader,
@@ -527,6 +535,23 @@ export class MemoryControllerCoordinator {
     }
   }
 
+  private async seedReceiptFailures(): Promise<void> {
+    if (this.receiptFailuresSeeded) return;
+    this.receiptFailuresSeeded = true;
+    const reader = this.deps.recorder?.trailingReceiptFailures;
+    if (!reader) return;
+    let recorded: number;
+    try {
+      recorded = await reader.call(this.deps.recorder);
+    } catch {
+      // Unknown receipt health keeps the gate closed.
+      recorded = 1;
+    }
+    if (Number.isFinite(recorded) && recorded > this.consecutiveReceiptFailures) {
+      this.consecutiveReceiptFailures = recorded;
+    }
+  }
+
   private async recordOutcome(event: MemoryControllerEvent): Promise<void> {
     if (!this.deps.recorder) return;
     await this.deps.recorder.record(event);
@@ -543,5 +568,3 @@ function isValidReceipt(receipt: unknown, decisionId: string): boolean {
   );
 }
 
-// ponytail: consecutiveReceiptFailures is per-instance, not persisted; persist
-// with the recorder if coordinator restarts must carry receipt health forward.

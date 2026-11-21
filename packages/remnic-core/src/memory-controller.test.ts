@@ -91,6 +91,16 @@ function harness(options?: {
         events.push(event);
       },
       countShadowRecords: async () => options?.shadowRecords ?? 10,
+      trailingReceiptFailures: async () => {
+        let count = 0;
+        for (let i = events.length - 1; i >= 0; i -= 1) {
+          const event = events[i];
+          if (event.phase !== "outcome") continue;
+          if (!event.failureClass || event.failureClass === "record_failed") break;
+          count += 1;
+        }
+        return count;
+      },
     },
     executors:
       options?.executors ??
@@ -243,6 +253,34 @@ test("failed receipt forces shadow on the next run", async () => {
   assert.equal(second.effectiveMode, "shadow");
   assert.ok(second.demotionReasons.includes("recent_receipt_failures"));
   assert.equal(second.executed, false);
+});
+
+test("a restarted coordinator keeps the receipt-failure demotion from recorded outcomes", async () => {
+  const h = harness({
+    executors: {
+      executeRecall: async () => ({ decisionId: "wrong-id", ok: true }),
+    },
+  });
+  const first = await new MemoryControllerCoordinator(h.deps).run({ prompt: RECALL_PROMPT });
+  assert.equal(first.executed, false);
+
+  const restarted = await new MemoryControllerCoordinator(h.deps).run({ prompt: RECALL_PROMPT });
+  assert.equal(restarted.effectiveMode, "shadow");
+  assert.ok(restarted.demotionReasons.includes("recent_receipt_failures"));
+  assert.equal(restarted.executed, false);
+});
+
+test("an unreadable receipt-failure history keeps the gate closed", async () => {
+  const h = harness();
+  h.deps.recorder = {
+    ...h.deps.recorder!,
+    trailingReceiptFailures: async () => {
+      throw new Error("history unavailable");
+    },
+  };
+  const result = await new MemoryControllerCoordinator(h.deps).run({ prompt: RECALL_PROMPT });
+  assert.equal(result.effectiveMode, "shadow");
+  assert.ok(result.demotionReasons.includes("recent_receipt_failures"));
 });
 
 test("executor error or missing executor records a failure class and demotes next run", async () => {
