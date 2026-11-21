@@ -372,8 +372,7 @@ export class NamespaceSearchRouter {
       const liveRecord = await this.liveCachedRecordForHealth(key, record, execution);
       const diagnosticBackend = liveRecord?.backend ?? record.backend;
       const backendStatus =
-        "status" in diagnosticBackend &&
-        typeof diagnosticBackend.status === "function"
+        diagnosticBackend.status
           ? await Promise.race([
               diagnosticBackend.status().catch(() => null),
               new Promise<null>((resolve) => setTimeout(() => resolve(null), 5_000).unref?.()),
@@ -394,11 +393,9 @@ export class NamespaceSearchRouter {
       // Cache only a healthy answer that carries backlog data when the backend
       // reports status. A degraded or incomplete answer must re-probe so a
       // readiness poll sees recovery on the next call, not one TTL late.
-      const statusMissing = backendStatus === null && typeof diagnosticBackend.status === "function";
       if (
         operational === undefined && this.cache.get(key) === pending &&
         execution?.signal?.aborted !== true &&
-        !statusMissing &&
         !isSearchHealthDegraded(health, health.embeddingBacklogThreshold)
       ) {
         this.healthResultCache.set(key, {
@@ -420,12 +417,8 @@ export class NamespaceSearchRouter {
     backendStatus: SearchBackendStatus | null,
     available = record.available,
   ): NamespaceSearchHealth {
-    const versionStatus =
-      "getVersionStatus" in diagnosticBackend &&
-      typeof diagnosticBackend.getVersionStatus === "function"
-        ? diagnosticBackend.getVersionStatus()
-        : null;
-    const statusFailed = typeof diagnosticBackend.status === "function" &&
+    const versionStatus = diagnosticBackend.getVersionStatus?.();
+    const statusFailed = diagnosticBackend.status &&
       (backendStatus === null || "error" in backendStatus ||
         !Number.isSafeInteger(backendStatus.pendingEmbeddings) ||
         backendStatus.pendingEmbeddings === null || backendStatus.pendingEmbeddings < 0);

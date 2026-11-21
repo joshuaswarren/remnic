@@ -8,9 +8,9 @@ import path from "node:path";
 import {
   QmdClient, resolveQmdCapabilities, retainSharedDaemonSessionForTest, releaseSharedDaemonSessionForTest,
 } from "./qmd.js";
-import type { CommandChildProcess } from "./runtime/child-process.js";
 import { NamespaceSearchRouter } from "./namespaces/search.js";
-import type { PluginConfig } from "./types.js";
+import { parseConfig } from "./config.js";
+import type { JsonValue } from "./extraction-reply-diagnostic.js";
 
 const NAMES = [
   "HOME", "USERPROFILE", "PATH", "XDG_CONFIG_HOME", "XDG_CACHE_HOME",
@@ -23,7 +23,7 @@ const memoryDir = path.join(os.tmpdir(), "fixture-notes");
 const collection = "fixture-notes";
 let fixtureId = 0;
 
-function hash(value: unknown): string {
+function hash(value: JsonValue): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
@@ -44,13 +44,11 @@ function packet() {
 
 async function operationalClient(
   t: TestContext,
-  respond: () => unknown | Promise<unknown> = packet,
-  advertisement: { marker?: unknown } = { marker: { schemaVersion: 1 } },
+  respond: () => JsonValue | Promise<JsonValue> = packet,
+  advertisement: { marker?: JsonValue } = { marker: { schemaVersion: 1 } },
 ) {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
-  const child = new EventEmitter();
-  let killed = false;
   let spawnCalls = 0;
   let initializeCalls = 0;
   let statusCalls = 0;
@@ -63,12 +61,12 @@ async function operationalClient(
       if (message.id === undefined) return;
       queueMicrotask(() => {
         void (async () => {
-          let result: unknown;
+          let result: JsonValue;
           if (message.method === "initialize") {
             initializeCalls++;
             result = {
               capabilities: {
-                experimental: "marker" in advertisement ? { "qmd/healthMetadata": advertisement.marker } : {},
+                experimental: advertisement.marker === undefined ? {} : { "qmd/healthMetadata": advertisement.marker },
               },
               serverInfo: { name: "fixture", version: "2.8.3" },
             };
@@ -88,14 +86,17 @@ async function operationalClient(
       });
     },
   });
-  Object.defineProperties(child, {
-    stdout: { value: stdout }, stderr: { value: stderr }, stdin: { value: stdin },
-    killed: { get: () => killed },
-    kill: { value: () => { killed = true; queueMicrotask(() => child.emit("close", 0)); return true; } },
+  const child = Object.assign(new EventEmitter(), {
+    stdout, stderr, stdin, killed: false,
+    kill() {
+      child.killed = true;
+      queueMicrotask(() => child.emit("close", 0));
+      return true;
+    },
   });
   const binary = `fixture-qmd-health-${++fixtureId}`;
   const session = retainSharedDaemonSessionForTest(binary, {}, undefined, "2.8.3");
-  Object.assign(session, { spawn: () => { spawnCalls++; return child as unknown as CommandChildProcess; } });
+  Object.assign(session, { spawn: () => { spawnCalls++; return child; } });
   const client = new QmdClient(collection, 3, {
     qmdPath: binary, daemonUrl: "stdio://fixture", qmdSupportedVersion: "2.8.3",
   });
@@ -237,7 +238,7 @@ test("operational health refuses malformed counts even when the catalog is empty
   assert.equal((await fixture.client.readOperationalHealth(memoryDir))?.collectionState, "unknown");
 });
 
-const corruptions: Array<[string, (value: ReturnFixture) => unknown]> = [
+const corruptions: Array<[string, (value: ReturnFixture) => JsonValue]> = [
   ["null metadata", () => ({ structuredContent: { health: null } })],
   ["missing advertised metadata", () => ({ structuredContent: {} })],
   ["unsupported schema", value => { value.structuredContent.health.schemaVersion = 99; return value; }],
@@ -250,7 +251,7 @@ const corruptions: Array<[string, (value: ReturnFixture) => unknown]> = [
   ["RPC tool failure", () => ({ isError: true, structuredContent: {} })],
 ];
 
-interface ReturnFixture {
+type ReturnFixture = {
   structuredContent: {
     health: {
       schemaVersion: number;
@@ -262,7 +263,7 @@ interface ReturnFixture {
       catalog: { complete: boolean; entries: Array<{ name: string; path: string; documents: number }> };
     };
   };
-}
+};
 
 for (const [name, corrupt] of corruptions) {
   test(`operational health refuses ${name}`, async t => {
@@ -449,28 +450,26 @@ for (const [pausedStorageCall, absentCapability] of [[1, false], [2, false], [1,
     const { promise: paused, resolve: entered } = Promise.withResolvers<void>();
     const { promise: gate, resolve: release } = Promise.withResolvers<void>();
     t.after(() => release());
+    t.mock.method(fixture.client, "probe", async () => true);
+    t.mock.method(fixture.client, "checkCollection", async () => "present");
     let storageCalls = 0;
     let created = 0;
-    const router = new NamespaceSearchRouter({
+    const router = new NamespaceSearchRouter(parseConfig({
       defaultNamespace: "main", memoryDir, qmdCollection: collection,
       qmdEnabled: true, qmdEmbeddingBacklogThreshold: 100,
-    } as PluginConfig, {
+    }), {
       storageFor: async () => {
-        if (++storageCalls === pausedStorageCall) {
+        if (created > 0 && ++storageCalls === pausedStorageCall) {
           entered();
           await gate;
         }
         return { dir: memoryDir };
       },
     }, () => {
-      created++;
+      if (++created === 1) return fixture.client;
       throw new Error("Ownership loss must not fall back to a diagnostic backend");
     });
-    const internals = router as unknown as { cache: Map<string, Promise<unknown>> };
-    internals.cache.set("main", Promise.resolve({
-      backend: fixture.client, collection, memoryDir, available: true,
-      collectionState: "present", filtersNestedNamespaces: false, disposed: false,
-    }));
+    await router.ensureNamespaceCollection("main");
     t.after(() => router.dispose());
     const pending = router.healthForNamespace("main");
     await paused;
@@ -483,7 +482,7 @@ for (const [pausedStorageCall, absentCapability] of [[1, false], [2, false], [1,
       const health = await pending;
       assert.equal(health.collectionState, "unknown");
       assert.equal(health.pendingEmbeddings, null);
-      assert.equal(created, 0);
+      assert.equal(created, 1);
       assert.equal(fixture.statusCalls(), absentCapability ? 0 : pausedStorageCall - 1);
       assert.equal(fixture.capabilityCalls(), 0);
     } finally {

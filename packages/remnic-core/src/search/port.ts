@@ -174,7 +174,14 @@ export interface SearchBackend {
   isAvailable(): boolean;
   debugStatus(): string;
   /** Opaque current operational generation; observing it must not acquire a process. */
-  operationalHealthIdentity?(): unknown;
+  operationalHealthIdentity?(): object | null;
+  getVersionStatus?(): {
+    installedVersion: string | null;
+    supportedVersion: string;
+    supported: boolean;
+    upgradeAvailable: boolean;
+    capabilities?: { doctor?: boolean };
+  } | null;
   /** Optional embedding backlog status for health surfaces. */
   status?(): Promise<SearchBackendStatus>;
   /**

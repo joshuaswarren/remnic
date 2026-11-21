@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { z } from "zod";
+import type { JsonValue } from "./extraction-reply-diagnostic.js";
 import type { OperationalSearchHealth } from "./search/port.js";
 
 // QMD health schema v1's native-owned input contract; no config parsing here.
@@ -19,25 +21,29 @@ export const UNKNOWN_OPERATIONAL_HEALTH: OperationalSearchHealth = Object.freeze
   embeddedFiles: null,
 });
 
-function identity(value: unknown): string {
+function identity(value: JsonValue): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function digest(value: unknown): value is string {
-  if (typeof value !== "string" || value.length !== 64) return false;
-  for (const c of value) {
-    if (!((c >= "0" && c <= "9") || (c >= "a" && c <= "f"))) return false;
-  }
-  return true;
-}
-
-function count(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
+const digest = z.string().regex(/^[0-9a-f]{64}$/);
+const count = z.number().int().nonnegative();
+const binding = z.object({ index: digest, configuration: digest, embeddingModel: digest });
+const catalogEntry = z.object({ name: digest, path: digest, documents: count });
+export const qmdHealthResponseSchema = z.object({
+  isError: z.literal(false).optional(),
+  structuredContent: z.object({
+    health: z.object({
+      schemaVersion: z.literal(1),
+      unavailable: z.literal(false).optional(),
+      environment: z.object({ names: z.array(z.string()), digest }),
+      active: binding,
+      current: binding,
+      countModel: digest,
+      pendingEmbeddings: count,
+      catalog: z.object({ complete: z.literal(true), entries: z.array(catalogEntry) }),
+    }),
+  }),
+});
 
 function environmentIdentity(env: NodeJS.ProcessEnv, cwd: string): string {
   return identity([cwd, ENVIRONMENT_NAMES.map(name => [name, env[name] ?? null])]);
@@ -45,7 +51,7 @@ function environmentIdentity(env: NodeJS.ProcessEnv, cwd: string): string {
 
 /** Capability absence is negotiated by the session, never inferred from a broken snapshot. */
 export function parseOperationalHealth(
-  result: unknown,
+  result: z.infer<typeof qmdHealthResponseSchema> | undefined,
   collection: string,
   memoryDir: string,
   beforeEnv: NodeJS.ProcessEnv,
@@ -53,39 +59,21 @@ export function parseOperationalHealth(
   beforeCwd: string,
   afterCwd: string,
 ): OperationalSearchHealth {
-  if (!record(result) || ("isError" in result && result.isError !== false)) return UNKNOWN_OPERATIONAL_HEALTH;
-  const content = result.structuredContent;
-  if (!record(content) || !Object.prototype.hasOwnProperty.call(content, "health")) return UNKNOWN_OPERATIONAL_HEALTH;
-  const health = content.health;
-  if (!record(health) || health.schemaVersion !== 1 ||
-    ("unavailable" in health && health.unavailable !== false)) {
-    return UNKNOWN_OPERATIONAL_HEALTH;
-  }
-  const environment = health.environment;
-  const active = health.active;
-  const current = health.current;
-  const catalog = health.catalog;
+  if (!result) return UNKNOWN_OPERATIONAL_HEALTH;
+  const { active, current, catalog, countModel, pendingEmbeddings, environment } = result.structuredContent.health;
   if (
-    !record(environment) || !Array.isArray(environment.names) ||
     environment.names.length !== ENVIRONMENT_NAMES.length ||
     !environment.names.every((name, i) => name === ENVIRONMENT_NAMES[i]) ||
-    !digest(environment.digest) ||
     environment.digest !== environmentIdentity(beforeEnv, beforeCwd) ||
     environment.digest !== environmentIdentity(afterEnv, afterCwd) ||
-    !record(active) || !record(current) ||
-    !digest(active.index) || !digest(current.index) || active.index !== current.index ||
-    !digest(active.configuration) || !digest(current.configuration) ||
-    !digest(active.embeddingModel) || !digest(current.embeddingModel) ||
-    health.countModel !== active.embeddingModel || !count(health.pendingEmbeddings) ||
-    !record(catalog) || catalog.complete !== true || !Array.isArray(catalog.entries)
+    active.index !== current.index || countModel !== active.embeddingModel
   ) return UNKNOWN_OPERATIONAL_HEALTH;
 
   const targetName = identity(collection);
   const names = new Set<string>();
-  let target: Record<string, unknown> | undefined;
+  let target: z.infer<typeof catalogEntry> | undefined;
   for (const entry of catalog.entries) {
-    if (!record(entry) || !digest(entry.name) || !digest(entry.path) ||
-      !count(entry.documents) || names.has(entry.name)) return UNKNOWN_OPERATIONAL_HEALTH;
+    if (names.has(entry.name)) return UNKNOWN_OPERATIONAL_HEALTH;
     names.add(entry.name);
     if (entry.name === targetName) target = entry;
   }
@@ -99,9 +87,9 @@ export function parseOperationalHealth(
 
   return {
     collectionState: "present",
-    pendingEmbeddings: health.pendingEmbeddings,
+    pendingEmbeddings,
     oldestPendingAgeMs: null,
-    totalFiles: target.documents as number,
+    totalFiles: target.documents,
     embeddedFiles: null,
   };
 }

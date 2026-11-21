@@ -23,7 +23,7 @@ import {
   versionAtLeast,
 } from "./qmd-preflight.js";
 import { EMPTY_QMD_STATUS, type QmdStatusReport, embedQmdFiles, fetchQmdStatus } from "./qmd-status.js";
-import { parseOperationalHealth, UNKNOWN_OPERATIONAL_HEALTH } from "./qmd-health-metadata.js";
+import { parseOperationalHealth, qmdHealthResponseSchema, UNKNOWN_OPERATIONAL_HEALTH } from "./qmd-health-metadata.js";
 import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
 import { mergeEnv } from "./runtime/env.js";
 import {
@@ -1542,7 +1542,7 @@ export class QmdClient implements SearchBackend {
         "status", {}, Math.max(1, deadline - performance.now()), execution?.signal,
       );
       const snapshot = parseOperationalHealth(
-        result, collection, memoryDir, beforeEnv,
+        qmdHealthResponseSchema.safeParse(result).data, collection, memoryDir, beforeEnv,
         mergeEnv({ NO_COLOR: "1", ...this.qmdRuntimeEnv }), beforeCwd, process.cwd(),
       );
       return { ...(isCurrent() ? snapshot : UNKNOWN_OPERATIONAL_HEALTH), isCurrent };

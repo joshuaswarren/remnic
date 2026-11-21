@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { abortError, throwIfAborted } from "./abort-error.js";
 import { log } from "./logger.js";
 import { type CommandChildProcess, launchProcess } from "./runtime/child-process.js";
@@ -5,6 +6,15 @@ import { mergeEnv } from "./runtime/env.js";
 import { sleep } from "./utils/sleep.js";
 
 export type QmdRuntimeEnv = Record<string, string | undefined>;
+
+const initializeHealthSchema = z.object({
+  isError: z.literal(false).optional(),
+  capabilities: z.object({
+    experimental: z.object({
+      "qmd/healthMetadata": z.strictObject({ schemaVersion: z.literal(1) }).optional(),
+    }).optional(),
+  }),
+});
 
 export type QmdDaemonSpawn = (
   command: string,
@@ -163,24 +173,9 @@ export class QmdDaemonSession {
           return false;
         }
         this.sendNotification("notifications/initialized");
-        const capabilities = typeof result === "object" && "capabilities" in result
-          ? result.capabilities : undefined;
-        const experimental = capabilities !== null && typeof capabilities === "object" &&
-          "experimental" in capabilities ? capabilities.experimental : undefined;
-        const marker = experimental !== null && typeof experimental === "object" &&
-          "qmd/healthMetadata" in experimental ? experimental["qmd/healthMetadata"] : undefined;
-        this.healthMetadataCapability =
-          typeof result !== "object" || Array.isArray(result) ||
-          ("isError" in result && result.isError !== false) ||
-          capabilities === null || typeof capabilities !== "object" || Array.isArray(capabilities) ||
-          ("experimental" in capabilities &&
-            (experimental === null || typeof experimental !== "object" || Array.isArray(experimental)))
-            ? "invalid"
-            : experimental !== null && typeof experimental === "object" && "qmd/healthMetadata" in experimental
-              ? marker !== null && typeof marker === "object" && !Array.isArray(marker) &&
-                Object.keys(marker).length === 1 && "schemaVersion" in marker && marker.schemaVersion === 1
-                ? "available" : "invalid"
-              : "absent";
+        const metadata = initializeHealthSchema.safeParse(result).data;
+        this.healthMetadataCapability = !metadata ? "invalid"
+          : metadata.capabilities.experimental?.["qmd/healthMetadata"] ? "available" : "absent";
         this.initialized = true;
         log.info("QMD mcp: stdio session initialized");
         return true;
