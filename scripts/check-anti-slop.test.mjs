@@ -103,6 +103,23 @@ test("unchanged violations do not block a clean edit in the same file", (t) => {
   assert.match(result.stdout, /no anti-slop findings/);
 });
 
+test("a widening added on a changed line reports at an unchanged line and must still fail", (t) => {
+  // no-widen-then-assert reports at the assert expression, which sits on a line
+  // the diff never touched. The widening is the added line, so the change
+  // introduced the finding even though its span is on an unchanged line. Both
+  // revisions keep a SAFETY comment on line 2 so the only new finding is the
+  // unchanged-line report the gate must catch.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const SAFETY = "// SAFETY: fixture\n";
+  write(root, "escape.ts", `${SAFETY}const config = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  commitAll(root, "base without widening");
+  write(root, "escape.ts", `${SAFETY}const config: unknown = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  const result = runGate(root, ["--base", "HEAD"]);
+  assertStatus(result, 1, "finding introduced by the change but reported on an unchanged line");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
+});
+
 test("introduced violations fail even when another violation is removed", (t) => {
   const root = makeRepo();
   t.after(() => rmSync(root, { recursive: true, force: true }));

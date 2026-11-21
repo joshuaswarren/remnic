@@ -9,13 +9,15 @@
 // change whose sources are all covered by ignorePatterns lint to zero matches
 // instead of erroring.
 //
-// ponytail: line-scoped only — a future alias/dataflow rule may report a span
-// on an unchanged line while the violation sits on an added one, and such
-// unchanged-line reports escape this gate. Whole-file scan or a ratcheted
-// baseline are the later upgrades if that starts happening.
+// Ratcheted baseline: tracked files are also linted at the base revision, and a
+// finding is reported when it lands on an added/changed line OR when the same
+// rule does not fire on the same source text in the base revision. That second
+// arm catches findings a change introduces whose span sits on an unchanged line
+// (e.g. no-widen-then-assert reporting at the assert while the widening is the
+// added line) without flagging debt that already existed.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -112,6 +114,62 @@ export function spanLines(span, lineStarts, byteLength = Infinity) {
   const start = lineOfOffset(lineStarts, span.offset);
   const end = lineOfOffset(lineStarts, span.offset + Math.max(span.length - 1, 0));
   return [start, end];
+}
+
+// Stable across line shifts: the rule plus the exact reported source text, so a
+// finding that merely moved keeps its identity while any text edit changes it.
+function diagnosticKey(diagnostic, contents) {
+  const labels = diagnostic.labels.map((label) => contents
+    .subarray(label.span.offset, label.span.offset + label.span.length)
+    .toString("utf8"));
+  return `${diagnostic.code}::${labels.join("|")}`;
+}
+
+// Lint the base revision of each tracked changed file and collect the finding
+// keys that already existed, keyed by the file's repo-relative path. Files with
+// no base revision (new files) get no baseline, so every finding blocks; a base
+// revision that fails to lint simply contributes no keys, falling back to the
+// line-scoped check for that file.
+function baseFindingKeys(repoRoot, baseRef, files) {
+  const keysByFile = new Map();
+  if (files.length === 0) return keysByFile;
+  const stageRoot = join(repoRoot, ".git", "anti-slop-base");
+  const staged = [];
+  try {
+    rmSync(stageRoot, { recursive: true, force: true });
+    for (const file of files) {
+      const result = execGit(repoRoot, ["show", `${baseRef}:${file}`]);
+      if (result.status !== 0 || !result.stdout) continue;
+      const target = join(stageRoot, file);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, result.stdout);
+      staged.push(file);
+    }
+    if (staged.length === 0) return keysByFile;
+    for (const diagnostic of lintChangedFiles(repoRoot, staged.map((file) => join(".git", "anti-slop-base", file)))) {
+      if (!isAntiSlopDiagnostic(diagnostic) || !Array.isArray(diagnostic.labels) || diagnostic.labels.length === 0) continue;
+      // oxlint reports paths relative to the cwd (the repo root), not the stage root.
+      const stagedPath = isNonEmptyText(diagnostic.filename)
+        ? relative(repoRoot, resolve(repoRoot, diagnostic.filename)).split(sep).join("/")
+        : null;
+      if (stagedPath === null || !stagedPath.startsWith(".git/anti-slop-base/")) continue;
+      const originalFile = stagedPath.slice(".git/anti-slop-base/".length);
+      let keys = keysByFile.get(originalFile);
+      if (keys === undefined) {
+        keys = new Set();
+        keysByFile.set(originalFile, keys);
+      }
+      try {
+        const contents = readFileSync(join(stageRoot, originalFile));
+        keys.add(diagnosticKey(diagnostic, contents));
+      } catch {
+        // unreadable staged copy: skip this finding's key
+      }
+    }
+  } finally {
+    rmSync(stageRoot, { recursive: true, force: true });
+  }
+  return keysByFile;
 }
 
 function linesIntersect(startLine, endLine, addedLines) {
@@ -245,6 +303,8 @@ function main() {
   for (const file of trackedSources) {
     if (!addedLinesByFile.has(file)) addedLinesByFile.set(file, addedLinesForTrackedFile(repoRoot, baseRef, file));
   }
+  const trackedSourcesList = [...new Set(trackedSources)];
+  const baseKeysByFile = baseFindingKeys(repoRoot, baseRef, trackedSourcesList);
 
   const scannedFiles = new Set(changedFiles);
   const sources = new Map();
@@ -271,7 +331,7 @@ function main() {
       }
       if (!sources.has(file)) {
         const contents = readFileSync(join(repoRoot, file));
-        sources.set(file, { byteLength: contents.length, lineStarts: byteLineStarts(contents) });
+        sources.set(file, { contents, byteLength: contents.length, lineStarts: byteLineStarts(contents) });
       }
       const source = sources.get(file);
       ranges = diagnostic.labels.map((label) => spanLines(label.span, source.lineStarts, source.byteLength));
@@ -281,10 +341,13 @@ function main() {
     }
     const addedLines = addedLinesByFile.get(file);
     const overlap = ranges.find(([start, end]) => addedLines === null || linesIntersect(start, end, addedLines));
-    if (overlap) {
-      const [startLine, endLine] = overlap;
+    const baseKeys = addedLines === null ? undefined : baseKeysByFile.get(file);
+    const introduced = baseKeys !== undefined && !baseKeys.has(diagnosticKey(diagnostic, sources.get(file).contents));
+    if (overlap || introduced) {
+      const [startLine, endLine] = overlap ?? ranges[0];
       const at = startLine === endLine ? `${startLine}` : `${startLine}-${endLine}`;
-      violations.push(`${file}:${at}: ${diagnostic.code} ${diagnostic.message}`);
+      const why = overlap ? "on added/changed lines" : "introduced by this change (absent from the base revision)";
+      violations.push(`${file}:${at}: ${diagnostic.code} ${diagnostic.message} (${why})`);
     }
   }
 
