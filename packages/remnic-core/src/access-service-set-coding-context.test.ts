@@ -4,6 +4,9 @@
  * marked remote so no daemon surface opens it as a local path.
  */
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { codingContextLocalRoot } from "./access-coding-context-resolution.js";
@@ -147,4 +150,61 @@ test("a remote context's local root degrades to the tag label, never a path", ()
   // The caller-shaped path must never come back as a daemon-openable root.
   assert.equal(codingContextLocalRoot(ctx!), "tag:/srv/secrets");
   assert.equal(codingContextLocalRoot({ ...CTX, projectId: "tag:x", remote: true }), "tag:x");
+});
+
+test("a remote post whose root is a repo on the daemon host keeps its local root", () => {
+  const orch = makeOrchestratorStub({ namespacesEnabled: false });
+  const service = new EngramAccessService(orch);
+  // Same-host pane: the client-resolved root exists on this filesystem, so
+  // surfaces must get the real path, not the degraded tag label.
+  const repoRoot = mkdtempSync(join(tmpdir(), "same-host-repo-"));
+  try {
+    mkdirSync(join(repoRoot, ".git"));
+    service.setCodingContext({
+      sessionKey: "pane-1",
+      codingContext: { projectId: "origin:abc123", branch: "main", rootPath: repoRoot, defaultBranch: "main" },
+      remote: true,
+    });
+    const ctx = orch.getCodingContextForSession("pane-1");
+    assert.notEqual(ctx?.remote, true, "a daemon-visible repo root must not stay remote");
+    assert.equal(codingContextLocalRoot(ctx!), repoRoot);
+    // A linked worktree carries a .git file, not a directory.
+    const worktreeRoot = mkdtempSync(join(tmpdir(), "same-host-worktree-"));
+    try {
+      writeFileSync(join(worktreeRoot, ".git"), "gitdir: /elsewhere");
+      service.setCodingContext({
+        sessionKey: "pane-2",
+        codingContext: { projectId: "origin:def456", branch: "main", rootPath: worktreeRoot, defaultBranch: "main" },
+        remote: true,
+      });
+      assert.equal(codingContextLocalRoot(orch.getCodingContextForSession("pane-2")!), worktreeRoot);
+    } finally {
+      rmSync(worktreeRoot, { recursive: true, force: true });
+    }
+    // A directory that is not a repo still degrades to the tag label.
+    const plainDir = mkdtempSync(join(tmpdir(), "not-a-repo-"));
+    try {
+      service.setCodingContext({
+        sessionKey: "pane-3",
+        codingContext: { projectId: "origin:ghi789", branch: "main", rootPath: plainDir, defaultBranch: "main" },
+        remote: true,
+      });
+      const plain = orch.getCodingContextForSession("pane-3");
+      assert.equal(plain?.remote, true);
+      assert.equal(codingContextLocalRoot(plain!), "tag:origin:ghi789");
+    } finally {
+      rmSync(plainDir, { recursive: true, force: true });
+    }
+    // A path that does not exist here stays remote.
+    service.setCodingContext({
+      sessionKey: "pane-4",
+      codingContext: { projectId: "origin:jkl000", branch: "main", rootPath: "/nonexistent/remote/repo", defaultBranch: "main" },
+      remote: true,
+    });
+    const missing = orch.getCodingContextForSession("pane-4");
+    assert.equal(missing?.remote, true);
+    assert.equal(codingContextLocalRoot(missing!), "tag:origin:jkl000");
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });

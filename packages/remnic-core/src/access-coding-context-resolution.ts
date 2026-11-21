@@ -1,3 +1,6 @@
+import { existsSync, statSync } from "node:fs";
+import { join } from "node:path";
+
 import { z } from "zod";
 
 import { EngramAccessInputError } from "./access-errors.js";
@@ -106,6 +109,21 @@ const setCodingContextRequestSchema = z.object({
   remote: z.boolean().optional(),
 });
 
+/**
+ * True when a caller-supplied root is a git worktree top on THIS host —
+ * a directory containing a `.git` entry (dir for a checkout, file for a
+ * linked worktree). A same-host pane's client-resolved root verifies and
+ * keeps its local path; a genuinely remote or forged path fails closed to
+ * the remote marker so surfaces never open it.
+ */
+function isDaemonRepoRoot(rootPath: string): boolean {
+  try {
+    return statSync(rootPath).isDirectory() && existsSync(join(rootPath, ".git"));
+  } catch {
+    return false;
+  }
+}
+
 export function setSessionCodingContext(
   orchestrator: Orchestrator,
   request: EngramAccessSetCodingContextRequest,
@@ -156,7 +174,7 @@ export function setSessionCodingContext(
     rootPath: ctx.rootPath,
     defaultBranch: ctx.defaultBranch,
   };
-  if (parsed.data.remote === true) {
+  if (parsed.data.remote === true && !isDaemonRepoRoot(ctx.rootPath)) {
     stored.remote = true;
   }
   orchestrator.setCodingContextForSession(sessionKey, stored, claimOwner);
