@@ -91,8 +91,9 @@ function startTricklingDaemon() {
 }
 
 // Send one JSON-RPC request through a stdio MCP proxy (server.js) aimed at
-// `daemonUrl`. Resolves with the proxy's reply, or reply null and the kill
-// signal when the proxy was still waiting at `killAfterMs`.
+// `daemonUrl`. Resolves with the proxy's first reply (null when the proxy was
+// still waiting at `killAfterMs`), the kill signal, and every stdout line so a
+// caller can check the request got exactly one reply.
 function callMcpProxy(serverPath, daemonUrl, { killAfterMs }) {
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
@@ -118,7 +119,8 @@ function callMcpProxy(serverPath, daemonUrl, { killAfterMs }) {
     child.on("error", reject);
     child.on("close", (_code, signal) => {
       clearTimeout(killer);
-      resolve({ reply, signal, elapsedMs: Date.now() - startedAt });
+      const lines = stdout.split("\n").filter((l) => l.trim());
+      resolve({ reply, signal, lines, elapsedMs: Date.now() - startedAt });
     });
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`);
   });
