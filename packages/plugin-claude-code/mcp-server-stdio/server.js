@@ -211,6 +211,16 @@ function forward(msg, isNotification) {
     params: msg.params ?? {},
   });
   return new Promise((resolve) => {
+    // One-shot completion guard: req.destroy() can surface the same failure
+    // on both the request and response error channels (and a late socket
+    // error can follow a completed response). Only the first terminal event
+    // may write a JSON-RPC reply.
+    let answered = false;
+    const firstAnswer = () => {
+      if (answered) return false;
+      answered = true;
+      return true;
+    };
     const req = transport.request(
       {
         method: "POST",
@@ -238,6 +248,7 @@ function forward(msg, isNotification) {
           chunks += c;
         });
         res.on("end", () => {
+          if (!firstAnswer()) return;
           try {
             if (isNotification) {
               // No reply expected. Either 2xx success or non-2xx-with-no-body
@@ -327,6 +338,7 @@ function forward(msg, isNotification) {
           }
         });
         res.on("error", (err) => {
+          if (!firstAnswer()) return;
           if (isNotification) {
             process.stderr.write(
               `remnic-mcp-proxy: notification ${msg.method} response stream error: ${sanitizeMessage(err.message)}\n`
@@ -343,10 +355,16 @@ function forward(msg, isNotification) {
         });
       }
     );
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    // One deadline for connect plus the full response. req.setTimeout() is an
+    // idle timer: it does not arm until the socket connects and restarts on
+    // every byte, so a daemon front that drops packets or trickles a reply
+    // held the tool call open far past REQUEST_TIMEOUT_MS.
+    const deadline = setTimeout(() => {
       req.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`));
-    });
+    }, REQUEST_TIMEOUT_MS);
+    req.on("close", () => clearTimeout(deadline));
     req.on("error", (err) => {
+      if (!firstAnswer()) return;
       if (isNotification) {
         process.stderr.write(
           `remnic-mcp-proxy: notification ${msg.method} transport error: ${sanitizeMessage(err.message)}\n`

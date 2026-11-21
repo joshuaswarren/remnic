@@ -383,3 +383,96 @@ test("fail-open: dead daemon still emits continue and never throws", async () =>
   assert.equal(json.continue, true);
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+// ── stalled daemon front ────────────────────────────────────────────────
+// A daemon URL that drops packets, or a front that accepts and then never
+// finishes the response, must not hold the host past the call's budget:
+// every daemon call carries one deadline covering connect plus response.
+
+const { startBlackhole, startTricklingDaemon } = require("../../../../tests/helpers/stalled-daemon.cjs");
+
+// Spawn the hook against `daemonUrl`, killing it at `killAfterMs`. PATH points
+// at an empty dir so the "daemon not running" branch cannot spawn a real
+// `remnic daemon start` on the machine running the tests.
+function runHookWithDeadline(event, input, { home, daemonUrl, killAfterMs }) {
+  const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-devin-nobin-"));
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const child = spawn(process.execPath, [RUNNER, event], {
+      env: {
+        ...process.env,
+        PATH: emptyBin,
+        HOME: home,
+        USERPROFILE: home,
+        XDG_STATE_HOME: path.join(home, "state"),
+        XDG_DATA_HOME: path.join(home, "data"),
+        OPENCLAW_REMNIC_ACCESS_TOKEN: "test-token",
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: "",
+        REMNIC_AUTH_TOKEN: "",
+        ENGRAM_AUTH_TOKEN: "",
+        REMNIC_HOOK_TOKEN: "",
+        REMNIC_DAEMON_URL: daemonUrl,
+        ENGRAM_DAEMON_URL: "",
+        DEVIN_PROJECT_DIR: "",
+        DEVIN_TRANSCRIPT_DIR: "",
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    const killer = setTimeout(() => child.kill("SIGKILL"), killAfterMs);
+    child.on("close", (code, signal) => {
+      clearTimeout(killer);
+      fs.rmSync(emptyBin, { recursive: true, force: true });
+      let json = null;
+      try {
+        json = JSON.parse(stdout.trim().split("\n").filter(Boolean).pop());
+      } catch {
+        /* leave null */
+      }
+      resolve({ json, signal, elapsedMs: Date.now() - startedAt });
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+test("black-holed daemon: session-start liveness probes keep their 2s budget", async (t) => {
+  const blackhole = await startBlackhole();
+  if (!blackhole) return t.skip("platform answers every SYN; cannot simulate a black hole");
+  const home = mkHome();
+  try {
+    // Two 2s liveness probes around the 2s start-wait: ~6s when each probe
+    // keeps its budget, ~12s when the connect phase falls back to the
+    // default agent's 5s socket timeout.
+    const { json, signal, elapsedMs } = await runHookWithDeadline(
+      "session-start",
+      { session_id: "blackhole-start", source: "startup" },
+      { home, daemonUrl: blackhole.url, killAfterMs: 30000 },
+    );
+    assert.equal(signal, null, `hook hung on the black-holed daemon (killed after ${elapsedMs}ms)`);
+    assert.ok(elapsedMs < 9000, `session-start took ${elapsedMs}ms against a 2s + 2s + 2s budget`);
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /daemon not running/);
+  } finally {
+    blackhole.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("trickling daemon front: user-prompt recall gives up at its 20s budget", async () => {
+  const front = await startTricklingDaemon();
+  const home = mkHome();
+  try {
+    const { json, signal, elapsedMs } = await runHookWithDeadline(
+      "user-prompt-recall",
+      { session_id: "trickle-recall", prompt: "what did we decide about the deploy pipeline" },
+      { home, daemonUrl: front.url, killAfterMs: 40000 },
+    );
+    assert.equal(signal, null, `hook hung on the trickling front (killed after ${elapsedMs}ms)`);
+    assert.ok(elapsedMs < 27000, `user-prompt recall took ${elapsedMs}ms against a 20s budget`);
+    assert.deepEqual(json, { continue: true });
+  } finally {
+    front.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
