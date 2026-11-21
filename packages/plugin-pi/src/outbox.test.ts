@@ -541,6 +541,57 @@ test("overflow spills captures instead of evicting them", async () => {
   }
 });
 
+test("a read-side refresh cannot replace entries during a spill mutation", async () => {
+  const filePath = tmpOutboxPath("refresh-spill-race");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 2 });
+  await outbox.enqueue(entryInput("a"));
+  await outbox.enqueue(entryInput("b"));
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const originalAppendSpill = outbox["appendSpill"].bind(outbox);
+  outbox["appendSpill"] = async (entries) => {
+    await originalAppendSpill(entries);
+    entered.resolve();
+    await release.promise;
+  };
+
+  const enqueue = outbox.enqueue(entryInput("c"));
+  await entered.promise;
+  let sizeFinished = false;
+  const size = outbox.size().then((value) => {
+    sizeFinished = true;
+    return value;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(sizeFinished, false, "read refresh waits for the in-flight mutation");
+  release.resolve();
+  await enqueue;
+  assert.equal(await size, 3);
+  assert.deepEqual(readSpilledContents(filePath), ["a"]);
+  assert.deepEqual(readContents(filePath), ["b", "c"]);
+});
+
+test("bounded drains stop after one successful send while ordinary drains stay unbounded", async () => {
+  const filePath = tmpOutboxPath("bounded-send-count");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  for (const value of ["a", "b", "c"]) await outbox.enqueue(entryInput(value));
+  const boundedSent: string[] = [];
+  const bounded = await outbox.drain(async (entry) => {
+    boundedSent.push(entry.messages[0].content);
+  }, { maxSends: 1, sleep: async () => undefined });
+  assert.deepEqual(boundedSent, ["a"]);
+  assert.equal(bounded.delivered, 1);
+  assert.equal(await outbox.size(), 2, "unsent entries remain durable");
+
+  const backgroundSent: string[] = [];
+  const background = await outbox.drain(async (entry) => {
+    backgroundSent.push(entry.messages[0].content);
+  }, { sleep: async () => undefined });
+  assert.deepEqual(backgroundSent, ["b", "c"]);
+  assert.equal(background.delivered, 2);
+  assert.equal(await outbox.size(), 0);
+});
+
 test("the default 200-entry hot queue spills additional captures to bounded disk segments", async () => {
   const filePath = tmpOutboxPath("default-spill-bound");
   const outbox = new ObserveOutbox(filePath);

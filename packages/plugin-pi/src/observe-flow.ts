@@ -89,7 +89,10 @@ export async function drainObserveOutbox(
     // Entries enqueued for a different daemon stay queued for it (#3381).
     destination: config.remnicDaemonUrl,
   };
-  if (bounded) drainOptions.maxAttempts = 1;
+  if (bounded) {
+    drainOptions.maxAttempts = 1;
+    drainOptions.maxSends = 1;
+  }
   // Why the drain stopped, from the last send. Auth and permanent failures
   // already tell the user why the queue is waiting.
   let stopReason: ObserveFailureClass | undefined;

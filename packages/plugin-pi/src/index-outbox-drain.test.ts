@@ -299,6 +299,9 @@ test("replay sends the queued entry's principal, not the draining process's", as
 
   const session = { notify: () => {} };
   await drainObserveOutbox(session, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
+  assert.equal(sentPrincipals.length, 1, "bounded replay stops after one delivery");
+  assert.equal(await outbox.size(), 1, "the next entry remains queued");
+  await drainObserveOutbox(session, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
 
   assert.equal(sentPrincipals[0], "w7P:p2@writer-host", "queued writer identity survives a foreign drainer");
   assert.equal(sentPrincipals[1], "wD6:p1@drainer-host", "entries without a principal keep the drainer's");

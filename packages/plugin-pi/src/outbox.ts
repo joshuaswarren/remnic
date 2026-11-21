@@ -87,6 +87,8 @@ export function classifyObserveFailure(err: Error): ObserveFailureClass {
 export type DrainOptions = {
   /** Total send attempts per drain across all entries (default 4). */
   maxAttempts?: number;
+  /** Successful entries per drain; omitted means no delivery-count bound. */
+  maxSends?: number;
   /** No-header backoff base, doubled per attempt (default 500ms). */
   backoffBaseMs?: number;
   /** Upper bound applied to Retry-After hints and computed backoff (default 30s). */
@@ -214,7 +216,7 @@ export class ObserveOutbox {
   private spillOldestQueuedAt: string | undefined;
   /** Signatures of the hot file and spill segments, shared across processes. */
   private diskSignature: string | null = null;
-  private writeChain: Promise<void> = Promise.resolve();
+  private operationChain: Promise<void> = Promise.resolve();
   private drainInProgress = false;
   private counters = { queued: 0, retried: 0, delivered: 0, dropped: 0 };
   constructor(filePath: string, options: { maxEntries?: number; lockMaxWaitMs?: number } = {}) {
@@ -262,11 +264,15 @@ export class ObserveOutbox {
 
   /** Read-only callers keep the last known entries when either file cannot be read. */
   private async refreshOrKeepLastKnown(notify?: OutboxNotify): Promise<void> {
-    try {
-      await this.refresh(notify);
-    } catch {
-      // Unreadable files keep the last known view; mutations still fail closed.
-    }
+    const run = this.operationChain.then(async () => {
+      try {
+        await this.refresh(notify);
+      } catch {
+        // Unreadable files keep the last known view; mutations still fail closed.
+      }
+    });
+    this.operationChain = run;
+    await run;
   }
 
   /** Re-read both files when another process (or this one) changed either one. */
@@ -426,7 +432,7 @@ export class ObserveOutbox {
    * before applying a mutation. A lock failure never overwrites another writer.
    */
   private mutate(update: () => void | Promise<void>, persistMain = true, notify?: OutboxNotify): Promise<void> {
-    const run = this.writeChain.then(async () => {
+    const run = this.operationChain.then(async () => {
       await mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
       await withHeldFileLock(
         this.lockPath,
@@ -445,7 +451,7 @@ export class ObserveOutbox {
         },
       );
     });
-    this.writeChain = run.catch(() => {
+    this.operationChain = run.catch(() => {
       this.diskSignature = UNREADABLE_SIGNATURE;
     });
     return run;
@@ -563,10 +569,11 @@ export class ObserveOutbox {
     const warnedStale = new Set<string>();
     let delivered = 0;
     let failures = 0;
+    const maxSends = options.maxSends ?? Number.POSITIVE_INFINITY;
     const eligible = (entry: ObserveOutboxEntry): boolean =>
       entryEligibleForDestination(entry, options.destination);
     try {
-      while (failures < maxAttempts) {
+      while (failures < maxAttempts && delivered < maxSends) {
         await this.refreshOrKeepLastKnown(notify);
         const spilled = await this.firstSpillEntry(eligible);
         const entry = spilled ?? this.entries.find(eligible);
