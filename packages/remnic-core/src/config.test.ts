@@ -3149,8 +3149,9 @@ test("parseConfig rejects plaintext non-loopback backgroundGeneration endpoints"
   });
 });
 
-test("parseConfig: extractionQueueConcurrency defaults to 1 and validates as a positive integer", () => {
-  assert.equal(parseConfig({}).extractionQueueConcurrency, 1);
+test("parseConfig: extractionQueueConcurrency defaults to bounded-parallel 2 and validates as a positive integer", () => {
+  assert.equal(parseConfig({}).extractionQueueConcurrency, 2);
+  assert.equal(parseConfig({ extractionQueueConcurrency: 1 }).extractionQueueConcurrency, 1);
   assert.equal(parseConfig({ extractionQueueConcurrency: 2 }).extractionQueueConcurrency, 2);
   for (const invalid of [0, -1, 1.5, "two"]) {
     assert.throws(

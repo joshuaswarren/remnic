@@ -1597,7 +1597,7 @@ export function parseConfig(
     // capture (retryable) instead of growing without bound during an outage.
     bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
     extractionQueueConcurrency:
-      parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 1,
+      parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
       typeof cfg.bufferMaxMinutes === "number" ? cfg.bufferMaxMinutes : 15,
     // Surprise-gated buffer flush (issue #563, D-MEM). See types.ts for

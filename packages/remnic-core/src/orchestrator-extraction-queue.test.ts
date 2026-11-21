@@ -35,7 +35,7 @@ function installCapturingLogger(): { entries: LogEntry[] } {
 }
 
 function createCoordinator(): ExtractionQueueCoordinator {
-  return new ExtractionQueueCoordinator();
+  return new ExtractionQueueCoordinator(1);
 }
 
 // ── Per-key FIFO: queued tasks retain their own captured scope and settlement ─
@@ -495,8 +495,8 @@ test("tasks sharing a buffer key never run concurrently even with free capacity"
   assert.equal(otherKey.outcome, "finished");
 });
 
-test("the default limit stays serial", async () => {
-  const coordinator = createCoordinator();
+test("an explicit limit of 1 keeps the queue serial", async () => {
+  const coordinator = createParallelCoordinator(1);
   assert.equal(coordinator.maxConcurrency, 1);
   const first = makeParkedTask(false);
   const second = makeParkedTask(false);

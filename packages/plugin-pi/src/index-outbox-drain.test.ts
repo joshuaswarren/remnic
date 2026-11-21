@@ -247,7 +247,7 @@ test("session start survives a locked outbox: no rejection, bounded, and the sta
 });
 
 test("#3381: a replay stopped by rejected credentials names the credentials, not daemon saturation", async () => {
-  for (const status of [401, 403, 503]) {
+  for (const status of [400, 401, 403, 503]) {
     const outboxPath = tmpOutboxPath();
     const config = drainTestConfig(outboxPath);
     const outbox = new ObserveOutbox(outboxPath);
@@ -265,6 +265,9 @@ test("#3381: a replay stopped by rejected credentials names the credentials, not
     const saturated = warnings.some((message) => message.includes("daemon saturated"));
     if (status === 503) {
       assert.ok(saturated, "a capacity stop still reports saturation");
+    } else if (status === 400) {
+      assert.ok(warnings.some((message) => message.includes("permanently rejected")), "the rejection cause reaches the user");
+      assert.equal(saturated, false, "a permanent rejection is not daemon saturation");
     } else {
       assert.ok(
         warnings.some((message) => message.includes(`rejected the request credentials (HTTP ${status})`)),
@@ -295,6 +298,9 @@ test("replay sends the queued entry's principal, not the draining process's", as
   };
 
   const session = { notify: () => {} };
+  await drainObserveOutbox(session, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
+  assert.equal(sentPrincipals.length, 1, "bounded replay stops after one delivery");
+  assert.equal(await outbox.size(), 1, "the next entry remains queued");
   await drainObserveOutbox(session, new RemnicClient(config), config, outbox, new Set<string>(), undefined, true);
 
   assert.equal(sentPrincipals[0], "w7P:p2@writer-host", "queued writer identity survives a foreign drainer");
@@ -404,4 +410,31 @@ test("a queued entry bound to another daemon does not suppress the live capture 
   await settleObserveOutboxDrain(outbox);
   assert.equal(sent, 1, "the capture reaches this daemon instead of being suppressed by the foreign entry");
   assert.equal(await outbox.size(), 1, "the foreign entry stays queued for its own daemon");
+});
+
+test("a successful bounded send leaving entries reports no daemon saturation", async () => {
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const outbox = new ObserveOutbox(outboxPath);
+  await outbox.enqueue(queuedEntry);
+  await outbox.enqueue({ ...queuedEntry, sessionKey: "second-entry", messageHashes: ["hash-second"] });
+
+  const client = new RemnicClient(config);
+  let sends = 0;
+  client.observe = async () => {
+    sends += 1;
+    return { ok: true };
+  };
+  const warnings: string[] = [];
+  const session = { notify: (message: string) => warnings.push(message) };
+
+  await drainObserveOutbox(session, client, config, outbox, new Set<string>(), undefined, true);
+
+  assert.equal(sends, 1, "the bounded drain sent exactly one capture");
+  assert.equal(await outbox.size(), 1, "the second entry remains queued");
+  assert.equal(
+    warnings.some((message) => message.includes("daemon saturated")),
+    false,
+    "normal bounded pacing after a successful send is not saturation"
+  );
 });

@@ -217,7 +217,7 @@ test("response loss (server accepted, client timed out) replays without duplicat
   assert.ok(notifications.some((n) => /queued durably/.test(n.message)));
 });
 
-test("non-capacity errors are neither queued nor retried", async (t) => {
+test("a permanent live rejection is queued for retry without a same-drain retry", async (t) => {
   const outboxPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-outbox-")), "observe-outbox.jsonl");
   const config = outboxTestConfig({ observeOutboxPath: outboxPath });
   const originalFetch = globalThis.fetch;
@@ -250,9 +250,9 @@ test("non-capacity errors are neither queued nor retried", async (t) => {
     outbox
   );
 
-  assert.equal(calls, 1, "no retry of a permanent rejection");
-  assert.equal(await outbox.size(), 0, "permanent rejections are not queued");
-  assert.ok(notifications.some((n) => n.level === "warning" && /Remnic observe failed/.test(n.message)));
+  assert.equal(calls, 1, "the initial live rejection is not retried synchronously");
+  assert.equal(await outbox.size(), 1, "the rejected capture remains durably queued");
+  assert.ok(notifications.some((n) => n.level === "warning" && /queued durably for retry/.test(n.message)));
 });
 
 test("session start drains an outbox left behind by a previous process", async (t) => {

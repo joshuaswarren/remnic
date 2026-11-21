@@ -134,7 +134,7 @@ async function runMixedSequence(memoryDir: string, countIngress: boolean): Promi
     buffer,
     config: makeConfig(memoryDir),
     bulkImportWriteNamespace: () => unreachable("bulkImportWriteNamespace"),
-    extractionQueueCoordinator: new ExtractionQueueCoordinator(),
+    extractionQueueCoordinator: new ExtractionQueueCoordinator(1),
     getStorage: async () => unreachable("getStorage"),
     heartbeatObserverChains: new Map(),
     lcmEngine: null,
