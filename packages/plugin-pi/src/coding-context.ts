@@ -31,6 +31,12 @@ export interface CodingContextSyncState {
    * when the resolved signature matches the latch.
    */
   codingContextMustPost?: boolean;
+  /**
+   * Bumped each time a sync runs, so a startup sync queued behind the probe
+   * skips when a newer observation already posted — its stale cwd must never
+   * be the last write the daemon sees.
+   */
+  codingContextSyncEpoch?: number;
   /** In-flight/queued sync — serializes posts so the newest resolution always lands last. */
   codingContextSyncChain?: Promise<void>;
 }
@@ -66,11 +72,10 @@ export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): 
     ctx.state.codingContextMustPost = true;
   }
   // A sync that actually runs supersedes any startup sync still queued behind
-  // the probe: burn the epoch so that attach's check sees the mismatch and
-  // skips instead of resolving and posting a stale cwd last.
-  if (ctx.state.startupEpoch !== undefined && ctx.state.startupEpoch < Number.MAX_SAFE_INTEGER) {
-    ctx.state.startupEpoch = Number.MAX_SAFE_INTEGER;
-  }
+  // the probe: bump the coding-context epoch so that attach's check sees the
+  // mismatch and skips instead of resolving and posting a stale cwd last.
+  // (Not `startupEpoch` — the probe chain reads that for its own staleness.)
+  ctx.state.codingContextSyncEpoch = (ctx.state.codingContextSyncEpoch ?? 0) + 1;
   // Serialize per session (wAK review): a slower earlier sync must never post
   // after a newer one. Each queued run resolves fresh, so the last post the
   // daemon sees always carries the newest resolution.
@@ -96,8 +101,10 @@ export function attachCodingContextSync<T>(
   probe: Promise<T>,
   ctx: CodingContextSyncCtx & { epoch: number },
 ): Promise<T> {
+  const syncEpoch = ctx.state.codingContextSyncEpoch ?? 0;
   return probe.then(async (result) => {
-    if (ctx.state.startupEpoch === undefined || ctx.state.startupEpoch === ctx.epoch) {
+    const superseded = (ctx.state.codingContextSyncEpoch ?? 0) !== syncEpoch;
+    if (!superseded && (ctx.state.startupEpoch === undefined || ctx.state.startupEpoch === ctx.epoch)) {
       await maybeSyncSessionCodingContext(ctx);
     }
     return result;
