@@ -2042,6 +2042,12 @@ export class Orchestrator {
     );
   }
 
+  async joinStartupSearchSync(signal?: AbortSignal): Promise<boolean> {
+    return this.orchestratorInitCoordinator.joinStartupSearchSync(
+      signal,
+    );
+  }
+
   async runPatternReinforcement(options: {
     force?: boolean;
     namespace?: string;

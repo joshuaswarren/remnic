@@ -5056,13 +5056,15 @@ async function cmdXray(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  // Freshness-dependent: join the shared post-ready startup sync so the
+  // recall lands after the corpus update instead of reading a stale index
+  // and aborting the update in flight (#3525).
+  await orchestrator.joinStartupSearchSync();
   const service = new EngramAccessService(orchestrator);
 
   try {
     await runXrayCommand(rest, xrayCliIo((request) => service.recallXray(request)));
   } finally {
-    // Xray is diagnostic, so it waits for deferred startup sync before recall;
-    // abort remains a no-op guard if startup behavior changes later.
     orchestrator.abortDeferredInit();
   }
 }
@@ -5179,6 +5181,7 @@ async function cmdWhy(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  await orchestrator.joinStartupSearchSync();
   const service = new EngramAccessService(orchestrator);
   try {
     await runWhyCommand(rest, whyCliIo((request) => service.recallWhy(request)));
@@ -5225,6 +5228,7 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  await orchestrator.joinStartupSearchSync();
   const service = new EngramAccessService(orchestrator);
   try {
     return await fn(service, orchestrator);

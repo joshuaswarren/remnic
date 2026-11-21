@@ -929,6 +929,23 @@ export class OrchestratorInitCoordinator {
   }
 
   /**
+   * Freshness-dependent one-shot entry point (#3525): joins the shared
+   * startupSearchSync when this lifecycle still owes a corpus sync, so a
+   * caller that needs a fresh index — the `remnic` one-shot diagnostic
+   * commands, an OpenClaw boot — waits for the same update the post-ready
+   * fire started instead of querying a stale index and aborting the run in
+   * flight. Resolves true when the index is already synced or no sync is
+   * owed (maintenance disabled); false when the joined sync failed.
+   */
+  async joinStartupSearchSync(signal?: AbortSignal): Promise<boolean> {
+    if (
+      !resolveQmdCapabilities(this.deps.config).qmdMaintenance
+      || this.deps.deferredSyncSucceeded
+    ) return true;
+    return this.startupSearchSync(signal);
+  }
+
+  /**
    * Namespace-aware startup search sync. Re-probes QMD, ensures collections
    * (namespace-aware when namespacesEnabled), runs update, and warms up search.
    * Designed for server retry paths that run after the deferred init completes
