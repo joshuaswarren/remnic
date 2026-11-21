@@ -29,6 +29,7 @@ import {
   entityMentionIdentity,
   entityMentionPersistedIndexReadable,
   entityMentionScopeKey,
+  peekWarmEntityMentionIndex,
   resolveEntityMentionIndex,
   writePersistedEntityMentionIndex,
 } from "./entity-mention-index-cache.js";
@@ -982,7 +983,33 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.recentTurns > 0 && options.transcriptEntries.length > 0,
     );
   const earlyMode = prefixedMode ?? (structuralFollowUp ? "follow_up" : null);
-  const persistedIndex = earlyMode
+  const namespaceScoped =
+    resolveNamespaceCapabilities(options.config).namespaces &&
+    options.namespaceStorage !== undefined &&
+    (options.recallNamespaces?.length ?? 0) > 0;
+  const resolvedStorages = namespaceScoped
+    ? await resolveEntityIndexStorages(
+      options.storage,
+      options.config,
+      options.recallNamespaces,
+      options.namespaceStorage,
+    )
+    : undefined;
+  const indexStorages = resolvedStorages ?? [options.storage];
+  // The scope key embeds the native-chunk revision. Every path that reached
+  // the index read the chunks anyway (absence check, scoped read, or the
+  // fallback below), so collecting them here adds no work; the read is a
+  // no-op when native knowledge is disabled.
+  const nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
+  checkEntityRecallAbort(options.abortSignal);
+  const scopeKey = entityMentionScopeKey(options.recallNamespaces, indexStorages, nativeEntityIndexRevision(nativeChunks));
+  // A warm slot for this exact scope already holds an index at least as
+  // fresh as the persisted file; run the fast no-candidate absence check on
+  // it instead of rereading the index JSON on every recall (issue #3529).
+  const warmIndex = earlyMode
+    ? undefined
+    : peekWarmEntityMentionIndex<EntityMentionIndex>(scopeKey, () => entityMentionIdentity(indexStorages));
+  const persistedIndex = earlyMode || warmIndex
     ? null
     : await readCurrentPersistedEntityIndex(
       options.storage,
@@ -992,38 +1019,18 @@ export async function buildEntityRecallSection(options: BuildEntityRecallSection
       options.abortSignal,
     );
   checkEntityRecallAbort(options.abortSignal);
-  let nativeChunks: NativeKnowledgeChunk[] | undefined;
+  const absenceIndex = warmIndex ?? persistedIndex;
   if (
     !earlyMode &&
-    persistedIndex &&
-    resolveLanguageIndependentExplicitCandidates(persistedIndex, options.query).length === 0
+    absenceIndex &&
+    resolveLanguageIndependentExplicitCandidates(absenceIndex, options.query).length === 0
   ) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
-    if (!hasFreshNativeExplicitMention(persistedIndex, nativeChunks, options.query)) {
+    if (!hasFreshNativeExplicitMention(absenceIndex, nativeChunks, options.query)) {
       return entityRecallSectionAbsent(options.abortSignal);
     }
   }
-  const namespaceScoped =
-    resolveNamespaceCapabilities(options.config).namespaces &&
-    options.namespaceStorage !== undefined &&
-    (options.recallNamespaces?.length ?? 0) > 0;
-  if (namespaceScoped) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
-  }
-  const resolvedStorages = namespaceScoped
-    ? await resolveEntityIndexStorages(
-      options.storage,
-      options.config,
-      options.recallNamespaces,
-      options.namespaceStorage,
-    )
-    : undefined;
-  if (!nativeChunks) {
-    nativeChunks = await readNativeChunks(options.config, options.recallNamespaces, options.abortSignal);
-  }
-  const indexStorages = resolvedStorages ?? [options.storage];
   const index = await resolveEntityMentionIndex({
-    scopeKey: entityMentionScopeKey(options.recallNamespaces, indexStorages, nativeEntityIndexRevision(nativeChunks)),
+    scopeKey,
     currentIdentity: () => entityMentionIdentity(indexStorages),
     abortSignal: options.abortSignal,
     buildFull: (signal) => buildEntityMentionIndex(

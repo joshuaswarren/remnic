@@ -336,6 +336,28 @@ export async function settleEntityMentionIndex(scopeKey?: string): Promise<void>
   }
 }
 
+/**
+ * The index a fully current slot would serve without any I/O (issue #3529).
+ * Used by the recall path to run its fast absence check on the warm index
+ * instead of rereading the persisted index file. The gate is stricter than
+ * `resolveEntityMentionIndex`'s serve rule on purpose: resolve serves a
+ * mention-epoch-drifted slot while arming its background reconciliation,
+ * but a peek that served the same stale slot would bypass resolve entirely
+ * and the rebuild would never be scheduled. Any identity drift — mutation
+ * or mention epoch — must fall through to the resolver.
+ */
+export function peekWarmEntityMentionIndex<T>(
+  scopeKey: string,
+  currentIdentity: () => EntityMentionIdentity,
+): T | undefined {
+  const existing = slots.get(scopeKey);
+  if (!existing) return undefined;
+  if (!sameIdentity(existing.identity, currentIdentity())) return undefined;
+  // SAFETY: the slot stores whatever index T this scope's resolver built;
+  // sameIdentity above established the slot belongs to this scope's caller.
+  return existing.index as T;
+}
+
 export async function resolveEntityMentionIndex<T>(options: {
   scopeKey: string;
   currentIdentity: () => EntityMentionIdentity;
