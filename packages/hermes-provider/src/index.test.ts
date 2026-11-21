@@ -349,6 +349,7 @@ test("recall times out when the daemon sends headers and then stalls the body (#
     res.write('{"context":');
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // SAFETY: a server listening on a TCP host and port reports an AddressInfo, never a pipe name or null.
   const { port } = server.address() as { port: number };
   try {
     const client = new HermesClient({
@@ -361,7 +362,7 @@ test("recall times out when the daemon sends headers and then stalls the body (#
     const outcome = await Promise.race([
       client.recall("what matters?").then(
         () => "resolved",
-        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+        (err: Error) => err.message,
       ),
       new Promise<string>((resolve) => setTimeout(() => resolve("still waiting"), 3000).unref()),
     ]);

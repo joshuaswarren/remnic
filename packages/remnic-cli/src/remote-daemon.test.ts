@@ -412,10 +412,11 @@ test("daemon reads stay bounded when the body stalls after the headers (#3534)",
     res.write('{"status":');
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // SAFETY: a server listening on a TCP host and port reports an AddressInfo, never a pipe name or null.
   const { port } = server.address() as { port: number };
   const lines: string[] = [];
   const originalLog = console.log;
-  console.log = (line: unknown) => {
+  console.log = (line: string) => {
     lines.push(String(line));
   };
   try {
