@@ -257,15 +257,9 @@ export class AccessRecallSurface {
       {
         query: options.query,
         ...(options.sessionKey ? { sessionKey: options.sessionKey } : {}),
-        ...(options.rawExcerptNamespace
-          ? { rawExcerptNamespace: options.rawExcerptNamespace }
-          : {}),
-        ...(options.rawExcerptSessionIds !== undefined
-          ? { rawExcerptSessionIds: options.rawExcerptSessionIds }
-          : {}),
-        ...(options.rawExcerptsSuppressed
-          ? { rawExcerptsSuppressed: options.rawExcerptsSuppressed }
-          : {}),
+        ...(options.rawExcerptNamespace ? { rawExcerptNamespace: options.rawExcerptNamespace } : {}),
+        ...(options.rawExcerptSessionIds !== undefined ? { rawExcerptSessionIds: options.rawExcerptSessionIds } : {}),
+        ...(options.rawExcerptsSuppressed ? { rawExcerptsSuppressed: options.rawExcerptsSuppressed } : {}),
       },
     );
     const context = results
