@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -58,6 +58,20 @@ test("capsule import gate: .. traversal out of the store is refused", async (t) 
   );
   // The real archive still validates — the refusal is about the traversal, not the store.
   await assert.doesNotReject(validateCapsuleImportArchive(archivePath, storageDir));
+});
+
+test("capsule import gate: a store symlink to a file outside the store is refused", async (t) => {
+  const { storageDir } = await storeFixture(t);
+  const outside = path.join(storageDir, "outside-target.tgz");
+  await writeFile(outside, "bytes");
+  // The link path itself sits inside the store; only its real path escapes.
+  const link = path.join(defaultCapsulesDir(storageDir), "escape.tgz");
+  await symlink(outside, link);
+
+  await assert.rejects(
+    validateCapsuleImportArchive(link, storageDir),
+    /existing file inside the namespace capsule store/,
+  );
 });
 
 test("capsule import gate: a directory inside the store is refused as not-a-file", async (t) => {

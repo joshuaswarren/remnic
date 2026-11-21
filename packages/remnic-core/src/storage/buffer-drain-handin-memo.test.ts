@@ -60,6 +60,18 @@ test("handin-memo: a changed stamp resets the next hand-in to the whole entry", 
   assert.deepEqual(record, incoming);
 });
 
+test("handin-memo: remember stores the post-append stamp, not the plan-time stamp", () => {
+  const memo = new HandInMemo();
+  const incoming = entry([turn("a"), turn("b")]);
+
+  // The append itself moves the inbox stamp, so the caller re-reads it.
+  const first = memo.plan("k1", "before", incoming);
+  assert.notEqual(first, null);
+  first!.remember("after");
+
+  assert.equal(memo.plan("k1", "after", incoming), null);
+});
+
 test("handin-memo: a null stamp from the caller never trusts the memo", () => {
   const memo = new HandInMemo();
   const incoming = entry([turn("a")]);
