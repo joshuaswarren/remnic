@@ -35,6 +35,8 @@ import {
 
 export interface SessionContextDeps {
   readonly _codingContextBySession: Map<string, CodingContext>;
+  /** First authenticated writer to an unclaimed session owns its context. */
+  readonly _codingContextOwnerBySession: Map<string, string>;
   /** Defensive init for Object.create(prototype) fakes — creates the session-binding maps on the orchestrator. */
   ensureSessionBindingMaps(): void;
   _passiveCorrectionService: CorrectionService | null;
@@ -248,7 +250,7 @@ export class SessionContextCoordinator {
    *
    * Pass `null` to clear.
    */
-  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
+  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null, owner?: string): void {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
     // Defensive init — `Object.create(Orchestrator.prototype)` stubs in
     // legacy tests skip class-field initializers. The init runs on the
@@ -257,9 +259,17 @@ export class SessionContextCoordinator {
     this.deps.ensureSessionBindingMaps();
     if (codingContext === null) {
       this.deps._codingContextBySession.delete(sessionKey);
+      this.deps._codingContextOwnerBySession.delete(sessionKey);
       return;
     }
     this.deps._codingContextBySession.set(sessionKey, codingContext);
+    if (owner !== undefined) this.deps._codingContextOwnerBySession.set(sessionKey, owner);
+  }
+
+  /** The principal that claimed this session's coding context, if any. */
+  getCodingContextOwnerForSession(sessionKey: string | undefined): string | undefined {
+    if (typeof sessionKey !== "string" || sessionKey.length === 0) return undefined;
+    return this.deps._codingContextOwnerBySession?.get(sessionKey);
   }
 
   /**

@@ -977,10 +977,13 @@ test("remote coding-context rootPath is never passed to repo scanning", async ()
   });
   const arch = await handleCodegraphTool({ tool: "get_architecture", sessionKey: "s1" }, ctx);
   assert.notEqual(built, CODING_CONTEXT.rootPath, "remote rootPath must not reach the scanner");
-  assert.equal(built, remoteCtx.projectId, "remote root degrades to projectId like a projectTag context");
+  // projectId is caller-chosen and may itself be path-shaped, so the remote
+  // root degrades to the tag form — the same non-path label a
+  // projectTag-derived context already carries.
+  assert.equal(built, `tag:${remoteCtx.projectId}`, "remote root degrades to the tag label like a projectTag context");
   assert.equal(arch.ok, true);
   const status = await handleCodegraphTool({ tool: "index_status", sessionKey: "s1" }, ctx);
   assert.notEqual(indexed, CODING_CONTEXT.rootPath);
-  assert.equal(indexed, remoteCtx.projectId);
+  assert.equal(indexed, `tag:${remoteCtx.projectId}`);
   assert.equal(status.ok, true);
 });

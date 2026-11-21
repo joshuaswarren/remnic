@@ -684,6 +684,7 @@ export class Orchestrator {
    * through the same namespace layer).
    */
   private _codingContextBySession = new Map<string, CodingContext>();
+  private _codingContextOwnerBySession = new Map<string, string>();
   /**
    * Per-session peer ID registry (issue #679 PR 3/5).
    * Set by connectors / hooks via `setPeerIdForSession` so `recallInternal`
@@ -703,6 +704,7 @@ export class Orchestrator {
    */
   ensureSessionBindingMaps(): void {
     this._codingContextBySession ??= new Map<string, CodingContext>();
+    this._codingContextOwnerBySession ??= new Map<string, string>();
     this._peerIdBySession ??= new Map<string, string>();
   }
   private routingRulesStore: RoutingRulesStore | null = null;
@@ -1107,13 +1109,20 @@ export class Orchestrator {
     );
   }
 
-  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
+  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null, owner?: string): void {
     return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
       selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
     )).setCodingContextForSession(
       sessionKey,
       codingContext,
+      owner,
     );
+  }
+
+  getCodingContextOwnerForSession(sessionKey: string | undefined): string | undefined {
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getCodingContextOwnerForSession(sessionKey);
   }
 
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null {

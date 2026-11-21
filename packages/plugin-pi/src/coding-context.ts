@@ -23,6 +23,14 @@ export interface CodingContextSyncState {
    * The next reachable sync clears the latch and re-posts the current context.
    */
   codingContextRepostPending: boolean;
+  /**
+   * The latched signature only tracks posts the daemon is known to have
+   * accepted. Reachability loss and a failed post both leave the daemon
+   * binding unknown (a restart wipes it; a lost response may have applied
+   * it), so the next conclusive sync must post — including a clear — even
+   * when the resolved signature matches the latch.
+   */
+  codingContextMustPost?: boolean;
   /** In-flight/queued sync — serializes posts so the newest resolution always lands last. */
   codingContextSyncChain?: Promise<void>;
 }
@@ -55,6 +63,13 @@ export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): 
   if (ctx.state.codingContextRepostPending) {
     ctx.state.lastCodingContextSignature = null;
     ctx.state.codingContextRepostPending = false;
+    ctx.state.codingContextMustPost = true;
+  }
+  // A sync that actually runs supersedes any startup sync still queued behind
+  // the probe: burn the epoch so that attach's check sees the mismatch and
+  // skips instead of resolving and posting a stale cwd last.
+  if (typeof ctx.state.startupEpoch === "number" && ctx.state.startupEpoch < Number.MAX_SAFE_INTEGER) {
+    ctx.state.startupEpoch = Number.MAX_SAFE_INTEGER;
   }
   // Serialize per session (wAK review): a slower earlier sync must never post
   // after a newer one. Each queued run resolves fresh, so the last post the
@@ -114,11 +129,14 @@ export async function syncSessionCodingContext(options: SyncCodingContextOptions
     return; // inconclusive resolution is not "no repo" — retry next sync
   }
   const next = resolved === null ? null : signature(resolved);
-  if (next === state.lastCodingContextSignature) return;
+  if (!state.codingContextMustPost && next === state.lastCodingContextSignature) return;
   try {
     await client.setCodingContext(sessionKey, resolved);
     state.lastCodingContextSignature = next;
+    state.codingContextMustPost = false;
   } catch {
-    // leave the signature stale so the next turn retries
+    // The daemon may have applied the post before the failure — the binding
+    // is unknown, so the next conclusive sync must repost, clear included.
+    state.codingContextMustPost = true;
   }
 }

@@ -85,7 +85,12 @@ export interface EngramAccessSetCodingContextRequest {
  * of scanning a foreign host's path.
  */
 export function codingContextLocalRoot(codingContext: CodingContext): string {
-  return codingContext.remote === true ? codingContext.projectId : codingContext.rootPath;
+  if (codingContext.remote !== true) return codingContext.rootPath;
+  // projectId is caller-chosen and may be shaped like a path ("/srv/x"), so a
+  // remote root degrades to the tag form — the same non-path label a
+  // projectTag-derived context carries — never a daemon-openable location.
+  const projectId = codingContext.projectId;
+  return projectId.startsWith("tag:") ? projectId : `tag:${projectId}`;
 }
 
 /**
@@ -117,14 +122,27 @@ export function setSessionCodingContext(
   // the session's derived principal must be the caller (or `default`,
   // i.e. unclaimed — first caller binds), mirroring the extraction
   // force-flush ownership check.
+  let claimOwner: string | undefined;
   if (resolveNamespaceCapabilities(orchestrator.config).namespaces === true) {
-    const authenticatedPrincipal = parsed.data.authenticatedPrincipal?.trim();
-    const sessionPrincipal = resolvePrincipal(sessionKey, orchestrator.config);
-    if (
-      !authenticatedPrincipal ||
-      (sessionPrincipal !== undefined && sessionPrincipal !== "default" && sessionPrincipal !== authenticatedPrincipal)
-    ) {
+    const authenticatedPrincipal = parsed.data.authenticatedPrincipal?.trim() || undefined;
+    // A live claim outranks the config mapping: the first authenticated
+    // writer to an unclaimed session owns it until the context is cleared
+    // or the session ends, so another principal cannot take it over later.
+    const claimedOwner = orchestrator.getCodingContextOwnerForSession(sessionKey);
+    const sessionPrincipal = claimedOwner ?? resolvePrincipal(sessionKey, orchestrator.config);
+    if (authenticatedPrincipal === undefined) {
+      // No transport principal — internal callers (daemon attach, CLI) may
+      // write an unclaimed session but never overwrite a claimed one.
+      if (sessionPrincipal !== undefined && sessionPrincipal !== "default") {
+        throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
+      }
+    } else if (sessionPrincipal !== undefined && sessionPrincipal !== "default" && sessionPrincipal !== authenticatedPrincipal) {
       throw new EngramAccessInputError("sessionKey is not owned by authenticated principal");
+    } else if (
+      authenticatedPrincipal !== "default" && claimedOwner === undefined
+      && (sessionPrincipal === undefined || sessionPrincipal === "default")
+    ) {
+      claimOwner = authenticatedPrincipal;
     }
   }
   const ctx = parsed.data.codingContext;
@@ -141,5 +159,5 @@ export function setSessionCodingContext(
   if (parsed.data.remote === true) {
     stored.remote = true;
   }
-  orchestrator.setCodingContextForSession(sessionKey, stored);
+  orchestrator.setCodingContextForSession(sessionKey, stored, claimOwner);
 }

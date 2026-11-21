@@ -4,6 +4,7 @@ import test from "node:test";
 import type { GitContext, GitContextProbeResult } from "@remnic/core/coding/git-context";
 
 import {
+  attachCodingContextSync,
   maybeSyncSessionCodingContext,
   syncSessionCodingContext,
   type CodingContextSyncState,
@@ -152,4 +153,56 @@ test("an inconclusive probe retains the posted binding — only a confirmed non-
   // A confirmed non-repo still clears.
   await syncSessionCodingContext({ sessionKey: "s1", cwd: "/scratch", state, client, resolve: async () => ({ context: null, conclusive: true }) });
   assert.equal(client.posts.at(-1)?.codingContext, null);
+});
+
+test("recovery after an outage posts a clear even when nothing was latched", async () => {
+  const client = fakeClient();
+  const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
+  const ctx = { session: { sessionKey: "s1", cwd: "/repo/a" }, state, client, config: { authToken: "t" } };
+  // Daemon goes away while a binding may exist server-side.
+  client.reachable = false;
+  await maybeSyncSessionCodingContext({ ...ctx, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  client.reachable = true;
+  // cwd left the repo during the outage: signature null === latch null, but the
+  // daemon may still hold the stale binding — the clear MUST be posted.
+  await maybeSyncSessionCodingContext({ ...ctx, session: { sessionKey: "s1", cwd: "/scratch" }, resolve: async () => ({ context: null, conclusive: true }) });
+  assert.deepEqual(client.posts, [{ sessionKey: "s1", codingContext: null }]);
+});
+
+test("a post that may have landed before failing is retried even on the same signature", async () => {
+  const client = fakeClient();
+  const state: CodingContextSyncState = { lastCodingContextSignature: null, codingContextRepostPending: false };
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  // The daemon applies B but the response is lost: the latch stays A while the
+  // binding may be B, so returning to A must repost, not skip.
+  let applied: GitContext | null = null;
+  const normal = client.setCodingContext.bind(client);
+  client.setCodingContext = async (sessionKey: string, codingContext: GitContext | null) => {
+    client.setCodingContext = normal; // one-shot: only this post loses its response
+    applied = codingContext;
+    throw new Error("response lost");
+  };
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/b", state, client, resolve: async () => ({ context: CTX_B, conclusive: true }) });
+  assert.equal(applied, CTX_B);
+  await syncSessionCodingContext({ sessionKey: "s1", cwd: "/repo/a", state, client, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  assert.equal(client.posts.at(-1)?.codingContext, CTX_A, "matching signature must repost while the binding is unknown");
+  assert.equal(state.codingContextMustPost, false);
+});
+
+test("a queued startup sync is superseded by a newer observation, not posted last", async () => {
+  const client = fakeClient();
+  const state: CodingContextSyncState & { startupEpoch?: number } = {
+    lastCodingContextSignature: null,
+    codingContextRepostPending: false,
+    startupEpoch: 1,
+  };
+  const ctx = { session: { sessionKey: "s1", cwd: "/repo/a" }, state, client, config: { authToken: "t" } };
+  let releaseStartup: () => void = () => {};
+  const probe = new Promise<void>((res) => { releaseStartup = res; });
+  const staleSync = attachCodingContextSync(probe, { ...ctx, epoch: 1, resolve: async () => ({ context: CTX_A, conclusive: true }) });
+  // A newer observation (cwd B) runs and posts before the startup probe lands.
+  await maybeSyncSessionCodingContext({ ...ctx, session: { sessionKey: "s1", cwd: "/repo/b" }, resolve: async () => ({ context: CTX_B, conclusive: true }) });
+  releaseStartup();
+  await staleSync;
+  assert.deepEqual(client.posts, [{ sessionKey: "s1", codingContext: CTX_B }], "stale startup resolution must not post last");
 });
