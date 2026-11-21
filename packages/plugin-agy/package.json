@@ -1,6 +1,6 @@
 {
   "name": "@remnic/plugin-agy",
-  "version": "10.0.163",
+  "version": "10.0.164",
   "description": "Remnic memory plugin for Antigravity CLI (agy) — hooks, skills, MCP integration",
   "type": "module",
   "license": "MIT",
