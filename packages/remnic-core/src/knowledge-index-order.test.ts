@@ -10,9 +10,17 @@ import { cleanupDir } from "./testing/orchestrator-lite.js";
 import type { EntityFile } from "./types.js";
 
 function entity(name: string, type: string): EntityFile {
-  // SAFETY: buildKnowledgeIndex reads only these fields; the rest of the
-  // entity shape is irrelevant to ordering.
-  return { name, type, facts: [], relationships: [], summary: `${type} ${name}` } as unknown as EntityFile;
+  return {
+    name,
+    type,
+    updated: "2026-11-21T00:00:00.000Z",
+    facts: [],
+    summary: `${type} ${name}`,
+    timeline: [],
+    relationships: [],
+    activity: [],
+    aliases: [],
+  };
 }
 
 // Issue #3530 review: equal scores must not fall back to corpus order. Two
