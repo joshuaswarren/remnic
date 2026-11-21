@@ -13,13 +13,20 @@
  * module. `raceAbort` and `attachFlightAbort` need no host (they operate on the
  * caller signal / flight object alone).
  */
-import { abortError, raceAbort, throwIfAborted } from "./abort-error.js";
+import { abortError, isAbortError, raceAbort, throwIfAborted } from "./abort-error.js";
 import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import {
+  EngramAccessDeadlineExceededError,
   EngramAccessInputError,
   type EngramAccessRecallRequest,
   type EngramAccessRecallResponse,
 } from "./access-service.js";
+import { clientDeadlineTimerMs, resolveClientDeadlineAtMs } from "./recall-qos.js";
+import {
+  composeMissingMemoryContext,
+  composeRecallContext,
+} from "./recall-context-composition.js";
+import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
 import {
   type BudgetDecision,
   type BudgetReservation,
@@ -96,7 +103,12 @@ export interface RecallCoordinatorHost {
   readonly recallSemaphores: Map<string, PrincipalSemaphore>;
   readonly recallInFlight: Map<string, RecallFlight>;
   readonly budget: Pick<CrossNamespaceBudget, "record" | "release">;
-  readonly orchestrator: { readonly config: { readonly recallMaxConcurrentPerPrincipal: number } };
+  readonly orchestrator: {
+    readonly config: {
+      readonly recallMaxConcurrentPerPrincipal: number;
+      readonly defaultNamespace: string;
+    };
+  };
   executeRecall(request: EngramAccessRecallRequest): Promise<RecallExecResult>;
   handleIdempotentRead<T>(options: {
     operation: string;
@@ -121,8 +133,17 @@ function acquireRecallSlot(
   key: string,
   limit: number,
   signal?: AbortSignal,
+  deadlineAtMs?: number | null,
 ): Promise<{ release: () => void; waitedMs: number }> {
   const cap = Number.isFinite(limit) && limit > 0 ? limit : Infinity;
+  // A deadline already past fails as a timeout, not a cancellation — checked
+  // before any semaphore state is inserted so an expired request cannot leave
+  // an idle entry behind (issue #3514 review).
+  if (deadlineAtMs != null && deadlineAtMs <= Date.now()) {
+    return Promise.reject(
+      new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+    );
+  }
   const sem = host.recallSemaphores.get(key) ?? { active: 0, waiters: [] };
   host.recallSemaphores.set(key, sem);
   const release = () => {
@@ -146,18 +167,33 @@ function acquireRecallSlot(
   // Contended — measure the real time spent blocked for a slot.
   const startedWaiting = Date.now();
   return new Promise<{ release: () => void; waitedMs: number }>((resolve, reject) => {
+    let deadlineHandle: NodeJS.Timeout | null = null;
+    const removeWaiter = () => {
+      const i = sem.waiters.indexOf(waiter);
+      if (i >= 0) sem.waiters.splice(i, 1);
+      if (deadlineHandle) clearTimeout(deadlineHandle);
+      if (sem.active === 0 && sem.waiters.length === 0) {
+        host.recallSemaphores.delete(key);
+      }
+    };
     const waiter = {
       take: () => {
+        if (deadlineHandle) clearTimeout(deadlineHandle);
         signal?.removeEventListener("abort", waiter.drop);
         resolve({ release, waitedMs: Date.now() - startedWaiting });
       },
       drop: () => {
-        const i = sem.waiters.indexOf(waiter);
-        if (i >= 0) sem.waiters.splice(i, 1);
-        if (sem.active === 0 && sem.waiters.length === 0) {
-          host.recallSemaphores.delete(key);
-        }
+        removeWaiter();
         reject(abortError("operation aborted"));
+      },
+      // A client deadline expiring mid-queue degrades as a timeout, not
+      // caller cancellation (#3514 review).
+      expire: () => {
+        removeWaiter();
+        signal?.removeEventListener("abort", waiter.drop);
+        reject(
+          new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+        );
       },
     };
     if (signal?.aborted) {
@@ -165,6 +201,9 @@ function acquireRecallSlot(
       return;
     }
     signal?.addEventListener("abort", waiter.drop, { once: true });
+    if (deadlineAtMs != null) {
+      deadlineHandle = setTimeout(waiter.expire, clientDeadlineTimerMs(deadlineAtMs, startedWaiting));
+    }
     sem.waiters.push(waiter);
   });
 }
@@ -182,11 +221,12 @@ export async function withRecallConcurrency<T>(
   principal: string,
   signal: AbortSignal | undefined,
   fn: (queueWaitMs: number) => Promise<T>,
+  deadlineAtMs?: number | null,
 ): Promise<T> {
   const key = principal || "__anonymous__";
   const limit = host.orchestrator.config.recallMaxConcurrentPerPrincipal;
   throwIfAborted(signal);
-  const { release, waitedMs } = await acquireRecallSlot(host, key, limit, signal);
+  const { release, waitedMs } = await acquireRecallSlot(host, key, limit, signal, deadlineAtMs);
   try {
     // The signal may have fired while queued: `take()` already removed the
     // abort listener when granting this slot, so re-check before entering `fn`.
@@ -246,8 +286,15 @@ function attachFlightAbort(
     if (cancelOnAbort && signal) signal.removeEventListener("abort", onAbort);
     // Unregister only once the LAST consumer finishes, so a joiner arriving
     // while a consumer is still settling (slow put / hooked consume) still
-    // coalesces onto the shared result (round 6 #1).
-    if (flight.live === 0) flight.onIdle?.();
+    // coalesces onto the shared result (round 6 #1). The last consumer out
+    // cancels the flight for ANY leave reason — settle, abort, or a
+    // deadline-fired detach — with the same committed-keyed persistence guard
+    // as the abort path: a shared pipeline nobody still consumes must not keep
+    // a concurrency slot queued (#3514 review).
+    if (flight.live === 0) {
+      if (!flight.persisted || !flight.committed) flight.controller.abort();
+      flight.onIdle?.();
+    }
   };
 }
 
@@ -265,6 +312,54 @@ function attachFlightAbort(
  *  entry. If the caller leaves before observing the result, the pipeline
  *  reservation it owns is released once the flight resolves so a cancelled
  *  recall never leaks quota (round 5 #2). */
+
+/** Bound one consumer's flight wait by its OWN absolute deadline (#3514
+ *  review). The shared pipeline belongs to every live consumer, so a firing
+ *  deadline rejects ONLY this caller — detach drops the live refcount and the
+ *  flight continues (or cancels at the last consumer via the flight
+ *  controller, never because one consumer's deadline fired while others
+ *  remain). A non-racing caller (committed keyed leader or keyed join) keeps
+ *  awaiting once the flight is `committed`: its deadline abandons only a
+ *  still-queued wait — the persistence contract outranks its own deadline
+ *  mid-execution. */
+function consumeWithinDeadline(
+  flight: RecallFlight,
+  request: EngramAccessRecallRequest,
+  race: boolean,
+): Promise<RecallExecResult> {
+  const deadlineAtMs = resolveClientDeadlineAtMs(request.deadlineMs, Date.now());
+  // Validate expiry BEFORE creating the abort race: a `settle` built then
+  // discarded by this early return keeps its abort listener armed, and a later
+  // caller abort would reject it unhandled (#3514 review).
+  if (deadlineAtMs !== null && deadlineAtMs <= Date.now()) {
+    return Promise.reject(
+      new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+    );
+  }
+  const settle = race
+    ? raceAbort(flight.promise, request.abortSignal)
+    : flight.promise;
+  if (deadlineAtMs === null) return settle;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (!race && flight.committed) return;
+      reject(
+        new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
+      );
+    }, clientDeadlineTimerMs(deadlineAtMs, Date.now()));
+    settle.then(
+      (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 export async function consumeFlight(
   host: RecallCoordinatorHost,
   flight: RecallFlight,
@@ -277,9 +372,7 @@ export async function consumeFlight(
   try {
     let result: RecallExecResult;
     try {
-      result = race
-        ? await raceAbort(flight.promise, request.abortSignal)
-        : await flight.promise;
+      result = await consumeWithinDeadline(flight, request, race);
     } catch (err) {
       // This caller left before observing the result. If it OWNS the
       // pipeline's reservation (recordBudget=false) and the flight still
@@ -502,6 +595,11 @@ export function createAndStartFlight(
     ...(persisted ? { persisted } : {}),
   };
   host.recallInFlight.set(flightKey, flight);
+  // The flight's own controller — not the leader's deadline — bounds the
+  // queued slot wait (#3514 review): each consumer's deadline detaches ONLY
+  // that consumer (consumeFlight), and the LAST consumer out aborts the
+  // controller, so queued shared work stays eligible while any live consumer
+  // still has budget instead of expiring on the leader's deadline alone.
   withRecallConcurrency(host, principalKey, controller.signal, async (queueWaitMs) => {
     // A slot was granted and the abort re-check in withRecallConcurrency passed
     // — the pipeline is now committing to execution. Past this point a keyed
@@ -570,7 +668,7 @@ export async function leadRecallFlight(
           // connected. Counting drops live to 0, and attachFlightAbort's
           // committed guard (!persisted || !committed) cancels the queued flight
           // while leaving a committed keyed flight to persist (round 15 #2).
-          const consumed = await consumeFlight(host, existing, request, true, race, true);
+          const consumed = await consumeFlight(host, existing, normalizedRequest, true, race, true);
           capturedReservation = consumed.reservation;
           // A KEYED follower that coalesced onto the leader's flight must
           // inherit the leader's persistence outcome before reporting success.
@@ -635,7 +733,7 @@ export async function leadRecallFlight(
         // not-yet-committed pipeline (attachFlightAbort's committed guard keeps
         // a post-commit keyed flight persisting, and any additional live caller
         // keeps live > 0 so the shared flight survives) (round 14 #3).
-        const consumed = await consumeFlight(host, flight, request, false, race, true);
+        const consumed = await consumeFlight(host, flight, normalizedRequest, false, race, true);
         capturedReservation = consumed.reservation;
         return consumed.response;
       },
@@ -651,7 +749,17 @@ export async function leadRecallFlight(
     // flight's `persisted` gate) that persistence failed so they behave
     // identically to this leader (release + reject) — no phantom success
     // (round 7 #1; keyed followers moved to the existing-join in round 12 #1).
-    ownedFlight?.persisted?.reject(err);
+    // A CALLER-LOCAL wait failure (this leader's own deadline or abort) means
+    // the leader's put never ran — resolve the gate instead so a follower
+    // proceeds on its OWN persistence outcome instead of inheriting the
+    // leader's deadline while the shared flight still completes for it
+    // (#3514 review). The gate must still settle either way: `persisted`
+    // keeps the flight discoverable until it does (round 12 #2).
+    if (isAbortError(err) || err instanceof EngramAccessDeadlineExceededError) {
+      ownedFlight?.persisted?.resolve();
+    } else {
+      ownedFlight?.persisted?.reject(err);
+    }
     throw err;
   }
   // Leader persisted successfully — resolve the gate so keyed followers
@@ -672,6 +780,41 @@ export async function leadRecallFlight(
   return response;
 }
 
+/** The degraded response for a recall whose deadline expired at admission,
+ *  while queued for a slot, or while consuming a shared flight (#3514
+ *  review): retrieval never started, so the result carries the missing-note
+ *  composition and a machine-readable `retrievalFailure` — never an empty
+ *  response indistinguishable from "no matches". */
+function degradedDeadlineRecallResponse(
+  host: RecallCoordinatorHost,
+  request: EngramAccessRecallRequest,
+): EngramAccessRecallResponse {
+  if (
+    request.disclosure !== undefined &&
+    request.disclosure !== null &&
+    !isRecallDisclosure(request.disclosure)
+  ) {
+    throw new EngramAccessInputError(
+      `disclosure must be one of: chunk, section, raw (got: ${String(request.disclosure)})`,
+    );
+  }
+  const composition = composeMissingMemoryContext({ detail: "timeout" });
+  return {
+    query: request.query,
+    sessionKey: request.sessionKey,
+    namespace: request.namespace?.trim() || host.orchestrator.config.defaultNamespace,
+    context: composeRecallContext(composition),
+    contextComposition: composition,
+    retrievalFailure: { reason: "backend_unavailable", detail: "timeout" },
+    count: 0,
+    memoryIds: [],
+    results: [],
+    fallbackUsed: false,
+    sourcesUsed: [],
+    disclosure: request.disclosure ?? DEFAULT_RECALL_DISCLOSURE,
+  };
+}
+
 /**
  * Top-level recall coordination (issue #1906): dispatch a validated recall to
  * either the non-coalesced per-request path (single-flight disabled) or the
@@ -679,22 +822,26 @@ export async function leadRecallFlight(
  * the caller through the shared access-setup capability projection so the
  * config flag is read only in capabilities.ts (#1523 scattered-gate ratchet).
  */
-export function coordinateRecall(
+export async function coordinateRecall(
   host: RecallCoordinatorHost,
   request: EngramAccessRecallRequest,
   normalizedRequest: EngramAccessRecallRequest,
-  requestFingerprint: Omit<EngramAccessRecallRequest, "abortSignal">,
+  requestFingerprint: Omit<EngramAccessRecallRequest, "abortSignal" | "deadlineMs">,
   principalKey: string,
   singleFlight: boolean,
 ): Promise<EngramAccessRecallResponse> {
+  try {
   if (!singleFlight) {
-    // No coalescing: per-request execution under a concurrency slot.
-    return withRecallConcurrency(
+    // No coalescing: per-request execution under a concurrency slot. The
+    // resolved absolute deadline also bounds the queue wait itself (#3514
+    // review) so a saturated semaphore cannot hold a recall past expiry.
+    return await withRecallConcurrency(
       host,
       principalKey,
       request.abortSignal,
       (queueWaitMs) =>
         runRecallDirect(host, request, normalizedRequest, requestFingerprint, queueWaitMs),
+      resolveClientDeadlineAtMs(normalizedRequest.deadlineMs, Date.now()),
     );
   }
 
@@ -734,11 +881,11 @@ export function coordinateRecall(
     // Reject at admission; the existing flight continues for its other live
     // consumers (round 10 #1).
     throwIfAborted(request.abortSignal);
-    return followRecallFlight(host, existing, request);
+    return await followRecallFlight(host, existing, normalizedRequest);
   }
   // We are the leader: leadRecallFlight registers the flight synchronously in
   // this same turn, then acquires a slot to run the one shared pipeline.
-  return leadRecallFlight(
+  return await leadRecallFlight(
     host,
     request,
     normalizedRequest,
@@ -746,4 +893,14 @@ export function coordinateRecall(
     flightKey,
     principalKey,
   );
+  } catch (err) {
+    // A deadline expiry at admission, in the queue, or on a shared-flight wait
+    // becomes the degraded recall response rather than a rejection (#3514
+    // review): caller cancellation stays an AbortError rejection, and every
+    // other failure propagates unchanged.
+    if (err instanceof EngramAccessDeadlineExceededError) {
+      return degradedDeadlineRecallResponse(host, normalizedRequest);
+    }
+    throw err;
+  }
 }

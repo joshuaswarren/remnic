@@ -4,6 +4,7 @@
  * (#1520/#1995). Verbatim move of `AccessRecallSurface.assembleRecallResponse`
  * as a free function taking the surface's dependency bundle; behavior unchanged.
  */
+import { createHash } from "node:crypto";
 import type { AccessAuditResult } from "./access-audit.js";
 import type { AccessRecallSurfaceDeps } from "./access-recall-surface.js";
 import {
@@ -14,6 +15,7 @@ import {
 import { type BudgetDecision, toBudgetWarning } from "./cross-namespace-budget.js";
 import { decideDisclosureEscalation } from "./recall-disclosure-escalation.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
+import { resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { displaySafeRecallSnapshot } from "./orchestration/recall-result-formatter.js";
 import {
@@ -69,9 +71,18 @@ export async function assembleRecallResponse(
     budgetDecision,
     budgetRecordPrincipal,
   } = params;
-  const snapshot = request.sessionKey
+  // Only a snapshot recorded for THIS request may shape the response: a
+  // timed-out recall that never reached record() must not serve the
+  // previous query's results on the same session (issue #3499 review).
+  const storedSnapshot = request.sessionKey
     ? deps.orchestrator.lastRecall.get(request.sessionKey)
     : null;
+  const snapshot =
+    storedSnapshot &&
+    storedSnapshot.queryHash === createHash("sha256").update(query).digest("hex") &&
+    Date.parse(storedSnapshot.recordedAt) >= startedAt
+      ? storedSnapshot
+      : null;
   const effectiveNamespace = snapshot?.namespace
     ? deps.resolveNamespace(snapshot.namespace)
     : namespace;
@@ -222,7 +233,19 @@ export async function assembleRecallResponse(
     // than the orchestrator's native context, but a strict subset
     // safe to inject.
     const admittedIds = new Set(results.map((r) => r.id));
-    const droppedAny = beforeIds.some((id) => !admittedIds.has(id));
+    // A rejected/absent snapshot serializes to zero results, so `beforeIds` is
+    // empty and nothing in `context` is tag-verified — a nonempty tag filter
+    // must still suppress that unverified memory text (#3514 review). The one
+    // exception is a locked secure store: its early-return context is a
+    // non-memory diagnostic (the unlock instructions), not recall text, so it
+    // survives the filter (#3514 review).
+    const secureStoreLocked =
+      snapshot === null &&
+      resolveRecallAuxiliaryCapabilities(deps.orchestrator.config).secureStore &&
+      !deps.orchestrator.storage.isSecureStoreUnlocked();
+    const droppedAny =
+      beforeIds.some((id) => !admittedIds.has(id)) ||
+      (snapshot === null && !secureStoreLocked && effectiveComposition.context.trim().length > 0);
     if (droppedAny) {
       const priorDegradation = effectiveComposition.degradation;
       const filteredContext = results

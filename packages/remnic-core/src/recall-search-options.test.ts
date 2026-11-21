@@ -62,3 +62,15 @@ test("buildConfiguredQmdSearchOptions threads recall searchOptions override", ()
   const none = orchestrator.buildConfiguredQmdSearchOptions("fleet status");
   assert.equal(none, undefined);
 });
+test("recallRequestSchema accepts an optional client deadlineMs (#3499)", () => {
+  // Small values read as a relative budget, epoch-sized values as an
+  // absolute timestamp — the force-flush convention (issue #3140).
+  const rel = recallRequestSchema.safeParse({ query: "q", deadlineMs: 60_000 });
+  assert.equal(rel.success, true);
+  assert.equal(rel.success && rel.data.deadlineMs, 60_000);
+  const abs = recallRequestSchema.safeParse({ query: "q", deadlineMs: Date.now() + 60_000 });
+  assert.equal(abs.success, true);
+  const bad = recallRequestSchema.safeParse({ query: "q", deadlineMs: -5 });
+  assert.equal(bad.success, false, "negative deadline is rejected");
+});
+

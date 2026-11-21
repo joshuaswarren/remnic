@@ -36,6 +36,7 @@ import { buildAccessWriteRequestFingerprint, buildObserveRequestFingerprint } fr
 import { UNATTRIBUTED_ACCESS_WRITE_ORIGIN } from "./shared-context/envelope-io.js";
 import { isSharedContextWriteInputError } from "./shared-context/write-output-controls.js";
 import { daySummaryAutoOptions, type LocationContextRequestOptions } from "./location/tagging.js";
+import { resolveClientDeadlineAtMs } from "./recall-qos.js";
 export type { EngramAccessHealthResponse, EngramAccessQmdCollectionState, EngramAccessQmdHealthResponse };
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import {
@@ -352,7 +353,7 @@ import { DEFAULT_RECALL_DISCLOSURE, isRecallDisclosure } from "./types.js";
 import { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
 // Re-exported so existing `import { … } from "./access-service.js"` callers keep
 // working after these classes moved to ./access-errors (issue #1888).
-export { EngramAccessInputError, NamespaceNotWritableError } from "./access-errors.js";
+export { EngramAccessInputError, NamespaceNotWritableError, EngramAccessDeadlineExceededError } from "./access-errors.js";
 
 export type AccessProfilingReportRequest = {
   format?: string;
@@ -2632,8 +2633,16 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     if (query.length === 0) {
       throw new EngramAccessInputError("query is required");
     }
+    // Resolve the client deadline to an absolute timestamp ONCE, before
+    // concurrency admission (issue #3499/#3514 review): the queue wait then
+    // observes the same expiry the pipeline enforces, and a relative budget
+    // cannot restart after admission via the surface's recallOptions copy.
+    const deadlineAtMs = resolveClientDeadlineAtMs(request.deadlineMs, Date.now());
     const normalizedRequest = { ...request, query };
-    const { abortSignal: _abortSignal, ...requestFingerprint } = normalizedRequest;
+    if (deadlineAtMs !== null) normalizedRequest.deadlineMs = deadlineAtMs;
+    // `deadlineMs` is per-call QoS, not work identity: two identical recalls
+    // carrying different client deadlines must still coalesce (#3514 review).
+    const { abortSignal: _abortSignal, deadlineMs: _deadlineMs, ...requestFingerprint } = normalizedRequest;
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {

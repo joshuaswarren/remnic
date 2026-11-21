@@ -10,6 +10,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 import { EngramAccessService } from "../packages/remnic-core/src/access-service.js";
 import {
@@ -45,8 +46,10 @@ function buildService(memories: FakeMemory[]) {
   const memoriesByPath = new Map(memories.map((m) => [m.path, m]));
   const snapshot = {
     sessionKey: "session-1",
-    recordedAt: "2026-04-25T00:00:00Z",
-    queryHash: "qh",
+    // Reads as recorded inside this request (the response path gates on
+    // recordedAt >= request start + the request query's hash — #3499).
+    recordedAt: new Date(Date.now() + 60_000).toISOString(),
+    queryHash: createHash("sha256").update("test").digest("hex"),
     queryLen: 10,
     memoryIds: memories.map((m) => m.id),
     namespace: "global",

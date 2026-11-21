@@ -263,6 +263,16 @@ export interface RecallInvocationOptions {
    * absent, so existing timing consumers are unaffected.
    */
   queueWaitMs?: number;
+  /**
+   * Client's own deadline for this recall (issue #3499).  Epoch-sized
+   * values are absolute; smaller values read as a budget from now — the
+   * force-flush convention (issue #3140).  Caps the request's outer
+   * deadline at `min(configured, client)` so a client whose own budget is
+   * tighter than `recallOuterTimeoutMs` gets a degraded recall inside what
+   * remains instead of an answer it can no longer use.  Never a rejection:
+   * an already-passed deadline behaves like a 0-remaining budget.
+   */
+  deadlineMs?: number;
   onContextComposition?: (composition: RecallContextComposition) => void | PromiseLike<void>;
 }
 
