@@ -1,4 +1,4 @@
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities, resolveQmdCapabilities } from "../capabilities.js";
 import path from "node:path";
 import { realpathSync } from "node:fs";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
@@ -355,7 +355,7 @@ export class NamespaceSearchRouter {
     const cached = this.healthResultCache.get(key);
     if (operational === undefined && this.cache.get(key) === pending &&
       cached && cached.expiresAt > Date.now() &&
-      !execution?.signal?.aborted && this.config.qmdEnabled !== false) {
+      !execution?.signal?.aborted && resolveQmdCapabilities(this.config).qmd !== false) {
       return { ...cached.value };
     }
 
@@ -454,14 +454,14 @@ export class NamespaceSearchRouter {
   ): Promise<(() => NamespaceSearchHealth) | null | undefined> {
     const pending = this.cache.get(key);
     if (!pending) return undefined;
-    if (execution?.signal?.aborted || this.config.qmdEnabled === false) return null;
+    if (execution?.signal?.aborted || resolveQmdCapabilities(this.config).qmd === false) return null;
     const record = await awaitWithAbort(pending, execution?.signal).catch(() => null);
     if (!record) return null;
     const backend = record.backend;
     const daemonMode = daemonModeForBackend(backend);
     const operationalIdentity = backend.operationalHealthIdentity?.();
     const current = () => !execution?.signal?.aborted && this.cache.get(key) === pending &&
-      !record.disposed && this.config.qmdEnabled !== false && record.backend === backend &&
+      !record.disposed && resolveQmdCapabilities(this.config).qmd !== false && record.backend === backend &&
       record.available && backend.isAvailable() && daemonModeForBackend(backend) === daemonMode &&
       backend.operationalHealthIdentity?.() === operationalIdentity;
     const refused = () => this.describeHealth(
