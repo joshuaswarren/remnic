@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -9,8 +9,9 @@ import { EngramAccessInputError } from "./access-errors.js";
 import { defaultCapsulesDir } from "./capsule-cli.js";
 import { isCapsuleImportArchiveInputError, validateCapsuleImportArchive } from "./capsule-import-gate.js";
 
-async function storeFixture(): Promise<{ storageDir: string; archivePath: string }> {
+async function storeFixture(t: test.TestContext): Promise<{ storageDir: string; archivePath: string }> {
   const storageDir = await mkdtemp(path.join(tmpdir(), "remnic-gate-"));
+  t.after(() => rm(storageDir, { recursive: true, force: true }));
   const storeDir = defaultCapsulesDir(storageDir);
   await mkdir(storeDir, { recursive: true });
   const archivePath = path.join(storeDir, "capsule.tgz");
@@ -18,13 +19,13 @@ async function storeFixture(): Promise<{ storageDir: string; archivePath: string
   return { storageDir, archivePath };
 }
 
-test("capsule import gate: an archive inside the capsule store validates", async () => {
-  const { storageDir, archivePath } = await storeFixture();
+test("capsule import gate: an archive inside the capsule store validates", async (t) => {
+  const { storageDir, archivePath } = await storeFixture(t);
   await assert.doesNotReject(validateCapsuleImportArchive(archivePath, storageDir));
 });
 
-test("capsule import gate: an archive outside the store is refused with the shared message", async () => {
-  const { storageDir } = await storeFixture();
+test("capsule import gate: an archive outside the store is refused with the shared message", async (t) => {
+  const { storageDir } = await storeFixture(t);
   const outside = path.join(storageDir, "outside.tgz");
   await writeFile(outside, "bytes");
 
@@ -36,8 +37,8 @@ test("capsule import gate: an archive outside the store is refused with the shar
   );
 });
 
-test("capsule import gate: a missing path is refused without revealing it is missing", async () => {
-  const { storageDir } = await storeFixture();
+test("capsule import gate: a missing path is refused without revealing it is missing", async (t) => {
+  const { storageDir } = await storeFixture(t);
   const missing = path.join(defaultCapsulesDir(storageDir), "never.tgz");
 
   await assert.rejects(
@@ -46,8 +47,8 @@ test("capsule import gate: a missing path is refused without revealing it is mis
   );
 });
 
-test("capsule import gate: .. traversal out of the store is refused", async () => {
-  const { storageDir, archivePath } = await storeFixture();
+test("capsule import gate: .. traversal out of the store is refused", async (t) => {
+  const { storageDir, archivePath } = await storeFixture(t);
   const traversed = path.join(defaultCapsulesDir(storageDir), "..", "outside-store.tgz");
   await writeFile(path.resolve(traversed), "bytes");
 
@@ -59,8 +60,8 @@ test("capsule import gate: .. traversal out of the store is refused", async () =
   await assert.doesNotReject(validateCapsuleImportArchive(archivePath, storageDir));
 });
 
-test("capsule import gate: a directory inside the store is refused as not-a-file", async () => {
-  const { storageDir } = await storeFixture();
+test("capsule import gate: a directory inside the store is refused as not-a-file", async (t) => {
+  const { storageDir } = await storeFixture(t);
   await mkdir(path.join(defaultCapsulesDir(storageDir), "a-dir"), { recursive: true });
 
   await assert.rejects(
@@ -69,8 +70,9 @@ test("capsule import gate: a directory inside the store is refused as not-a-file
   );
 });
 
-test("capsule import gate: a missing capsule store is refused like any other path", async () => {
+test("capsule import gate: a missing capsule store is refused like any other path", async (t) => {
   const storageDir = await mkdtemp(path.join(tmpdir(), "remnic-gate-nostore-"));
+  t.after(() => rm(storageDir, { recursive: true, force: true }));
   const archivePath = path.join(storageDir, "whatever.tgz");
 
   await assert.rejects(
