@@ -70,10 +70,10 @@ test("deferredInitialize resolves without the corpus update and leaves the retry
   const deps = asDeps(orchestrator);
   try {
     deps.qmd = blockingUpdateQmd(updateCalls);
-    deps.namespaceSearchRouter.updateNamespaces = async () => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await new Promise<void>(() => {});
-      return 0;
+      return { backendCount: 0, eligibleNamespaces: [] };
     };
     stubWarmupDeps(deps);
 
@@ -108,10 +108,10 @@ test("startupSearchReadySync probes and ensures collections without running the 
       ensured.push(ns);
       return "present";
     };
-    deps.namespaceSearchRouter.updateNamespaces = async () => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await new Promise<void>(() => {});
-      return 0;
+      return { backendCount: 0, eligibleNamespaces: [] };
     };
 
     const ready = await Promise.race([
@@ -163,9 +163,9 @@ test("startupSearchSync still runs the corpus update over the catalog union for 
     ];
     deps.namespaceSearchRouter.clearCache = () => undefined;
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updates.push([...ns]);
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const synced = await orchestrator.startupSearchSync(new AbortController().signal);
@@ -212,10 +212,10 @@ test("startupSearchReadySync joins an in-flight full sync's backend phase and re
       await ensureGate.promise;
       return "present";
     };
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await updateGate.promise;
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const signal = new AbortController().signal;
@@ -287,9 +287,9 @@ test("an unknown collection state keeps the readiness and full syncs unready (wA
     // startup syncs must not claim readiness off an unverified ensure. A
     // zero-result healthy warm-up on top must not open the gate as warmed.
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "unknown";
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const signal = new AbortController().signal;
@@ -500,6 +500,129 @@ test("an aborted caller settles instead of waiting on the shared run", async () 
     );
   } finally {
     ensureGate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+/** The qmd stub the shared-sync tests need: update blocks on a gate so the
+ *  in-flight window is observable, and the fail/run timestamps satisfy the
+ *  post-update verification once the gate resolves. */
+function gatedUpdateQmd(gate: Promise<void>) {
+  return {
+    probe: async () => true,
+    debugStatus: () => "synthetic-qmd",
+    isAvailable: () => true,
+    search: async () => [],
+    async update() {
+      await gate;
+    },
+    lastUpdateRanAtMs: 1,
+    lastUpdateFailedAtMs: null,
+  };
+}
+
+function stubSharedSyncDeps(orchestrator: Orchestrator, gate: Promise<void>, onUpdate?: () => void) {
+  const deps = asDeps(orchestrator);
+  deps.qmd = gatedUpdateQmd(gate);
+  deps.namespaceSearchRouter.clearCache = () => undefined;
+  deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
+  // The test config is namespace-enabled: the corpus update runs through the
+  // namespace router, not the single-collection `qmd.update`.
+  deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
+    onUpdate?.();
+    await gate;
+    return { backendCount: 1, eligibleNamespaces: [...ns] };
+  };
+  return deps;
+}
+
+test("a joining caller's own abort settles its wait without cancelling the shared sync", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const gate = Promise.withResolvers<void>();
+  let updateStarted = false;
+  const deps = stubSharedSyncDeps(orchestrator, gate.promise, () => {
+    updateStarted = true;
+  });
+  try {
+    const firstController = new AbortController();
+    const first = orchestrator.startupSearchSync(firstController.signal);
+    for (let i = 0; i < 200 && !updateStarted; i += 1) await sleep(5);
+    assert.ok(updateStarted, "the shared run reached the corpus update");
+
+    // The joiner shares the flight but keeps its own signal: aborting it must
+    // settle promptly as not-synced — never park on the whole `qmd update`.
+    const joinerController = new AbortController();
+    const joiner = orchestrator.joinStartupSearchSync(joinerController.signal);
+    joinerController.abort();
+    assert.equal(
+      await Promise.race([joiner, sleep(2_000).then(() => "hung" as const)]),
+      false,
+      "the aborted joiner settles without waiting for the shared update",
+    );
+
+    // The flight survives the joiner's abort: the first caller still gets the
+    // update's result when it finishes.
+    gate.resolve();
+    assert.equal(await first, true, "the initiating caller resolves with the finished sync");
+  } finally {
+    gate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("the initiating caller's abort does not cancel the shared sync for live joiners", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const gate = Promise.withResolvers<void>();
+  let updateStarted = false;
+  const deps = stubSharedSyncDeps(orchestrator, gate.promise, () => {
+    updateStarted = true;
+  });
+  try {
+    const firstController = new AbortController();
+    const first = orchestrator.startupSearchSync(firstController.signal);
+    for (let i = 0; i < 200 && !updateStarted; i += 1) await sleep(5);
+    assert.ok(updateStarted, "the shared run reached the corpus update");
+
+    const joiner = orchestrator.joinStartupSearchSync(new AbortController().signal);
+    firstController.abort();
+    assert.equal(
+      await Promise.race([first, sleep(2_000).then(() => "hung" as const)]),
+      false,
+      "the aborted initiator settles as not-synced",
+    );
+
+    // One live caller keeps the flight: its update result must be the shared
+    // run's, not the retired initiator's false.
+    gate.resolve();
+    assert.equal(await joiner, true, "the joiner resolves with the finished sync, not the initiator's abort");
+    assert.equal(
+      deps.deferredSyncSucceeded,
+      true,
+      "a completed shared run publishes sync success for this epoch",
+    );
+  } finally {
+    gate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a direct startupSearchSync success publishes deferredSyncSucceeded for the epoch", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const deps = stubSharedSyncDeps(orchestrator, Promise.resolve());
+  try {
+    assert.equal(deps.deferredSyncSucceeded, false, "the epoch still owes a sync");
+    assert.equal(await orchestrator.startupSearchSync(new AbortController().signal), true);
+    // The post-ready fire and a server retry can arrive after this call: the
+    // completed run must already have published, so neither runs a redundant
+    // `qmd update`.
+    assert.equal(deps.deferredSyncSucceeded, true, "the completed sync marks the epoch synced");
+  } finally {
     await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true });
   }

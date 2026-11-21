@@ -185,6 +185,7 @@ import {
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { initCliLogger } from "./cli-logger.js";
+import { joinStartupSyncOrWarn } from "./startup-sync-join.js";
 import { BUFFER_DRAIN_USAGE, runBufferDrain } from "./buffer-drain-cmd.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
@@ -5056,13 +5057,15 @@ async function cmdXray(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  // Freshness-dependent: join the shared post-ready startup sync so the
+  // recall lands after the corpus update instead of reading a stale index
+  // and aborting the update in flight (#3525).
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
 
   try {
     await runXrayCommand(rest, xrayCliIo((request) => service.recallXray(request)));
   } finally {
-    // Xray is diagnostic, so it waits for deferred startup sync before recall;
-    // abort remains a no-op guard if startup behavior changes later.
     orchestrator.abortDeferredInit();
   }
 }
@@ -5179,6 +5182,7 @@ async function cmdWhy(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
   try {
     await runWhyCommand(rest, whyCliIo((request) => service.recallWhy(request)));
@@ -5225,6 +5229,8 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  // No startup-sync join here: who-knows and promotion-candidates read memories
+  // from storage, not the search index, so a join would only add latency (#3527).
   const service = new EngramAccessService(orchestrator);
   try {
     return await fn(service, orchestrator);
