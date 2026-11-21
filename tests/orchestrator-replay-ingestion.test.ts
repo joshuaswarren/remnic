@@ -24,7 +24,7 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
   );
   assert.match(
     source,
-    /for \(const sessionSlice of splitTurnsBySourceValidAt\(sessionTurns\)\) \{[\s\S]*bufferKey:\s*key,[\s\S]*targetValidAtMs:\s*targetSourceValidAtSortMs\(sessionSlice\),[\s\S]*\.sort\(\(a, b\) => \{[\s\S]*\.map\(\s*\(\{ bufferKey, turns: sessionSlice \}\) =>[\s\S]*skipDedupeCheck:\s*true,[\s\S]*clearBufferAfterExtraction:\s*false,[\s\S]*skipCharThreshold:\s*true,[\s\S]*skipUserTurnThreshold:\s*true,[\s\S]*bufferKey,/m,
+    /for \(const sessionSlice of splitTurnsBySourceValidAt\(sessionTurns\)\) \{[\s\S]*bufferKey:\s*key,[\s\S]*targetValidAtMs:\s*targetSourceValidAtSortMs\(sessionSlice\),[\s\S]*sortedSlices[\s\S]*for \(const \{ bufferKey, turns: sessionSlice \} of sortedSlices\) \{[\s\S]*skipDedupeCheck:\s*true,[\s\S]*clearBufferAfterExtraction:\s*false,[\s\S]*skipCharThreshold:\s*true,[\s\S]*skipUserTurnThreshold:\s*true,[\s\S]*bufferKey,/m,
     "replay ingestion should globally order source slices while preserving the session-specific buffer key and threshold bypasses",
   );
   // #1526 seam 25: module-level replay helpers moved to
@@ -40,8 +40,8 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
   );
   assert.match(
     source,
-    /const settled = await Promise\.allSettled\(replayTasks\);[\s\S]*firstRejected[\s\S]*throw firstRejected\.reason;/m,
-    "replay ingestion should drain all per-session tasks before surfacing a batch failure",
+    /for \(const \{ bufferKey, turns: sessionSlice \} of sortedSlices\) \{[\s\S]*await new Promise<void>\(\(resolve, reject\)[\s\S]*onTaskSettled: \(err\) => \(err \? reject\(err\) : resolve\(\)\),[\s\S]*\.catch\(reject\);/m,
+    "replay ingestion should settle each ordered slice before submitting the next so a batch failure surfaces in order",
   );
 });
 
