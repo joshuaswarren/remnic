@@ -130,3 +130,12 @@ test("isRequestTooLargeError matches size rejections only", () => {
   assert.equal(isRequestTooLargeError(new FakeBadRequestError(429, "rate limit exceeded")), false);
   assert.equal(isRequestTooLargeError(new Error("input too large")), false);
 });
+
+test("isRequestTooLargeError needs an input subject for 'too large' and 'too long' (#3533)", () => {
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "temperature is too large")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "max_tokens is too large: 9000")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "top_k value is too large")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "stop sequence is too long")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "Request too large for model")), true);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "prompt is too long")), true);
+});

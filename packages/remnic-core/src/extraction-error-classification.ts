@@ -32,20 +32,21 @@ export function classifyExtractionThrownError(err: unknown): ExtractionFailureCl
   }
 }
 
-const REQUEST_TOO_LARGE_MESSAGE =
-  /too large|too long|maximum context|context length|context window|request entity/i;
-const REQUEST_TOO_LARGE_SIZE_TERM = /\b(?:input|size|payload|length|tokens?|context)\b/i;
+const CONTEXT_LIMIT_MESSAGE = /maximum context|context length|context window|request entity/i;
+const SIZE_LIMIT_PHRASE = /too large|too long|exceed/i;
+const INPUT_SUBJECT_TERM =
+  /\b(?:input|prompt|request|payload|body|messages?|content|context|size|length|tokens?)\b/i;
 const REQUEST_TOO_LARGE_EXCLUDE =
   /\b(?:max_tokens|max_completion_tokens|temperature|top_p|quota|rate limit|spending|billing)\b/i;
 
 /**
  * True when a provider refused the request because the input is too big: HTTP
  * 413, or HTTP 400 whose message names a size or context limit (OpenAI-style
- * "maximum context length", "total text input size exceeds 8 MB"). A bare
- * "exceed" counts only beside an input/size term and never beside an output,
- * quota or sampling term (`max_tokens exceeds limit`, `quota exceeded` are
- * different failures). Resending the same atomic request can never succeed
- * (#3531). Never throws.
+ * "maximum context length", "total text input size exceeds 8 MB"). "too large",
+ * "too long" and "exceed" count only beside an input subject and never beside
+ * an output, quota or sampling term (`max_tokens exceeds limit`,
+ * `temperature is too large`, `quota exceeded` are different failures).
+ * Resending the same atomic request can never succeed (#3531). Never throws.
  */
 
 /** An Error or SDK error object; the HTTP status is sniffed off it when present. */
@@ -60,9 +61,9 @@ export function isRequestTooLargeError(err: HttpThrowable): boolean {
     if (status === 413) return true;
     if (status !== 400 || !(err instanceof Error)) return false;
     const message = err.message;
-    if (REQUEST_TOO_LARGE_MESSAGE.test(message)) return true;
+    if (CONTEXT_LIMIT_MESSAGE.test(message)) return true;
     if (REQUEST_TOO_LARGE_EXCLUDE.test(message)) return false;
-    return /exceed/i.test(message) && REQUEST_TOO_LARGE_SIZE_TERM.test(message);
+    return SIZE_LIMIT_PHRASE.test(message) && INPUT_SUBJECT_TERM.test(message);
   } catch {
     return false;
   }
