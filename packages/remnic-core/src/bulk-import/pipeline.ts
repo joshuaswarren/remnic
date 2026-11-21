@@ -36,6 +36,20 @@ export type ProcessBatchFn = (
   context: ProcessBatchContext,
 ) => Promise<ProcessBatchResult>;
 
+/**
+ * Batch processor backed by an ingest call that reports what it persisted.
+ * `memoriesCreated` is the batch's own `persistedCount`, so concurrent
+ * extractions writing to the same memory root cannot inflate it (issue #3554).
+ */
+export function processBatchFromIngest(
+  ingest: (turns: ImportTurn[]) => Promise<{ persistedCount: number }>,
+): ProcessBatchFn {
+  return async (turns) => {
+    const { persistedCount } = await ingest(turns);
+    return { memoriesCreated: persistedCount, duplicatesSkipped: 0 };
+  };
+}
+
 export function validateBatchSize(value: number | undefined): number {
   if (value === undefined) return DEFAULT_BATCH_SIZE;
   if (typeof value !== "number" || !Number.isFinite(value)) {

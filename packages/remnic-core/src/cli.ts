@@ -52,6 +52,7 @@ import { isReplaySource, normalizeReplaySessionKey, type ReplaySource, type Repl
 import {
   getBulkImportSource,
   listBulkImportSources,
+  processBatchFromIngest,
   registerBulkImportSource,
   runBulkImportPipeline,
   type BulkImportResult,
@@ -3416,12 +3417,7 @@ async function walkMemoryMarkdownFiles(
 /**
  * List absolute paths of every `*.md` file under each recall category directory
  * of `memoryDir` (facts/, corrections/, decisions/, ...; see
- * `walkMemoryMarkdownFiles`). Used by the bulk-import CLI to derive a per-batch
- * `memoriesCreated` count via set-subtraction of "paths after extraction"
- * against "paths before extraction". Caveat: the extraction queue is shared
- * across sessions, so concurrent organic extractions between the two snapshots
- * can still inflate the count; the set diff at least ignores pre-existing and
- * deleted files. Exported for category-dir coverage tests (#1546).
+ * `walkMemoryMarkdownFiles`). Exported for category-dir coverage tests (#1546).
  */
 export async function listMemoryMarkdownFilePaths(memoryDir: string): Promise<string[]> {
   const paths: string[] = [];
@@ -5142,23 +5138,7 @@ export function registerCli(
             writeNamespace,
           );
           const writeRoot = writeStorage.dir;
-          const ingestBatch: ProcessBatchFn = async (turns) => {
-            // Filename-set diff correctly excludes files that already existed
-            // (vs. a naïve `after - before` integer subtraction, which would
-            // inflate when unrelated files are deleted mid-batch). Concurrent
-            // organic extractions against the same writeRoot can still inflate
-            // this count; the extraction engine does not expose a per-session
-            // hook for "files created by this run", so full isolation against
-            // concurrent writes is tracked as a follow-up.
-            const before = new Set(await listMemoryMarkdownFilePaths(writeRoot));
-            await orchestrator.ingestBulkImportBatch(turns, {});
-            const after = await listMemoryMarkdownFilePaths(writeRoot);
-            let memoriesCreated = 0;
-            for (const p of after) {
-              if (!before.has(p)) memoriesCreated += 1;
-            }
-            return { memoriesCreated, duplicatesSkipped: 0 };
-          };
+          const ingestBatch = processBatchFromIngest((turns) => orchestrator.ingestBulkImportBatch(turns, {}));
           try {
             const result = await runBulkImportCliCommand({
               memoryDir: writeRoot,
