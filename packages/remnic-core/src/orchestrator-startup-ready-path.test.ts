@@ -451,3 +451,56 @@ test("a caller abort does not cancel the shared backend ensure for joined caller
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("an aborted caller settles instead of waiting on the shared run", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const ensureGate = Promise.withResolvers<void>();
+  let firstEnsureSeen = false;
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      update: async () => {},
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async () => {
+      if (!firstEnsureSeen) {
+        firstEnsureSeen = true;
+        await ensureGate.promise;
+      }
+      return "present";
+    };
+
+    const firstController = new AbortController();
+    const first = orchestrator.startupSearchReadySync(firstController.signal);
+    for (let i = 0; i < 200 && !firstEnsureSeen; i += 1) await sleep(5);
+    assert.ok(firstEnsureSeen, "the shared run reached its ensure");
+
+    const second = orchestrator.startupSearchReadySync(new AbortController().signal);
+    firstController.abort();
+
+    // The aborted caller must not stay parked on the shared run: it settles
+    // now while the joiner's live participation keeps the run alive.
+    assert.equal(
+      await Promise.race([first, sleep(2_000).then(() => "hung" as const)]),
+      false,
+      "the aborted caller settles as not-ready without waiting on the held ensure",
+    );
+    ensureGate.resolve();
+    assert.equal(
+      await Promise.race([second, sleep(2_000).then(() => "hung" as const)]),
+      true,
+      "the joined caller still resolves with the shared run's verified result",
+    );
+  } finally {
+    ensureGate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

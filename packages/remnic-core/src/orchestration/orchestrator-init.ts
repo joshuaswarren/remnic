@@ -135,11 +135,9 @@ export class OrchestratorInitCoordinator {
     | undefined;
   private readonly startupStorageWrites = new Set<Promise<void>>();
   private readonly startupWarmups = new Set<Promise<void>>();
-  /** Default-namespace collection state from the initialize() check, kept
+  /** Default-namespace collection state from the initialize() check,
    *  epoch-scoped so a retired lifecycle's outcome cannot leak into the next. */
-  private startupDefaultCollection:
-    | { epoch: number; state: SearchCollectionState }
-    | undefined;
+  private startupDefaultCollection: { epoch: number; state: SearchCollectionState } | undefined;
 
   constructor(
     private readonly deps: OrchestratorInitDeps,
@@ -661,12 +659,10 @@ export class OrchestratorInitCoordinator {
     // commits rather than holding readiness for a full reindex.
     if (this.deps.qmd.isAvailable() && !resolveQmdCapabilities(this.deps.config).qmdMaintenance) {
       // Available backend with maintenance disabled — no corpus update is
-      // owed, but probe availability alone is not sync-done: the initialize()
-      // ensure may have answered "unknown", and claiming success here would
-      // let ensureSearchReady skip collection re-verification and open the
-      // readiness gate as warmed. Only a verified ensure — "present", or
-      // explicit "skipped" — disarms the retry loop; anything else leaves
-      // the flag false so startupSearchReadySync re-ensures.
+      // owed, but probe availability alone is not sync-done: an "unknown"
+      // ensure must not stamp success, or ensureSearchReady would skip
+      // collection re-verification. Only a verified ensure — "present" or
+      // explicit "skipped" — disarms the retry loop.
       const collection = this.startupDefaultCollection;
       if (
         collection?.epoch === epoch &&
@@ -1070,12 +1066,28 @@ export class OrchestratorInitCoordinator {
     flight.liveCallers += 1;
     if (signal) {
       const held = flight;
-      const onCallerAbort = () => {
-        held.liveCallers -= 1;
-        if (held.liveCallers <= 0) held.controller.abort();
-      };
-      signal.addEventListener("abort", onCallerAbort, { once: true });
-      flight.cleanup.push(() => signal.removeEventListener("abort", onCallerAbort));
+      // An aborted caller releases its slot and settles its own wait as
+      // "retired" — it must not stay parked on the shared run while live
+      // callers keep it going.
+      return new Promise<StartupBackendEnsure>((resolve, reject) => {
+        const onCallerAbort = () => {
+          held.liveCallers -= 1;
+          if (held.liveCallers <= 0) held.controller.abort();
+          resolve({ state: "retired" });
+        };
+        signal.addEventListener("abort", onCallerAbort, { once: true });
+        held.cleanup.push(() => signal.removeEventListener("abort", onCallerAbort));
+        held.promise.then(
+          (result) => {
+            signal.removeEventListener("abort", onCallerAbort);
+            resolve(result);
+          },
+          (err) => {
+            signal.removeEventListener("abort", onCallerAbort);
+            reject(err);
+          },
+        );
+      });
     }
     return flight.promise;
   }
