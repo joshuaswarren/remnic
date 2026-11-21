@@ -808,7 +808,7 @@ export class EntityStore {
         summary: e.synthesis ?? e.summary,
         topRelationships: e.relationships.slice(0, 3).map((r) => r.target),
       }));
-      scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+      scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name) || a.type.localeCompare(b.type));
       // Publish only when the shared revision held across the corpus read:
       // a peer write landing mid-scan must not pin a half-seen corpus under
       // a revision the next call already knows is stale. The secure-store key
