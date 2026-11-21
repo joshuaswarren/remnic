@@ -68,7 +68,7 @@ export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): 
   // A sync that actually runs supersedes any startup sync still queued behind
   // the probe: burn the epoch so that attach's check sees the mismatch and
   // skips instead of resolving and posting a stale cwd last.
-  if (typeof ctx.state.startupEpoch === "number" && ctx.state.startupEpoch < Number.MAX_SAFE_INTEGER) {
+  if (ctx.state.startupEpoch !== undefined && ctx.state.startupEpoch < Number.MAX_SAFE_INTEGER) {
     ctx.state.startupEpoch = Number.MAX_SAFE_INTEGER;
   }
   // Serialize per session (wAK review): a slower earlier sync must never post

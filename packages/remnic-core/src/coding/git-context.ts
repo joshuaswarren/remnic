@@ -116,7 +116,7 @@ export function defaultGitInvokerSync(): SyncGitInvoker {
     if (result.error) return { stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE };
     return {
       stdout: typeof result.stdout === "string" ? result.stdout : "",
-      stderr: typeof result.stderr === "string" ? result.stderr : "",
+      stderr: result.stderr ?? "",
       exitCode: typeof result.status === "number" ? result.status : 1,
     };
   };
@@ -177,7 +177,7 @@ export function defaultGitInvoker(): GitInvoker {
     });
     child.once("error", () => finish({ stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE }));
     child.once("close", (exitCode: number | null) => {
-      finish({ stdout, stderr, exitCode: typeof exitCode === "number" ? exitCode : 1 });
+      finish({ stdout, stderr, exitCode: exitCode ?? 1 });
     });
     options.abortSignal?.addEventListener("abort", onAbort, { once: true });
 

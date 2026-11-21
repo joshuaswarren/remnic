@@ -268,7 +268,7 @@ export class SessionContextCoordinator {
 
   /** The principal that claimed this session's coding context, if any. */
   getCodingContextOwnerForSession(sessionKey: string | undefined): string | undefined {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return undefined;
+    if (!sessionKey) return undefined;
     return this.deps._codingContextOwnerBySession?.get(sessionKey);
   }
 
