@@ -26,6 +26,7 @@ export {
 export {
   runBulkImportPipeline,
   formatBatchTranscript,
+  processBatchFromIngest,
   validateBatchSize,
   resolveBulkImportContext,
   type ProcessBatchFn,
