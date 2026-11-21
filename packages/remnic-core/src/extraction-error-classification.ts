@@ -1,4 +1,4 @@
-import type { ExtractionFailureClass } from "./types.js";
+import type { ExtractionFailureClass, ExtractionResult } from "./types.js";
 import { isTransientHttpError } from "./connectors/live/transient-errors.js";
 
 /**
@@ -30,6 +30,49 @@ export function classifyExtractionThrownError(err: unknown): ExtractionFailureCl
   } catch {
     return "provider_retryable";
   }
+}
+
+const REQUEST_TOO_LARGE_MESSAGE =
+  /too large|too long|exceeds?|maximum context|context length|context window|request entity/i;
+
+/**
+ * True when a provider refused the request because the input is too big: HTTP
+ * 413, or HTTP 400 whose message names a size or context limit (OpenAI-style
+ * "maximum context length", "total text input size exceeds 8 MB"). Resending
+ * the same atomic request can never succeed (#3531). Never throws.
+ */
+export function isRequestTooLargeError(err: unknown): boolean {
+  try {
+    const status = httpStatusFromError(err);
+    if (status === 413) return true;
+    if (status !== 400 || !(err instanceof Error)) return false;
+    return REQUEST_TOO_LARGE_MESSAGE.test(err.message);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Result when the provider refused the window as too large (#3531). Retryable
+ * on purpose: the retained turns are never parked or dropped, and
+ * `remnic buffer drain` can still extract them in budget-sized chunks.
+ */
+export function directInputTooLargeResult(): ExtractionResult {
+  return {
+    facts: [],
+    profileUpdates: [],
+    entities: [],
+    questions: [],
+    extractionFailure: "direct_input_too_large",
+    extractionFailureClass: "provider_retryable",
+  };
+}
+
+export function formatDirectInputTooLargeLog(chars: number): string {
+  return (
+    `extraction: direct client refused a ${chars}-char request as too large; the turns stay buffered ` +
+    "(an atomic flush is never split) and `remnic buffer drain` extracts them in budget-sized chunks"
+  );
 }
 
 /**

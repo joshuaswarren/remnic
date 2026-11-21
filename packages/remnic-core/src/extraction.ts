@@ -38,7 +38,7 @@ import {
 import { applyGroundingWithConnector, headerConnector, renderExtractionConversation, resolveSourceConnector, type ExtractionGroundingContext } from "./source-agent-qualifier.js";
 import { isMemoryCategory } from "./write-envelope.js";
 export { classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog } from "./extraction-error-classification.js";
-import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
+import { LocalLlmRejectedError, classifyExtractionThrownError, classifyFallbackParseFailure, formatExtractionParseFailureLog, directInputTooLargeResult, formatDirectInputTooLargeLog, isRequestTooLargeError, localRejectionStatus, type LocalFailureDiag } from "./extraction-error-classification.js";
 import { buildUnusableReplyDiagnostic, formatUnusableReplyDiagnostic, looksLikeExtractionResultPayload } from "./extraction-reply-diagnostic.js";
 import { AMBIENT_CAPTURE_PROMPT_SECTION_COMPACT, clampAmbientCaptureConfidence } from "./ambient-provenance.js";
 import {
@@ -1179,6 +1179,8 @@ export class ExtractionEngine {
     // fallback, so a gateway "no models" result doesn't re-classify a real
     // primary failure as auth_config (codex review: preserve direct/local failures).
     let primaryExtractorAttempted = false;
+    // Direct client refused the request as too large (#3531): report that if the gateway fails too.
+    let directInputTooLarge = false;
 
     try {
     // Try local LLM first if enabled
@@ -1275,6 +1277,8 @@ export class ExtractionEngine {
           });
         } catch { /* trace emit must not block fallback */ }
         closedDirectTrace = true;
+        directInputTooLarge = isRequestTooLargeError(err);
+        if (directInputTooLarge) log.warn(formatDirectInputTooLargeLog(conversation.length));
         log.info("extraction: direct client failed, falling back to gateway AI:", err);
       } finally {
         try { this.profiler.endSpan("direct-client", extractionTraceId); } catch { /* span may already be closed */ }
@@ -1383,6 +1387,7 @@ export class ExtractionEngine {
               "provider_retryable"
             : classifyFallbackParseFailure(detailed.failureReason)
           : "parse_empty";
+      if (directInputTooLarge) return directInputTooLargeResult();
       return {
         facts: [],
         profileUpdates: [],
@@ -1398,6 +1403,7 @@ export class ExtractionEngine {
         durationMs: Date.now() - fallbackStartTime, error: String(err),
       });
       log.error("extraction fallback failed", err);
+      if (directInputTooLarge) return directInputTooLargeResult();
       return {
         facts: [],
         profileUpdates: [],
