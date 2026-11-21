@@ -258,6 +258,42 @@ test("permanent rejection stays queued, reports the cause, and preserves FIFO", 
   assert.equal(notifications[0].level, "warning");
 });
 
+test("a permanently refused capture does not block later captures from other sessions (#3520)", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("refused-other-session"));
+  await outbox.enqueue(entryInput("refused", "hash-refused"));
+  await outbox.enqueue({ ...entryInput("later"), sessionKey: "sess-2" });
+  const delivered: string[] = [];
+  const result = await outbox.drain(
+    async (entry) => {
+      if (entry.messages[0].content === "refused") throw new RemnicHttpError(400, "bad request", "invalid_request");
+      delivered.push(entry.messages[0].content);
+    },
+    { sleep: async () => {} }
+  );
+
+  assert.deepEqual(delivered, ["later"], "the later capture from another session is delivered");
+  assert.equal(result.delivered, 1);
+  assert.equal(await outbox.size(), 1, "the refused capture stays queued for retry after the cause is fixed");
+});
+
+test("a permanently refused spill entry does not block later hot captures from other sessions (#3520)", async () => {
+  const outbox = new ObserveOutbox(tmpOutboxPath("refused-spill-session"), { maxEntries: 1 });
+  await outbox.enqueue(entryInput("refused", "hash-refused"));
+  await outbox.enqueue({ ...entryInput("later"), sessionKey: "sess-2" });
+  const delivered: string[] = [];
+  const result = await outbox.drain(
+    async (entry) => {
+      if (entry.messages[0].content === "refused") throw new RemnicHttpError(400, "bad request", "invalid_request");
+      delivered.push(entry.messages[0].content);
+    },
+    { sleep: async () => {} }
+  );
+
+  assert.deepEqual(delivered, ["later"], "the later hot-file capture from another session is delivered past the refused spill head");
+  assert.equal(result.delivered, 1);
+  assert.equal(await outbox.size(), 1, "the refused spill entry stays queued");
+});
+
 test("drain on an empty outbox is a no-op", async () => {
   const outbox = new ObserveOutbox(tmpOutboxPath("empty"));
   const result = await outbox.drain(async () => undefined);
