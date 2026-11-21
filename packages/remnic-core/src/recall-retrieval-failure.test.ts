@@ -926,3 +926,32 @@ test("a tag-filtered recall with no validated snapshot suppresses unverified mem
     { recallOuterTimeoutMs: 400 },
   );
 });
+
+test("a tag-filtered recall while the secure store is locked preserves the unlock diagnostic (#3514 review)", async () => {
+  await withOrchestrator(
+    "remnic-tagfilter-locked-",
+    false,
+    async (orchestrator) => {
+      // Flip the lock state post-init (a genuinely locked store cannot
+      // initialize): capability on + store locked makes the recall lock gate
+      // return the unlock diagnostic as `context` with NO composition/snapshot.
+      // A tag filter must not rebuild that non-memory diagnostic away — it is
+      // the only actionable signal the caller gets.
+      Object.assign(orchestrator.config, { secureStoreEnabled: true });
+      Object.assign(orchestrator.storage, {
+        isSecureStoreUnlocked: () => false,
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "what did I write",
+        sessionKey: "tag-session",
+        tags: ["draft"],
+      });
+      assert.match(
+        response.context,
+        /secure-store locked/,
+        "the locked-store diagnostic must survive a tag filter with no snapshot",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});

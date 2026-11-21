@@ -13,7 +13,7 @@
  * module. `raceAbort` and `attachFlightAbort` need no host (they operate on the
  * caller signal / flight object alone).
  */
-import { abortError, raceAbort, throwIfAborted } from "./abort-error.js";
+import { abortError, isAbortError, raceAbort, throwIfAborted } from "./abort-error.js";
 import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import {
   EngramAccessDeadlineExceededError,
@@ -327,16 +327,19 @@ function consumeWithinDeadline(
   request: EngramAccessRecallRequest,
   race: boolean,
 ): Promise<RecallExecResult> {
-  const settle = race
-    ? raceAbort(flight.promise, request.abortSignal)
-    : flight.promise;
   const deadlineAtMs = resolveClientDeadlineAtMs(request.deadlineMs, Date.now());
-  if (deadlineAtMs === null) return settle;
-  if (deadlineAtMs <= Date.now()) {
+  // Validate expiry BEFORE creating the abort race: a `settle` built then
+  // discarded by this early return keeps its abort listener armed, and a later
+  // caller abort would reject it unhandled (#3514 review).
+  if (deadlineAtMs !== null && deadlineAtMs <= Date.now()) {
     return Promise.reject(
       new EngramAccessDeadlineExceededError("recall deadline exceeded while queued"),
     );
   }
+  const settle = race
+    ? raceAbort(flight.promise, request.abortSignal)
+    : flight.promise;
+  if (deadlineAtMs === null) return settle;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       if (!race && flight.committed) return;
@@ -746,7 +749,17 @@ export async function leadRecallFlight(
     // flight's `persisted` gate) that persistence failed so they behave
     // identically to this leader (release + reject) — no phantom success
     // (round 7 #1; keyed followers moved to the existing-join in round 12 #1).
-    ownedFlight?.persisted?.reject(err);
+    // A CALLER-LOCAL wait failure (this leader's own deadline or abort) means
+    // the leader's put never ran — resolve the gate instead so a follower
+    // proceeds on its OWN persistence outcome instead of inheriting the
+    // leader's deadline while the shared flight still completes for it
+    // (#3514 review). The gate must still settle either way: `persisted`
+    // keeps the flight discoverable until it does (round 12 #2).
+    if (isAbortError(err) || err instanceof EngramAccessDeadlineExceededError) {
+      ownedFlight?.persisted?.resolve();
+    } else {
+      ownedFlight?.persisted?.reject(err);
+    }
     throw err;
   }
   // Leader persisted successfully — resolve the gate so keyed followers
