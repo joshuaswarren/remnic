@@ -76,6 +76,7 @@ export function parseOperationalHealth(
     !digest(active.index) || !digest(current.index) || active.index !== current.index ||
     !digest(active.configuration) || !digest(current.configuration) ||
     !digest(active.embeddingModel) || !digest(current.embeddingModel) ||
+    health.countModel !== active.embeddingModel || !count(health.pendingEmbeddings) ||
     !record(catalog) || catalog.complete !== true || !Array.isArray(catalog.entries)
   ) return UNKNOWN_OPERATIONAL_HEALTH;
 
@@ -93,8 +94,7 @@ export function parseOperationalHealth(
   if (
     target.path !== identity(path.resolve(memoryDir)) ||
     active.configuration !== current.configuration ||
-    active.embeddingModel !== current.embeddingModel ||
-    health.countModel !== active.embeddingModel || !count(health.pendingEmbeddings)
+    active.embeddingModel !== current.embeddingModel
   ) return UNKNOWN_OPERATIONAL_HEALTH;
 
   return {

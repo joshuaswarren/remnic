@@ -344,11 +344,13 @@ export class NamespaceSearchRouter {
     const key = namespace.trim() || this.config.defaultNamespace;
     let pending = this.cache.get(key);
     let operational = await this.operationalHealthForNamespace(key, execution);
-    if (operational) return operational;
-    if (this.cache.get(key) !== pending) {
+    if (!operational && this.cache.get(key) !== pending) {
       pending = this.cache.get(key);
       operational = await this.operationalHealthForNamespace(key, execution);
-      if (operational) return operational;
+    }
+    if (operational) {
+      this.healthResultCache.delete(key);
+      return operational();
     }
     const cached = this.healthResultCache.get(key);
     if (operational === undefined && this.cache.get(key) === pending &&
@@ -449,7 +451,7 @@ export class NamespaceSearchRouter {
   private async operationalHealthForNamespace(
     key: string,
     execution?: SearchExecutionOptions,
-  ): Promise<NamespaceSearchHealth | null | undefined> {
+  ): Promise<(() => NamespaceSearchHealth) | null | undefined> {
     const pending = this.cache.get(key);
     if (!pending) return undefined;
     if (execution?.signal?.aborted || this.config.qmdEnabled === false) return null;
@@ -466,16 +468,16 @@ export class NamespaceSearchRouter {
       record, backend, record.collectionState === "missing" ? "missing" : "unknown", null,
       record.available && !record.disposed,
     );
-    if (!current()) return refused();
+    if (!current()) return refused;
     if (!backend.readOperationalHealth) return undefined;
-    if (record.collectionState === "missing") return refused();
+    if (record.collectionState === "missing") return refused;
     const storage = await awaitWithAbort(this.storageRouter.storageFor(key), execution?.signal).catch(() => null);
-    if (!current() || !storage) return refused();
+    if (!current() || !storage) return refused;
     const expectedCollection = () => namespaceCollectionName(this.config.qmdCollection, key, {
       defaultNamespace: this.config.defaultNamespace,
       useLegacyDefaultCollection: key === this.config.defaultNamespace && storage.dir === this.config.memoryDir,
     });
-    if (record.memoryDir !== storage.dir || record.collection !== expectedCollection()) return refused();
+    if (record.memoryDir !== storage.dir || record.collection !== expectedCollection()) return refused;
 
     let snapshot: OperationalSearchHealth | null | undefined;
     try {
@@ -483,17 +485,21 @@ export class NamespaceSearchRouter {
         backend.readOperationalHealth(storage.dir, execution), execution?.signal,
       );
     } catch {
-      return refused();
+      return refused;
     }
-    if (snapshot === null) return refused();
+    if (snapshot === null) return refused;
     const currentStorage = await awaitWithAbort(
       this.storageRouter.storageFor(key), execution?.signal,
     ).catch(() => null);
-    if (!current() || currentStorage?.dir !== storage.dir ||
-      record.memoryDir !== storage.dir || record.collection !== expectedCollection() ||
-      snapshot?.isCurrent?.() === false) return refused();
+    const canPublish = () => current() && currentStorage?.dir === storage.dir &&
+      record.memoryDir === storage.dir && record.collection === expectedCollection() &&
+      snapshot?.isCurrent?.() !== false;
+    if (!canPublish()) return refused;
     if (snapshot === undefined) return undefined;
-    return this.describeHealth(record, backend, snapshot.collectionState, snapshot);
+    // The public caller resumes after this helper; invalidation can run in between.
+    return () => canPublish()
+      ? this.describeHealth(record, backend, snapshot.collectionState, snapshot)
+      : refused();
   }
 
   private async liveCachedRecordForHealth(

@@ -222,6 +222,21 @@ test("operational health returns missing for authoritative removal despite stale
   assert.equal((await fixture.client.readOperationalHealth(memoryDir))?.collectionState, "missing");
 });
 
+test("operational health refuses malformed counts even when the catalog is empty", async t => {
+  let corruptModel = false;
+  const fixture = await operationalClient(t, () => {
+    const value = packet();
+    const health = value.structuredContent.health;
+    health.catalog.entries = [];
+    if (corruptModel) health.countModel = hash("wrong-model");
+    else health.pendingEmbeddings = -1;
+    return value;
+  });
+  assert.equal((await fixture.client.readOperationalHealth(memoryDir))?.collectionState, "unknown");
+  corruptModel = true;
+  assert.equal((await fixture.client.readOperationalHealth(memoryDir))?.collectionState, "unknown");
+});
+
 const corruptions: Array<[string, (value: ReturnFixture) => unknown]> = [
   ["null metadata", () => ({ structuredContent: { health: null } })],
   ["missing advertised metadata", () => ({ structuredContent: {} })],

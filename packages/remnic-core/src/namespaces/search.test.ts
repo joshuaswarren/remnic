@@ -16,6 +16,7 @@ import type {
   SearchQueryOptions,
 } from "../search/port.js";
 import type { QmdCapabilities, QmdVersionStatus } from "../qmd.js";
+import { parseQmdStatusOutput } from "../qmd-status.js";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 
 type CollectionState = "present" | "missing" | "unknown" | "skipped";
@@ -1627,21 +1628,62 @@ test("operational health precedes an existing healthy result cache and never dis
   const live = new FakeBackend(false, [], { ensure: "present" }, true);
   live.statusResult = { ...operationalSnapshot };
   Object.assign(live, { readOperationalHealth: async () => snapshot });
+  const missing = new FakeBackend(false, [], { check: "missing" });
   const router = new NamespaceSearchRouter(config(),
     { storageFor: async () => ({ dir: "/fixture/notes" }) },
-    () => ++created === 1 ? live : new FakeBackend(false, [], { check: "present" }));
+    () => ++created === 1 ? live : created === 2 ? new FakeBackend(false, [], { check: "present" }) : missing);
   t.after(() => router.dispose());
   await router.ensureNamespaceCollection("shared");
   assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
   assert.equal(created, 2);
   assert.equal((await router.healthForNamespace("shared")).collectionState, "present");
   assert.equal(created, 2, "absent older capability must retain the guarded diagnostic TTL");
-  snapshot = { ...operationalSnapshot, collectionState: "unknown", pendingEmbeddings: null };
-  const drifted = await router.healthForNamespace("shared");
-  assert.equal(drifted.collectionState, "unknown");
-  assert.equal(isSearchHealthDegraded(drifted, drifted.embeddingBacklogThreshold), true);
+  snapshot = { ...operationalSnapshot, collectionState: "missing", pendingEmbeddings: null };
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
   assert.equal(created, 2);
   assert.equal(live.disposed, 0);
+  snapshot = undefined; // Operational metadata became unavailable after the removal.
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "missing");
+  assert.equal(created, 3, "the native removal must have invalidated the old CLI result");
+});
+
+test("CLI-only health caches a recognized QMD report with no pending embeddings", async t => {
+  let created = 0;
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) }, () => {
+      created++;
+      const backend = new FakeBackend(false, [], { check: "present" });
+      backend.statusResult = parseQmdStatusOutput(
+        "QMD Status\n\nIndex: /fixture/index.sqlite\nSize: 1 KB\n\nDocuments\n  Total: 1 files indexed\n  Vectors: 1 embedded\n",
+      );
+      return backend;
+    });
+  t.after(() => router.dispose());
+  const health = await router.healthForNamespace("shared");
+  assert.equal(health.collectionState, "present");
+  assert.equal(health.pendingEmbeddings, 0);
+  assert.equal(isSearchHealthDegraded(health, health.embeddingBacklogThreshold), false);
+  assert.equal((await router.healthForNamespace("shared")).pendingEmbeddings, 0);
+  assert.equal(created, 1);
+});
+
+test("operational snapshot is revalidated at the public return boundary", async t => {
+  let valid = true;
+  const live = new FakeBackend(false, [], { ensure: "present" }, true);
+  Object.assign(live, {
+    readOperationalHealth: async () => ({
+      ...operationalSnapshot,
+      isCurrent: () => {
+        queueMicrotask(() => { valid = false; });
+        return valid;
+      },
+    }),
+  });
+  const router = new NamespaceSearchRouter(config(),
+    { storageFor: async () => ({ dir: "/fixture/notes" }) }, () => live);
+  t.after(() => router.dispose());
+  await router.ensureNamespaceCollection("shared");
+  assert.equal((await router.healthForNamespace("shared")).collectionState, "unknown");
 });
 
 test("operational health preserves backlog and fresh removal instead of returning old readiness", async t => {

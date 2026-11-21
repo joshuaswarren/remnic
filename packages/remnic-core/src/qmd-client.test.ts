@@ -402,6 +402,13 @@ test("parseQmdStatusOutput returns nulls for unparseable output", () => {
   assert.equal(report.oldestPendingAgeMs, null);
 });
 
+test("an omitted count does not make malformed or unrecognized status healthy", () => {
+  const summary = "Total: 1 files indexed\nVectors: 8 embedded";
+  assert.equal(parseQmdStatusOutput(summary).pendingEmbeddings, null);
+  assert.equal(parseQmdStatusOutput("QMD Status\nTotal: 1 files indexed").pendingEmbeddings, null);
+  assert.equal(parseQmdStatusOutput(`QMD Status\n${summary}\nPending: unavailable`).pendingEmbeddings, null);
+});
+
 test("QmdClient.status() returns parsed report on success", async () => {
   const client = new QmdClient("test-col", 3, { qmdSupportedVersion: "2.8.3" });
   const internals = client as unknown as {
