@@ -101,10 +101,20 @@ export interface OrchestratorInitDeps {
 
 /** Outcome of one backend bring-up: probe, catalog-union discovery, per-namespace
  * collection ensure, and the missing-collection noop swap. "ready" carries the
- * epoch and discovery the full sync needs for its corpus update. */
+ * epoch and discovery the full sync needs for its corpus update. "degraded" is
+ * the probed-available backend whose collection check answered "unknown" — the
+ * ensure is unverified, so neither sync may claim success. */
 type StartupBackendEnsure =
   | { state: "ready"; epoch: number; discovery: { namespaces: string[]; complete: boolean } }
-  | { state: "unavailable" | "missing" | "retired" };
+  | { state: "unavailable" | "missing" | "degraded" | "retired" };
+
+type StartupBackendEnsureFlight = {
+  epoch: number;
+  promise: Promise<StartupBackendEnsure>;
+  controller: AbortController;
+  liveCallers: number;
+  cleanup: Array<() => void>;
+};
 
 export class OrchestratorInitCoordinator {
   private nextStartupEpoch = 0;
@@ -113,7 +123,7 @@ export class OrchestratorInitCoordinator {
   private maintenanceNamespacesFlight:
     | { epoch: number; promise: Promise<string[]> }
     | undefined;
-  private startupBackendEnsureFlight: Promise<StartupBackendEnsure> | undefined;
+  private startupBackendEnsureFlight: StartupBackendEnsureFlight | undefined;
   private correctionCatalogFlight:
     | { epoch: number; promise: Promise<Awaited<ReturnType<NamespaceCatalog["listNamespaces"]>>> }
     | undefined;
@@ -889,6 +899,12 @@ export class OrchestratorInitCoordinator {
     const ensured = await this.ensureStartupSearchBackend(signal);
     if (ensured.state !== "ready") return false;
     const { epoch, discovery } = ensured;
+    // A caller whose own signal aborted must not dispatch update work even
+    // when joined callers kept the shared ensure alive to a ready result.
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      log.debug("startupSearchSync: aborted or retired after the shared backend ensure");
+      return false;
+    }
     const namespaces = discovery.namespaces;
 
     // Run index update — namespace-aware when enabled.
@@ -993,34 +1009,65 @@ export class OrchestratorInitCoordinator {
     // read): probe() flips isAvailable() before the collection ensure and the
     // missing-collection noop swap finish, so a readiness caller arriving
     // mid-run must await the SAME run — never observe the half-finished state
-    // or start a second probe/ensure. The joiner keeps its own aborted-signal
-    // check above; the shared run keeps its original epoch fencing and signal.
-    if (this.startupBackendEnsureFlight) return this.startupBackendEnsureFlight;
-    const run = this.runStartupSearchBackend(signal);
-    this.startupBackendEnsureFlight = run;
-    // .then(clear, clear) clears the flight on settle in both directions
-    // without creating a second derived promise that could reject unhandled.
-    run.then(
-      () => {
-        if (this.startupBackendEnsureFlight === run) {
+    // or start a second probe/ensure. Three boundaries keep the sharing safe
+    // (#3518 third read): the flight is joined only while its epoch is still
+    // current and it has not been abandoned, so a caller after a lifecycle
+    // restart runs its own ensure instead of inheriting "retired"; and the
+    // shared run aborts only when its epoch retires or every participating
+    // caller's signal has aborted — never because one caller's per-attempt
+    // timeout fired while other callers still hold it.
+    let flight = this.startupBackendEnsureFlight;
+    if (
+      !flight ||
+      !this.isCurrentStartupEpoch(flight.epoch) ||
+      flight.controller.signal.aborted
+    ) {
+      const epoch = this.currentOrNewStartupEpoch();
+      if (epoch === null) return Promise.resolve({ state: "retired" });
+      const controller = new AbortController();
+      const run = this.runStartupSearchBackend(epoch, controller.signal);
+      const next: StartupBackendEnsureFlight = {
+        epoch,
+        promise: run,
+        controller,
+        liveCallers: 0,
+        cleanup: [],
+      };
+      this.startupBackendEnsureFlight = next;
+      // run.then(clear, clear) clears the flight on settle in both directions
+      // without creating a second derived promise that could reject
+      // unhandled; settle also removes every registered caller listener.
+      const settle = () => {
+        if (this.startupBackendEnsureFlight === next) {
           this.startupBackendEnsureFlight = undefined;
         }
-      },
-      () => {
-        if (this.startupBackendEnsureFlight === run) {
-          this.startupBackendEnsureFlight = undefined;
-        }
-      },
-    );
-    return run;
+        for (const remove of next.cleanup) remove();
+      };
+      run.then(settle, settle);
+      flight = next;
+    }
+    // Each caller holds the shared run open until its own signal aborts; the
+    // last live caller's abort cancels the run for everyone.
+    flight.liveCallers += 1;
+    if (signal) {
+      const held = flight;
+      const onCallerAbort = () => {
+        held.liveCallers -= 1;
+        if (held.liveCallers <= 0) held.controller.abort();
+      };
+      signal.addEventListener("abort", onCallerAbort, { once: true });
+      flight.cleanup.push(() => signal.removeEventListener("abort", onCallerAbort));
+    }
+    return flight.promise;
   }
 
   private async runStartupSearchBackend(
+    epoch: number,
     signal?: AbortSignal,
   ): Promise<StartupBackendEnsure> {
-    if (signal?.aborted) return { state: "retired" };
-    const epoch = this.currentOrNewStartupEpoch();
-    if (epoch === null) return { state: "retired" };
+    if (signal?.aborted || !this.isCurrentStartupEpoch(epoch)) {
+      return { state: "retired" };
+    }
 
     const available = await this.probeForStartupEpoch(epoch, signal);
     if (!available) return { state: "unavailable" };
@@ -1099,6 +1146,20 @@ export class OrchestratorInitCoordinator {
       this.deps.qmd = new NoopSearchBackend();
       log.warn("startupSearchSync: search collection missing; disabling search (fallback retrieval remains enabled)");
       return { state: "missing" };
+    }
+
+    // "unknown" means the collection check could not determine the state
+    // (timeout, cancelled auto-create, failed recheck). Retrieval stays
+    // fail-open on the probed backend, but the ensure is unverified: neither
+    // the readiness sync nor the full sync may claim success — the next
+    // attempt re-checks, and the warm-up gate counts this as degraded
+    // rather than warmed (#3518 third read). Explicit "skipped" (remote or
+    // daemon-only modes that run no local check) still counts as ready.
+    if (defaultState === "unknown") {
+      log.warn(
+        "startupSearchSync: collection check could not verify the default collection; the sync stays unready until a retry verifies it",
+      );
+      return { state: "degraded" };
     }
 
     return { state: "ready", epoch, discovery };

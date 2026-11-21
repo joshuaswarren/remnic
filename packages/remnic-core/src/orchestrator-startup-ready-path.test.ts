@@ -235,6 +235,11 @@ test("startupSearchReadySync joins an in-flight full sync's backend phase and re
       ensureEntries.length,
       "each namespace is ensured once across joined callers",
     );
+    assert.equal(
+      await Promise.race([ready.then(() => "settled" as const), sleep(50).then(() => "pending" as const)]),
+      "pending",
+      "the joined ready sync must wait for the shared ensure to finish",
+    );
 
     ensureGate.resolve();
     assert.equal(
@@ -254,6 +259,194 @@ test("startupSearchReadySync joins an in-flight full sync's backend phase and re
   } finally {
     ensureGate.resolve();
     updateGate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an unknown collection state keeps the readiness and full syncs unready (wAQ third read)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const updateCalls: number[] = [];
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      update: async () => {
+        updateCalls.push(1);
+      },
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    // The collection check could not determine the state (timeout, cancelled
+    // auto-create, recheck failure): retrieval stays fail-open, but the
+    // startup syncs must not claim readiness off an unverified ensure. A
+    // zero-result healthy warm-up on top must not open the gate as warmed.
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "unknown";
+    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+      updateCalls.push(1);
+      return ns.length;
+    };
+
+    const signal = new AbortController().signal;
+    assert.equal(
+      await orchestrator.startupSearchReadySync(signal),
+      false,
+      "an unverified collection state must not open strict readiness",
+    );
+    assert.equal(
+      await orchestrator.startupSearchSync(signal),
+      false,
+      "the full sync must not claim success off an unverified ensure",
+    );
+    assert.equal(updateCalls.length, 0, "the corpus update does not run while the ensure is unverified");
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("an explicitly skipped collection ensure still counts as ready (wAQ third read)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      update: async () => {},
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    // Remote or daemon-only modes intentionally run no local collection check;
+    // "skipped" is a supported explicit answer, unlike "unknown".
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "skipped";
+
+    assert.equal(
+      await orchestrator.startupSearchReadySync(new AbortController().signal),
+      true,
+      "explicit skipped support must be preserved",
+    );
+  } finally {
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a caller after an epoch transition runs its own backend ensure instead of joining the retired flight", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const probeCalls: number[] = [];
+  const ensureGate = Promise.withResolvers<void>();
+  let gateFirstEnsure = true;
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => {
+        probeCalls.push(1);
+        return true;
+      },
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      update: async () => {},
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async () => {
+      if (gateFirstEnsure) {
+        gateFirstEnsure = false;
+        await ensureGate.promise;
+      }
+      return "present";
+    };
+
+    const signal = new AbortController().signal;
+    const first = orchestrator.startupSearchReadySync(signal);
+    for (let i = 0; i < 200 && gateFirstEnsure; i += 1) await sleep(5);
+    assert.equal(probeCalls.length, 1, "epoch A's readiness run reached its ensure");
+
+    // A same-instance lifecycle restart retires epoch A and opens epoch B
+    // while A's shared ensure is still in flight.
+    deps.orchestratorInitCoordinator.beginStartupEpoch();
+
+    const second = orchestrator.startupSearchReadySync(signal);
+    ensureGate.resolve();
+    assert.equal(
+      await second,
+      true,
+      "the epoch-B caller must run its own ensure, not inherit epoch A's retired flight",
+    );
+    assert.equal(
+      probeCalls.length,
+      2,
+      "the epoch-B caller re-probes instead of joining the retired run",
+    );
+    assert.equal(
+      await first,
+      false,
+      "epoch A's joined run reports retired once its epoch is replaced",
+    );
+  } finally {
+    ensureGate.resolve();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a caller abort does not cancel the shared backend ensure for joined callers", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ready-path-"));
+  const orchestrator = new Orchestrator(readyPathConfig(memoryDir));
+  const ensureGate = Promise.withResolvers<void>();
+  let firstEnsureSeen = false;
+  const deps = asDeps(orchestrator);
+  try {
+    deps.qmd = {
+      probe: async () => true,
+      debugStatus: () => "synthetic-qmd",
+      isAvailable: () => true,
+      search: async () => [],
+      update: async () => {},
+      lastUpdateRanAtMs: 1,
+      lastUpdateFailedAtMs: null,
+    };
+    deps.namespaceSearchRouter.clearCache = () => undefined;
+    deps.namespaceSearchRouter.ensureNamespaceCollection = async () => {
+      if (!firstEnsureSeen) {
+        firstEnsureSeen = true;
+        await ensureGate.promise;
+      }
+      return "present";
+    };
+
+    // The first caller aborts mid-ensure — the readiness gate's per-attempt
+    // timeout. The shared backend run is epoch-owned, so the abort must not
+    // kill it for the full-sync caller that joined it.
+    const firstController = new AbortController();
+    const first = orchestrator.startupSearchReadySync(firstController.signal);
+    for (let i = 0; i < 200 && !firstEnsureSeen; i += 1) await sleep(5);
+    assert.ok(firstEnsureSeen, "the shared run reached its ensure");
+
+    const second = orchestrator.startupSearchReadySync(new AbortController().signal);
+    firstController.abort();
+    ensureGate.resolve();
+
+    assert.equal(
+      await Promise.race([second, sleep(2_000).then(() => "hung" as const)]),
+      true,
+      "the joined caller keeps the shared run's result after the first caller's abort",
+    );
+    await first;
+  } finally {
+    ensureGate.resolve();
     await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true });
   }

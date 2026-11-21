@@ -7,7 +7,7 @@ import test from "node:test";
 import { z } from "zod";
 
 import { startServer, type ServerResult } from "./index.js";
-import { createStartupSyncEnsurers } from "./startup-readiness.js";
+import { completeStartupReadiness, createStartupSyncEnsurers } from "./startup-readiness.js";
 
 /**
  * Regression for #3253: the standalone readiness warm-up must search the
@@ -353,10 +353,14 @@ test("ensureSearchReady during an in-flight full sync runs its own readiness lev
 
   fake.readyGate.resolve(true);
   const ready = await Promise.race([
-    ensureSearchReady(signal).then(() => "ready" as const),
+    ensureSearchReady(signal),
     sleepMs(500).then(() => "hung" as const),
   ]);
-  assert.equal(ready, "ready");
+  assert.equal(
+    ready,
+    true,
+    "the readiness attempt must resolve ready, not merely settle",
+  );
   assert.equal(
     fake.readyCalls,
     1,
@@ -382,4 +386,39 @@ test("ensureSearchReady short-circuits once the startup sync succeeded", async (
 
   assert.equal(await ensureSearchReady(new AbortController().signal), true);
   assert.equal(fake.readyCalls, 0, "no readiness work runs once the sync flag is set");
+});
+
+test("an unverified collection ensure opens the gate degraded, never warmed (wAQ third read)", async () => {
+  const { orchestrator, fake } = fakeEnsurerOrchestrator();
+  // ensureCollection answered "unknown": the real coordinator reports the
+  // readiness ensure as not-ready, so each warm-up attempt fails before the
+  // search. The gate must open degraded — a zero-result healthy warm-up must
+  // never reach it as "warmed".
+  fake.readyGate.resolve(false);
+  const { ensureSearchReady } = createStartupSyncEnsurers(orchestrator);
+  const state = { ready: false, warmupAttempts: 0, lastError: null, degraded: false };
+  let gateOpens = 0;
+  let warmupSearches = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    warmup: async () => {
+      warmupSearches += 1;
+    },
+    prepareWarmup: ensureSearchReady,
+    state,
+    timeoutMs: 50,
+    retryIntervalMs: 5,
+    degradedAfterAttempts: 1,
+    openGate: () => {
+      gateOpens += 1;
+    },
+    shutdownSignal: AbortSignal.timeout(300),
+  });
+
+  assert.equal(outcome, "cancelled");
+  assert.equal(warmupSearches, 0, "the warm-up search never runs while the ensure is unverified");
+  assert.equal(gateOpens, 1, "the gate opens once, degraded");
+  assert.equal(state.degraded, true, "an unknown collection state counts as degraded");
+  assert.equal(state.ready, true);
 });
