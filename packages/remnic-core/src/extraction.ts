@@ -1277,7 +1277,7 @@ export class ExtractionEngine {
           });
         } catch { /* trace emit must not block fallback */ }
         closedDirectTrace = true;
-        directInputTooLarge = isRequestTooLargeError(err);
+        directInputTooLarge = err instanceof Object && isRequestTooLargeError(err);
         if (directInputTooLarge) log.warn(formatDirectInputTooLargeLog(conversation.length));
         log.info("extraction: direct client failed, falling back to gateway AI:", err);
       } finally {

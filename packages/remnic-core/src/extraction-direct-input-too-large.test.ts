@@ -4,7 +4,8 @@ import test from "node:test";
 import { parseConfig } from "./config.js";
 import { isRequestTooLargeError } from "./extraction-error-classification.js";
 import { ExtractionEngine } from "./extraction.js";
-import type { BufferTurn } from "./types.js";
+import type { StructuredParseResult } from "./fallback-llm-codex-subscription.js";
+import type { BufferTurn, ExtractionResult } from "./types.js";
 
 // Issue #3531: forced and fail-closed flushes send the whole window as one
 // atomic direct-client request. When the provider refuses it as too large, the
@@ -30,8 +31,12 @@ class FakeBadRequestError extends Error {
 
 function engineWithDirectFailure(
   err: Error,
-  gatewayResult: unknown = { result: null, failureReason: "no_models", errorClass: "no_models" },
-): { engine: ExtractionEngine; directCalls: () => number; gatewayCalls: () => number } {
+  gatewayResult: StructuredParseResult<ExtractionResult> = {
+    result: null,
+    failureReason: "no_models",
+    errorClass: "no_models",
+  },
+) {
   const engine = new ExtractionEngine(parseConfig({ openaiApiKey: "fixture-key" }));
   let direct = 0;
   let gateway = 0;
@@ -104,6 +109,17 @@ test("a direct 400 that is not about size keeps the gateway failure", async () =
   assert.equal(result.extractionFailure, "fallback_no_parsed_output");
 });
 
+test("isRequestTooLargeError rejects 400s whose 'exceed' is not about input size", () => {
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "max_tokens exceeds maximum allowed")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "temperature exceeds 2.0")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "quota exceeded")), false);
+  assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "spending limit exceeded")), false);
+  assert.equal(
+    isRequestTooLargeError(new FakeBadRequestError(400, "You exceeded your current quota, please check your plan")),
+    false,
+  );
+});
+
 test("isRequestTooLargeError matches size rejections only", () => {
   assert.equal(isRequestTooLargeError(new FakeBadRequestError(413, "Payload Too Large")), true);
   assert.equal(isRequestTooLargeError(new FakeBadRequestError(400, "The total text input size exceeds 8 MB")), true);
@@ -113,5 +129,4 @@ test("isRequestTooLargeError matches size rejections only", () => {
   assert.equal(isRequestTooLargeError(new FakeBadRequestError(500, "upstream payload too large")), false);
   assert.equal(isRequestTooLargeError(new FakeBadRequestError(429, "rate limit exceeded")), false);
   assert.equal(isRequestTooLargeError(new Error("input too large")), false);
-  assert.equal(isRequestTooLargeError(undefined), false);
 });
