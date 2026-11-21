@@ -6,10 +6,19 @@ import test, { mock } from "node:test";
 
 import { EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
+import type { CorpusReadOptions } from "./corpus-read-cancellation.js";
+import {
+  dropEntityMentionIndexCache,
+  entityMentionFullRebuildsStarted,
+  entityMentionIndexScopeKeys,
+} from "./entity-mention-index-cache.js";
+import { entityMentionEpoch } from "./entity-mention-epoch.js";
+import { buildEntityRecallSection } from "./entity-retrieval.js";
 import { Orchestrator } from "./orchestrator.js";
 import { getRecallTimings } from "./recall-timings.js";
 import { StorageManager } from "./storage.js";
 import { cleanupDir } from "./testing/orchestrator-lite.js";
+import type { MemoryFile } from "./types.js";
 
 test.afterEach(() => {
   mock.restoreAll();
@@ -39,7 +48,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const SLOW_READ_MS = 2200;
 const WARM_LEG_BOUND_MS = 2000;
 
-function gateCorpusReads(t: test.TestContext): { entityFiles: number; memories: number; persistedIndex: number } {
+function gateCorpusReads(t: test.TestContext) {
   const counts = { entityFiles: 0, memories: 0, persistedIndex: 0 };
   const origEntityFiles = StorageManager.prototype.readAllEntityFiles;
   t.mock.method(
@@ -56,31 +65,41 @@ function gateCorpusReads(t: test.TestContext): { entityFiles: number; memories: 
   // cached corpus. The reread boundary the issue pins is the disk scan
   // underneath, so the gate sits on _readAllMemoriesFromDisk — a hot-cache
   // hit never reaches it, a real rescan always does.
-  const diskProto = StorageManager.prototype as unknown as Record<
-    string,
-    (this: StorageManager, ...args: never[]) => Promise<unknown>
-  >;
-  const origMemoriesDisk = diskProto._readAllMemoriesFromDisk;
-  t.mock.method(
-    diskProto,
+  const diskScanDescriptor = Object.getOwnPropertyDescriptor(
+    StorageManager.prototype,
     "_readAllMemoriesFromDisk",
-    async function (this: StorageManager, ...args: unknown[]) {
+  );
+  if (!diskScanDescriptor) {
+    throw new Error("_readAllMemoriesFromDisk missing on StorageManager.prototype");
+  }
+  // SAFETY: the private disk-scan method exists on the prototype — the
+  // descriptor check above verified it; the assertion names its signature.
+  const origMemoriesDisk = diskScanDescriptor.value as (
+    this: StorageManager,
+    options?: CorpusReadOptions,
+  ) => Promise<MemoryFile[]>;
+  Reflect.set(
+    StorageManager.prototype,
+    "_readAllMemoriesFromDisk",
+    async function (this: StorageManager, options?: CorpusReadOptions): Promise<MemoryFile[]> {
       counts.memories += 1;
       await sleep(SLOW_READ_MS);
-      return origMemoriesDisk.apply(this, args as never[]);
+      return origMemoriesDisk.call(this, options);
     },
   );
+  t.after(() => {
+    Reflect.set(StorageManager.prototype, "_readAllMemoriesFromDisk", origMemoriesDisk);
+  });
   // The persisted mention index is read by a module-level helper (no
   // prototype seam, and fs/promises is frozen under ESM). Its parse step is
   // the observable boundary: a warm recall that rereads the index JSON must
   // parse a document carrying the index's version + entity fields.
   const origParse = JSON.parse;
-  t.mock.method(JSON, "parse", (text: string, ...rest: unknown[]) => {
-    if (typeof text === "string" && text.includes('"entityStatusVersion"') && text.includes('"entities"')) {
+  t.mock.method(JSON, "parse", (text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    if (text.includes('"entityStatusVersion"') && text.includes('"entities"')) {
       counts.persistedIndex += 1;
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (origParse as any).call(JSON, text, ...rest);
+    return origParse(text, reviver);
   });
   return counts;
 }
@@ -214,5 +233,85 @@ test("a real entity mutation still invalidates the warm indexes (#3529)", async 
     );
   } finally {
     await cleanupDir(memoryDir);
+  }
+});
+
+test("a scoped no-match recall still reconciles a drifted mention epoch (#3529)", async () => {
+  const defaultDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-default-"));
+  const teamDir = await mkdtemp(path.join(os.tmpdir(), "remnic-scope-team-"));
+  try {
+    const defaultStorage = new StorageManager(defaultDir);
+    const teamStorage = new StorageManager(teamDir);
+    const config = makeConfig(defaultDir);
+    // The scoped path only engages when namespaces are enabled and a
+    // namespaceStorage resolver is present.
+    const scopedConfig = parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir: defaultDir,
+      workspaceDir: path.join(defaultDir, "workspace"),
+      namespacesEnabled: true,
+      qmdEnabled: false,
+      embeddingFallbackEnabled: false,
+      recallPlannerEnabled: false,
+      sharedContextEnabled: false,
+      initGateTimeoutMs: 1000,
+    });
+    void config;
+    const namespaceStorage = async (namespace: string) =>
+      namespace === "team" ? teamStorage : defaultStorage;
+    const recall = (query: string) =>
+      buildEntityRecallSection({
+        config: scopedConfig,
+        storage: defaultStorage,
+        namespaceStorage,
+        recallNamespaces: ["default", "team"],
+        query,
+        recentTurns: 0,
+        maxHints: 2,
+        maxSupportingFacts: 2,
+        maxRelatedEntities: 2,
+        maxChars: 10_000,
+        transcriptEntries: [],
+      });
+
+    const entityRef = await teamStorage.writeEntity("Alice", "person", [
+      "Alice leads the platform launch review.",
+    ]);
+    await teamStorage.writeMemory("fact", "Alice leads the platform launch review.", {
+      source: "test",
+      entityRef,
+    });
+
+    // Cold scoped recall builds the slot once, then declines — the query
+    // names no entity.
+    const cold = await recall("lunch plans tomorrow?");
+    const scopeKey = entityMentionIndexScopeKeys().find((key) => key.includes(teamDir));
+    assert.ok(scopeKey, "a scoped mention slot must exist after the cold recall");
+    assert.equal(entityMentionFullRebuildsStarted(scopeKey), 1, "one cold full build");
+
+    // A linked memory write bumps the mention epoch while the entity
+    // revision stays put — the stale-slot bypass must not skip the
+    // resolver's scheduled reconciliation for that drift.
+    const epochBefore = entityMentionEpoch.current(teamDir);
+    await teamStorage.writeMemory("fact", "A project note links Alice's review to the roadmap.", {
+      source: "test",
+      entityRef,
+    });
+    assert.ok(
+      entityMentionEpoch.current(teamDir) > epochBefore,
+      "the memory write must advance the mention epoch",
+    );
+
+    const warm = await recall("lunch plans tomorrow?");
+    assert.equal(warm, null, "still no entity hints for a no-match query");
+    assert.equal(
+      entityMentionFullRebuildsStarted(scopeKey),
+      2,
+      "the drifted epoch must reach the resolver so reconciliation is scheduled",
+    );
+  } finally {
+    dropEntityMentionIndexCache();
+    await cleanupDir(defaultDir);
+    await cleanupDir(teamDir);
   }
 });
