@@ -136,8 +136,14 @@ export async function drainObserveOutbox(
     }
   }, drainOptions);
   // Entries bound to another daemon are pending for IT, not saturation here.
+  // Only a stop caused by an actual failed send (capacity/ambiguous) reports
+  // saturation; a successful bounded send leaving entries is normal pacing.
   const pendingForUs = result.pending - (result.foreign ?? 0);
-  if (pendingForUs > 0 && !result.skipped && stopReason !== "blocked" && stopReason !== "permanent") {
+  if (
+    pendingForUs > 0 &&
+    !result.skipped &&
+    (stopReason === "retry-capacity" || stopReason === "retry-ambiguous")
+  ) {
     session.notify(
       `Remnic observe outbox: ${pendingForUs} queued capture(s) still pending (daemon saturated); they will retry on the next successful contact`,
       "warning",

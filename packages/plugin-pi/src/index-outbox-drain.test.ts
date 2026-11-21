@@ -411,3 +411,30 @@ test("a queued entry bound to another daemon does not suppress the live capture 
   assert.equal(sent, 1, "the capture reaches this daemon instead of being suppressed by the foreign entry");
   assert.equal(await outbox.size(), 1, "the foreign entry stays queued for its own daemon");
 });
+
+test("a successful bounded send leaving entries reports no daemon saturation", async () => {
+  const outboxPath = tmpOutboxPath();
+  const config = drainTestConfig(outboxPath);
+  const outbox = new ObserveOutbox(outboxPath);
+  await outbox.enqueue(queuedEntry);
+  await outbox.enqueue({ ...queuedEntry, sessionKey: "second-entry", messageHashes: ["hash-second"] });
+
+  const client = new RemnicClient(config);
+  let sends = 0;
+  client.observe = async () => {
+    sends += 1;
+    return { ok: true };
+  };
+  const warnings: string[] = [];
+  const session = { notify: (message: string) => warnings.push(message) };
+
+  await drainObserveOutbox(session, client, config, outbox, new Set<string>(), undefined, true);
+
+  assert.equal(sends, 1, "the bounded drain sent exactly one capture");
+  assert.equal(await outbox.size(), 1, "the second entry remains queued");
+  assert.equal(
+    warnings.some((message) => message.includes("daemon saturated")),
+    false,
+    "normal bounded pacing after a successful send is not saturation"
+  );
+});

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { writeFileAtomically } from "@remnic/core/maintenance/atomic-file";
@@ -240,15 +240,24 @@ export class ObserveOutbox {
   private async spillFiles(): Promise<string[]> {
     let names: string[];
     try {
+      // AGENTS.md spill policy: a symlinked spill root is rejected entirely so
+      // no read or write can follow it outside the outbox's own directory.
+      if (!(await lstat(this.spillDirectory)).isDirectory()) return [];
       names = await readdir(this.spillDirectory);
     } catch (err) {
       if (err instanceof Error && "code" in err && err.code === "ENOENT") return [];
       throw err;
     }
-    return names
+    const candidates = names
       .filter((name) => /^segment-\d{20}\.jsonl$/.test(name))
-      .sort()
-      .map((name) => path.join(this.spillDirectory, name));
+      .sort();
+    const files: string[] = [];
+    for (const name of candidates) {
+      // Only regular files are read; a symlink segment is ignored, never followed.
+      if (!(await lstat(path.join(this.spillDirectory, name))).isFile()) continue;
+      files.push(path.join(this.spillDirectory, name));
+    }
+    return files;
   }
 
   private async signature(): Promise<string | null> {
@@ -357,6 +366,11 @@ export class ObserveOutbox {
 
   private async appendSpill(entries: ObserveOutboxEntry[]): Promise<void> {
     await mkdir(this.spillDirectory, { recursive: true, mode: 0o700 });
+    // Before any chmod or write: a pre-existing symlinked spill root would make
+    // chmod follow it and mode an external directory as a side effect.
+    if ((await lstat(this.spillDirectory)).isSymbolicLink()) {
+      throw new Error(`observe outbox spill directory is a symlink (${this.spillDirectory}); refusing to follow it`);
+    }
     await chmod(this.spillDirectory, 0o700);
     await syncDirectory(path.dirname(this.spillDirectory));
     const files = await this.spillFiles();
@@ -469,26 +483,41 @@ export class ObserveOutbox {
    * capture for this one — they are never delivered here (#3504 review).
    */
   async pendingHashes(destination?: string): Promise<Set<string>> {
-    await this.refreshOrKeepLastKnown();
-    const hashes = new Set<string>();
-    try {
-      for (const file of await this.spillFiles()) {
-        for await (const line of readLines(file)) {
-          const entry = parseOutboxEntry(line.trim());
-          if (entry && entryEligibleForDestination(entry, destination)) {
-            for (const hash of entry.messageHashes) if (hash !== null) hashes.add(hash);
+    // One consistent state: the refresh, the spill scan and the hot-entry
+    // snapshot all run inside the operation chain, so no concurrent spill or
+    // write can interleave between them. Read-only — no mutation, no lock — and
+    // the chain stays resolved when the scan fails.
+    const run = this.operationChain.then(async () => {
+      try {
+        await this.refresh();
+      } catch {
+        // Unreadable files keep the last known view; read-only caller.
+      }
+      const hashes = new Set<string>();
+      try {
+        for (const file of await this.spillFiles()) {
+          for await (const line of readLines(file)) {
+            const entry = parseOutboxEntry(line.trim());
+            if (entry && entryEligibleForDestination(entry, destination)) {
+              for (const hash of entry.messageHashes) if (hash !== null) hashes.add(hash);
+            }
           }
         }
+      } catch {
+        // Keep the live hook usable when the spill store is unreadable; hot entries remain available.
       }
-    } catch {
-      // Keep the live hook usable when the spill store is unreadable; hot entries remain available.
-    }
-    for (const entry of this.entries) {
-      if (entryEligibleForDestination(entry, destination)) {
-        for (const hash of entry.messageHashes) if (hash !== null) hashes.add(hash);
+      for (const entry of this.entries) {
+        if (entryEligibleForDestination(entry, destination)) {
+          for (const hash of entry.messageHashes) if (hash !== null) hashes.add(hash);
+        }
       }
-    }
-    return hashes;
+      return hashes;
+    });
+    this.operationChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
   }
 
   /** Counters since process start plus the oldest queued entry age. */

@@ -798,3 +798,99 @@ test("pendingHashes only suppresses captures a drain on this destination would d
   assert.deepEqual([...forB].sort(), ["hash-legacy-capture", "hash-own-capture"], "own + unbound entries suppress; foreign do not");
   assert.equal((await outbox.pendingHashes()).size, 3, "no destination = general drainer: every queued capture suppresses");
 });
+
+function spillSegmentLine(id: string, content: string): string {
+  return `${JSON.stringify({ id, queuedAt: "2026-01-01T00:00:00.000Z", ...entryInput(content) })}\n`;
+}
+
+test("a symlinked spill directory is rejected entirely", async () => {
+  const filePath = tmpOutboxPath("symlink-root");
+  const external = fs.mkdtempSync(path.join(path.dirname(filePath), "external-"));
+  fs.symlinkSync(external, `${filePath}.spill`, "dir");
+
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("first"));
+  await assert.rejects(
+    () => outbox.enqueue(entryInput("second")),
+    /symlink/,
+    "appendSpill refuses a symlinked spill root instead of following it"
+  );
+  assert.deepEqual(fs.readdirSync(external), [], "the external target was never written into");
+  assert.equal((await outbox.pendingHashes()).size, 1, "reads ignore the symlinked spill root");
+});
+
+test("a symlinked spill segment is ignored, never followed", async () => {
+  const filePath = tmpOutboxPath("symlink-segment");
+  const spillDir = `${filePath}.spill`;
+  fs.mkdirSync(spillDir, { mode: 0o700 });
+  fs.writeFileSync(path.join(spillDir, "segment-00000000000000000000.jsonl"), spillSegmentLine("id-real", "real"));
+  const externalFile = path.join(fs.mkdtempSync(path.join(path.dirname(filePath), "external-")), "segment-00000000000000000001.jsonl");
+  fs.writeFileSync(externalFile, spillSegmentLine("id-external", "external"));
+  fs.symlinkSync(externalFile, path.join(spillDir, "segment-00000000000000000001.jsonl"));
+
+  const outbox = new ObserveOutbox(filePath);
+  const hashes = await outbox.pendingHashes();
+  assert.deepEqual([...hashes], ["hash-real"], "only the regular segment contributes hashes");
+  assert.equal(fs.readFileSync(externalFile, "utf8").includes("id-external"), true, "the external file is untouched");
+  assert.equal(await outbox.size(), 1);
+});
+
+test("appendSpill never chmods through a symlinked spill root", async () => {
+  const filePath = tmpOutboxPath("symlink-chmod");
+  const external = fs.mkdtempSync(path.join(path.dirname(filePath), "external-"));
+  fs.chmodSync(external, 0o755);
+  fs.symlinkSync(external, `${filePath}.spill`, "dir");
+
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("first"));
+  await assert.rejects(() => outbox.enqueue(entryInput("second")), /symlink/);
+  assert.equal(fs.statSync(external).mode & 0o777, 0o755, "chmod never touched the external directory's mode");
+});
+
+test("pendingHashes returns one consistent state while an enqueue interleaves", async () => {
+  const filePath = tmpOutboxPath("pending-chain");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("first"));
+
+  // Hold the spill scan mid-flight so the concurrent enqueue can only land
+  // after the snapshot, never partway through it.
+  const gate = Promise.withResolvers<void>();
+  let gated = false;
+  const realSpillFiles = outbox["spillFiles"].bind(outbox);
+  // SAFETY: test seam into the private scanner; the real lister runs after the gate.
+  outbox["spillFiles"] = async () => {
+    if (!gated) {
+      gated = true;
+      await gate.promise;
+    }
+    return realSpillFiles();
+  };
+
+  const snapshot = outbox.pendingHashes();
+  const enqueued = outbox.enqueue(entryInput("second"));
+  gate.resolve();
+  await Promise.all([snapshot, enqueued]);
+
+  const hashes = await snapshot;
+  assert.deepEqual([...hashes], ["hash-first"], "the snapshot is the pre-enqueue state, never a torn read");
+  assert.deepEqual([...(await outbox.pendingHashes())].sort(), ["hash-first", "hash-second"], "the next read sees both");
+});
+
+test("pendingHashes still resolves when the spill scan fails, and the chain keeps working", async () => {
+  const filePath = tmpOutboxPath("pending-fail");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("first"));
+
+  const realSpillFiles = outbox["spillFiles"].bind(outbox);
+  let failing = true;
+  outbox["spillFiles"] = async () => {
+    if (failing) throw new Error("spill scan exploded");
+    return realSpillFiles();
+  };
+
+  const hashes = await outbox.pendingHashes();
+  assert.deepEqual([...hashes], ["hash-first"], "hot entries survive a failed spill scan");
+  failing = false;
+  await outbox.enqueue(entryInput("second"));
+  assert.deepEqual([...(await outbox.pendingHashes())].sort(), ["hash-first", "hash-second"], "the operation chain stays usable");
+});
