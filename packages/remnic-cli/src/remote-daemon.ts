@@ -264,7 +264,8 @@ function unreachableError(baseUrl: string): Error {
 }
 
 /**
- * Fetch one daemon endpoint. Applies the bearer token and a timeout, and
+ * Fetch one daemon endpoint. Applies the bearer token and one timeout that
+ * covers connect, headers and body, and
  * enforces the https guard: a base URL configured as `https://` must never
  * be silently rewritten to `http://host:port` — that downgrade is a loud
  * error, not a fallback (issue #2448).
@@ -290,10 +291,18 @@ async function daemonFetch(
   try {
     const headers: Record<string, string> = { accept: "application/json" };
     if (token) headers.authorization = `Bearer ${token}`;
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       headers: { ...headers, ...init?.headers as Record<string, string> | undefined },
       signal: controller.signal,
+    });
+    // Read the body inside the same deadline: a daemon that sends headers
+    // and then stalls must not hold the caller past timeoutMs.
+    const body = await response.arrayBuffer();
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
     });
   } finally {
     clearTimeout(timeoutId);

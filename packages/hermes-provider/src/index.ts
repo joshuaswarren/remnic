@@ -410,10 +410,8 @@ export class HermesClient {
           signal: controller.signal,
         });
 
-        clearTimeout(timeout);
-        timeout = undefined;
-
-        // Success responses
+        // The timer stays armed until the body is read: a daemon that sends
+        // headers and then stalls must not hold the call past timeoutMs.
         if (response.ok) {
           if (response.status === 204) return {} as T;
           return (await response.json()) as T;
@@ -437,6 +435,8 @@ export class HermesClient {
           }
           const errorBody = await response.json().catch(() => ({ error: "rate_limited", code: "rate_limited" })) as { error: string; code?: string };
           lastRateLimitError = new HermesError(429, errorBody.code ?? "rate_limited", errorBody.error);
+          clearTimeout(timeout);
+          timeout = undefined;
           if (attempt >= maxAttempts - 1) {
             throw lastRateLimitError;
           }
@@ -459,7 +459,6 @@ export class HermesClient {
         lastError = new Error(`HTTP ${response.status}`);
         continue;
       } catch (err) {
-        if (timeout !== undefined) clearTimeout(timeout);
         if (err instanceof HermesError) throw err;
         if (err instanceof DOMException && err.name === "AbortError") {
           lastError = new Error(`request timed out after ${this.timeoutMs}ms`);
@@ -467,6 +466,8 @@ export class HermesClient {
         }
         lastError = err as Error;
         continue;
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
       }
     }
 
