@@ -66,11 +66,6 @@ export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): 
     ctx.state.codingContextRepostPending = true;
     return;
   }
-  if (ctx.state.codingContextRepostPending) {
-    ctx.state.lastCodingContextSignature = null;
-    ctx.state.codingContextRepostPending = false;
-    ctx.state.codingContextMustPost = true;
-  }
   // A sync that actually runs supersedes any startup sync still queued behind
   // the probe: bump the coding-context epoch so that attach's check sees the
   // mismatch and skips instead of resolving and posting a stale cwd last.
@@ -79,15 +74,23 @@ export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): 
   // Serialize per session (wAK review): a slower earlier sync must never post
   // after a newer one. Each queued run resolves fresh, so the last post the
   // daemon sees always carries the newest resolution.
-  const run = (ctx.state.codingContextSyncChain ?? Promise.resolve()).then(() =>
-    syncSessionCodingContext({
+  const run = (ctx.state.codingContextSyncChain ?? Promise.resolve()).then(() => {
+    // Apply the recovery invalidation inside the serialized run: an earlier
+    // POST still in flight would otherwise re-latch its signature and clear
+    // mustPost after this was consumed, silently dropping the owed repost.
+    if (ctx.state.codingContextRepostPending) {
+      ctx.state.lastCodingContextSignature = null;
+      ctx.state.codingContextRepostPending = false;
+      ctx.state.codingContextMustPost = true;
+    }
+    return syncSessionCodingContext({
       sessionKey: ctx.session.sessionKey,
       cwd: ctx.session.cwd,
       state: ctx.state,
       client: ctx.client,
       resolve: ctx.resolve,
-    }),
-  );
+    });
+  });
   ctx.state.codingContextSyncChain = run;
   await run;
 }
