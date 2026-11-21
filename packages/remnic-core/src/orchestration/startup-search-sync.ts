@@ -133,7 +133,7 @@ export class StartupSearchSyncRunner {
       // Normalize an operational failure on the shared run before any caller
       // joins it: a caller without a signal (the local CLI) must get false and
       // keep its stale-index warning and cleanup, not a rejection (#3527).
-      const run = this.runStartupSearchSync(controller.signal).catch((err: unknown) => {
+      const run = this.runStartupSearchSync(controller.signal).catch((err) => {
         log.warn(`startupSearchSync: shared sync failed: ${err}`);
         return false;
       });
