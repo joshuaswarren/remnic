@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { RemnicHttpError, RemnicRequestTimeoutError, isTransientNetworkError } from "./client.js";
 import type { ObserveMessage } from "./client.js";
-import { ObserveOutbox, type ObserveOutboxEntry, classifyObserveFailure } from "./outbox.js";
+import { ObserveOutbox, type ObserveOutboxEntry, type OutboxNotify, classifyObserveFailure } from "./outbox.js";
 
 function tmpOutboxPath(label: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `remnic-outbox-${label}-`));
@@ -1043,4 +1043,102 @@ test("#3522: the drain summary counts what remains in the spill file", async () 
 
   assert.equal(result.pending, 3, "pending counts the parked spill entries, not just the hot window");
   assert.equal(result.foreign, 2, "foreign counts entries bound elsewhere in BOTH files");
+});
+
+test("#3522 review: a drain's spill consult serializes behind a concurrent spill append", async () => {
+  const filePath = tmpOutboxPath("consult-race");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue({ ...entryInput("foreign"), destination: "daemon-elsewhere" });
+  await outbox.enqueue({ ...entryInput("s0"), destination: "daemon-1" });
+
+  // Fire a concurrent spill append in the gap between the drain's chained
+  // refill and its spill consult — the interleave the review described. The
+  // consult must queue behind the in-flight append instead of reading a
+  // signature-fresh spillView that still lacks the appended entry.
+  type RefillSeam = {
+    refillFromSpill: (notify?: OutboxNotify) => Promise<boolean>;
+  };
+  const seam = outbox as unknown as RefillSeam;
+  const origRefill = seam.refillFromSpill.bind(outbox);
+  let refillCalls = 0;
+  seam.refillFromSpill = (notify?: OutboxNotify) =>
+    origRefill(notify).then((moved) => {
+      refillCalls += 1;
+      // s0 is consumed in the first pass; the second pass's consult is the one
+      // that must not miss this mid-drain append.
+      if (refillCalls === 2) {
+        void outbox.enqueue({ ...entryInput("e1"), destination: "daemon-1" }).catch(() => undefined);
+      }
+      return moved;
+    });
+
+  const sent: string[] = [];
+  await outbox.drain(
+    async (entry) => {
+      sent.push(entry.messages[0].content);
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+  assert.deepEqual(sent, ["s0", "e1"], "an eligible capture appended mid-drain must not be missed by a racing consult");
+});
+
+test("#3522 review: a failed spill failure-marker append does not bump the in-memory count", async () => {
+  const filePath = tmpOutboxPath("marker-phantom");
+  const spillPath = `${filePath}.spill`;
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue({ ...entryInput("hot"), destination: "daemon-elsewhere" });
+  await outbox.enqueue({ ...entryInput("s0"), destination: "daemon-1" });
+
+  // Refuse the durable append: the parked count must not advance in memory
+  // ahead of what is actually on disk.
+  fs.chmodSync(spillPath, 0o444);
+  await assert.rejects(
+    outbox.drain(
+      async () => {
+        throw new RemnicHttpError(500, "internal_error", "internal_error");
+      },
+      { destination: "daemon-1", sleep: async () => {} }
+    )
+  );
+  fs.chmodSync(spillPath, 0o600);
+
+  // One real recorded failure, then a blocked (401) break leaves the entry
+  // parked with its failure count on disk — compaction keeps it on the entry.
+  let calls = 0;
+  await outbox.drain(
+    async () => {
+      calls += 1;
+      if (calls === 1) throw new RemnicHttpError(500, "internal_error", "internal_error");
+      throw new RemnicHttpError(401, "unauthorized", "unauthorized");
+    },
+    { destination: "daemon-1", sleep: async () => {} }
+  );
+  const entry = fs
+    .readFileSync(spillPath, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0 && !line.includes('"$spill"'))
+    .map((line) => JSON.parse(line) as ObserveOutboxEntry)
+    .find((candidate) => candidate.messages[0].content === "s0");
+  assert.equal(entry?.failedAttempts, 1, "the unpersisted bump is gone — only real failures count");
+});
+
+test("#3522 review: clearing a marker-only spill file does not claim lines were dropped", async () => {
+  const filePath = tmpOutboxPath("marker-only");
+  const spillPath = `${filePath}.spill`;
+  fs.writeFileSync(
+    spillPath,
+    `${entryLine("ghost")}${JSON.stringify({ $spill: "consumed", id: "id-ghost" })}\n`,
+    { mode: 0o600 }
+  );
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  const notifications: string[] = [];
+  await outbox.drain(async () => undefined, {
+    notify: (message) => notifications.push(message),
+    sleep: async () => {},
+  });
+  assert.ok(!fs.existsSync(spillPath), "the marker-only file is still cleared");
+  assert.ok(
+    !notifications.some((message) => /dropped 0 unreadable/.test(message)),
+    "consumed markers are not 'unreadable dropped lines'"
+  );
 });

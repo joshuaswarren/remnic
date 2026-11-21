@@ -569,10 +569,12 @@ export class ObserveOutbox {
         // it under the lock and say so, matching the queue file's visible skip.
         if (view.skipped > 0 || view.markers > 0) {
           await this.removeSpillFile();
-          notify?.(
-            `Remnic observe outbox: dropped ${view.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the spill file held no live captures`,
-            "warning"
-          );
+          if (view.skipped > 0) {
+            notify?.(
+              `Remnic observe outbox: dropped ${view.skipped} unreadable line(s) in ${path.basename(this.spillPath)}; the spill file held no live captures`,
+              "warning"
+            );
+          }
         }
         return;
       }
@@ -718,9 +720,13 @@ export class ObserveOutbox {
       const view = await this.liveSpillView();
       const parked = view.live.find((candidate) => candidate.id === entry.id);
       if (!parked) return;
-      parked.failedAttempts = (parked.failedAttempts ?? 0) + 1;
-      attempts = parked.failedAttempts;
-      await this.appendSpillLines([spillFailedLine(entry.id, attempts)]);
+      // The count must not lead the durable record: if the append or its fsync
+      // fails, a bumped in-memory value would be re-signed with the file and
+      // report a failure that never persisted (#3522 review).
+      const recordedAttempts = (parked.failedAttempts ?? 0) + 1;
+      await this.appendSpillLines([spillFailedLine(entry.id, recordedAttempts)]);
+      parked.failedAttempts = recordedAttempts;
+      attempts = recordedAttempts;
       if (this.spillView) this.spillView.markers += 1;
     });
     return attempts;
@@ -790,9 +796,11 @@ export class ObserveOutbox {
           // hot window has no eligible candidate, so a window full of foreign or
           // session-blocked entries cannot starve spilled captures (#3520).
           const parked = (
-            await this.liveSpillView()
-              .then((view) => view.live)
-              .catch((): ObserveOutboxEntry[] => [])
+            await this.withReadChain(() =>
+              this.liveSpillView()
+                .then((view) => view.live)
+                .catch((): ObserveOutboxEntry[] => [])
+            )
           ).find((candidate) => eligible(candidate) && !skippedSessions.has(candidate.sessionKey));
           if (parked) entry = parked;
         }
@@ -886,9 +894,11 @@ export class ObserveOutbox {
     // Pending and foreign counts span both files — a drain that leaves only
     // parked spill entries must still report them, or the caller believes the
     // outbox is empty while a backlog waits (#3522 review).
-    const spillRest = await this.liveSpillView()
-      .then((view) => view.live)
-      .catch((): ObserveOutboxEntry[] => []);
+    const spillRest = await this.withReadChain(() =>
+      this.liveSpillView()
+        .then((view) => view.live)
+        .catch((): ObserveOutboxEntry[] => [])
+    );
     const foreign =
       this.entries.filter((entry) => !eligible(entry)).length +
       spillRest.filter((entry) => !eligible(entry)).length;
