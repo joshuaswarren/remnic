@@ -19,9 +19,11 @@
 //         │
 //     @remnic/coding-graph (implements against these types)
 //
-// Per #1551 PR1 — these are the full contract surface. PR2 fills the
-// extractors; PR3+ lands the walker, determinism, and grammarDir
-// behaviour behind the same `parseFile()` entry point.
+// Contract surface first declared per #1551 PR1. PR2 (real WASM tree-sitter
+// parser + tier-1 extractors) and the PR3+ walker/determinism work have
+// landed; failure paths return `{ ok: false, code: "parse_failed" }` per
+// rule 44. grammarDir is still auto-resolved by the engine, not yet wired
+// through the factory options.
 
 // ---------------------------------------------------------------------------
 // Version constant — surfaced through the engine instance so consumers can
@@ -75,8 +77,7 @@ export interface CodingGraphEngine {
   /**
    * Parse a single source file and emit its FileIR.
    *
-   * PR1 throws `CodingGraphError("not_implemented", …)`. PR2 will return
-   * `ParseResult`; failure paths come back as
+   * Never throws: load/parse failures come back as
    * `{ ok: false, code: "parse_failed", path, message }` (rule 44) rather
    * than partial / silent IR.
    */
@@ -194,10 +195,11 @@ export interface RouteIR {
 // Factory options
 // ---------------------------------------------------------------------------
 /**
- * Reserved for PR2. Declared now so the public surface is stable; the
- * options object is intentionally empty in PR1.
+ * Currently empty; `grammarDir` is auto-resolved by the engine backend.
+ * Declared now so the public surface is stable when an operator-supplied
+ * grammar directory is wired through the factory.
  */
 export interface CreateCodingGraphEngineOptions {
-  /** Reserved for PR2: extra grammar directory supplied by the operator. */
+  /** Reserved: extra grammar directory supplied by the operator. */
   readonly grammarDir?: never;
 }
