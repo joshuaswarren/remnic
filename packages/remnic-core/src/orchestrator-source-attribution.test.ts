@@ -14,6 +14,7 @@ import {
   attachCitation,
 } from "./source-attribution.js";
 import type { ExtractionResult } from "./types.js";
+import type { ExtractionPreemptHandle } from "./orchestration/extraction-queue-coordinator.js";
 
 /**
  * Issue #369 — Orchestrator-level source attribution end-to-end.
@@ -354,6 +355,105 @@ test("ingestReplayBatch globally queues source timestamps across sessions", asyn
     {
       sessionKey: "beam-cross-session-later",
       sourceValidAt: "2025-01-03T00:00:00Z",
+      content: "Later session source-dated turn.",
+    },
+  ]);
+});
+
+test("ingestReplayBatch keeps global source order when a later slice would overtake", async () => {
+  // #3532 bounded the extraction queue to concurrent slots, so slices from
+  // different sessions run in parallel and a later-sorted slice can reach
+  // extraction before an earlier one that stalls mid-flight. Hold the first
+  // slice inside its task until the later slice's extraction starts (or a
+  // bound, so serialized execution still completes) and require the sorted
+  // order either way.
+  const { orchestrator } = await makeOrchestrator({
+    extractionMinChars: 0,
+    extractionMinUserTurns: 1,
+    threadingEnabled: false,
+    extractionQueueConcurrency: 2,
+  });
+
+  const observedTargets: Array<{
+    sessionKey: string | undefined;
+    content: string;
+  }> = [];
+  let releaseLaterExtract: () => void = () => {};
+  const laterExtractStarted = new Promise<void>((resolve) => {
+    releaseLaterExtract = resolve;
+  });
+  orchestrator.extraction = {
+    extract: async (turns: any[]) => {
+      const firstTarget = turns.find(
+        (turn) => turn.extractionContextOnly !== true,
+      );
+      observedTargets.push({
+        sessionKey: firstTarget?.sessionKey,
+        content: firstTarget?.content,
+      });
+      if (firstTarget?.content === "Later session source-dated turn.") {
+        releaseLaterExtract();
+      }
+      // SAFETY: the stub returns the ExtractionResult fields the drain reads;
+      // the remaining shape is unused by the queue path under test.
+      return {
+        facts: [makeFact(`Observed cross-session slice ${observedTargets.length}.`)],
+        entities: [],
+        relationships: [],
+        questions: [],
+        profileUpdates: [],
+      } as ExtractionResult;
+    },
+  };
+
+  const coordinator = orchestrator.extractionQueueCoordinator;
+  const originalRunPreemptable = coordinator.runPreemptable.bind(coordinator);
+  let held = false;
+  coordinator.runPreemptable = async <T>(
+    preempt: ExtractionPreemptHandle | undefined,
+    preemptable: boolean,
+    parent: AbortSignal | undefined,
+    run: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
+    if (!held && preemptable === false) {
+      held = true;
+      await Promise.race([
+        laterExtractStarted,
+        new Promise<void>((resolve) => setTimeout(resolve, 250)),
+      ]);
+    }
+    return originalRunPreemptable(preempt, preemptable, parent, run);
+  };
+
+  await orchestrator.ingestReplayBatch(
+    [
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-later",
+        role: "user",
+        content: "Later session source-dated turn.",
+        timestamp: "2025-01-03T00:00:00Z",
+        sourceValidAt: "2025-01-03T00:00:00Z",
+      },
+      {
+        source: "openclaw",
+        sessionKey: "beam-cross-session-earlier",
+        role: "user",
+        content: "Earlier session source-dated turn.",
+        timestamp: "2025-01-01T00:00:00Z",
+        sourceValidAt: "2025-01-01T00:00:00Z",
+      },
+    ],
+    { archiveLcm: false },
+  );
+
+  assert.deepEqual(observedTargets, [
+    {
+      sessionKey: "beam-cross-session-earlier",
+      content: "Earlier session source-dated turn.",
+    },
+    {
+      sessionKey: "beam-cross-session-later",
       content: "Later session source-dated turn.",
     },
   ]);

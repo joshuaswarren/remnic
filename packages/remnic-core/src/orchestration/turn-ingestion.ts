@@ -369,41 +369,34 @@ export class TurnIngestionCoordinator {
       }
     }
 
-    const replayTasks = replaySlices
-      .sort((a, b) => {
-        if (a.targetValidAtMs < b.targetValidAtMs) return -1;
-        if (a.targetValidAtMs > b.targetValidAtMs) return 1;
-        if (a.order === b.order) return 0;
-        return a.order < b.order ? -1 : 1;
-      })
-      .map(
-        ({ bufferKey, turns: sessionSlice }) =>
-          new Promise<void>((resolve, reject) => {
-            void this.deps.queueBufferedExtraction(sessionSlice, "trigger_mode", {
-              skipDedupeCheck: true,
-              forceExtractionAttempt: true,
-              clearBufferAfterExtraction: false,
-              skipCharThreshold: true,
-              skipUserTurnThreshold: true,
-              bufferKey,
-              extractionDeadlineMs: options.deadlineMs,
-              abortSignal: options.abortSignal,
-              writeNamespaceOverride: options.writeNamespaceOverride,
-              principalOverride: options.principalOverride,
-              scopeProfileWritePlan: options.scopeProfileWritePlan,
-              onTaskSettled: (err) => (err ? reject(err) : resolve()),
-            }).catch(reject);
-          }),
-      );
-    if (replayTasks.length > 0) {
-      const settled = await Promise.allSettled(replayTasks);
-      const firstRejected = settled.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      if (firstRejected) {
-        throw firstRejected.reason;
-      }
+    // #3532's bounded queue runs different-key slices in parallel, so firing
+    // every sorted slice at once lets a later one extract before an earlier
+    // one stalls mid-flight. Submit them one at a time — the same serialized
+    // slice loop ingestBulkImportBatch uses — so the global source-valid_at
+    // order is the execution order, not just the enqueue order.
+    const sortedSlices = replaySlices.sort((a, b) => {
+      if (a.targetValidAtMs < b.targetValidAtMs) return -1;
+      if (a.targetValidAtMs > b.targetValidAtMs) return 1;
+      if (a.order === b.order) return 0;
+      return a.order < b.order ? -1 : 1;
+    });
+    for (const { bufferKey, turns: sessionSlice } of sortedSlices) {
+      await new Promise<void>((resolve, reject) => {
+        void this.deps.queueBufferedExtraction(sessionSlice, "trigger_mode", {
+          skipDedupeCheck: true,
+          forceExtractionAttempt: true,
+          clearBufferAfterExtraction: false,
+          skipCharThreshold: true,
+          skipUserTurnThreshold: true,
+          bufferKey,
+          extractionDeadlineMs: options.deadlineMs,
+          abortSignal: options.abortSignal,
+          writeNamespaceOverride: options.writeNamespaceOverride,
+          principalOverride: options.principalOverride,
+          scopeProfileWritePlan: options.scopeProfileWritePlan,
+          onTaskSettled: (err) => (err ? reject(err) : resolve()),
+        }).catch(reject);
+      });
     }
   }
 
