@@ -247,7 +247,7 @@ test("session start survives a locked outbox: no rejection, bounded, and the sta
 });
 
 test("#3381: a replay stopped by rejected credentials names the credentials, not daemon saturation", async () => {
-  for (const status of [401, 403, 503]) {
+  for (const status of [400, 401, 403, 503]) {
     const outboxPath = tmpOutboxPath();
     const config = drainTestConfig(outboxPath);
     const outbox = new ObserveOutbox(outboxPath);
@@ -265,6 +265,9 @@ test("#3381: a replay stopped by rejected credentials names the credentials, not
     const saturated = warnings.some((message) => message.includes("daemon saturated"));
     if (status === 503) {
       assert.ok(saturated, "a capacity stop still reports saturation");
+    } else if (status === 400) {
+      assert.ok(warnings.some((message) => message.includes("permanently rejected")), "the rejection cause reaches the user");
+      assert.equal(saturated, false, "a permanent rejection is not daemon saturation");
     } else {
       assert.ok(
         warnings.some((message) => message.includes(`rejected the request credentials (HTTP ${status})`)),

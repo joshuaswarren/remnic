@@ -73,8 +73,9 @@ test("outbox survives a process restart: entries reload and drain in order", asy
   assert.equal(await after.size(), 0);
 });
 
-test("bounded outbox evicts the oldest entry with a visible notification, never silently", async () => {
-  const outbox = new ObserveOutbox(tmpOutboxPath("bound"), { maxEntries: 2 });
+test("outbox spills overflow to disk and replays it before the hot queue after restart", async () => {
+  const filePath = tmpOutboxPath("spill-order");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 2 });
   const notifications: Array<{ message: string; level: string }> = [];
   const notify = (message: string, level: "info" | "warning" | "error") => notifications.push({ message, level });
 
@@ -82,15 +83,71 @@ test("bounded outbox evicts the oldest entry with a visible notification, never 
   await outbox.enqueue(entryInput("two"), notify);
   await outbox.enqueue(entryInput("three"), notify);
 
-  assert.equal(await outbox.size(), 2);
-  const delivered: string[] = [];
-  await outbox.drain(async (entry) => {
-    delivered.push(entry.messages[0].content);
-  });
-  assert.deepEqual(delivered, ["two", "three"]);
+  assert.equal(await outbox.size(), 3, "overflow remains accepted and queued");
+  assert.deepEqual([...await outbox.pendingHashes()], ["hash-one", "hash-two", "hash-three"]);
+  assert.deepEqual(readContents(filePath), ["two", "three"], "the hot file stays within its configured bound");
+  assert.deepEqual(readSpilledContents(filePath), ["one"], "the oldest capture is disk-backed");
+  assert.equal(fs.statSync(`${filePath}.spill`).mode & 0o777, 0o700, "the spill directory stays private");
+  assert.equal(fs.statSync(spillSegments(filePath)[0]).mode & 0o777, 0o600, "spill contents stay private");
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].message, /dropped 1 oldest/);
-  assert.equal(notifications[0].level, "warning");
+  assert.match(notifications[0].message, /spilled 1 oldest queued capture/);
+  assert.equal(notifications[0].level, "info");
+
+  const restarted = new ObserveOutbox(filePath, { maxEntries: 2 });
+  const delivered: string[] = [];
+  const result = await restarted.drain(async (entry) => { delivered.push(entry.messages[0].content); });
+  assert.deepEqual(delivered, ["one", "two", "three"], "restart preserves FIFO across spill and hot files");
+  assert.deepEqual(result, { delivered: 3, dropped: 0, pending: 0 });
+});
+
+test("legacy outbox files load and remain ordered when another writer spills", async () => {
+  const filePath = tmpOutboxPath("spill-legacy");
+  fs.writeFileSync(filePath, entryLine("legacy"));
+  const writerA = new ObserveOutbox(filePath, { maxEntries: 2 });
+  const writerB = new ObserveOutbox(filePath, { maxEntries: 2 });
+  await writerB.pendingHashes();
+  await writerA.enqueue(entryInput("second"));
+  await writerB.enqueue(entryInput("third"));
+
+  const restarted = new ObserveOutbox(filePath, { maxEntries: 2 });
+  const delivered: string[] = [];
+  await restarted.drain(async (entry) => { delivered.push(entry.messages[0].content); });
+  assert.deepEqual(delivered, ["legacy", "second", "third"]);
+});
+
+test("ambiguous failures remain durable after repeated timeouts and survive restart", async () => {
+  const filePath = tmpOutboxPath("keep-ambiguous");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("unresolved"));
+  await outbox.enqueue(entryInput("later"));
+  const first = await outbox.drain(async () => {
+    throw new RemnicRequestTimeoutError(1000);
+  }, { maxAttempts: 8, jitterRatio: 0, sleep: async () => undefined });
+
+  assert.equal(first.pending, 2, "eight ambiguous failures do not discard accepted captures");
+  assert.deepEqual(readSpilledContents(filePath), ["unresolved"], "overflow remains disk-backed");
+  const restarted = new ObserveOutbox(filePath, { maxEntries: 1 });
+  assert.equal(await restarted.size(), 2, "both captures remain after restart");
+  const delivered: string[] = [];
+  const second = await restarted.drain(async (entry) => { delivered.push(entry.messages[0].content); });
+  assert.deepEqual(delivered, ["unresolved", "later"], "FIFO retry proceeds after restart");
+  assert.equal(second.pending, 0);
+});
+
+test("a crash between spill and hot-file rewrites does not duplicate or lose a capture", async () => {
+  const filePath = tmpOutboxPath("spill-shadow");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("old"));
+  await outbox.enqueue(entryInput("new"));
+
+  const oldLine = fs.readFileSync(spillSegments(filePath)[0], "utf8").trim();
+  fs.writeFileSync(filePath, `${oldLine}\n${fs.readFileSync(filePath, "utf8")}`);
+  const recovered = new ObserveOutbox(filePath, { maxEntries: 1 });
+  assert.equal(await recovered.size(), 2, "the spill copy wins over the crash-window shadow");
+  const delivered: string[] = [];
+  await recovered.drain(async (entry) => { delivered.push(entry.messages[0].content); });
+  assert.deepEqual(delivered, ["old", "new"]);
+  assert.equal(await recovered.size(), 0);
 });
 
 test("corrupt or partially written lines are skipped without losing valid entries", async () => {
@@ -172,7 +229,7 @@ test("drain makes bounded attempts per drain and keeps undelivered entries", asy
   assert.equal(await outbox.size(), 1, "undelivered entries stay queued");
 });
 
-test("drain drops permanently rejected entries with a notification and continues", async () => {
+test("permanent rejection stays queued, reports the cause, and preserves FIFO", async () => {
   const outbox = new ObserveOutbox(tmpOutboxPath("permanent"));
   await outbox.enqueue(entryInput("bad-1", "hash-bad-1"));
   await outbox.enqueue(entryInput("good"));
@@ -181,9 +238,7 @@ test("drain drops permanently rejected entries with a notification and continues
   let sleeps = 0;
   const result = await outbox.drain(
     async (entry) => {
-      if (entry.messages[0].content === "bad-1") {
-        throw new RemnicHttpError(400, "bad request", "invalid_request");
-      }
+      if (entry.messages[0].content === "bad-1") throw new RemnicHttpError(400, "bad request", "invalid_request");
       delivered.push(entry.messages[0].content);
     },
     {
@@ -194,11 +249,12 @@ test("drain drops permanently rejected entries with a notification and continues
     }
   );
 
-  assert.deepEqual(delivered, ["good"]);
-  assert.deepEqual(result, { delivered: 1, dropped: 1, pending: 0 });
-  assert.equal(sleeps, 0, "permanent failures are not retried");
+  assert.deepEqual(delivered, []);
+  assert.deepEqual(result, { delivered: 0, dropped: 0, pending: 2 });
+  assert.equal(sleeps, 0, "permanent failures are not retried inside this drain");
+  assert.equal(await outbox.size(), 2, "the capture stays available for a later retry");
   assert.equal(notifications.length, 1);
-  assert.match(notifications[0].message, /dropped 1 capture/);
+  assert.match(notifications[0].message, /remains queued for retry/);
   assert.equal(notifications[0].level, "warning");
 });
 
@@ -218,8 +274,7 @@ test("classifyObserveFailure separates retryable backpressure from permanent rej
   assert.ok(isTransientNetworkError(networkErr));
   assert.equal(classifyObserveFailure(networkErr), "retry-ambiguous");
   assert.equal(classifyObserveFailure(new RemnicHttpError(400, "bad request", "invalid_request")), "permanent");
-  // #3381: an unrecognized 5xx is ambiguous, not a verdict on the payload; the
-  // per-entry failure cap is what drops a deterministic 5xx like this one.
+  // #3381: an unrecognized 5xx is ambiguous, not a verdict on the payload.
   assert.equal(
     classifyObserveFailure(new RemnicHttpError(500, "storage target missing", "storage_target_missing")),
     "retry-ambiguous"
@@ -357,6 +412,18 @@ function readContents(file: string): string[] {
   return entries.map((entry) => entry.messages[0].content);
 }
 
+function spillSegments(filePath: string): string[] {
+  return fs
+    .readdirSync(`${filePath}.spill`)
+    .filter((name) => /^segment-\d{20}\.jsonl$/.test(name))
+    .sort()
+    .map((name) => path.join(`${filePath}.spill`, name));
+}
+
+function readSpilledContents(filePath: string): string[] {
+  return spillSegments(filePath).flatMap(readContents);
+}
+
 test("REVIEW 2: two processes sharing one outbox file keep each other's entries", async () => {
   const file = tmpOutboxPath("two-procs");
   const procA = new ObserveOutbox(file);
@@ -369,12 +436,14 @@ test("REVIEW 2: two processes sharing one outbox file keep each other's entries"
 
 test("many concurrent writers never lose an entry and leave no stray temp files", async () => {
   const file = tmpOutboxPath("many-writers");
-  const writers = Array.from({ length: 12 }, () => new ObserveOutbox(file));
+  const writers = Array.from({ length: 12 }, () => new ObserveOutbox(file, { maxEntries: 2 }));
   await Promise.all(writers.map((writer, i) => writer.enqueue(entryInput(`w${i}`))));
-  assert.deepEqual(
-    readContents(file).sort(),
-    Array.from({ length: 12 }, (_, i) => `w${i}`).sort(),
-  );
+  const expected = Array.from({ length: 12 }, (_, i) => `w${i}`).sort();
+  const persisted = [...readSpilledContents(file), ...readContents(file)];
+  assert.deepEqual([...persisted].sort(), expected, "every concurrent writer survives spill");
+  const replayed: string[] = [];
+  await new ObserveOutbox(file, { maxEntries: 2 }).drain(async (entry) => { replayed.push(entry.messages[0].content); });
+  assert.deepEqual(replayed, persisted, "restart replays concurrent writes in persisted FIFO order");
   const strays = fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith(".tmp"));
   assert.deepEqual(strays, [], "temp files are unique per write and renamed away");
 });
@@ -396,7 +465,7 @@ test("a drain removes only the entry it delivered and keeps what another process
   assert.equal(readContents(file).length, 0);
 });
 
-test("classifyObserveFailure keeps rate limits and gateway errors, parks auth, drops semantic rejections", () => {
+test("classifyObserveFailure keeps rate limits and gateway errors, keeps auth queued, and retains semantic rejections", () => {
   const cls = (status: number) => classifyObserveFailure(new RemnicHttpError(status, "x", "x"));
   assert.equal(cls(429), "retry-capacity");
   assert.equal(cls(503), "retry-capacity");
@@ -456,32 +525,60 @@ test("a drain that finds another drain running reports skipped so callers do not
   assert.equal(done.skipped, undefined, "the real drain is not marked skipped");
 });
 
-test("every eviction warns with the count of captures dropped, not just the first", async () => {
-  const outbox = new ObserveOutbox(tmpOutboxPath("evict-each"), { maxEntries: 2 });
-  const warnings: string[] = [];
-  const notify = (message: string, level: "info" | "warning" | "error") => {
-    if (level === "warning") warnings.push(message);
-  };
+test("overflow spills captures instead of evicting them", async () => {
+  const filePath = tmpOutboxPath("spill-each");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 2 });
+  const notices: string[] = [];
+  const notify = (message: string) => notices.push(message);
   for (const c of ["a", "b", "c", "d", "e"]) await outbox.enqueue(entryInput(c), notify);
-  assert.equal(warnings.length, 3, "one warning for each of the three evictions");
-  for (const warning of warnings) {
-    assert.match(warning, /dropped 1 oldest queued capture\(s\)/);
-    assert.match(warning, /2-entry bound/);
+  assert.equal(await outbox.size(), 5, "all accepted captures remain queued");
+  assert.deepEqual(readSpilledContents(filePath), ["a", "b", "c"], "overflow is stored in FIFO order");
+  assert.equal(spillSegments(filePath).length, 2, "spill storage uses bounded-size segments");
+  assert.equal(notices.length, 3, "each spill operation is surfaced");
+  for (const notice of notices) {
+    assert.match(notice, /spilled 1 oldest queued capture\(s\)/);
+    assert.match(notice, /2-entry in-memory bound/);
   }
 });
 
-test("a dropped 4xx capture is logged with its HTTP status and replay key", async () => {
-  const outbox = new ObserveOutbox(tmpOutboxPath("drop-4xx"));
+test("the default 200-entry hot queue spills additional captures to bounded disk segments", async () => {
+  const filePath = tmpOutboxPath("default-spill-bound");
+  const outbox = new ObserveOutbox(filePath);
+  for (let i = 0; i < 205; i += 1) await outbox.enqueue(entryInput(`capture-${i}`));
+
+  assert.equal(await outbox.size(), 205);
+  assert.equal(readContents(filePath).length, 200, "only the configured hot capacity stays in memory");
+  assert.deepEqual(readSpilledContents(filePath), Array.from({ length: 5 }, (_, i) => `capture-${i}`));
+  assert.deepEqual(spillSegments(filePath).map((file) => readContents(file).length), [5]);
+});
+
+test("a spill storage failure rejects enqueue without replacing the existing hot queue", async () => {
+  const filePath = tmpOutboxPath("spill-failure");
+  const outbox = new ObserveOutbox(filePath, { maxEntries: 1 });
+  await outbox.enqueue(entryInput("kept"));
+  fs.writeFileSync(`${filePath}.spill`, "not a directory");
+
+  await assert.rejects(() => outbox.enqueue(entryInput("not-accepted")));
+  assert.deepEqual(readContents(filePath), ["kept"], "the prior durable queue is unchanged");
+  assert.equal(await outbox.size(), 1, "read-only status keeps the last known queue");
+});
+
+test("a permanent 4xx stays queued with its HTTP status and replay key", async () => {
+  const filePath = tmpOutboxPath("keep-4xx");
+  const outbox = new ObserveOutbox(filePath);
   await outbox.enqueue({ ...entryInput("rejected"), replayNonce: "nonce-for-rejected" });
   const notifications: string[] = [];
   const result = await outbox.drain(async () => {
     throw new RemnicHttpError(422, "unprocessable", "invalid_request");
   }, { notify: (message) => notifications.push(message), sleep: async () => undefined });
-  assert.equal(result.dropped, 1, "a retry cannot fix a 4xx, so it is still dropped");
+  assert.equal(result.dropped, 0);
+  assert.equal(result.pending, 1, "permanent rejections remain available for retry");
   assert.equal(notifications.length, 1);
   assert.match(notifications[0], /HTTP 422/, "the status is in the log line");
   assert.match(notifications[0], /nonce-for-rejected/, "and so is the key that identifies the capture");
+  assert.match(notifications[0], /remains queued for retry/);
 });
+
 
 test("an unreadable existing outbox fails the write instead of being treated as empty (#3381)", async () => {
   const file = tmpOutboxPath("unreadable");
@@ -555,28 +652,22 @@ test("#3381: a looser file is tightened on write; a pre-existing directory keeps
   assert.equal(fs.statSync(path.dirname(filePath)).mode & 0o777, 0o755, "a directory the outbox did not create is left alone");
 });
 
-test("a transient 500 is retried, not dropped, but a deterministic one cannot block the queue forever", async () => {
-  // #3381 item 4: an internal_error answer is transient far more often than it
-  // is semantic; classify it retry-ambiguous and cap each entry's failures so a
-  // deterministic 500 still falls out of the FIFO instead of pinning it.
+test("repeated 500 responses never discard a queued capture", async () => {
   assert.equal(classifyObserveFailure(new RemnicHttpError(500, "internal_error", "internal_error")), "retry-ambiguous");
   assert.equal(classifyObserveFailure(new RemnicHttpError(599, "x", "x")), "retry-ambiguous");
   assert.equal(classifyObserveFailure(new RemnicHttpError(400, "x", "x")), "permanent");
 
   const outbox = new ObserveOutbox(tmpOutboxPath("five-hundred"));
   await outbox.enqueue(entryInput("server-erroring"));
-  const notifications: string[] = [];
   const fail = async () => {
     throw new RemnicHttpError(500, "internal_error", "internal_error");
   };
-  const options = { sleep: async () => {}, notify: (message: string) => notifications.push(message) };
-  const first = await outbox.drain(fail, options);
-  assert.equal(await outbox.size(), 1, "a 500 keeps the capture queued for replay");
-  assert.equal(first.dropped, 0);
-  const second = await outbox.drain(fail, options);
-  assert.equal(second.dropped, 1, "the per-entry cap drops a deterministic 500");
-  assert.equal(await outbox.size(), 0);
-  assert.ok(notifications.some((m) => /gave up|dropped/i.test(m)), "the drop is surfaced, not silent");
+  for (let run = 0; run < 3; run += 1) {
+    const result = await outbox.drain(fail, { sleep: async () => undefined });
+    assert.equal(result.dropped, 0);
+    assert.equal(result.pending, 1, "repeated ambiguous failures keep the capture queued");
+    assert.equal(await outbox.size(), 1);
+  }
 });
 
 test("a drain only sends entries queued for its own daemon and leaves the rest for their destination", async () => {
