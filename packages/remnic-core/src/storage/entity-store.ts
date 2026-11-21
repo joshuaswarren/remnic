@@ -79,7 +79,7 @@ export interface EntityStoreDeps {
   getEntityMutationVersion(): number;
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
-  knowledgeIndexCache: { scored: ScoredEntity[]; builtAt: number; revision: number } | null;
+  knowledgeIndexCache: { scored: ScoredEntity[]; builtAt: number; revision: number; keyId: string } | null;
   okfConformanceEnabled(): boolean;
   normalizeEntityName(raw: string, type: string): string;
   readAllEntityFiles(): Promise<EntityFile[]>;
@@ -784,9 +784,15 @@ export class EntityStore {
     // (knowledge-index-peer-write.test.ts): a TTL-fresh cache at a stale
     // revision would serve a corpus the directory has already outgrown.
     const liveRevision = this.deps.getEntityMutationVersion();
+    // The corpus under the index is encrypted: the cache entry must also name
+    // the secure-store key it was built under. A lock or relock mid-scan does
+    // not advance the entity revision, so a revision-only stamp would let a
+    // decrypted corpus publish past the lock and serve while locked (#3530).
+    const liveKeyId = this.deps.getEntityCacheSecureStoreKey();
     if (
       cache &&
       cache.revision === liveRevision &&
+      cache.keyId === liveKeyId &&
       Date.now() - cache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
     ) {
       scored = cache.scored;
@@ -802,12 +808,17 @@ export class EntityStore {
         summary: e.synthesis ?? e.summary,
         topRelationships: e.relationships.slice(0, 3).map((r) => r.target),
       }));
-      scored.sort((a, b) => b.score - a.score);
+      scored.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
       // Publish only when the shared revision held across the corpus read:
       // a peer write landing mid-scan must not pin a half-seen corpus under
-      // a revision the next call already knows is stale.
-      if (this.deps.getEntityMutationVersion() === liveRevision) {
-        this.deps.knowledgeIndexCache = { scored, builtAt: Date.now(), revision: liveRevision };
+      // a revision the next call already knows is stale. The secure-store key
+      // must also hold: a lock landing mid-scan leaves the revision untouched
+      // while the just-read plaintext must not persist into a locked cache.
+      if (
+        this.deps.getEntityMutationVersion() === liveRevision &&
+        this.deps.getEntityCacheSecureStoreKey() === liveKeyId
+      ) {
+        this.deps.knowledgeIndexCache = { scored, builtAt: Date.now(), revision: liveRevision, keyId: liveKeyId };
       }
     }
 
