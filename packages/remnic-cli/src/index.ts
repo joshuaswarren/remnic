@@ -5229,7 +5229,8 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
-  await joinStartupSyncOrWarn(orchestrator);
+  // No startup-sync join here: who-knows and promotion-candidates read memories
+  // from storage, not the search index, so a join would only add latency (#3527).
   const service = new EngramAccessService(orchestrator);
   try {
     return await fn(service, orchestrator);

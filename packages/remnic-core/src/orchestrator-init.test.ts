@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
+import { initLogger, resetLogger } from "./logger.js";
 import { NoopSearchBackend } from "./search/noop-backend.js";
 
 /**
@@ -102,9 +103,9 @@ test("initialize and its init gate survive an enabled catalog planner timeout", 
       ensuredNamespaces.push(namespace);
       return "present";
     };
-    (orchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => {
+    (orchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => {
       updatedNamespaces.push([...namespaces]);
-      return namespaces.length;
+      return { backendCount: namespaces.length, eligibleNamespaces: [...namespaces] };
     };
 
     const initPromise = (orchestrator as any).initPromise as Promise<void>;
@@ -234,9 +235,9 @@ test("aborted deferred and retry discovery do not start QMD work after the sourc
       ensureStarts += 1;
       return "present";
     };
-    (orchestrator as any).namespaceSearchRouter.updateNamespaces = async () => {
+    (orchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateStarts += 1;
-      return 1;
+      return { backendCount: 1, eligibleNamespaces: [...ns] };
     };
 
     const deferred = (orchestrator as any).deferredInitialize(deferredAbort.signal);
@@ -334,9 +335,9 @@ test("a late correction catalog result recovers a dynamic stale plan once withou
       ensuredNamespaces.push(namespace);
       return "present";
     };
-    (orchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => {
+    (orchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => {
       updatedNamespaces.push([...namespaces]);
-      return namespaces.length;
+      return { backendCount: namespaces.length, eligibleNamespaces: [...namespaces] };
     };
 
     const initialized = await withTestDeadline(orchestrator.initialize().then(() => "settled" as const));
@@ -452,9 +453,9 @@ test("destroy retires a timed-out correction catalog epoch while a fresh epoch r
       firstEnsuredNamespaces.push(namespace);
       return "present";
     };
-    (firstOrchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => {
+    (firstOrchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => {
       firstUpdatedNamespaces.push([...namespaces]);
-      return namespaces.length;
+      return { backendCount: namespaces.length, eligibleNamespaces: [...namespaces] };
     };
 
     const firstInitialized = await withTestDeadline(firstOrchestrator.initialize().then(() => "settled" as const));
@@ -545,7 +546,7 @@ test("destroy retires a timed-out correction catalog epoch while a fresh epoch r
       freshEnsuredNamespaces.push(namespace);
       return "present";
     };
-    (freshOrchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => namespaces.length;
+    (freshOrchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => ({ backendCount: namespaces.length, eligibleNamespaces: [...namespaces] });
 
     const freshInitialized = await withTestDeadline(freshOrchestrator.initialize().then(() => "settled" as const));
     assert.equal(freshInitialized, "settled", "a fresh orchestrator must start a new epoch");
@@ -632,9 +633,9 @@ test("startup retries share one pending maintenance discovery and only a later r
       ensuredNamespaces.push(namespace);
       return "present";
     };
-    (orchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => {
+    (orchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => {
       updatedNamespaces.push([...namespaces]);
-      return namespaces.length;
+      return { backendCount: namespaces.length, eligibleNamespaces: [...namespaces] };
     };
 
     const initialized = await withTestDeadline(orchestrator.initialize().then(() => "settled" as const));
@@ -859,7 +860,7 @@ test("a superseded paused initializer cannot admit discovery or resolve the newe
     };
     (orchestrator as any).namespaceSearchRouter.clearCache = () => undefined;
     (orchestrator as any).namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
-    (orchestrator as any).namespaceSearchRouter.updateNamespaces = async (namespaces: string[]) => namespaces.length;
+    (orchestrator as any).namespaceSearchRouter.updateNamespacesDetailed = async (namespaces: string[]) => ({ backendCount: namespaces.length, eligibleNamespaces: [...namespaces] });
 
     const initGate = (orchestrator as any).initPromise as Promise<void>;
     let initGateSettled = false;
@@ -1988,6 +1989,132 @@ test("one-shot query joins the post-ready sync instead of reading a stale index 
     assert.equal(updateCalls, 1, "the join must not spawn a second update");
   } finally {
     release?.();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+function syncTestConfig(memoryDir: string, namespacesEnabled: boolean) {
+  return parseConfig({
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: true,
+    qmdMaintenanceEnabled: true,
+    namespacesEnabled,
+    namespaceCatalogEnabled: false,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [],
+    embeddingFallbackEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    compoundingEnabled: false,
+    knowledgeIndexEnabled: false,
+  });
+}
+
+function syncTestQmd(overrides: Record<string, unknown> = {}) {
+  return {
+    probe: async () => true,
+    debugStatus: () => "synthetic-qmd",
+    isAvailable: () => true,
+    search: async () => [],
+    ensureCollection: async () => "present",
+    update: async () => undefined,
+    // SAFETY: the qmd timestamps are nullable number fields on the private
+    // backend shape; literal values keep the stub honest.
+    lastUpdateRanAtMs: 1 as number | null,
+    lastUpdateFailedAtMs: null as number | null,
+    resetUpdateThrottles: () => undefined,
+    ...overrides,
+  };
+}
+
+test("a rejected shared startup sync resolves false for callers with and without a signal (#3527)", async () => {
+  // The local CLI joins without a signal. A rejection would skip its
+  // stale-index warning, its query and its cleanup, so a failed shared run
+  // must settle every caller with false.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sync-reject-"));
+  const orchestrator = new Orchestrator(syncTestConfig(memoryDir, false));
+  const warnings: string[] = [];
+  initLogger({ info() {}, warn: (msg) => { warnings.push(msg); }, error() {}, debug() {} }, false);
+  try {
+    // SAFETY: the stub covers every qmd member startupSearchSync touches;
+    // the field is private so the test injects it through `any`.
+    (orchestrator as any).qmd = syncTestQmd({
+      ensureCollection: async () => { throw new Error("collection check exploded"); },
+    });
+    const unsignalled = orchestrator.startupSearchSync().then(
+      (value) => ({ settled: "resolved", value }),
+      (err: unknown) => ({ settled: "rejected", value: String(err) }),
+    );
+    const signalled = orchestrator.startupSearchSync(new AbortController().signal);
+    assert.deepEqual(await unsignalled, { settled: "resolved", value: false });
+    assert.equal(await signalled, false);
+    assert.ok(
+      warnings.some((msg) => msg.includes("collection check exploded")),
+      "the failure detail stays in the log",
+    );
+  } finally {
+    resetLogger();
+    await orchestrator.destroy().catch(() => undefined);
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
+});
+
+test("a startup sync that skips a namespace names it and counts namespaces, not backends (#3527)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-sync-coverage-"));
+  const orchestrator = new Orchestrator(syncTestConfig(memoryDir, true));
+  const warnings: string[] = [];
+  const infos: string[] = [];
+  initLogger({
+    info: (msg) => { infos.push(msg); },
+    warn: (msg) => { warnings.push(msg); },
+    error() {},
+    debug() {},
+  }, false);
+  // SAFETY: the router and qmd are private orchestrator seams the
+  // neighbouring lifecycle tests stub the same way.
+  const orch = orchestrator as any;
+  try {
+    orch.qmd = syncTestQmd();
+    orch.maintenanceNamespaces = () => Promise.resolve(orch.configuredNamespaceList());
+    // "shared" has a missing collection: the router excludes it from the
+    // update while the default namespace's backend still updates.
+    orch.namespaceSearchRouter.ensureNamespaceCollection = async (namespace: string) =>
+      namespace === "shared" ? "missing" : "present";
+    orch.namespaceSearchRouter.updateNamespacesDetailed = async () => ({
+      backendCount: 1,
+      eligibleNamespaces: ["default"],
+    });
+
+    const synced = await orchestrator.startupSearchSync();
+
+    assert.equal(synced, true, "a namespace with no collection has no index to refresh, so it does not fail the sync");
+    assert.ok(
+      warnings.some((msg) => msg.includes("skipped") && msg.includes("shared")),
+      `the skipped namespace must be reported by name; warnings: ${JSON.stringify(warnings)}`,
+    );
+
+    // One global backend updates both namespaces: the success line must count
+    // two namespaces, not one backend.
+    warnings.length = 0;
+    infos.length = 0;
+    orch.namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
+    orch.namespaceSearchRouter.updateNamespacesDetailed = async () => ({
+      backendCount: 1,
+      eligibleNamespaces: ["default", "shared"],
+    });
+    orch.deferredSyncSucceeded = false;
+    assert.equal(await orchestrator.startupSearchSync(), true);
+    assert.ok(
+      infos.some((msg) => msg.includes("2/2 namespaces updated")),
+      `the success line counts namespaces; infos: ${JSON.stringify(infos)}`,
+    );
+    assert.deepEqual(warnings, []);
+  } finally {
+    resetLogger();
     await orchestrator.destroy().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }

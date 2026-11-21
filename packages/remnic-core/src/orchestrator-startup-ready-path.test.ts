@@ -70,10 +70,10 @@ test("deferredInitialize resolves without the corpus update and leaves the retry
   const deps = asDeps(orchestrator);
   try {
     deps.qmd = blockingUpdateQmd(updateCalls);
-    deps.namespaceSearchRouter.updateNamespaces = async () => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await new Promise<void>(() => {});
-      return 0;
+      return { backendCount: 0, eligibleNamespaces: [] };
     };
     stubWarmupDeps(deps);
 
@@ -108,10 +108,10 @@ test("startupSearchReadySync probes and ensures collections without running the 
       ensured.push(ns);
       return "present";
     };
-    deps.namespaceSearchRouter.updateNamespaces = async () => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await new Promise<void>(() => {});
-      return 0;
+      return { backendCount: 0, eligibleNamespaces: [] };
     };
 
     const ready = await Promise.race([
@@ -163,9 +163,9 @@ test("startupSearchSync still runs the corpus update over the catalog union for 
     ];
     deps.namespaceSearchRouter.clearCache = () => undefined;
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updates.push([...ns]);
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const synced = await orchestrator.startupSearchSync(new AbortController().signal);
@@ -212,10 +212,10 @@ test("startupSearchReadySync joins an in-flight full sync's backend phase and re
       await ensureGate.promise;
       return "present";
     };
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
       await updateGate.promise;
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const signal = new AbortController().signal;
@@ -287,9 +287,9 @@ test("an unknown collection state keeps the readiness and full syncs unready (wA
     // startup syncs must not claim readiness off an unverified ensure. A
     // zero-result healthy warm-up on top must not open the gate as warmed.
     deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "unknown";
-    deps.namespaceSearchRouter.updateNamespaces = async (ns: string[]) => {
+    deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
       updateCalls.push(1);
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     };
 
     const signal = new AbortController().signal;
@@ -529,10 +529,10 @@ function stubSharedSyncDeps(orchestrator: Orchestrator, gate: Promise<void>, onU
   deps.namespaceSearchRouter.ensureNamespaceCollection = async () => "present";
   // The test config is namespace-enabled: the corpus update runs through the
   // namespace router, not the single-collection `qmd.update`.
-  deps.namespaceSearchRouter.updateNamespaces = async () => {
+  deps.namespaceSearchRouter.updateNamespacesDetailed = async (ns: string[]) => {
     onUpdate?.();
     await gate;
-    return 1;
+    return { backendCount: 1, eligibleNamespaces: [...ns] };
   };
   return deps;
 }

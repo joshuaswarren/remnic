@@ -130,7 +130,13 @@ export class StartupSearchSyncRunner {
       flight.controller.signal.aborted
     ) {
       const controller = new AbortController();
-      const run = this.runStartupSearchSync(controller.signal);
+      // Normalize an operational failure on the shared run before any caller
+      // joins it: a caller without a signal (the local CLI) must get false and
+      // keep its stale-index warning and cleanup, not a rejection (#3527).
+      const run = this.runStartupSearchSync(controller.signal).catch((err: unknown) => {
+        log.warn(`startupSearchSync: shared sync failed: ${err}`);
+        return false;
+      });
       const next: StartupSyncFlight = {
         epoch,
         promise: run,
@@ -143,18 +149,15 @@ export class StartupSearchSyncRunner {
         if (this.startupSyncInFlight === next) this.startupSyncInFlight = undefined;
         for (const remove of next.cleanup) remove();
       };
-      run.then(settle, settle);
+      void run.then(settle);
       // A completed sync publishes success for its epoch directly — not only
       // through the post-ready .then() — so a joiner, a server retry or an
       // abortDeferredInit() that lands first never re-runs `qmd update`.
-      run.then(
-        (synced) => {
-          if (synced && !controller.signal.aborted && this.host.isCurrentStartupEpoch(epoch)) {
-            this.host.deps.deferredSyncSucceeded = true;
-          }
-        },
-        () => undefined,
-      );
+      void run.then((synced) => {
+        if (synced && !controller.signal.aborted && this.host.isCurrentStartupEpoch(epoch)) {
+          this.host.deps.deferredSyncSucceeded = true;
+        }
+      });
       flight = next;
     }
     // Each caller holds the shared run open until its own signal aborts; the
@@ -170,16 +173,10 @@ export class StartupSearchSyncRunner {
         };
         signal.addEventListener("abort", onCallerAbort, { once: true });
         held.cleanup.push(() => signal.removeEventListener("abort", onCallerAbort));
-        held.promise.then(
-          (result) => {
-            signal.removeEventListener("abort", onCallerAbort);
-            resolve(result);
-          },
-          () => {
-            signal.removeEventListener("abort", onCallerAbort);
-            resolve(false);
-          },
-        );
+        void held.promise.then((result) => {
+          signal.removeEventListener("abort", onCallerAbort);
+          resolve(result);
+        });
       });
     }
     return flight.promise;
@@ -219,10 +216,10 @@ export class StartupSearchSyncRunner {
         }
         log.info("startupSearchSync: updating index to match current disk state");
         const updateAbort = this.host.linkedEpochAbortController(epoch, signal);
-        let namespacesUpdated = 0;
+        let namespaceUpdate: { backendCount: number; eligibleNamespaces: string[] } | null = null;
         try {
           if (resolveNamespaceCapabilities(this.host.deps.config).namespaces) {
-            namespacesUpdated = await this.host.deps.namespaceSearchRouter.updateNamespaces(
+            namespaceUpdate = await this.host.deps.namespaceSearchRouter.updateNamespacesDetailed(
               namespaces,
               { signal: updateAbort.controller.signal },
             );
@@ -250,12 +247,22 @@ export class StartupSearchSyncRunner {
           log.warn("startupSearchSync: update silently failed (detected via fail timestamp)");
           return false;
         }
-        if (resolveNamespaceCapabilities(this.host.deps.config).namespaces) {
-          if (namespacesUpdated === 0) {
+        if (namespaceUpdate !== null) {
+          if (namespaceUpdate.backendCount === 0) {
             log.warn("startupSearchSync: no namespace backends were eligible for update (all unavailable or collections missing)");
             return false;
           }
-          log.info(`startupSearchSync: namespace updates succeeded (${namespacesUpdated}/${namespaces.length} namespaces updated)`);
+          // The router skips a namespace whose backend is unavailable or whose
+          // collection is missing. Name each one so a partial update is never
+          // reported as full coverage (#3527). It does not fail the sync: a
+          // missing collection has no index to refresh, and a false here would
+          // re-run the corpus update on every server retry.
+          const eligible = new Set(namespaceUpdate.eligibleNamespaces);
+          const skipped = namespaces.filter((namespace) => !eligible.has(namespace));
+          if (skipped.length > 0) {
+            log.warn(`startupSearchSync: skipped namespaces with no available backend or collection: ${skipped.join(", ")}`);
+          }
+          log.info(`startupSearchSync: namespace updates succeeded (${eligible.size}/${namespaces.length} namespaces updated)`);
         } else if (hasRunTs && runTsAfter === null) {
           log.warn("startupSearchSync: update was throttled/skipped (run timestamp is null after reset + update)");
           return false;

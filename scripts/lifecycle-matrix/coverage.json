@@ -120,6 +120,7 @@
     "packages/remnic-core/src/orchestration/semantic-merge-promotion-payload.ts",
     "packages/remnic-core/src/orchestration/session-context.ts",
     "packages/remnic-core/src/orchestration/startup-collection-checks.ts",
+    "packages/remnic-core/src/orchestration/startup-search-sync.ts",
     "packages/remnic-core/src/orchestration/task-exit.ts",
     "packages/remnic-core/src/orchestration/tier-migration-coordinator.ts",
     "packages/remnic-core/src/orchestration/turn-ingestion-buffered.ts",
