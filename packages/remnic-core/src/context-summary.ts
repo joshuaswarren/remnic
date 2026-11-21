@@ -143,7 +143,7 @@ async function attemptLlm(
 
 /** Deterministic truncation: first and last sentence, plus middle truncation. */
 export function deterministicTruncate(text: string, maxTokens: number): string {
-  if (maxTokens <= 0 || estimateTokenCount(text) <= maxTokens) return text;
+  if (estimateTokenCount(text) <= maxTokens) return text;
 
   const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 0);
   if (sentences.length <= 2) return clampToTokenBudget(text, maxTokens);
