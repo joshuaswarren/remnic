@@ -108,7 +108,7 @@ export interface AccessRecallSurfaceDeps {
   ): Promise<EngramAccessMemorySummary["rawExcerpts"] | null>;
   maybeAttachCodingContext(
     sessionKey: string | undefined,
-    options: { cwd?: string; projectTag?: string },
+    options: { cwd?: string; projectTag?: string; authenticatedPrincipal?: string },
   ): Promise<void>;
   normalizeRecallMode(mode?: RecallPlanMode | "auto"): RecallPlanMode | undefined;
   readonly orchestrator: Orchestrator;
@@ -685,6 +685,7 @@ export class AccessRecallSurface {
       this.deps.setCodingContext({
         sessionKey: request.sessionKey,
         codingContext: request.codingContext,
+        authenticatedPrincipal: request.authenticatedPrincipal, remote: true,
       });
     }
     // Auto-resolve coding context from cwd/projectTag when no explicit
@@ -693,8 +694,8 @@ export class AccessRecallSurface {
     // transparently.
     if (request.codingContext === undefined && request.sessionKey) {
       await this.deps.maybeAttachCodingContext(request.sessionKey, {
-        cwd: request.cwd,
-        projectTag: request.projectTag,
+        cwd: request.cwd, projectTag: request.projectTag,
+        authenticatedPrincipal: request.authenticatedPrincipal,
       });
     }
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();

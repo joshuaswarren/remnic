@@ -117,6 +117,9 @@ export function copyBufferTurn(turn: BufferTurn): BufferTurn {
       rootPath: ctx.rootPath,
       defaultBranch: ctx.defaultBranch,
     };
+    if (ctx.remote === true) {
+      copy.codingContext.remote = true;
+    }
   }
   return copy;
 }

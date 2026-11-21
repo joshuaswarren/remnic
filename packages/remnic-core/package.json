@@ -605,6 +605,16 @@
       "remnic-source": "./src/coding/coding-graph-types.ts",
       "import": "./dist/coding/coding-graph-types.js"
     },
+    "./coding/git-context": {
+      "types": "./dist/coding/git-context.d.ts",
+      "remnic-source": "./src/coding/git-context.ts",
+      "import": "./dist/coding/git-context.js"
+    },
+    "./coding/git-context.js": {
+      "types": "./dist/coding/git-context.d.ts",
+      "remnic-source": "./src/coding/git-context.ts",
+      "import": "./dist/coding/git-context.js"
+    },
     "./coding/pre-action-gate": {
       "types": "./dist/coding/pre-action-gate.d.ts",
       "remnic-source": "./src/coding/pre-action-gate.ts",

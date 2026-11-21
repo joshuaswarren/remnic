@@ -809,6 +809,8 @@ test("HTTP coding-context endpoint accepts projectTag shorthand", async () => {
           rootPath: projectId,
           defaultBranch: null,
         },
+        authenticatedPrincipal: undefined,
+        remote: true,
       },
     ]);
   } finally {

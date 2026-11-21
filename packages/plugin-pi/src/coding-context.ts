@@ -1,0 +1,152 @@
+/**
+ * Client-side coding context sync (#3515). The daemon's server-side
+ * `resolveGitContext(cwd)` runs git on ITS filesystem — a remote pane's cwd
+ * usually does not exist there, so resolution silently fails and the session
+ * lands in the default overlay. The pane host has the real cwd, so it resolves
+ * locally and posts the result through `POST /engram/v1/coding-context`.
+ * Server-side cwd resolution remains the fallback for same-host daemons.
+ */
+import { probeGitContext, type GitContext, type GitContextProbeResult } from "@remnic/core/coding/git-context";
+
+import type { SetCodingContextResponse } from "./client.js";
+
+export interface CodingContextCarrier {
+  setCodingContext(sessionKey: string, codingContext: GitContext | null): Promise<SetCodingContextResponse>;
+}
+
+export interface CodingContextSyncState {
+  /** Signature of the last context the daemon accepted; null = nothing posted. */
+  lastCodingContextSignature: string | null;
+  /**
+   * Set when a sync observed the daemon unreachable: a restart there wipes the
+   * per-session context map, so the latched signature may no longer be true.
+   * The next reachable sync clears the latch and re-posts the current context.
+   */
+  codingContextRepostPending: boolean;
+  /**
+   * The latched signature only tracks posts the daemon is known to have
+   * accepted. Reachability loss and a failed post both leave the daemon
+   * binding unknown (a restart wipes it; a lost response may have applied
+   * it), so the next conclusive sync must post — including a clear — even
+   * when the resolved signature matches the latch.
+   */
+  codingContextMustPost?: boolean;
+  /**
+   * Bumped each time a sync runs, so a startup sync queued behind the probe
+   * skips when a newer observation already posted — its stale cwd must never
+   * be the last write the daemon sees.
+   */
+  codingContextSyncEpoch?: number;
+  /** In-flight/queued sync — serializes posts so the newest resolution always lands last. */
+  codingContextSyncChain?: Promise<void>;
+}
+
+export interface SyncCodingContextOptions {
+  sessionKey: string;
+  cwd: string;
+  state: CodingContextSyncState;
+  client: CodingContextCarrier;
+  /** Injectable for tests; defaults to the shared core probe. */
+  resolve?: (cwd: string) => Promise<GitContextProbeResult>;
+}
+
+export interface CodingContextSyncCtx {
+  session: { sessionKey: string; cwd: string };
+  state: CodingContextSyncState & { startupEpoch?: number };
+  client: CodingContextCarrier & { isReachable(): boolean };
+  config: { authToken?: string };
+  /** Injectable for tests; defaults to the shared core probe. */
+  resolve?: (cwd: string) => Promise<GitContextProbeResult>;
+}
+
+/** Per-turn refresh: re-resolve off the turn path and post only on change. */
+export async function maybeSyncSessionCodingContext(ctx: CodingContextSyncCtx): Promise<void> {
+  if (!ctx.config.authToken) return;
+  if (!ctx.client.isReachable()) {
+    ctx.state.codingContextRepostPending = true;
+    return;
+  }
+  // A sync that actually runs supersedes any startup sync still queued behind
+  // the probe: bump the coding-context epoch so that attach's check sees the
+  // mismatch and skips instead of resolving and posting a stale cwd last.
+  // (Not `startupEpoch` — the probe chain reads that for its own staleness.)
+  ctx.state.codingContextSyncEpoch = (ctx.state.codingContextSyncEpoch ?? 0) + 1;
+  // Serialize per session (wAK review): a slower earlier sync must never post
+  // after a newer one. Each queued run resolves fresh, so the last post the
+  // daemon sees always carries the newest resolution.
+  const run = (ctx.state.codingContextSyncChain ?? Promise.resolve()).then(() => {
+    // Apply the recovery invalidation inside the serialized run: an earlier
+    // POST still in flight would otherwise re-latch its signature and clear
+    // mustPost after this was consumed, silently dropping the owed repost.
+    if (ctx.state.codingContextRepostPending) {
+      ctx.state.lastCodingContextSignature = null;
+      ctx.state.codingContextRepostPending = false;
+      ctx.state.codingContextMustPost = true;
+    }
+    return syncSessionCodingContext({
+      sessionKey: ctx.session.sessionKey,
+      cwd: ctx.session.cwd,
+      state: ctx.state,
+      client: ctx.client,
+      resolve: ctx.resolve,
+    });
+  });
+  ctx.state.codingContextSyncChain = run;
+  await run;
+}
+
+/**
+ * Chain the session-start sync behind the startup probe so the post lands
+ * before the first observe when the host is fast. `epoch` lets a stale probe
+ * chain (a newer session_start bumped state.startupEpoch) skip its post.
+ */
+export function attachCodingContextSync<T>(
+  probe: Promise<T>,
+  ctx: CodingContextSyncCtx & { epoch: number },
+): Promise<T> {
+  const syncEpoch = ctx.state.codingContextSyncEpoch ?? 0;
+  return probe.then(async (result) => {
+    const superseded = (ctx.state.codingContextSyncEpoch ?? 0) !== syncEpoch;
+    if (!superseded && (ctx.state.startupEpoch === undefined || ctx.state.startupEpoch === ctx.epoch)) {
+      await maybeSyncSessionCodingContext(ctx);
+    }
+    return result;
+  });
+}
+
+function signature(ctx: GitContext): string {
+  return `${ctx.projectId}\n${ctx.branch}\n${ctx.rootPath}\n${ctx.defaultBranch}`;
+}
+
+/**
+ * Resolve the session's git context locally and POST it only when it changed
+ * since the last accepted post. A `null` resolution clears a previously posted
+ * context (the cwd left its repo); nothing is posted when there was never a
+ * context to clear. A failed post leaves the signature unlatched so the next
+ * sync retries. Never throws — context sync is best-effort beside the turn path.
+ */
+export async function syncSessionCodingContext(options: SyncCodingContextOptions): Promise<void> {
+  const { sessionKey, cwd, state, client } = options;
+  const resolve = options.resolve ?? ((dir: string) => probeGitContext(dir));
+  let resolved: GitContext | null;
+  try {
+    const probe = await resolve(cwd);
+    if (!probe.conclusive) {
+      return; // probe failed or degraded (timeout/spawn) — keep the posted binding, retry next sync
+    }
+    resolved = probe.context;
+  } catch {
+    return; // inconclusive resolution is not "no repo" — retry next sync
+  }
+  const next = resolved === null ? null : signature(resolved);
+  if (!state.codingContextMustPost && next === state.lastCodingContextSignature) return;
+  try {
+    await client.setCodingContext(sessionKey, resolved);
+    state.lastCodingContextSignature = next;
+    state.codingContextMustPost = false;
+  } catch {
+    // The daemon may have applied the post before the failure — the binding
+    // is unknown, so the next conclusive sync must repost, clear included.
+    state.codingContextMustPost = true;
+  }
+}

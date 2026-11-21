@@ -22,6 +22,9 @@ function makeService(): {
 } {
   const calls: Array<{ sessionKey: string; ctx: CodingContext | null }> = [];
   const stubOrchestrator = {
+    // Namespaces off keeps this suite on the permissive validation path; the
+    // principal-binding gate is covered in access-service-set-coding-context.test.ts.
+    config: { namespacesEnabled: false },
     setCodingContextForSession(sessionKey: string, ctx: CodingContext | null) {
       calls.push({ sessionKey, ctx });
     },

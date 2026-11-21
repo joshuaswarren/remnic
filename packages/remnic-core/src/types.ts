@@ -601,8 +601,8 @@ export interface CodingContext {
   branch: string | null;
   rootPath: string;
   defaultBranch: string | null;
+  remote?: boolean; // server-side marker: `rootPath` lives on the caller's host — never open on the daemon; use `codingContextLocalRoot` (#3515)
 }
-
 export type ScopeProfileLayerId = "userProject" | "teamProject" | "userGlobal" | "serverShared";
 
 export type ScopeProfilePromotionTarget = ScopeProfileLayerId | "serverShared" | "teamProject" | "userGlobal";

@@ -853,3 +853,40 @@ test("RemnicClient omits x-engram-principal when config.principal is unset", asy
   await client.live({ timeoutMs: 1000 });
   assert.deepEqual(seen, [{ principal: undefined }]);
 });
+
+test("RemnicClient.setCodingContext posts the resolved context to /engram/v1/coding-context", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+  globalThis.fetch = async (input, init) => {
+    seen.push({ url: String(input), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  const codingContext = { projectId: "origin:aaaa0001", branch: "main", rootPath: "/repo/a", defaultBranch: "main" };
+  await client.setCodingContext("sess-1", codingContext, { timeoutMs: 1000 });
+  assert.deepEqual(seen, [{
+    url: "http://127.0.0.1:4318/engram/v1/coding-context",
+    method: "POST",
+    body: { sessionKey: "sess-1", codingContext },
+  }]);
+});
+
+test("RemnicClient.setCodingContext posts null to clear the attached context", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const seen: Array<{ body: unknown }> = [];
+  globalThis.fetch = async (_input, init) => {
+    seen.push({ body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  await client.setCodingContext("sess-1", null, { timeoutMs: 1000 });
+  assert.deepEqual(seen, [{ body: { sessionKey: "sess-1", codingContext: null } }]);
+});

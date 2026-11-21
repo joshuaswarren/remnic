@@ -634,15 +634,22 @@ async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void
   const sessionKey = getLastOption(args, "session-key");
   if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
     const projectId = projectTagProjectId(projectTag.trim());
-    service.setCodingContext({
-      sessionKey,
-      codingContext: {
-        projectId,
-        branch: null,
-        rootPath: projectId,
-        defaultBranch: null,
-      },
-    });
+    try {
+      service.setCodingContext({
+        sessionKey,
+        authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+        codingContext: {
+          projectId,
+          branch: null,
+          rootPath: projectId,
+          defaultBranch: null,
+        },
+      });
+    } catch {
+      // The attach is a convenience for project-scoped writes; a session the
+      // CLI caller does not own keeps its binding rather than failing the
+      // command on the ownership check.
+    }
   }
   const op = getOperation("coding_decision");
   if (!op) {
@@ -698,6 +705,7 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
         : projectTagProjectId(path.basename(repoRoot));
     service.setCodingContext({
       sessionKey,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
       codingContext: {
         projectId,
         branch: null,
@@ -745,6 +753,7 @@ async function runDelta(args: ParsedArgs, preferredId?: string): Promise<void> {
         : projectTagProjectId(path.basename(repoRoot));
     service.setCodingContext({
       sessionKey,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
       codingContext: {
         projectId,
         branch: null,

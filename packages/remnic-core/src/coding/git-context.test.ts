@@ -822,3 +822,32 @@ test("a non-repo-only cache remembers non-repos but always re-reads repos", asyn
   await resolveGitContext("/tmp/z", { invoker: notRepo, cache });
   assert.equal(nonRepoCalls, 1);
 });
+
+test("probeGitContext: dubious-ownership exit 128 is inconclusive, a real non-repo is conclusive", async () => {
+  const { probeGitContext } = await import("./git-context.js");
+  const dubious: GitInvoker = (cwd, args) =>
+    args.includes("--show-toplevel")
+      ? { stdout: "", stderr: "fatal: detected dubious ownership in repository at '/repo'", exitCode: 128 }
+      : { stdout: "", exitCode: 1 };
+  const d = await probeGitContext("/repo", { invoker: dubious });
+  assert.equal(d.conclusive, false, "operational git failure must not masquerade as a confirmed non-repo");
+
+  const notRepo: GitInvoker = (cwd, args) =>
+    args.includes("--show-toplevel")
+      ? { stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git", exitCode: 128 }
+      : { stdout: "", exitCode: 1 };
+  const n = await probeGitContext("/tmp/x", { invoker: notRepo });
+  assert.equal(n.conclusive, true);
+  assert.equal(n.context, null);
+
+  // Inside a confirmed repo, an optional probe failing (no origin) stays conclusive.
+  const noOrigin: GitInvoker = (cwd, args) => {
+    if (args.includes("--show-toplevel")) return { stdout: "/repo\n", exitCode: 0 };
+    if (args[0] === "remote") return { stdout: "", stderr: "error: No such remote 'origin'", exitCode: 2 };
+    if (args[1] === "--abbrev-ref") return { stdout: "main\n", exitCode: 0 };
+    if (args[0] === "symbolic-ref" || args[0] === "rev-parse") return { stdout: "", stderr: "", exitCode: 1 };
+    return { stdout: "", exitCode: 1 };
+  };
+  const r = await probeGitContext("/repo", { invoker: noOrigin });
+  assert.equal(r.conclusive, true, "a missing origin inside a repo is a conclusive result, not a degraded probe");
+});

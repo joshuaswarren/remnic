@@ -88,7 +88,7 @@ export interface AccessObserveWriteSurfaceDeps {
   legacyResponseNamespaceForScope(scope: MemoryScopePlan): string;
   maybeAttachCodingContext(
     sessionKey: string | undefined,
-    options: { cwd?: string; projectTag?: string }
+    options: { cwd?: string; projectTag?: string; authenticatedPrincipal?: string }
   ): Promise<void>;
   namespaceQmdHealth(
     searchBackend: string,
@@ -764,6 +764,7 @@ export class AccessObserveWriteSurface {
         this.deps.maybeAttachCodingContext(request.sessionKey, {
           cwd: request.cwd,
           projectTag: request.projectTag,
+          authenticatedPrincipal: request.authenticatedPrincipal,
         })
       );
 
