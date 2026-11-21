@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v10.0.163] — 2026-11-21
+
 ### Performance
 
 - Background extraction now defaults to two concurrent sessions. Per-session serialization, configured backpressure limits, and the shared model concurrency limiter remain unchanged; an explicit `extractionQueueConcurrency` value still takes precedence.
