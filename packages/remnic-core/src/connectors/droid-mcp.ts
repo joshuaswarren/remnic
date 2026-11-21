@@ -17,6 +17,7 @@ import os from "node:os";
 
 import { readEnvVar } from "../runtime/env.js";
 import type { ConnectorManifest } from "./index.js";
+import type { TokenStore } from "../tokens.js";
 
 // ── Manifest ────────────────────────────────────────────────────────────────
 
@@ -76,17 +77,16 @@ export type DroidInstallStepResult =
 /**
  * Write the remnic MCP entry to ~/.factory/mcp.json, with token rollback on failure.
  *
- * `saveTokenStore` is passed as a callback to avoid a circular dependency
- * back into the main connectors module.
+ * `saveTokenStoreFn` is the token-store saver (`saveTokenStore` in
+ * production), injected so a test can observe or fail the rollback.
  */
 export function droidInstallStep(
   authToken: string | undefined,
   resolvedConfig: Record<string, unknown>,
   requiresToken: boolean,
   tokenEntry: { token: string } | null,
-  priorTokenStore: unknown,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-saveTokenStoreFn: (store: any) => void,
+  priorTokenStore: TokenStore | null,
+  saveTokenStoreFn: (store: TokenStore) => void,
 ): DroidInstallStepResult {
   try {
     const result = writeDroidMcpEntry(authToken, resolvedConfig);
