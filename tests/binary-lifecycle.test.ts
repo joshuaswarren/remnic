@@ -75,6 +75,17 @@ test("matchesPatterns matches *.png and *.pdf, ignores .md", () => {
   assert.equal(matchesPatterns("image.jpg", patterns), false);
 });
 
+test("matchesPatterns honors * and ? anywhere in a filename pattern (#3549)", () => {
+  assert.equal(matchesPatterns("IMG_0042.JPG", ["img_*.jpg"]), true);
+  assert.equal(matchesPatterns("photo.jpg", ["img_*.jpg"]), false);
+  assert.equal(matchesPatterns("backup.tar.gz", ["*.tar.gz"]), true);
+  assert.equal(matchesPatterns("scan-07.png", ["scan-??.png"]), true);
+  assert.equal(matchesPatterns("scan-7.png", ["scan-??.png"]), false);
+  assert.equal(matchesPatterns("a.b.c", ["*.*.*"]), true);
+  assert.equal(matchesPatterns("exact.bin", ["EXACT.BIN"]), true);
+  assert.equal(matchesPatterns("x".repeat(200), ["*".repeat(20) + "y"]), false);
+});
+
 // ---------------------------------------------------------------------------
 // Scanner
 // ---------------------------------------------------------------------------
