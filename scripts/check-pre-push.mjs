@@ -136,11 +136,12 @@ const CHECKS = [
     name: "scoped anti-slop",
     argv: ["node", "scripts/check-anti-slop.mjs"],
     // CI's lint job runs this gate; without it here a type assertion on an
-    // added line passed check:pre-push and failed CI (#3616). Same base as
-    // the other changed-line gates.
+    // added line passed check:pre-push and failed CI (#3616). The merge-base,
+    // not the base ref tip, so commits that landed on main after the branch
+    // point do not count as changed lines.
     env: {
       REMNIC_ANTI_SLOP_BASE_REF:
-        process.env.REMNIC_ANTI_SLOP_BASE_REF ?? resolvedBase?.ref ?? "origin/main",
+        process.env.REMNIC_ANTI_SLOP_BASE_REF ?? resolvedBase?.mergeBase ?? "origin/main",
     },
     hint: "An added line trips an anti-slop rule (for example a type assertion without a SAFETY: comment). Fix the line, or justify it the way the rule message asks.",
   },
@@ -216,8 +217,11 @@ function runCheck(check) {
   return ok;
 }
 
+// Test seam: REMNIC_PRE_PUSH_ONLY=<check name> runs that one check.
+const only = process.env.REMNIC_PRE_PUSH_ONLY;
 const failures = [];
 for (const check of CHECKS) {
+  if (only && check.name !== only) continue;
   if (check.optional && !existsSync(join(repoRoot, check.argv[1]))) {
     console.log(`[pre-push] SKIP ${check.name} (script absent)`);
     continue;
