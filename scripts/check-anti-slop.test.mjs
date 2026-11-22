@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -101,6 +101,83 @@ test("unchanged violations do not block a clean edit in the same file", (t) => {
   const result = runGate(root, ["--base", "HEAD"]);
   assertStatus(result, 0, "clean edit next to committed debt");
   assert.match(result.stdout, /no anti-slop findings/);
+});
+
+test("a widening added on a changed line reports at an unchanged line and must still fail", (t) => {
+  // no-widen-then-assert reports at the assert expression, which sits on a line
+  // the diff never touched. The widening is the added line, so the change
+  // introduced the finding even though its span is on an unchanged line. Both
+  // revisions keep a SAFETY comment on line 2 so the only new finding is the
+  // unchanged-line report the gate must catch.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const SAFETY = "// SAFETY: fixture\n";
+  write(root, "escape.ts", `${SAFETY}const config = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  commitAll(root, "base without widening");
+  write(root, "escape.ts", `${SAFETY}const config: unknown = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  const result = runGate(root, ["--base", "HEAD"]);
+  assertStatus(result, 1, "finding introduced by the change but reported on an unchanged line");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
+});
+
+test("a second identical finding on unchanged lines blocks even when one already existed", (t) => {
+  // Twin-scope fixture from the 3625 review: deleting the shadowing scope makes
+  // the untouched inner assert resolve to the widened binding, so the same rule
+  // fires twice with identical span text on unchanged lines. A set-keyed
+  // baseline would hide the new occurrence; only counting catches it.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const base = [
+    "// SAFETY: fixture",
+    "function outer(input: unknown) {",
+    "  const config: unknown = input as { name: string };",
+    "  const o1 = config as { name: string };",
+    "  {",
+    "    const config = input as { name: string };",
+    "    // SAFETY: fixture",
+    "    const o2 = config as { name: string };",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  const head = [
+    "// SAFETY: fixture",
+    "function outer(input: unknown) {",
+    "  const config: unknown = input as { name: string };",
+    "  const o1 = config as { name: string };",
+    "  {",
+    "    // SAFETY: fixture",
+    "    const o2 = config as { name: string };",
+    "  }",
+    "}",
+    "",
+  ].join("\n");
+  write(root, "twin.ts", base);
+  commitAll(root, "base with one widening pair");
+  write(root, "twin.ts", head);
+  const result = runGate(root, ["--base", "HEAD"]);
+  assertStatus(result, 1, "second identical finding is new even though its text repeats the baseline");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
+});
+
+test("the gate runs inside a linked git worktree, where .git is a file", (t) => {
+  // A linked worktree has a .git FILE, not a directory, so a stage directory
+  // under <repo>/.git fails with ENOTDIR. The stage lives in the worktree's real
+  // git dir instead.
+  const root = makeRepo();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const SAFETY = "// SAFETY: fixture\n";
+  write(root, "escape.ts", `${SAFETY}const config = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  commitAll(root, "base without widening");
+  const worktree = join(root, "..", `linked-${basename(root)}`);
+  git(root, ["worktree", "add", "-q", "-b", "feature", worktree]);
+  t.after(() => rmSync(worktree, { recursive: true, force: true }));
+  assert.equal(existsSync(join(worktree, ".git")), true);
+  assert.equal(statSync(join(worktree, ".git")).isFile(), true, "linked worktree .git must be a file");
+  write(worktree, "escape.ts", `${SAFETY}const config: unknown = input as { name: string };\nconst orchestrator = config as { name: string };\n`);
+  const result = runGate(worktree, ["--base", "HEAD"]);
+  assertStatus(result, 1, "linked worktree with a finding introduced on an unchanged line");
+  assert.match(result.stderr, /anti-slop\(no-widen-then-assert\)/);
 });
 
 test("introduced violations fail even when another violation is removed", (t) => {
