@@ -1071,8 +1071,8 @@ export interface PluginConfig
   /**
    * When true, recall multiplies candidate scores by the Memory Worth factor
    * from `mw_success` / `mw_fail` (see `computeMemoryWorth`): failed memories
-   * sink; neutral ones untouched (multiplier 1.0). Default false until the
-   * benchmark shows precision tie-or-win.
+   * sink; neutral ones untouched (multiplier 1.0). Default true since the
+   * #560 PR 5 bench: precision@5 0.00 to 0.60 over 50 seeded cases.
    */
   recallMemoryWorthFilterEnabled: boolean;
   /**
