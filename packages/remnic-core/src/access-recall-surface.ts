@@ -1280,6 +1280,7 @@ export class AccessRecallSurface {
           const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
           const baseDir =
             (await this.deps.orchestrator.getStorage(namespace)).dir;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during result decoration");
           const decorated = snapshot.results.map((result, index) => {
             const memory = memoryByIndex[index];
             if (!memory) {
