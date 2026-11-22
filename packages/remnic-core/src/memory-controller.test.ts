@@ -283,6 +283,17 @@ test("an unreadable receipt-failure history keeps the gate closed", async () => 
   assert.ok(result.demotionReasons.includes("recent_receipt_failures"));
 });
 
+test("a non-finite receipt-failure count keeps the gate closed", async () => {
+  const h = harness();
+  h.deps.recorder = {
+    ...h.deps.recorder!,
+    trailingReceiptFailures: async () => Number.NaN,
+  };
+  const result = await new MemoryControllerCoordinator(h.deps).run({ prompt: RECALL_PROMPT });
+  assert.equal(result.effectiveMode, "shadow");
+  assert.ok(result.demotionReasons.includes("recent_receipt_failures"));
+});
+
 test("executor error or missing executor records a failure class and demotes next run", async () => {
   const h = harness({
     executors: {
