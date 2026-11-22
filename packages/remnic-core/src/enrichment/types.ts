@@ -1,7 +1,6 @@
 
 import type { ImportanceLevel, MemoryCategory } from "../types.js";
 
-// ---------------------------------------------------------------------------
 
 export type EnrichmentCostTier = "free" | "cheap" | "expensive";
 

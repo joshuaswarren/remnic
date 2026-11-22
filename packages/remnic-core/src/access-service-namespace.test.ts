@@ -1563,7 +1563,6 @@ test("offlineSyncSnapshot drains a pending memory-lifecycle spill so the append-
       spillPayload,
       "the spilled lifecycle event was folded into the synced active ledger",
     );
-    // The node-local pending spill dir stays excluded from the snapshot...
     assert.ok(
       !snapshot.files.some((f) => f.path.startsWith("state/memory-lifecycle-ledger.jsonl.pending.d")),
       "pending spill dir remains offline-sync excluded",

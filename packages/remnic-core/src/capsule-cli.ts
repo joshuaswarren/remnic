@@ -1,7 +1,6 @@
 
 import path from "node:path";
 
-// ---------------------------------------------------------------------------
 
 export type CapsuleOutputFormat = "text" | "markdown" | "json";
 
@@ -457,7 +456,6 @@ export function renderCapsuleInspect(
     ].join("\n");
   }
 
-  // text
   const lines: string[] = [
     `Capsule: ${capsuleId}`,
     `  version:          ${version}`,

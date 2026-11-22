@@ -78,7 +78,6 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export type CodingKnowledgeFeatureFlag = "decisionRecords" | "architectureCard" | "sessionDelta";
 

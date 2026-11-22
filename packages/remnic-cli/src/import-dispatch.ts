@@ -1,5 +1,4 @@
 // `remnic import` command dispatcher (issue #568, slice 1)
-// ---------------------------------------------------------------------------
 //
 // This module is the top-level CLI entry for optional memory importers
 // (ChatGPT, Claude, Gemini, Mem0, Supermemory). Slice 1 wires ONLY the infrastructure —
@@ -45,6 +44,7 @@ import {
   type SupportedImporterName,
 } from "./optional-importer.js";
 import { expandTilde } from "./path-utils.js";
+import { readZipEntries } from "./zip-entries.js";
 
 export interface ImportDispatchArgs {
   adapter: SupportedImporterName;
@@ -70,6 +70,8 @@ export interface ImportBundleArgs {
 
 export interface ImportDispatchIO {
   readFile: (path: string) => Promise<string>;
+  /** Raw bytes of a file; the ChatGPT importer reads its export ZIP through this. */
+  readFileBytes?: (path: string) => Promise<Uint8Array>;
   loadAdapter: (name: SupportedImporterName) => Promise<ImporterAdapter<unknown>>;
   runImporter: typeof runImporter;
   /**
@@ -224,7 +226,8 @@ export async function runImportCommand(
   args: ImportDispatchArgs,
   io: ImportDispatchIO,
 ): Promise<RunImporterResult> {
-  if (args.file && (isZipFilePath(args.file) || /\.(tgz|tar\.gz)$/i.test(args.file))) {
+  const chatgptZip = args.adapter === "chatgpt" && !!args.file && isZipFilePath(args.file);
+  if (args.file && !chatgptZip && (isZipFilePath(args.file) || /\.(tgz|tar\.gz)$/i.test(args.file))) {
     throw new Error(
       `unpack first: archive imports are not supported ('${args.file}'). Extract the archive, then pass the directory.`,
     );
@@ -232,7 +235,9 @@ export async function runImportCommand(
   const adapter = await io.loadAdapter(args.adapter);
 
   let input: unknown;
-  if (args.adapter === "okf") {
+  if (chatgptZip) {
+    input = await readChatGPTExportZip(args.file!, io);
+  } else if (args.adapter === "okf") {
     if (!args.file) {
       throw new Error("OKF import requires a directory path (remnic import okf <dir>)");
     }
@@ -299,6 +304,68 @@ export async function runImportCommand(
     );
   }
   return result;
+}
+
+const CHATGPT_ZIP_KEYS = new Map<string, ChatGPTZipKey>([
+  ["memory.json", "memory"],
+  ["memories.json", "memories"],
+  ["user.json", "user"],
+  ["conversations.json", "conversations"],
+]);
+
+type ExportJson = string | number | boolean | null | ExportJson[] | { [key: string]: ExportJson };
+type ChatGPTZipKey = "memory" | "memories" | "user" | "conversations";
+type ChatGPTZipBundle = Partial<Record<ChatGPTZipKey, ExportJson>>;
+
+/**
+ * The raw ChatGPT data-export ZIP, read without a manual unzip: the known JSON
+ * files (at any depth) become the bundle object the ChatGPT parser accepts.
+ */
+async function readChatGPTExportZip(file: string, io: ImportDispatchIO): Promise<ChatGPTZipBundle> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await (io.readFileBytes ?? ((p: string) => fs.promises.readFile(p)))(file);
+  } catch (err) {
+    throw new Error(`Failed to read --file '${file}': ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const base = (name: string) => name.slice(name.lastIndexOf("/") + 1).toLowerCase();
+  const entries = readZipEntries(bytes, (name) => CHATGPT_ZIP_KEYS.has(base(name)));
+  const bundle: ChatGPTZipBundle = {};
+  for (const [name, data] of entries) {
+    const key = CHATGPT_ZIP_KEYS.get(base(name));
+    if (key === undefined) continue;
+    let value: ExportJson;
+    try {
+      value = JSON.parse(data.toString("utf8"));
+    } catch (err) {
+      throw new Error(`'${name}' in '${file}' is not valid JSON: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    mergeChatGPTZipSection(bundle, key, value);
+  }
+  if (Object.keys(bundle).length === 0) {
+    throw new Error(`'${file}' holds none of ${[...CHATGPT_ZIP_KEYS.keys()].join(", ")}; is it a ChatGPT data export?`);
+  }
+  return bundle;
+}
+
+/**
+ * An export file can hold its section directly (memory.json as an array) or
+ * wrapped in an object with the same keys the parser reads ({"memory": [...]}).
+ * Wrapped sections merge in; a bare value lands under the file's own key.
+ */
+function mergeChatGPTZipSection(bundle: ChatGPTZipBundle, key: ChatGPTZipKey, value: ExportJson): void {
+  if (key === "user" || !(value instanceof Object) || Array.isArray(value)) {
+    bundle[key] = value;
+    return;
+  }
+  let merged = false;
+  for (const section of CHATGPT_ZIP_KEYS.values()) {
+    if (section in value) {
+      bundle[section] = value[section];
+      merged = true;
+    }
+  }
+  if (!merged) bundle[key] = value;
 }
 
 function isZipFilePath(filePath: string): boolean {
@@ -486,7 +553,7 @@ export async function cmdImport(
   rest: string[],
   targetFactory: () => Promise<ImporterWriteTarget>,
   disposeTarget?: () => Promise<void>,
-  ioOverrides: Partial<Pick<ImportDispatchIO, "loadAdapter" | "readFile" | "runImporter">> = {},
+  ioOverrides: Partial<Pick<ImportDispatchIO, "loadAdapter" | "readFile" | "readFileBytes" | "runImporter">> = {},
 ): Promise<RunImporterResult | RunImporterResult[] | undefined> {
   if (rest.includes("--help") || rest.includes("-h")) {
     process.stdout.write(IMPORT_USAGE);
@@ -536,6 +603,7 @@ export async function cmdImport(
   let materializePromise: Promise<ImporterWriteTarget> | undefined;
   const io: ImportDispatchIO = {
     readFile: ioOverrides.readFile ?? (async (p) => fs.promises.readFile(p, "utf-8")),
+    readFileBytes: ioOverrides.readFileBytes ?? (async (p) => fs.promises.readFile(p)),
     loadAdapter: ioOverrides.loadAdapter ?? (async (name) => (await loadImporterModule(name)).adapter),
     runImporter: ioOverrides.runImporter ?? runImporter,
     getWriteTarget: async () => {

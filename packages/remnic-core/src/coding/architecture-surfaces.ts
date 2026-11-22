@@ -14,7 +14,6 @@ import { log } from "../logger.js";
 import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envelope.js";
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export const ARCHITECTURE_SUBCOMMANDS = ["get", "refresh"] as const;
 

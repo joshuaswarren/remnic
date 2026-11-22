@@ -15,7 +15,6 @@ import {
 import { isCodingKnowledgeFeatureEnabled, isCodingKnowledgeFeatureVisible } from "./coding-knowledge-config.js";
 import type { CodingContext, CodingKnowledgeConfig, PluginConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
   enabled: false,

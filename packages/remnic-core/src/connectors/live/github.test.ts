@@ -23,7 +23,6 @@ import type { ConnectorCursor } from "./framework.js";
  * repo names. All inputs are obviously synthetic.
  */
 
-// ---------------------------------------------------------------------------
 
 const SYNTHETIC_TOKEN = "ghp_synthetic_token_DO_NOT_USE_0000000000000000";
 const SYNTHETIC_LOGIN = "synthetic-user";
@@ -501,7 +500,6 @@ test("incremental sync skips items strictly before the watermark", async () => {
   };
 
   const result = (await connector.syncIncremental({ cursor, config })) as GitHubSyncResult;
-  // afterComment is after the watermark → ingested.
   assert.equal(result.newDocs.length, 2);
   const ids = result.newDocs.map((d) => d.source.externalId);
   assert.ok(ids.includes(`${REPO_A}/issue-comment/2`), "atComment must be ingested");

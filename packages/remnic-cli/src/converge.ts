@@ -1041,7 +1041,6 @@ Subcommands:
       intervalSeconds = parsed;
       i += 1;
     } else if (arg === "--timeout") {
-      // Flag-present-but-value-absent is malformed, not "use the default".
       const raw = rest[i + 1];
       const parsed = raw === undefined ? Number.NaN : Number(raw);
       if (!Number.isFinite(parsed) || parsed <= 0) {

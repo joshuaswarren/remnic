@@ -1429,7 +1429,6 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       indexFile: async () => {},
       removeFromIndex: async () => {},
     };
-    // Deterministic judge: merge into the top candidate's current body.
     orchestrator.localLlm = {
       chatCompletion: async (messages) => {
         if (

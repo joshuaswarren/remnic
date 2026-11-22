@@ -272,7 +272,6 @@ export function normalizeHandle(token: string): string | null {
   const trimmed = token.trim().toLowerCase();
   const bracketed = /^\[m:([0-9a-f]{4,8})\]$/.exec(trimmed);
   if (bracketed) return bracketed[1] ?? null;
-  // m:4f2a
   const prefixed = /^m:([0-9a-f]{4,8})$/.exec(trimmed);
   if (prefixed) return prefixed[1] ?? null;
   const bare = /^([0-9a-f]{4,8})$/.exec(trimmed);

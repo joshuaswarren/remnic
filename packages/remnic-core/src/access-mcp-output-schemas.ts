@@ -135,7 +135,6 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   ),
   memory_expand: navigationResultSchema(),
   memory_traverse: navigationResultSchema(),
-  // rendered are the fields every variant returns.
   memory_ls: browseResultSchema(),
   memory_tree: browseResultSchema(),
   memory_find: browseResultSchema(),

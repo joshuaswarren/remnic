@@ -11,6 +11,10 @@ export interface ChatExecutorBindings {
 
 export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExecutor {
   const { service, principal, namespace, sessionKey } = bindings;
+  const correctionScope: Parameters<EngramAccessService["correctionListPending"]>[0] = {};
+  if (namespace) correctionScope.namespace = namespace;
+  if (sessionKey) correctionScope.sessionKey = sessionKey;
+  if (principal) correctionScope.principal = principal;
 
   return {
     async memorySearch(query: string, maxResults?: number): Promise<string> {
@@ -70,20 +74,36 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
       });
     },
 
+    // ── Correction tools — Correction Contract (#1580) ─────────────────
+    // Thin adapters over the service's plan/apply pipeline. The engine's
+    // confirmation interception asks for a pending plan's preview via the
+    // "retrieve plan <id>" sentinel; that is a lookup, not a new plan.
 
     async correctionPlan(request: string): Promise<{ planId: string; preview: string }> {
-      return {
-        planId: `stub-${Date.now()}`,
-        preview: `[Correction Contract (#1580) not yet available]\n\nRequested correction: "${request}"\n\nThe plan/apply pipeline is pending. Inspection tools are fully functional.`,
-      };
+      const retrieve = /^retrieve plan (\S+)$/i.exec(request.trim());
+      if (retrieve) {
+        const pending = await service.correctionListPending(correctionScope);
+        const plan = pending.find((p) => p.planId === retrieve[1]);
+        if (!plan) {
+          throw new Error(`Correction plan ${retrieve[1]} not found or expired.`);
+        }
+        return { planId: plan.planId, preview: plan.diff };
+      }
+      const plan = await service.correctionPlan({
+        text: request,
+        ...correctionScope,
+      });
+      return { planId: plan.planId, preview: plan.diff };
     },
 
     async correctionApply(planId: string): Promise<string> {
-      return JSON.stringify({
-        applied: false,
-        planId,
-        reason: "Correction Contract (#1580) not yet available. No mutation was applied.",
+      // The engine's confirmation protocol is the explicit consent; pass it
+      // through as confirm so the apply gate sees a confirmed call.
+      const outcome = await service.correctionApply(planId, {
+        confirm: true,
+        ...correctionScope,
       });
+      return JSON.stringify(outcome);
     },
 
     async memoryPromote(memoryId: string): Promise<string> {

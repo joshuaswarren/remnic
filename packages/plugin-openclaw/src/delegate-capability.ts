@@ -492,7 +492,6 @@ export function createDelegateMemoryCapability(
           throw new Error("daemon /engram/v1/memories/search returned a malformed result entry");
         }
         const rawPath = hit.path;
-        //
         const citation = sharedScope().relativizeToMemoryRoot(rawPath);
         if (isMemoryArtifactPath(citation)) continue;
         if (typeof hit.score !== "number" || !Number.isFinite(hit.score)) {

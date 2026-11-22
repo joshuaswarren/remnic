@@ -243,7 +243,6 @@ function run(config) {
   }
 
   //
-  //
   // One deadline for the whole request: connect, response headers, and body.
   // req.setTimeout() is an idle timer that does not arm until the socket
   // connects and restarts on every byte, so a daemon address that drops
@@ -580,7 +579,6 @@ function run(config) {
 
   // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
   // Antigravity: AGY_PROJECT_DIR).
-  // Hosts that omit cwd from the hook payload still export a project-dir
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;

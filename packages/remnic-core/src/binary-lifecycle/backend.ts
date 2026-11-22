@@ -12,7 +12,6 @@ import path from "node:path";
 import type { BinaryStorageBackendConfig } from "./types.js";
 import { isErrnoCode } from "../utils/errno.js";
 
-// ---------------------------------------------------------------------------
 
 export interface BinaryStorageBackend {
   readonly type: string;

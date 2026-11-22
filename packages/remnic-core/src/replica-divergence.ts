@@ -41,7 +41,6 @@ import { resolveAgentAccessAuthToken, type ResolveSecretRefFn } from "./resolve-
 
 const DEFAULT_MAX_CONCURRENT_PEER_FETCHES = 4;
 
-// ---------------------------------------------------------------------------
 
 /** Per-peer verdict. `unreachable`/`unknown` are NEVER conflated with `converged` (§22). */
 export type ReplicaPeerState = "converged" | "diverged" | "unreachable" | "unknown";

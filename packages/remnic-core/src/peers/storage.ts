@@ -123,7 +123,6 @@ import {
   type PeerProfileFieldProvenance,
 } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────
 
 const ALLOWED_KINDS: ReadonlySet<PeerKind> = new Set<PeerKind>([
   "self",

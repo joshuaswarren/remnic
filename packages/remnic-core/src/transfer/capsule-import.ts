@@ -250,7 +250,6 @@ export async function importCapsule(
       );
     }
 
-    //
     if (rec.path.includes("\\")) {
       throw new Error(
         `importCapsule: record path contains backslash separators (Windows-style paths are not allowed): ${rec.path}`,

@@ -12,7 +12,6 @@ const ROOT = process.env.REMNIC_DOCS_PARITY_ROOT
 
 
 //
-//
 const CLI_FILES = [
   "packages/remnic-cli/src/index.ts",
   "packages/remnic-core/src/cli.ts",

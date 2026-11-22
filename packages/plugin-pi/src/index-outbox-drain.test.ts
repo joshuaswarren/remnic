@@ -14,7 +14,6 @@ import { observedMessageDedupeKey, sessionKeyFromContext, toObserveMessage } fro
 import { drainObserveOutbox, settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
-// ---------------------------------------------------------------------------
 
 function drainTestConfig(outboxPath: string): RemnicPiConfig {
   return {

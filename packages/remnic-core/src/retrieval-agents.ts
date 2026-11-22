@@ -535,7 +535,6 @@ export async function augmentWithDirectAndTemporal(
   ]);
   const durationMs = Date.now() - startMs;
 
-  //
   const scopedDirect = directResults;
 
   const contextualTagged: ParallelSearchResult[] = contextualResults.map((r) => ({

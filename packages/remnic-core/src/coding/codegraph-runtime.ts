@@ -114,7 +114,6 @@ export type CodegraphDeadCodeResult =
   | { ok: true; hits: unknown[] }
   | { ok: false; code: string };
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export function codegraphSurfaceVisible(config: PluginConfig): boolean {
   const ck = config.codingKnowledge;
@@ -830,7 +829,6 @@ export async function reportCodegraphIndexStatus(params: {
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
-  // Thread 13 (issue #1554): defaultCodingGitInvoker is a factory function.
   if (typeof mod.getIndexStatus !== "function" || typeof mod.defaultCodingGitInvoker !== "function") {
     return { ok: false, code: "runtime_unavailable", message: "getIndexStatus is not available in the installed @remnic/coding-graph." };
   }

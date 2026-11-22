@@ -2,7 +2,6 @@
 "use strict";
 
 //
-//
 
 const URL_DEFAULT = "http://localhost:4318/mcp";
 

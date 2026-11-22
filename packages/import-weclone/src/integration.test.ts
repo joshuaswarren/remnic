@@ -1,5 +1,4 @@
 // End-to-end integration test — synthetic WeClone export → bulk-import pipeline
-// ---------------------------------------------------------------------------
 //
 // This test exercises the full WeClone import path against the `@remnic/core`
 // bulk-import pipeline using synthetic fixture data.  No real conversations

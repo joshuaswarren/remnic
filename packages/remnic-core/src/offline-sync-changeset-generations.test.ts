@@ -158,7 +158,6 @@ async function seedLocalGeneration(root: string, count: number): Promise<Map<str
   return local;
 }
 
-// ---------------------------------------------------------------------------
 
 test("manifested changeset replaces changed shards and carries unchanged members atomically", async () => {
   const root = await tempDir("remnic-3150-apply");

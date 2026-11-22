@@ -25,7 +25,6 @@ export interface ParserBackend {
   dispose(): Promise<void>;
 }
 
-//
 // ---------------------------------------------------------------------------
 
 function resolveGrammarDir(): string {

@@ -66,7 +66,6 @@ const PI_ASSISTANT: BufferTurn = {
   sourceConnector: "pi",
 };
 
-// ---------------------------------------------------------------------------
 
 test("scope prompt no longer teaches that tool configurations are global", async () => {
   const { captured } = await extractViaGateway([PI_USER, PI_ASSISTANT]);

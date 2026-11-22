@@ -61,7 +61,6 @@ function fakeMemory(overrides: {
   };
 }
 
-// ---------------------------------------------------------------------------
 
 test("seedGraduation defaults to disabled with minCorroborations 2", () => {
   assert.deepEqual(SEED_GRADUATION_DEFAULTS, { enabled: false, minCorroborations: 2 });

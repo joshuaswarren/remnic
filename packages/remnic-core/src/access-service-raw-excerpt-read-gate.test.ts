@@ -13,6 +13,7 @@ import {
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
+import type { RecallXraySnapshot } from "./recall-xray.js";
 import type { StorageManager } from "./storage.js";
 import type { RecallExecResult } from "./access-recall-concurrency.js";
 import type { CodingContext, MemoryFile, PluginConfig } from "./types.js";
@@ -37,6 +38,12 @@ function makeRawExcerptProbe(options: {
   snapshotNamespace: string;
   sessionContext?: CodingContext;
   sessionKey: string;
+  /** Called inside the readMemoryByPath stub — used to fire a mid-I/O abort. */
+  onMemoryRead?: (path: string) => void;
+  /** Value the readMemoryByPath stub resolves. */
+  memoryFixture?: MemoryFile;
+  /** Snapshot the recallWithXrayCapture stub returns (null → empty x-ray). */
+  xraySnapshot?: RecallXraySnapshot | null;
   /** snapshot.memoryIds → getMemoryById fixtures (recall results path). */
   memories?: ReadonlyMap<string, MemoryFile>;
   /** Rows the LCM stub's `searchContextFull` returns. */
@@ -88,8 +95,9 @@ function makeRawExcerptProbe(options: {
 
   const storage = probeCast<StorageManager>({
     dir: "/synthetic/remnic-raw-excerpt-read-gate/store",
-    async readMemoryByPath() {
-      return null;
+    async readMemoryByPath(path: string) {
+      options.onMemoryRead?.(path);
+      return options.memoryFixture ?? null;
     },
     async getMemoryById(id: string) {
       return options.memories?.get(id) ?? null;
@@ -122,6 +130,12 @@ function makeRawExcerptProbe(options: {
     ]),
     async recall() {
       return "";
+    },
+    async recallWithXrayCapture() {
+      return {
+        snapshot: options.xraySnapshot ?? null,
+        recallStartedAt: Date.now(),
+      };
     },
     lcmEngine: {
       enabled: true,
@@ -642,5 +656,73 @@ test("#3546: quotes under the attribution length floor claim nothing", async () 
     response.results[0]?.rawExcerpts?.map((e) => e.turnIndex),
     [3, 4],
     "below-floor quotes keep the excerpt on the first result",
+  );
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// #3547: an abort that lands during post-capture shaping stops the
+// pipeline — shaping must not run to completion for a canceled caller.
+// ──────────────────────────────────────────────────────────────────────
+
+test("#3547: abort during x-ray decoration reads throws AbortError instead of completing", async () => {
+  const controller = new AbortController();
+  const snapshot: RecallXraySnapshot = {
+    schemaVersion: "1",
+    query: "what database are we using?",
+    snapshotId: "xray-3547",
+    capturedAt: Date.now(),
+    sessionKey: SESSION_KEY,
+    namespace: "pi-geek",
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "mem-a",
+        path: "facts/a.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.9 },
+        admittedBy: ["budget", "namespace"],
+      },
+    ],
+    appliedResultLimit: 10,
+    appliedResults: [],
+    headroomResults: [],
+    filters: [],
+    budget: { chars: 8000, used: 100 },
+  };
+  const probe = makeRawExcerptProbe({
+    config: { principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }] },
+    snapshotNamespace: "pi-geek",
+    sessionKey: SESSION_KEY,
+    xraySnapshot: snapshot,
+    // The cancel lands mid-I/O: the first result read aborts the caller's
+    // signal, then the read resolves. Post-capture shaping must notice
+    // before continuing the pipeline.
+    onMemoryRead: () => controller.abort(),
+    memoryFixture: {
+      path: "facts/a.md",
+      content: "synthetic memory body",
+      frontmatter: {
+        id: "mem-a",
+        category: "preference",
+        created: "2026-11-01T00:00:00Z",
+        updated: "2026-11-01T00:00:00Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+      },
+    },
+  });
+
+  await assert.rejects(
+    probe.service.recallXray({
+      query: "what database are we using?",
+      sessionKey: SESSION_KEY,
+      authenticatedPrincipal: "pi-geek",
+      disclosure: "section",
+      abortSignal: controller.signal,
+    }),
+    (err: Error) => err.name === "AbortError",
+    "a cancel that lands during result decoration must abort the pipeline",
   );
 });

@@ -56,7 +56,6 @@ import path from "node:path";
 import { readPeer, writePeerIfAbsent } from "./storage.js";
 import type { Peer } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────────────
 
 export interface MigrateFromIdentityAnchorOptions {
   /**

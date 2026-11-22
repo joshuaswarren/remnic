@@ -16,7 +16,6 @@ import {
 } from "./correction-contract.js";
 import { CorrectionPlanner, type LlmClassificationResult, type PlannerCandidate, type PlannerDeps } from "./correction-planner.js";
 
-// ---------------------------------------------------------------------------
 
 interface StubState {
   candidatesById: Map<string, PlannerCandidate>;
@@ -729,7 +728,6 @@ test("#1713: recoverStaleApplyingPlans recovers pre-fix plans immediately at exp
     const plan = await planner.plan({ text: "correct this" }, ["default"]);
 
     await planner.markConsumed("default", plan.planId, "applying");
-    // Simulate a pre-fix plan: manually strip applyingAt from the file
     const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
     const planFile = dir + "/state/corrections/pending/" + plan.planId + ".json";
     const planJson = JSON.parse(await rf(planFile, "utf-8"));

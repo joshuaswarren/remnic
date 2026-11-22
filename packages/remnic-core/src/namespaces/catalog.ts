@@ -981,7 +981,6 @@ export class NamespaceCatalog {
     }
 
     //
-    //
     if (dryRun) {
       return this.queueCritical(async () => this.rebuildInsideChain(dryRun, false));
     }

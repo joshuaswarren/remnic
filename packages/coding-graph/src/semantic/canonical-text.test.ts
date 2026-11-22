@@ -29,7 +29,6 @@ function fn(qname: string, rawText: string): SymbolIR {
 }
 
 // Rule 23/38: ONE canonical form — formatting variants hash identically.
-// ──────────────────────────────────────────────────────────────────────────
 
 test("canonical text: whitespace-only variants produce identical text", () => {
   const variantA = `function add(a, b) {\n    return a + b;\n}`;

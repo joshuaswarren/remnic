@@ -262,14 +262,12 @@ test("present projection with memory_current MISSING required columns → probe 
     assert.equal(probe.nativeBindingMismatch, false);
     assert.ok(probe.detail, "expected a path-free detail for the missing-column schema failure");
 
-    // Doctor lens surfaces this as an ERROR with a rebuild hint — NOT ok.
     const check = summarizeProjectionHealth({ memoryDir: dir });
     assert.equal(check.status, "error");
     assert.match(check.summary, /missing or unreadable/i);
     assert.ok(check.remediation);
     assert.match(check.remediation, /rebuild-memory-projection/);
 
-    // Browse still returns null (full-scan fallback trigger) — the projection
     assert.equal(readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 }), null);
   } finally {
     await rm(dir, { recursive: true, force: true });

@@ -1,4 +1,3 @@
-//
 // Adding a new importer:
 //   1. Append its name to `SUPPORTED_IMPORTERS`.
 //   2. Publish the package as `@remnic/import-<name>`.

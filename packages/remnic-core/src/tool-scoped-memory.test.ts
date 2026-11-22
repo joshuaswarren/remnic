@@ -7,7 +7,6 @@ import {
   withholdToolScopedFromSharedNamespace,
 } from "./tool-scoped-memory.js";
 
-//
 // ---------------------------------------------------------------------------
 
 const REF_CASES: Array<{ content: string; expected: boolean; note: string }> = [

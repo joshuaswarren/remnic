@@ -372,7 +372,6 @@ Respond with valid JSON matching this schema:
       }
     }
 
-    // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       try {
         const contextSizes = this.modelRegistry.calculateContextSizes(

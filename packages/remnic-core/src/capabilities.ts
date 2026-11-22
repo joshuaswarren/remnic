@@ -69,7 +69,6 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
 }
 
 // Graph-construction capability set (issue #1566 Cluster A).
-//
 // The recall CapabilitySet above covers flags whose EVERY read site lives on
 // the recall call chain. The five flags below are read on graph-construction,
 // write/extraction, AND recall paths — so they cannot join the recall set

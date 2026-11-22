@@ -21,7 +21,6 @@ import type { LocalLlmClient } from "./local-llm.js";
 import type { MemoryFrontmatter } from "./types.js";
 import { callOpenAiCompatibleChat } from "./local-model-endpoint.js";
 
-// ---------------------------------------------------------------------------
 
 function stubFallbackLlm(
   content: string | null,

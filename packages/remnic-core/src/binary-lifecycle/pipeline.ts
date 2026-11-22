@@ -57,7 +57,6 @@ interface PipelineOptions {
   writeMarkdownFile?: WriteMarkdownFile;
 }
 
-// ---------------------------------------------------------------------------
 
 async function hashFile(filePath: string): Promise<string> {
   const content = await fsp.readFile(filePath);

@@ -128,7 +128,6 @@ export class MaintenanceScheduler {
     });
   }
 
-  // ───────────────────────────────────────────────────────────────────────
 
   /**
    * Register every cron job the daemon should run, gated by its config flag.

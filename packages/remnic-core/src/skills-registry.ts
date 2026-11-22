@@ -46,7 +46,6 @@ export function isValidSkillSlug(slug: string): boolean {
   return /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$/.test(slug);
 }
 
-// ---------------------------------------------------------------------------
 //
 // Packaged @remnic/core artifacts ship skill sources under
 // `packages/remnic-core/skills/<slug>/SKILL.md`; source checkouts can fall back

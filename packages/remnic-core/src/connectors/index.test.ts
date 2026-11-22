@@ -1022,7 +1022,6 @@ test("removeConnector with legacy config (no installExtension key) skips extensi
   );
 });
 
-//
 
 test("coerceInstallExtension parity — all representative inputs match expected coercion", () => {
   const testCases: Array<[unknown, boolean | undefined]> = [

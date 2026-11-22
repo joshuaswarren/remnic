@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 import { parseIsoOffsetTimestamp } from "@remnic/core";
 //

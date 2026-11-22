@@ -15,7 +15,6 @@ import type {
 import { log } from "../logger.js";
 import { resolvePresentationCapabilities } from "../capabilities.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * Deduplicate synthesis-evidence entries by normalized text, keeping the

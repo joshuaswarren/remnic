@@ -1,7 +1,6 @@
 
 import type { MemoryCategory, MemoryFrontmatter } from "../types.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * The user-facing input: a plain-language correction plus optional explicit

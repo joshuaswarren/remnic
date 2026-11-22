@@ -123,7 +123,6 @@ export async function generateMeetingEpisodes(
   return { written, skipped };
 }
 
-// ---------------------------------------------------------------------------
 
 export interface MeetingFactCandidate {
   /** Claim text (a decision, commitment, or open question). */

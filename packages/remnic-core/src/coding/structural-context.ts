@@ -36,7 +36,6 @@
  */
 import type { CodingKnowledgeConfig, PluginConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Distinct failure codes for the structural-context port. Every code is

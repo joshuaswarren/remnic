@@ -39,7 +39,6 @@ function probe(args: {
   };
 }
 
-// ---------------------------------------------------------------------------
 
 test("tokenize lowercases and splits on non-alnum, preserving hyphens", () => {
   assert.deepEqual(

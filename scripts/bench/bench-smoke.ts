@@ -141,7 +141,6 @@ function printUsage(): void {
   );
 }
 
-// ---------------------------------------------------------------------------
 
 export function createDeterministicAdapter(): BenchMemoryAdapter {
   const store = new Map<string, Message[]>();

@@ -14,7 +14,6 @@ import {
   type SymbolIR,
 } from "./graph-store.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function sym(
   qualifiedName: string,

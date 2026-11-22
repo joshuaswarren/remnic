@@ -23,7 +23,6 @@ import {
 import { CorrectionPlanner, type PlannerDeps } from "./correction-planner.js";
 import { CorrectionExecutor, type ExecutorDeps } from "./correction-executor.js";
 
-// ---------------------------------------------------------------------------
 
 export interface CorrectionNamespacePolicy {
   /**

@@ -56,7 +56,6 @@ function conditionsOf(
   }).conditions;
 }
 
-// ---------------------------------------------------------------------------
 
 test("registry: bounded-memory-contracts is registered and resolvable", () => {
   const all = listBenchmarks();

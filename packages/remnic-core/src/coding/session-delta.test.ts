@@ -22,7 +22,6 @@ import {
   type SessionDeltaGitInvoker,
 } from "./session-delta.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function slice(head: string, commits: GitCommit[] = [], files: string[] = []): GitLogSlice {
   return { commits, touchedFiles: files, currentHead: head };

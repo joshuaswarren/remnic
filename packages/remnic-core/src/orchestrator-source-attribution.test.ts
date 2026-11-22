@@ -698,7 +698,6 @@ test("persistExtraction does not double-inject a citation on facts that already 
   assert.equal(parsed!.ts, "2025-01-01T00:00:00Z");
 });
 
-// ---------------------------------------------------------------------------
 
 test("dedup: pre-tagged fact is not re-persisted when canonical body is already in the hash index", async () => {
   const { orchestrator, storage, memoryDir } = await makeOrchestrator({

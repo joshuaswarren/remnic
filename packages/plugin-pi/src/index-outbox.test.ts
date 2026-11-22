@@ -12,7 +12,6 @@ import { observedMessageDedupeKey, toObserveMessage } from "./messages.js";
 import { settleObserveOutboxDrain } from "./observe-flow.js";
 import { ObserveOutbox } from "./outbox.js";
 
-// ---------------------------------------------------------------------------
 
 function outboxTestConfig(overrides: Partial<RemnicPiConfig> = {}): RemnicPiConfig {
   return {

@@ -7,7 +7,6 @@ import { EngramAccessInputError, EngramAccessService } from "../access-service.j
 import type { CodingContext } from "../types.js";
 import { validateRequest, type RecallRequest, type ObserveRequest } from "../access-schema.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("recall schema accepts cwd field", () => {
   const result = validateRequest<RecallRequest>("recall", {

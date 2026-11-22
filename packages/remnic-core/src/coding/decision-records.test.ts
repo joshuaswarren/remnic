@@ -14,7 +14,6 @@ import {
   serializeDecisionRecord,
 } from "./decision-records.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeInput(overrides: Partial<DecisionRecordInput> = {}): DecisionRecordInput {
   return {

@@ -3334,7 +3334,6 @@ export class Orchestrator {
     return this.recallSearchPipelineCoordinator.applyColdFallbackPipeline(options);
   }
 
-  // ---------------------------------------------------------------------------
 
   trackMemoryAccess(
     memoryIds: string[],

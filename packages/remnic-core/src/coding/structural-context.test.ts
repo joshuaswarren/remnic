@@ -52,7 +52,6 @@ afterEach(() => {
   clearStructuralContextProvidersForTest();
 });
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("structuralProviderActive: false when master gate off (default)", () => {
   assert.equal(structuralProviderActive(configWith({})), false);

@@ -39,7 +39,6 @@ import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import { parseConfig } from "./config.js";
 import type { StorageManager } from "./storage.js";
 
-// ---------------------------------------------------------------------------
 
 function mockService(): EngramAccessService {
   return {} as unknown as EngramAccessService;

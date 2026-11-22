@@ -17,7 +17,6 @@ import {
 } from "./replica-divergence.js";
 import { parseReplicaPeersConfig, resolveReplicaPeersConfig } from "./replica-peers-config.js";
 
-// ---------------------------------------------------------------------------
 
 const THRESHOLDS = { maxFileCountDelta: 100, maxWatermarkAgeDeltaMs: 900_000 } as const;
 

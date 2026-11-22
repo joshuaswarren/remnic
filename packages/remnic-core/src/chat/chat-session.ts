@@ -28,7 +28,6 @@ export function chatSessionFile(memoryDir: string, chatSessionId: string): strin
   return join(chatSessionDir(memoryDir), `${chatSessionId}.jsonl`);
 }
 
-// ---------------------------------------------------------------------------
 
 let lastTranscriptSeq = 0;
 

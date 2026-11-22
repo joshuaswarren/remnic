@@ -154,7 +154,6 @@ test("candidate flushes on a cue-free semantic topic shift", async () => {
   assert.equal(task.scores.control_topic_shift_f1, 0);
 });
 
-// ---------------------------------------------------------------------------
 
 test("topicShiftF1: perfect match returns 1", () => {
   assert.equal(topicShiftF1([5, 10], [5, 10]), 1);

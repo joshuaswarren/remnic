@@ -2,7 +2,6 @@ import { readFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
 import { expandTildePath } from "../utils/path.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Maximum byte size of the serialised card. When the deterministic card

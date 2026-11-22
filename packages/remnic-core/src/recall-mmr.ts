@@ -182,7 +182,6 @@ export function summarizeMmrDiversity<C extends MmrCandidate>(
   };
 }
 
-// -----------------------------------------------------------------------------
 
 function clampLambda(value: number | undefined): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_LAMBDA;

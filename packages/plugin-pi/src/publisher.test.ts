@@ -1720,7 +1720,6 @@ test("omp first-time publish without bun is fully retryable after installing bun
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
-  // No bun available → resolveBunBinary returns null → pre-bundle fails.
   process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
   t.after(() => {
     restoreEnv("HOME", previousHome);

@@ -1,6 +1,5 @@
 import type { CodingKnowledgeConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export type DecisionStatus = "proposed" | "accepted" | "superseded" | "rejected";
 

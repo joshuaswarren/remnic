@@ -270,14 +270,6 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   };
 
   let pendingWrites: Promise<void> = Promise.resolve();
-  // Cache-write failures must never fail the task (PR #1591, P1).
-  // PR #1591 (round-5 OTHls): cache writes are fire-and-forget at the
-  // miss site so a slow filesystem write cannot consume a phase
-  // timeout (benchmarkPhaseTimeoutMs / retryOptions.timeoutMs) that
-  // exists for the judge call. Track pending writes on a chained
-  // `pendingWrites` promise so callers may drain (e.g. between runs or
-  // at process exit) and observe failures via the
-  // `cacheWriteFailures` counter.
 
   const putSafely = (
     parts: JudgeCacheKeyParts,

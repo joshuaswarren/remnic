@@ -346,7 +346,6 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   await waitFor(() => recallLanded, "background recall to land");
   await flushBackgroundChains();
 
-  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const secondResult = (await harness.emit(
     "before_agent_start",
     { prompt: "next", systemPrompt: "" },
@@ -404,7 +403,6 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   });
 
   const harness = makePiHarness();
-  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",

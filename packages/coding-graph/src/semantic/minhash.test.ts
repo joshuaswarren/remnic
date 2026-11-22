@@ -33,7 +33,6 @@ import {
 } from "./config.js";
 
 // Rule 38: determinism — same fixture, two runs, identical candidate set
-// ──────────────────────────────────────────────────────────────────────────
 
 const CLONE_A = `function processPayment(amount, currency) {
   const fee = amount * 0.029;

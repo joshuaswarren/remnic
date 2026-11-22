@@ -26,7 +26,6 @@ import {
 } from "./codegraph-runtime.js";
 import type { DecisionSurfaceRequest, DecisionSurfaceResponse } from "./decision-surfaces.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
   enabled: false,

@@ -21,7 +21,6 @@ import {
   type GitInvoker,
 } from "./git-context.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 type InvokeKey = string;
 

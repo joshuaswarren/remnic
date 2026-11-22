@@ -6,7 +6,6 @@ const SCOPE_ACME = "project:acme";
 const SCOPE_BETA = "project:beta";
 const SCOPE_ALICE = "user:alice";
 
-// ---------------------------------------------------------------------------
 
 const DEPLOY_GATEWAY_SKILL: FixtureSkill = {
   id: "skill:deploy-gateway",

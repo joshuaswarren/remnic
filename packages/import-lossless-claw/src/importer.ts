@@ -1,4 +1,3 @@
-//
 // Streams rows from a lossless-claw SQLite export into a Remnic LCM
 // SQLite database opened by the caller. The Remnic database must already
 // have its schema applied (use openLcmDatabase() from @remnic/core).

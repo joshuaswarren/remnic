@@ -26,7 +26,6 @@ import { extractJsonCandidates } from "./json-extract.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { OUTPUT_LANGUAGE_POLICY } from "./extraction-prompt.js";
 
-// ---------------------------------------------------------------------------
 
 export interface JudgeCandidate {
   text: string;

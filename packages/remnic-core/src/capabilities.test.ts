@@ -138,7 +138,6 @@ test("resolveCapabilities is deterministic — same config always yields identic
 
 
 //
-//
 // ---------------------------------------------------------------------------
 
 import {
@@ -290,7 +289,6 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
 // ---------------------------------------------------------------------------
 //
 //
-// Parity contract: a caps-resolved run and a config-derived run MUST produce
 // ---------------------------------------------------------------------------
 
 const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
@@ -427,10 +425,8 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
 
 // ---------------------------------------------------------------------------
 //
-// Same invariant as the sets above: every caps field must project from its
 //
 // Parity contract: a caps-resolved run and a config-derived run MUST produce
-// identical boolean values for every gate — on AND off.
 // ---------------------------------------------------------------------------
 
 import {

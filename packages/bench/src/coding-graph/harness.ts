@@ -30,7 +30,6 @@ import {
   type SyntheticRepoConfig,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 export function captureMachineFingerprint(): MachineFingerprint {
   const cpus = os.cpus();

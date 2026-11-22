@@ -43,7 +43,6 @@ export interface CodingNamespaceOverlay {
   scope: "project" | "branch";
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Normalize a projectId / branch fragment so the resulting namespace passes

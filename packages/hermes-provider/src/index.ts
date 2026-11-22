@@ -9,7 +9,6 @@
  *   const memories = await client.recall("what did I work on last week?");
  */
 
-// ---------------------------------------------------------------------------
 
 export interface HermesClientOptions {
   /** Base URL of the Engram HTTP server (e.g. "http://127.0.0.1:4318") */

@@ -16,7 +16,6 @@ import { initLogger, resetLogger } from "./logger.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import type { StorageManager } from "./storage.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeMockService(briefingFn?: () => Promise<unknown>): EngramAccessService {
   return {
@@ -140,7 +139,6 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
 test("MCP reports a missing storage target as a non-retryable storage_target_required error", async () => {
   const failure = new Error("accepted capture requires an explicit storage target");
   failure.name = "StorageTargetRequiredError";
-  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw failure;
@@ -153,7 +151,6 @@ test("MCP reports a missing storage target as a non-retryable storage_target_req
       messages: [{ role: "user", content: "cannot succeed on retry" }],
     }),
   );
-  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
   const result = response as {
     result?: { isError?: boolean; structuredContent?: { code?: string; retryable?: boolean } };
   };

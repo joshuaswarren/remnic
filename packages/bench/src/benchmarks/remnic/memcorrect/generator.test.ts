@@ -24,7 +24,6 @@ const ALL_SHAPES: CorrectionShape[] = [
   "re-assertion",
 ];
 
-// ---------------------------------------------------------------------------
 
 test("generator: same seed → byte-identical corpus hash", () => {
   const a = generateMemCorrectCorpus(BASE);

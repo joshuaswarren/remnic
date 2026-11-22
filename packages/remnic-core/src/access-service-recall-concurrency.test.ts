@@ -778,7 +778,6 @@ test("an idempotency put failure after a direct-path reserve releases the reserv
     crossNamespace: true,
     pipeline: async () => stubResponse([]),
   });
-  // Simulate handleIdempotentRead's store put failing AFTER execute() (and thus
   const host = h.service as unknown as {
     handleIdempotentRead: (options: {
       execute: () => Promise<EngramAccessRecallResponse>;
@@ -1062,7 +1061,6 @@ test("a response's budgetWarning never carries the internal reservation token / 
       await release.promise;
       return stubResponse([]);
     },
-    // soft=1: count 1 => under soft (no warning), count 2 => over soft (warning).
     budgetRecord: () => {
       count += 1;
       const reason = count > 1 ? "warn-over-soft" : "allowed-under-soft";
@@ -1679,7 +1677,6 @@ test("a queued keyed flight cancels once its leader AND its existing-join follow
   await assert.rejects(leader, (error: Error) => error.name === "AbortError");
   await assert.rejects(follower, (error: Error) => error.name === "AbortError");
 
-  // Free the slot; a still-alive queued flight would now execute + reserve.
   holderGate.resolve();
   await holder;
   await flushMacrotasks();

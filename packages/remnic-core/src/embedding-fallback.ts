@@ -664,14 +664,12 @@ export class EmbeddingFallback {
         log.warn(
           `embedding fallback fetch timed out after ${timeoutMs}ms (${provider.type}, mode=${mode})`,
         );
-        //
         if (mode === "lookup") {
           throw new EmbeddingTimeoutError(
             `embedding backend timed out after ${timeoutMs}ms (${provider.type})`,
           );
         }
       } else {
-        // to decideSemanticDedup's backend_unavailable branch, activating the
         //
         if (mode === "lookup") {
           log.warn(

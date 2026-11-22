@@ -47,7 +47,6 @@ const { readBounded } = require("./remnic-agy-jsonl-read.cjs");
 // trajectory_meta, steps with protobuf metadata blobs), plus a JSONL prompt
 // history at ~/.gemini/antigravity-cli/history.jsonl. There is NO per-session
 // JSON transcript file yet found, so ATIF parsing below is provisional: if
-// Conversation storage (measured on Linux 2026-11-17): per-conversation
 // SQLite files at ~/.gemini/antigravity-cli/conversations/<id>.db (tables:
 // trajectory_meta, steps with protobuf payload blobs). There is NO
 // per-session JSON transcript — 3449 shipped a JSON-only resolver, so the

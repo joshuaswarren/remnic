@@ -13,7 +13,6 @@ import type { LspConfig } from "./config.js";
 import type { CodingGraphLanguage } from "@remnic/core";
 import type { ResolutionResult } from "./resolution.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Per-language LSP status. Surfaced in `index_status` and rendered as a

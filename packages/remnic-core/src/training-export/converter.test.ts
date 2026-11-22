@@ -6,7 +6,6 @@ import path from "node:path";
 
 import { convertMemoriesToRecords, readContainedMarkdownFile } from "./converter.js";
 
-// ---------------------------------------------------------------------------
 
 interface SyntheticMemory {
   id: string;

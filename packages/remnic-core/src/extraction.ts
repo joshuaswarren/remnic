@@ -1616,7 +1616,6 @@ ${truncatedConversation}`;
     this.emit({ kind: "llm_start", traceId: cTraceId, model: this.config.model, operation: "consolidation", input: newList });
     const cStartTime = Date.now();
 
-    // Try local LLM first if enabled
     if (this.shouldUseLocalLlm) {
       try {
         const localResult = await this.consolidateWithLocalLlm(newList, existingList, currentProfile);
@@ -1877,7 +1876,6 @@ ${CONSOLIDATION_RESPONSE_SCHEMA}`;
       return profileFallback;
     }
 
-    // Fall back to OpenAI API
     if (!this.client) {
       log.warn("profile consolidation skipped — no OpenAI API key and local LLM failed/disabled");
       return null;
@@ -1950,7 +1948,6 @@ ${PROFILE_CONSOLIDATION_RESPONSE_SCHEMA}`;
     fullProfileContent: string,
     targetLines: number = 50,
   ): Promise<{ consolidatedProfile: string; removedCount: number; summary: string } | null> {
-    // Get dynamic context sizes
     const contextSizes = this.modelRegistry.calculateContextSizes(
       this.config.localLlmModel,
       this.config.localLlmMaxContext

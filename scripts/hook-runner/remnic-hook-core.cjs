@@ -242,7 +242,6 @@ function run(config) {
   }
 
   //
-  //
   // One deadline for the whole request: connect, response headers, and body.
   // req.setTimeout() is an idle timer that does not arm until the socket
   // connects and restarts on every byte, so a daemon address that drops
@@ -465,7 +464,6 @@ function run(config) {
   const ATIF_MESSAGE_CAP = 8000;
   const ATIF_TOOL_CALL_ARG_CAP = 500;
   const ATIF_TOOL_RESULT_CAP = 2000;
-  // JSON.parse only yields plain objects, arrays, and primitives, so
   function isJsonObject(v) {
     return v instanceof Object && !Array.isArray(v);
   }
@@ -579,7 +577,6 @@ function run(config) {
     return "";
   }
 
-  // Hosts that omit cwd from the hook payload still export a project-dir
   function cwdFor(input) {
     const cwd = input.cwd || "";
     if (isString(cwd) && cwd) return cwd;

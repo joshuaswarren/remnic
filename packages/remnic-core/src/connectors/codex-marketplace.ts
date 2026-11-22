@@ -44,7 +44,6 @@ export interface MarketplaceEntry {
 export interface MarketplaceManifest {
   version: 1;
   name: string;
-  /** Human-readable description. */
   description: string;
   plugins: MarketplaceEntry[];
 }

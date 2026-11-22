@@ -34,7 +34,6 @@ import { excludeSupportPassportPrivateMemories } from "../support-passport/card-
 import type { MemoryFile, MemoryFrontmatter, MemoryStatus } from "../types.js";
 import type { SeedGraduationConfig } from "./seed-graduation-config-types.js";
 
-// ---------------------------------------------------------------------------
 
 // Canonical definitions live in seed-graduation-config-types.ts (a leaf) so
 // types.ts can consume them without this module's storage.js import cycle.

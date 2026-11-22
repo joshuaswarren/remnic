@@ -235,8 +235,6 @@ export async function ensureDaySummaryCron(
       updateFields: options.hasExplicitAgentId ? ["agentId"] : [],
       deepMerge: {
         schedule: { tz: options.timezone },
-        // Mirror model at job root for backward compat with older OpenClaw
-        // builds that read root model instead of payload.model.
         model: options.model ?? null,
         payload: {
           model: options.model ?? null,

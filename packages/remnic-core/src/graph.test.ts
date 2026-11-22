@@ -354,7 +354,6 @@ async function writeGraphEdges(
 }
 
 
-// ---------------------------------------------------------------------------
 
 const onWriteOpts = {
   entityRef: "Acme",

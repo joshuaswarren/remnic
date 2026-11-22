@@ -4642,7 +4642,6 @@ test("lightweight adapter suppresses real Remnic pipeline even when feature over
   }
 });
 
-// ---------------------------------------------------------------------------
 
 test("correction scoping: fully-owned plan proceeds", () => {
   const owned = new Set(["m-1", "m-2"]);

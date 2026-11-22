@@ -6,7 +6,6 @@ export { collapseWhitespace, displayWidth, graphemeUnits, padEndDisplay, truncat
 export * from "./context-summary.js";
 export * from "./active-context-transform.js";
 
-// ---------------------------------------------------------------------------
 
 export { resolvePluginEntry, type PluginEntryResolverOptions } from "./plugin-entry-resolver.js";
 

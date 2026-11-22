@@ -73,7 +73,6 @@ function record(
   };
 }
 
-// ---------------------------------------------------------------------------
 
 test("fanout runs a job across all maintained namespaces (default + catalog)", async () => {
   const memoryDir = await mkMemoryDir();

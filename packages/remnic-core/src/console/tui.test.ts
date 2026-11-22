@@ -371,7 +371,6 @@ test("stop() clears the interval and resolves done", async () => {
 test(
   "stop() awaits in-flight tick body before resolving done (Codex P2 #732 round 4)",
   async (t) => {
-    //
     const stream = new CaptureStream();
     const orchestrator = makeOrchestrator();
     let appendInvocations = 0;

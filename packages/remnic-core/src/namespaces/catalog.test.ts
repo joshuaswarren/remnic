@@ -1989,7 +1989,6 @@ test("registerConfiguredNamespaces skips an unsafe configured name without abort
   }
 });
 
-//
 test("a same-process second instance does not treat another instance's lock as self-held", async () => {
   const memoryDir = await mkMemoryDir();
   try {
@@ -2606,7 +2605,6 @@ test("a touch racing only the rebuild SCAN phase is not blocked by the mutex (NF
     const tokenDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
     await mkdir(path.join(tokenDir, "facts"), { recursive: true });
 
-    // Separate instances == separate processes (separate writeChain + lock owner).
     const writer = new SeamCatalog(makeConfig(memoryDir));
     const rebuilder = new SeamCatalog(makeConfig(memoryDir));
 
@@ -3683,9 +3681,6 @@ test("malformed reads during a pending repair do not queue another attempt (#329
       assert.equal(catalog.malformedRepairAttemptsForTest, 1, "the in-flight repair is the reason no second attempt is queued");
       assert.equal(await readFile(catalogPath, "utf8"), before, "no rewrite ran under another process's lock");
     });
-    // The attempt's bounded lock wait runs inside queueCritical, so the holder above
-    // cannot release until the attempt has settled (dropped): by this point nothing is
-    // in flight and the cleanup below is safe.
     assert.equal(await readFile(catalogPath, "utf8"), before, "the dropped attempt changed nothing");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

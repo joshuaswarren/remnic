@@ -508,7 +508,6 @@ test("citationTemplatesToRecognize: overlapping custom marker wins over inner de
 });
 
 test("formatCitation: substituted values containing placeholder syntax are not re-interpreted", () => {
-  //
   const out = formatCitation(
     { agent: "{ts}", sessionId: "s1", ts: "T" },
     "{agent}:{sessionId}:{ts}",
@@ -856,8 +855,6 @@ test(
   "Option A — Test B: custom bracketed inline citation: archive removes raw-content hash via stored contentHash",
   async () => {
     //
-    // Verifies Option 1 fix: removeByHash(frontmatter.contentHash) correctly
-    // deletes the entry without double-hashing.
     const dir = await mkdtemp(path.join(os.tmpdir(), "engram-option-a-test-b-"));
     try {
       const rawContent = "user prefers tea";
@@ -876,7 +873,6 @@ test(
         contentHashSource: rawContent,
       });
 
-      // Confirm raw-content hash is indexed.
       assert.ok(
         await storage.hasFactContentHash(rawContent),
         "raw-content hash must be in the index after write",
@@ -890,7 +886,6 @@ test(
         "frontmatter.contentHash must be persisted on disk",
       );
 
-      // Confirm frontmatter.contentHash is a 64-char hex string (pre-computed hash).
       assert.match(
         written!.frontmatter.contentHash!,
         /^[a-f0-9]{64}$/,
@@ -911,7 +906,6 @@ test(
         "after archive using removeByHash(frontmatter.contentHash), raw-content hash must be removed from index",
       );
 
-      // Confirm that the buggy approach (double-hash via remove()) would have failed.
       const idxDoubleHashCheck = new ContentHashIndex(stateDir);
       await idxDoubleHashCheck.load();
       idxDoubleHashCheck.add(rawContent);

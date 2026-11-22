@@ -55,25 +55,15 @@ export function isMultilingualAck(candidate: string): boolean {
 }
 
 export const GRAPH_MODE_CUES: readonly string[] = [
-  // Japanese
   "タイムライン", "時系列", "時の流れ", "順序", "経緯", "変遷", "何があった", "どうなった",
-  // Chinese
   "时间线", "时间轴", "时间顺序", "先后顺序", "来龙去脉", "变迁", "发生了什么", "怎么演变",
-  // Korean
   "타임라인", "시간순", "경위", "변천", "무슨 일이 있었", "어떻게 됐", "어떻게 변했",
-  // Spanish
   "línea de tiempo", "cronología", "cronologia", "qué pasó", "qué ocurrió", "historial",
-  // French
   "chronologie", "frise chronologique", "qu'est-il passé", "historique",
-  // German
   "zeitleiste", "abfolge", "ereignisfolge", "was ist passiert", "verlauf",
-  // Portuguese
   "linha do tempo", "sequência de eventos", "o que aconteceu",
-  // Russian
   "хронология", "последовательность событий", "что произошло", "таймлайн",
-  // Arabic
   "الجدول الزمني", "التسلسل الزمني", "تسلسل الأحداث", "ماذا حدث",
-  // Hindi
   "टाइमलाइन", "कालक्रम", "घटनाक्रम", "क्या हुआ",
 ];
 

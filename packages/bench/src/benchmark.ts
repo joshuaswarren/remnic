@@ -156,8 +156,6 @@ export async function runBenchmark(
 
   let primaryDrainPendingWrites: (() => Promise<void>) | undefined;
   let crossDrainPendingWrites: (() => Promise<void>) | undefined;
-  // Issue #1573 PR1: optionally route judge calls through a content-keyed
-  // PR #1591 P2 (thread #10): AMA-Bench can run a separate cross judge
   const cacheWiring = (() => {
     if (options.noJudgeCache) {
       return undefined;
@@ -332,7 +330,6 @@ export function wrapJudgeWithCache(args: {
   provider: ProviderConfig | null;
   cache: JudgeCache;
 }): { judge: BenchJudge; counters: JudgeCacheCounters; drainPendingWrites: () => Promise<void> } {
-  // PR #1591 P2 (round-3 follow-up, reviewer chatgpt-codex-connector):
   const crossJudgeIdSuffix = args.role === "cross" ? "-cross" : "";
   const wrapped = runJudgeWithCache({
     judge: args.judge,

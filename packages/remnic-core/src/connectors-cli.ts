@@ -6,7 +6,6 @@ import {
   type ConnectorSyncStatus,
 } from "./connectors/live/index.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * A lightweight descriptor for one live connector, assembled from the parsed
@@ -256,7 +255,6 @@ export function renderConnectorsRunResult(
     return lines.join("\n") + "\n";
   }
 
-  // text
   const lines: string[] = [];
   if (ok) {
     lines.push(`connectors run: ${connectorId} — OK`);

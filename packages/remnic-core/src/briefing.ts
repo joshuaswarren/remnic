@@ -27,7 +27,6 @@ import type {
   MemoryFile,
 } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export const BRIEFING_FORMAT_ALLOWED = ["markdown", "json"] as const;
 

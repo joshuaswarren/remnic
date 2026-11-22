@@ -1178,7 +1178,6 @@ export class LocalLlmClient {
         `Local LLM: Found ${modelIds.length} model(s). First 10: ${modelIds.slice(0, 10).join(", ")}`,
       );
 
-      // Find the model matching our configured model ID
       const configuredModel = this.config.localLlmModel;
       let model = data.data.find((m) => m.id === configuredModel);
 

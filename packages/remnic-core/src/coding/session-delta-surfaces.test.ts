@@ -16,7 +16,6 @@ import type {
 } from "../types.js";
 import type { SessionDeltaGitInvoker } from "./session-delta.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: CodingKnowledgeConfig = {
   enabled: true,
@@ -289,7 +288,6 @@ test("handler/get: git rev-parse failure → git_failed, no state advance", asyn
 test("handler/get: transient git log failure (exit 127) → git_failed, state NOT advanced", async () => {
   const { storage, cleanup } = await makeTempStorage();
   try {
-    // Seed headA.
     const invoker1 = makeInvoker([
       { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
     ]);
@@ -355,7 +353,6 @@ test("handler/get: state file is created after a successful first_run", async ()
 test("handler/get: changed response surfaces uncapped totals alongside capped slices (issue #1630 fix 1)", async () => {
   const { storage, cleanup } = await makeTempStorage();
   try {
-    // Seed: first run on headA.
     const invoker1 = makeInvoker([
       { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
     ]);

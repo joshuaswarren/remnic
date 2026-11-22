@@ -44,7 +44,6 @@ async function call(mcp: EngramMcpServer, name: string, args: Record<string, unk
   return anyMcp.callTool(name, args);
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("engram.set_coding_context is listed in the tool catalogue", () => {
   const { mcp } = makeMcp();

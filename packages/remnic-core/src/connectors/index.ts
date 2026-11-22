@@ -135,9 +135,7 @@ export interface InstallOptions {
 }
 
 export interface InstallResult {
-  /** Connector ID */
   connectorId: string;
-  /** Status */
   status: "installed" | "already_installed" | "config_required" | "error";
   configPath?: string;
   message: string;
@@ -147,7 +145,6 @@ export interface RemoveResult {
   /** Connector ID */
   connectorId: string;
   configPath: string;
-  /** Message */
   message: string;
   /** Status: "removed" on success, "error" if the removal failed partway, "not_found" if the connector was not installed, "skipped" if removal was aborted (e.g. malformed config). */
   status: "removed" | "error" | "not_found" | "skipped";
@@ -985,7 +982,6 @@ export function installConnector(options: InstallOptions): InstallResult {
   //
   //
   //
-  //
   const nonHermesPriorTokenStore = (options.connectorId !== "hermes" && manifest.requiresToken)
     ? loadTokenStore()
     : null;
@@ -1691,7 +1687,6 @@ export function installConnector(options: InstallOptions): InstallResult {
     writeSecretFileSync(configPath, JSON.stringify(resolvedConfig, null, 2));
   } catch (writeErr) {
     //
-    // Initialize to false: only set true once saveTokenStore() succeeds.
     let configWriteTokenRolledBack = false;
     let configWriteTokenRollbackMsg = "";
     if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {

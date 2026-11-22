@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 import type { BulkImportSourceAdapter } from "./types.js";
 

@@ -57,7 +57,6 @@ async function readFrontmatterById(
   return mems.find((m) => m.frontmatter.id === id)?.frontmatter ?? null;
 }
 
-// ---------------------------------------------------------------------------
 
 test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
   const { storage, cleanup } = await makeStorage();
@@ -413,7 +412,6 @@ test("isValidAsOf: extracted end-only bound is open-start (-inf, invalid_at] (#1
   assert.equal(isValidAsOf(fm, Date.parse("2024-01-01T00:00:00.000Z")), true);
   assert.equal(isValidAsOf(fm, Date.parse("2025-06-15T00:00:00.000Z")), true);
   assert.equal(isValidAsOf(fm, Date.parse("2025-07-01T00:00:00.000Z")), false);
-  // After invalid_at — not authoritative.
   assert.equal(isValidAsOf(fm, Date.parse("2026-01-01T00:00:00.000Z")), false);
 });
 

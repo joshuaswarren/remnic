@@ -232,7 +232,6 @@ export function computeWhoKnows(input: {
 
 // MCP tool definition (spread into access-mcp.ts tools/list — see
 // MEETINGS_MCP_TOOLS precedent; the type-only import keeps this cycle-free).
-// ---------------------------------------------------------------------------
 
 export const WHO_KNOWS_MCP_TOOLS: McpTool[] = [
   {

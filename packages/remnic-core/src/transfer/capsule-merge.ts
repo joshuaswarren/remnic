@@ -140,7 +140,6 @@ export interface MergeCapsuleResult {
   manifest: ExportManifestV2;
 }
 
-// ---------------------------------------------------------------------------
 
 /**
  * Merge a V2 capsule archive into an existing memory directory using

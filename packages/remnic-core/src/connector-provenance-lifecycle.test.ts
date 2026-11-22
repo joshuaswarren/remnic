@@ -24,7 +24,6 @@ import type { FallbackLlmOptions } from "./fallback-llm.js";
 import { handleCodingDecision } from "./coding/decision-surfaces.js";
 import type { DecisionSurfaceContext } from "./coding/decision-surfaces.js";
 
-// ---------------------------------------------------------------------------
 
 function makeMinimalConfig(): PluginConfig {
   return {

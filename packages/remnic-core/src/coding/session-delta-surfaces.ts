@@ -41,7 +41,6 @@ import {
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 import { log } from "../logger.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export const DELTA_SUBCOMMANDS = ["get"] as const;
 

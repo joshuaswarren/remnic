@@ -588,8 +588,6 @@ export class AccessObserveWriteSurface {
     const response = await this.deps.handleIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: canonical.idempotencyKey,
-      // Shared builder (issue #1989 PR3): byte-parity with the historical
-      // inline literal is asserted by access-fingerprint-parity.test.ts.
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
@@ -606,7 +604,6 @@ export class AccessObserveWriteSurface {
       beforeExecute: hooks?.enforceWriteQuota,
       execute,
     });
-    // #2780 fix B: rewrite a replayed coercion note from THIS request's raw category.
     return reapplyCategoryCoercion(response, categoryCoercion);
   }
 

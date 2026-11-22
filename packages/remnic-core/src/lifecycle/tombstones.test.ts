@@ -1125,7 +1125,6 @@ describe("TombstoneStore — enabled gate (rule 30)", () => {
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * A read-merge-write file io that simulates the secure-store append path

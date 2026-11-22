@@ -311,7 +311,6 @@ export class ExtractionDrain {
   ): Promise<ExtractionRunResult> {
     const baseOptions = { ...runOptions, skipCharThreshold: true, skipUserTurnThreshold: true };
     const bufferKey = runOptions.bufferKey;
-    // A native group clears its turns by identity (a pinned capture can sit in front); a drop must find them the same way.
     const byIdentity = runOptions.clearMatchingTurns === true;
     const dropAfter = this.deps.config.extractionChunkDropAfterFailures;
     let aggregate: ExtractionRunResult | null = null;

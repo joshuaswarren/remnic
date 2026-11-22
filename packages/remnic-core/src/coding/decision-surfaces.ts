@@ -26,7 +26,6 @@ import { composeMemoryEnvelope, type SealedMemoryEnvelope } from "../write-envel
 import type { MemoryWriteResult } from "../storage.js";
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export const DECISION_SUBCOMMANDS = [
   "list",

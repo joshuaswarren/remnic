@@ -24,7 +24,6 @@ import type { TierMigrationCycleSummary } from "../recall-state.js";
 import { log } from "../logger.js";
 import { getExtractionLlmHealth, resetExtractionLlmHealthForTests } from "../extraction-llm-health.js";
 
-// ---------------------------------------------------------------------------
 
 function failureResult(cls: ExtractionFailureClass): ExtractionResult {
   return {

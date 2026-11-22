@@ -24,7 +24,6 @@ import {
   type PeerProfile,
 } from "./index.js";
 
-// ──────────────────────────────────────────────────────────────────────
 
 const makeTempDir = (): Promise<string> => managedMakeTempDir("peers-test-");
 

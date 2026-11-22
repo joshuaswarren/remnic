@@ -9,7 +9,6 @@ import { makeTempDir as managedMakeTempDir } from "../testing/tmp-dir.js";
 import { readPeer } from "./storage.js";
 import { migrateFromIdentityAnchor } from "./migrate-from-identity-anchor.js";
 
-// ──────────────────────────────────────────────────────────────────────────────
 
 const makeTempDir = (): Promise<string> => managedMakeTempDir("peer-migrate-test-");
 

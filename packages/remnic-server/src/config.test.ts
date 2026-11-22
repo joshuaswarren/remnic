@@ -497,7 +497,6 @@ test("envOverrides honors REMNIC_READY_DEGRADED_AFTER_ATTEMPTS with legacy fallb
     process.env.ENGRAM_READY_DEGRADED_AFTER_ATTEMPTS = "0";
     assert.equal(parseServerConfig(envOverrides()).readinessDegradedAfterAttempts, 0);
 
-    // Invalid env values reach validation and are rejected, not silently dropped.
     clear();
     process.env.REMNIC_READY_DEGRADED_AFTER_ATTEMPTS = "nope";
     assert.throws(

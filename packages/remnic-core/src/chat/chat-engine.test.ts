@@ -27,7 +27,6 @@ import {
 import type { ChatSessionState } from "./chat-types.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
 
-// ---------------------------------------------------------------------------
 
 function makeStubExecutor(overrides: Partial<ChatToolExecutor> = {}): ChatToolExecutor {
   const base: ChatToolExecutor = {

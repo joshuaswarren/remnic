@@ -2,7 +2,6 @@
 import type { ImportanceLevel, ImportanceScore, MemoryCategory, MemoryFile } from "./types.js";
 import { cjkBigrams, hasLatinWord, informationalLength } from "./utils/script-aware-text.js";
 
-// ---------------------------------------------------------------------------
 
 const CRITICAL_PATTERNS = [
   /\b(critical|crucial|essential|must|always|never)\b/i,

@@ -196,7 +196,6 @@ test("a failed awaited LCM archival records the lcm-accept phase and still throw
       },
     });
     const service = new EngramAccessService(orch);
-    // SAFETY: the literal sets the request fields the observe path reads.
     const failedLcmRequest = {
       sessionKey: "alice:sess-lcmfail",
       authenticatedPrincipal: "alice",

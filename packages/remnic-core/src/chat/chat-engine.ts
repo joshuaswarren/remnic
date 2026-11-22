@@ -16,7 +16,6 @@ import {
   type ChatToolName,
 } from "./chat-tools.js";
 
-// ---------------------------------------------------------------------------
 
 export interface ChatToolExecutor {
   memorySearch(query: string, maxResults?: number): Promise<string>;
@@ -28,6 +27,12 @@ export interface ChatToolExecutor {
   reviewList(runId?: string): Promise<string>;
   scopeInspect(): Promise<string>;
   correctionPlan(request: string): Promise<{ planId: string; preview: string }>;
+  /**
+   * Apply a correction plan.  Returns a JSON result string. Implementations
+   * pass `confirm: true` to the service; the engine's preview-confirm
+   * protocol is the consent that satisfies the apply gate, so this method
+   * must stay reachable only through the engine's confirmation flow.
+   */
   correctionApply(planId: string): Promise<string>;
   memoryPromote(memoryId: string): Promise<string>;
 }

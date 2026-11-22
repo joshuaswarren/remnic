@@ -400,7 +400,6 @@ test("parseConfig: Infinity semanticDedupThreshold falls back to default 0.92", 
 });
 
 //
-//
 
 test("regression #399: semantic dedup skip does NOT add content hash to index", async () => {
   const stateDir = await mkdtemp(join(tmpdir(), "remnic-test-"));
@@ -818,17 +817,14 @@ test("regression #399 HIGH: long content that would chunk is NOT written when se
 });
 
 test("regression #399 HIGH: long content that would chunk IS written when semantic-skip has a contradiction (supersession path)", async () => {
-  // Build content long enough to trigger chunking at the low threshold.
   const longContent = buildLongContent(30);
 
-  // Confirm this content would produce multiple chunks (precondition).
   const chunkResult = chunkContent(longContent, LOW_THRESHOLD_CHUNKING);
   assert.ok(
     chunkResult.chunked && chunkResult.chunks.length > 1,
     `precondition: chunkResult.chunked must be true; got ${chunkResult.chunks.length} chunk(s)`,
   );
 
-  // The semantic dedup lookup returns a high-similarity hit → decision = skip.
   const semanticDecision = await decideSemanticDedup(
     longContent,
     makeLookup([{ id: "neighbor-001", score: 0.97 }]),
@@ -842,7 +838,6 @@ test("regression #399 HIGH: long content that would chunk IS written when semant
 
   const supersedes = "old-memory-abc-123";
 
-  // Fixed orchestrator gate: if (pendingSemanticSkip && !supersedes) → skip.
   const pendingSemanticSkip =
     semanticDecision.action === "skip" ? semanticDecision : null;
   const gateTriggered = pendingSemanticSkip !== null && !supersedes;
@@ -1165,7 +1160,6 @@ test("round 10 Ui1J+Ui1L: search() with throwOnTimeout:true throws EmbeddingTime
   const { restore, callCount } = stubTimeoutFetch();
   process.env.REMNIC_EMBEDDING_FETCH_TIMEOUT_MS = "1";
   try {
-    // Seed a non-empty index so search() actually attempts an embed call.
     await seedEmbeddingIndex(memoryDir, {
       "mem-t-001": { vector: [1, 0, 0, 0], path: "facts/t-001.md" },
     });

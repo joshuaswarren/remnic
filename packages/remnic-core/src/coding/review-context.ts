@@ -4,7 +4,6 @@ import type {
   StructuralContextProvider,
 } from "./structural-context.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * A memory candidate as fed into review-context ranking. The shape is a

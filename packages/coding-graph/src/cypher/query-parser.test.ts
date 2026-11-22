@@ -18,7 +18,6 @@ import {
   type CypherNodeValue,
 } from "./query-parser.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function sym(
   qualifiedName: string,

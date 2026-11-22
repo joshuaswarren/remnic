@@ -16,7 +16,6 @@ function turn(overrides: Partial<EvidenceClassTurnInput> & Pick<EvidenceClassTur
   return { role: "assistant", ...overrides };
 }
 
-// ---------------------------------------------------------------------------
 
 const DERIVATION_TABLE: ReadonlyArray<{
   label: string;

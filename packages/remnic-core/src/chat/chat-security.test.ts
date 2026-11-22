@@ -21,7 +21,6 @@ import type { ChatToolExecutor } from "./chat-engine.js";
 import type { EngramAccessService } from "../access-service.js";
 import { createChatExecutor } from "./chat-executor.js";
 
-// ---------------------------------------------------------------------------
 
 function makeStubExecutor(overrides: Partial<ChatToolExecutor> = {}): ChatToolExecutor {
   const base: ChatToolExecutor = {

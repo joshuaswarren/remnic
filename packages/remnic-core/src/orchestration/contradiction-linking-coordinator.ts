@@ -637,7 +637,6 @@ export class ContradictionLinkingCoordinator {
     return "resolved";
   }
 
-  // ---------------------------------------------------------------------------
 
   /**
    * Suggest links for a new memory based on similar existing memories.

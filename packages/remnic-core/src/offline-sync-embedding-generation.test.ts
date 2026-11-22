@@ -81,7 +81,6 @@ async function readGenerationEntries(
   return merged;
 }
 
-// ---------------------------------------------------------------------------
 
 test("incoming legacy index replaces a local sharded generation as a whole", async () => {
   const localRoot = await tempDir("remnic-3148-legacy-over-shards");

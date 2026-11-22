@@ -1797,7 +1797,6 @@ export async function runSessionRepairCliCommand(
   return { report, plan, applyResult };
 }
 
-//
 // ---------------------------------------------------------------------------
 
 export interface TierStatusCoordinatorCliAdapter {

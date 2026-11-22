@@ -418,7 +418,6 @@ export class LanceDbBackend implements SearchBackend {
       return this.table;
     }
 
-    // Create empty table with schema
     const emptyRow = {
       docid: "__placeholder__",
       path: "",

@@ -4040,7 +4040,6 @@ async function cmdStatus(json: boolean): Promise<void> {
   await printHealthCheck(resolveDaemonBaseUrl(resolveConfigPath()), resolveStatusProbeToken());
 }
 // ── OAuth operator commands ─────────────────────────────────────────────────
-//
 
 /** Shape of one entry in `GET /oauth/pending`. Mirrors the server response. */
 interface OAuthPendingEntry {

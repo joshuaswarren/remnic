@@ -76,7 +76,6 @@ test("a timed-out attempt is retried by the live engine but not by the drain eng
 
 test("the orchestrator's claim-drain coordinator extracts with one attempt", async () => {
   const memoryDir = await mkTempMemoryDir("drain-extraction-wiring");
-  // Real 30 ms attempt timer: the abort under test is the client's own wall-clock timeout.
   const orchestrator = new Orchestrator(
     makeLifecycleConfig(memoryDir, {
       localLlmEnabled: true,
@@ -139,7 +138,6 @@ test("a drain extraction starts while a live extraction holds the shared client"
   let liveSettledWhenDrainStarted: boolean | undefined;
   const original = globalThis.fetch;
   let chat = 0;
-  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (!String(url).endsWith("/chat/completions")) {
       return Promise.resolve(new Response(modelsBody, { status: 200, headers: { "content-type": "application/json" } }));

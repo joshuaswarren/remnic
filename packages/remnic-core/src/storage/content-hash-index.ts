@@ -458,7 +458,6 @@ export class ContentHashIndex {
    * fired retry) simply yields `acquired=false` after the bounded wait.
    */
   async rebuildUnderLock(populate: () => Promise<void>): Promise<boolean> {
-    // The advisory lock file lives beside the index — ensure the dir exists
     await mkdir(path.dirname(this.filePath), { recursive: true });
     let published = false;
     await withHeldFileLock(
@@ -638,7 +637,6 @@ export class ContentHashIndex {
   addByHash(hash: string): void {
     // A re-add supersedes a pending removal of the same hash.
     this.removed.delete(hash);
-    // Record OUR durable delta even when the local snapshot already holds the
     this.hashes.add(hash);
     this.added.add(hash);
     this.dirty = true;

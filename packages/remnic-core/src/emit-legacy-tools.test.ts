@@ -30,7 +30,6 @@ function withIsolatedConnectorsDir<T>(
   }
 }
 
-// ============================================================================
 
 test("resolveEmitLegacyTools: fresh install with absent raw falls through to sticky-legacy (false)", () => {
   withIsolatedConnectorsDir(false, () => {

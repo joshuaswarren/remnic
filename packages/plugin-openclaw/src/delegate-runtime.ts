@@ -919,7 +919,6 @@ export function maybeRegisterDelegateRuntime(
     // binds nothing and must not poison a later delegate registration).
     // Record active registers so a later reload that flips to delegate on the
     // SAME api stays embedded instead of stacking both memory paths.
-    //
     // This is deliberate for `auto` too. Once embedded hooks are bound there is
     // no way to take them off — OpenClaw exposes no unregister — so adopting
     // delegate on a later register() of the same api would run BOTH memory

@@ -423,7 +423,6 @@ export async function buildExplicitCueRecallSection(
     includeContentLexicalCues: options.includeContentLexicalCues,
     includeStructuredPlanCues: options.includeStructuredPlanCues,
   });
-  //
   const rankedEvidenceItems = unifiedDedupeAndRank(evidenceItems, {
     query: "",
     intents: [],

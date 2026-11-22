@@ -832,7 +832,6 @@ type DaemonSearchToolArgs = {
   rerank?: boolean;
 };
 
-// ---------------------------------------------------------------------------
 
 export class QmdClient implements SearchBackend {
   private available: boolean | null = null;
@@ -1767,7 +1766,6 @@ export class QmdClient implements SearchBackend {
       return [];
     }
 
-    // Subprocess fallback (only reached when daemon is unavailable and not loading)
     return this.searchGlobalViaSubprocess(trimmed, n, searchOptions, execution?.signal, execution?.onDegradation);
   }
 
@@ -1847,8 +1845,6 @@ export class QmdClient implements SearchBackend {
         }
         throw err;
       }
-      // When daemon is available, trust its outcome and skip subprocess (same
-      // rationale as search() — subprocess hangs at 99% CPU on 75K+ files).
       if (results !== null) {
         if (results.length === 0) {
           log.debug("QMD daemon vsearch returned 0 results; skipping subprocess");

@@ -32,7 +32,6 @@ import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import { sanitizeFragment } from "./coding-namespace.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export interface GitCommit {
   /** Full or abbreviated SHA — callers decide precision. */
@@ -377,7 +376,6 @@ export function parseLogOutput(stdout: string, sep: string): {
   const commits: GitCommit[] = [];
   const fileSet = new Set<string>();
 
-  //   <blank line>
   //
   const blocks = stdout.split(/\n\s*\n/);
   for (const block of blocks) {

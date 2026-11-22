@@ -1,7 +1,6 @@
 
 import { EventEmitter } from "node:events";
 
-// ---------------------------------------------------------------------------
 
 export type GraphEventType =
   | "node-added"

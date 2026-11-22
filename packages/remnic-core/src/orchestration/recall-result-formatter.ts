@@ -50,7 +50,6 @@ function renderConnectorLabel(connector: string | undefined): string | null {
     : `${connector.slice(0, CONNECTOR_LABEL_MAX_LENGTH - 1)}…`;
 }
 
-// ---------------------------------------------------------------------------
 
 export function hasIdentityRecoveryIntent(prompt: string): boolean {
   const text = typeof prompt === "string" ? prompt.toLowerCase() : "";

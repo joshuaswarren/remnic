@@ -143,7 +143,6 @@ const SAMPLE_PENDING = {
   ],
 };
 
-// ════════════════════════════════════════════════════════════════════════════
 
 test("oauth pending (text) renders the list and sends the bearer token", async () => {
   const { requests } = installFetchMock(({ url, method }) => {

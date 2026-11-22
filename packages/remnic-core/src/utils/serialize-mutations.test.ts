@@ -1,5 +1,4 @@
 //
-//
 // NOTE on real timers: the serializeMutations tests below use NO wall-clock
 
 import assert from "node:assert/strict";

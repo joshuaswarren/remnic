@@ -53,7 +53,6 @@ function fakeMemoryFile(over: Partial<MemoryFile["frontmatter"]> & { id: string 
   } as MemoryFile;
 }
 
-// ---------------------------------------------------------------------------
 
 test("#1672 item 2: isEligibleCorrectionCandidate accepts an active, non-archived memory", () => {
   const m = fakeMemoryFile({ id: "m1", status: "active" });

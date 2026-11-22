@@ -620,7 +620,6 @@ test("#1495 explicit namespace wins and project context does NOT silently overri
   assert.equal(res.effectiveNamespace, "team", "explicit namespace must win");
   assert.equal(probe.lcmCalls[0].sessionKey, encodeNs("team", "pi-geek:abc123"));
   assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "team");
-  // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity),
   assert.deepEqual(
     new Set(probe.extractionCalls[0].sessionKeys),
     new Set(["pi-geek:abc123"]),

@@ -43,7 +43,6 @@ function mockGit(head: string | null): CodingGitInvoker {
     listTrackedFiles: () => ({ ok: true, paths: [] }),  };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("index_status: empty store → mode 'empty'", async () => {
   const { store, dir } = await tempStore();

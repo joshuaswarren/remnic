@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 export { adapter, geminiAdapter } from "./adapter.js";
 export {

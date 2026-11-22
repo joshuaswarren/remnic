@@ -1468,7 +1468,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
-      // Boundary dispatch (issue #2482): same registry path as memory_store.
       const op = getOperation("observe");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: observe");
@@ -1623,8 +1622,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
-        // Phase 1 provenance: server-resolved connector identity from the
-        // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),
       })) as { result: EngramAccessWriteResponse };
       const response = output.result;
@@ -1826,7 +1823,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         ?? parsed.searchParams.get("session")
         ?? parsed.searchParams.get("sessionKey")
         ?? undefined;
-      // Migrated through the access boundary (issue #1525): the registry
       const op = getOperation("memory_get");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_get");
@@ -2140,7 +2136,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
       }
-      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
       const targetPair = readPair(this.service.memoryDir, pairId);
       if (targetPair) {
         enforceNamespaceAllowList(
@@ -2271,7 +2266,6 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     // ── Graph mutation event stream (issue #691 PR 5/5) ──────────────────────
-    //
     // GET /engram/v1/graph/events
     //
     // Server-Sent Events stream that emits graph mutation events in real time.

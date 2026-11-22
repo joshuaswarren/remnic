@@ -41,7 +41,6 @@ const UNMIGRATED_HANDLER_BASELINE = 0;
 
 void getOperation;
 
-// ---------------------------------------------------------------------------
 
 const LEGACY_PREFIX = "engram.";
 const CANONICAL_PREFIX = "remnic_";
@@ -662,7 +661,6 @@ test("every migrated MCP/HTTP entry resolves to a registered AND dispatched boun
     }
   }
 
-  //  review P2: bind dispatch validation to method/path routes)
   const mcpDispatch = extractMcpDispatchMap();
   const httpRouteDispatch = extractHttpRouteDispatchMap();
   const violations = validateDispatchCoverage(

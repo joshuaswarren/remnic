@@ -658,7 +658,6 @@ describe("WeCloneProxy", () => {
       "Streamed response should include content chunks"
     );
 
-    // Wait for fire-and-forget observe
     await new Promise((r) => setTimeout(r, 200));
 
     assert.ok(

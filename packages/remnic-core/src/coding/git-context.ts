@@ -34,7 +34,6 @@ import { expandTildePath } from "../utils/path.js";
 // lives in `utils/path.ts`.
 export { expandTildePath };
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export interface GitContext {
   /**

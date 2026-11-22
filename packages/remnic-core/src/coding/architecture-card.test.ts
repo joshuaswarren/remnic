@@ -11,7 +11,6 @@ import {
   ARCHITECTURE_CARD_MAX_BYTES,
 } from "./architecture-card.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 async function makeFixtureRepo(overrides: {
   files?: Array<{ path: string; content?: string }>;

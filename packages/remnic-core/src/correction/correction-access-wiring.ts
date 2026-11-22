@@ -31,7 +31,6 @@ import { completeCorrectionClassify } from "./correction-classify.js";
 import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 
-// ---------------------------------------------------------------------------
 
 export interface CorrectionAccessWiring {
   orchestrator: Orchestrator;
@@ -776,7 +775,10 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * can never drift out of sync (review thread: correction-gate-config-mismatch):
  *   - nested: `config.correction.enabled`
  *   - flat:   the `correctionEnabled` legacy key (ratchet-safe shape)
- * Nested wins when present; both default to `true` (plan is read-only, safe on).
+ * Nested wins when present; both default to `true`. Default-on predates the
+ * chat wiring: the executor's plan/apply tools are mutation-capable but sit
+ * behind the engine's interactive preview-confirm protocol, so enabled-by-
+ * default is intended for human-attended surfaces.
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
   if (typeof resolveRecallAuxiliaryCapabilities(config).correction === "boolean") return resolveRecallAuxiliaryCapabilities(config).correction;
@@ -801,7 +803,6 @@ function readCorrectionFlag(config: PluginConfig, key: string, fallback: boolean
 }
 
 function readCorrectionNumber(config: PluginConfig, key: string, fallback: number): number {
-  // Nested shape wins: config.correction.<key> (review thread: nested-correction-settings).
   const nested = (config as unknown as Record<string, unknown>).correction as
     | Record<string, unknown>
     | undefined;

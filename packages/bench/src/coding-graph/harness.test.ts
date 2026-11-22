@@ -28,7 +28,6 @@ import {
   type CodingGraphLanguage,
 } from "@remnic/coding-graph";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("generator: same seed + same params → byte-identical output", () => {
   const config = { ...DEFAULT_SMOKE_FIXTURE, fileCount: 10, symbolsPerFile: 5 };

@@ -440,7 +440,6 @@ test("SmartBuffer prunes stale logical session buffers to a bounded entry set", 
   assert.ok(!persistedKeys.includes("thread-0"));
 });
 
-// ---------------------------------------------------------------------------
 
 test("retainDeferredTurns preserves turns across clearAfterExtraction", async () => {
   const storage = new FakeStorage({

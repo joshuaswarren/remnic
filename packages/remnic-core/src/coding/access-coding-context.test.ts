@@ -13,7 +13,6 @@ import { EngramAccessService, EngramAccessInputError } from "../access-service.j
 import type { CodingContext } from "../types.js";
 
 // Minimal orchestrator stub — only the surface `setCodingContext` touches.
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeService(): {
   service: EngramAccessService;

@@ -7,7 +7,6 @@ import {
   type RecentMemoryLike,
 } from "./buffer-surprise.js";
 
-// -----------------------------------------------------------------------------
 //
 // We use two complementary mock embedders so that tests are fully reproducible
 // and do not depend on any real embedding model.

@@ -15,7 +15,6 @@ import {
   type ReviewCandidate,
 } from "./review-context.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("isReviewPrompt: matches the #569 keyword list (case-insensitive)", () => {
   for (const prompt of [

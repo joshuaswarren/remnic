@@ -7,7 +7,6 @@ import type { CorrectionPlan, CorrectionOutcome } from "./correction-contract.js
 
 import "../access-operations.js";
 
-// ---------------------------------------------------------------------------
 
 function extractToolNames(response: unknown): Set<string> {
   if (typeof response !== "object" || response === null) return new Set();

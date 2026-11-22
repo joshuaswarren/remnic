@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 //
 
 import { isSpecifierNotFoundError } from "./optional-module-loader.js";

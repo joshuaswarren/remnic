@@ -37,7 +37,6 @@ import {
 } from "./byte-position.js";
 import type { LspLocation } from "./types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * A call site that Phase A left unresolved or at low confidence. The

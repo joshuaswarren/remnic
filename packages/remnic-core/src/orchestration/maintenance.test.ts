@@ -69,7 +69,6 @@ function buildScheduler(opts: {
   });
 }
 
-// ───────────────────────────────────────────────────────────────────────────
 
 test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)", async () => {
   const updateArgs: string[] = [];
@@ -1612,7 +1611,6 @@ test("catalog-disabled fallback decodes a long tokenized namespace dir so an enc
         "keyed target is unlocked so the encrypted ledger can be rewritten",
       );
 
-      // The core proof: the encrypted over-cap ledger COMPACTS, it does not defer.
       const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
       assert.equal(
         outcome,
@@ -1741,7 +1739,6 @@ test("catalog-disabled fallback resolves a LEGACY RAW namespace dir (not a ns- t
 test("catalog-disabled fallback routes a LEGACY RAW namespace dir through the PRODUCTION resolver (resolveNamespaceStorageRoot) so its encrypted over-cap ledger compacts, not defers (#2033)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-legacyraw-prod-"));
   try {
-    // A legacy deployment wrote per-namespace data under the RAW namespace name
     const nsName = "legacy-raw-prod-ns";
     assert.equal(namespaceIdentityFromToken(nsName), null, "precondition: dir name is NOT a ns- identity token");
     assert.ok(isSafeRouteNamespace(nsName), "precondition: dir name is a safe route namespace");
@@ -2144,8 +2141,6 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
 test("filesystem-fallback compaction recovers a crash-orphaned *.claimed spill when no live spill remains (#2033)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-claimed-"));
   try {
-    // Namespaces enabled but NO catalog storage wired: only the filesystem
-    // fallback finds this per-namespace ledger, so target.storage is absent.
     const token = namespaceIdentityToken("project-fallback-claimed");
     const nsDir = path.join(root, "namespaces", token);
     const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");

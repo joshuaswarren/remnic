@@ -839,7 +839,6 @@ export function parseConfig(
     watchFile: rawDreaming.watchFile !== false,
   };
 
-  //
   const rawDreamsBlock =
     cfg.dreams && typeof cfg.dreams === "object" && !Array.isArray(cfg.dreams)
       ? (cfg.dreams as Record<string, unknown>)

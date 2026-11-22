@@ -42,7 +42,6 @@ import { extractJsonCandidates } from "./json-extract.js";
 
 export type { FaithfulnessFrontmatter } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * The three entailment verdicts. "unchecked" is NOT a member of this union —
@@ -823,7 +822,6 @@ function boundedWindow(
   const half = Math.floor(maxChars / 2);
   let start = Math.max(0, center - half);
   const end = Math.min(text.length, start + maxChars);
-  // Re-anchor start so the window uses the full budget when end clamped.
   start = Math.max(0, end - maxChars);
   return { text: text.slice(start, end), start };
 }

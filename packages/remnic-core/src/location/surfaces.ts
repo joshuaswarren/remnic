@@ -77,7 +77,6 @@ export async function runLocationDay(memoryDir: string, rawDate: unknown): Promi
   };
 }
 
-// ---------------------------------------------------------------------------
 
 function requireLocationDate(raw: unknown, label: string): string {
   if (typeof raw !== "string" || !isValidLocationDate(raw)) {

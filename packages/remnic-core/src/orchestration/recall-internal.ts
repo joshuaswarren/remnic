@@ -449,7 +449,6 @@ export class RecallInternalCoordinator {
         recallPlan: timings.recallPlan,
         queryPolicy: timings.queryPolicy,
       });
-      //
       if (
         options.xrayCapture === true &&
         !options.abortSignal?.aborted
@@ -2918,7 +2917,6 @@ export class RecallInternalCoordinator {
       try {
         const focusedListSection = await buildFocusedListRecallSection({
           engine: this.deps.lcmEngine,
-          // #1495 thread 3 + #1505 fallback unification: read across the ordered
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: focusedListMaxChars,
@@ -2965,9 +2963,6 @@ export class RecallInternalCoordinator {
         const responseGuidanceSection = await buildResponseGuidanceRecallSection({
           engine: this.deps.lcmEngine,
           // #1495 thread 3 + #1505 fallback unification: read across the ordered
-          // LCM read key set so a branch-scoped session reads its own
-          // #1505 codex P2: the builder MERGES candidates across every key under
-          // its single budget.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: responseGuidanceMaxChars,
@@ -3087,7 +3082,6 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 1. Profile
     if (profile)
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3233,7 +3227,6 @@ export class RecallInternalCoordinator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
-        // #1495 + #1505 fallback unification: read across the ordered LCM read
         const structuredSettled = await Promise.allSettled(
           lcmReadSessionIds.map((lcmSessionId) =>
             this.deps.lcmEngine!.searchStructuredParts(lcmSessionId ?? "", retrievalQuery),
@@ -3958,8 +3951,6 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
-        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
-        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           const trustT0 = Date.now();
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
@@ -4263,7 +4254,6 @@ export class RecallInternalCoordinator {
                 searchOptions: qmdSearchOptions,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
-              // #1577: cold trust map back.
               recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
@@ -4606,9 +4596,6 @@ export class RecallInternalCoordinator {
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
     //
-    // Skip capture when the caller has already aborted this recall —
-    // otherwise a canceled call could clobber a prior successful
-    // (issue #570 PR 1 review follow-up).
     if (
       options.xrayCapture === true &&
       !options.abortSignal?.aborted
@@ -4784,8 +4771,6 @@ export class RecallInternalCoordinator {
           peerProfileInjection: peerProfileXrayAnnotation,
         });
       } catch (err) {
-        // Capture is a best-effort side channel: a capture failure
-        // must NEVER propagate into the primary recall path.
         log.debug(`x-ray capture failed: ${err}`);
       }
     }

@@ -2884,7 +2884,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
   async peekSuggestionSubmitIdempotency(
     rawRequest: EngramAccessSuggestionSubmitRequest
   ): Promise<EngramAccessIdempotencyStatus> {
-    // #2780/#2829: fingerprint the canonical category (schema transform already mapped aliases).
     const { canonical: request } = splitCanonicalWriteRequest(rawRequest);
     const namespace = await this.resolveCodingScopedWriteNamespace(request);
     const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
@@ -2894,8 +2893,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     return this.peekIdempotentWrite({
       operation: "suggestion_submit",
       idempotencyKey: request.idempotencyKey,
-      // Shared builder (issue #1989 PR3): byte-parity with the historical
-      // inline literal is asserted by access-fingerprint-parity.test.ts.
       requestFingerprint: buildAccessWriteRequestFingerprint({
         schemaVersion,
         namespace,
@@ -3173,7 +3170,6 @@ export class EngramAccessService extends SupportPassportAccessServiceBase {
     });
   }
 
-  // -------------------------------------------------------------------------
   // -------------------------------------------------------------------------
   /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). Same reader as the runtime gate so visibility + enforcement stay in sync. */
   get correctionSurfaceVisible(): boolean {

@@ -29,7 +29,6 @@
 import type { BenchMemoryAdapter } from "../../../adapters/types.js";
 import type { MemCorrectSystemAdapter } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 interface IngestedTurn {
   sessionKey: string;

@@ -6,7 +6,6 @@
  * mutating tools, each a thin adapter over an existing access-service method.
  */
 
-// ---------------------------------------------------------------------------
 
 export interface ChatLlmMessage {
   role: "system" | "user" | "assistant" | "tool";

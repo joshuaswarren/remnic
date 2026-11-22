@@ -20,7 +20,6 @@ import { assertIsDirectoryNotSymlink, assertRealpathInsideRoot } from "./fs-util
 import type { CapsuleParent, ExportManifestV2 } from "./types.js";
 import { CAPSULE_ID_PATTERN } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * Options accepted by {@link forkCapsule}.

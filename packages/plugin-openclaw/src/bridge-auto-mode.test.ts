@@ -2454,7 +2454,6 @@ test("UnsetEnvironment removes an assignment from every tier", () => {
         "Environment=REMNIC_HOST=127.0.0.1",
         "Environment=REMNIC_PORT=4318",
         "EnvironmentFile=/etc/remnic/env",
-        // ---- drop-in ----
         "[Service]",
         "UnsetEnvironment=REMNIC_PORT REMNIC_AUTH_TOKEN",
       ].join("\n"),

@@ -619,7 +619,6 @@ export class ExtractionPersistCoordinator {
               dedupContent,
               {
                 invalidAt: options.invalidAt,
-                // #1707 thread 2 — carry the corrected start bound.
                 validFrom: options.validAt,
                 ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
@@ -1033,7 +1032,6 @@ export class ExtractionPersistCoordinator {
       }
     }
 
-    //
     let judgeVerdictsByFactIndex: Map<number, import("../extraction-judge.js").JudgeVerdict> | null = null;
     let judgeGatedCount = 0;
     if (lifecycleCaps.extractionJudge) {
@@ -1720,7 +1718,6 @@ export class ExtractionPersistCoordinator {
             contentHashSource: rawChunkedContent,
             ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
             ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
-            // Claim-level provenance spans (issue #1575 PR 2).
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
             // PR #2016: never defer here — fallible chunk/artifact writes follow this
@@ -2007,7 +2004,6 @@ export class ExtractionPersistCoordinator {
         }
       }
 
-      // Classify memory kind (v8.0 Phase 2B: HiMem episode/note dual store)
       const memoryKind =
         writeCategory === "procedure"
           ? undefined
@@ -2072,7 +2068,6 @@ export class ExtractionPersistCoordinator {
         memoryKind,
         ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
         contentHashSource: writeCategory === "fact" ? fact.content : undefined,
-        // Faithfulness gate (issue #1576).
         ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
         ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
         // Claim-level provenance spans (issue #1575 PR 2). Carry verified
@@ -2121,7 +2116,6 @@ export class ExtractionPersistCoordinator {
         harmonicFact,
       });
       // #1645: defer contradiction auto-resolve until tombstone status is
-      // known (see applyDeferredContradictionResolve).
       try {
         const contradictionOutcome = await this.deps.applyDeferredContradictionResolve(
           contradiction,

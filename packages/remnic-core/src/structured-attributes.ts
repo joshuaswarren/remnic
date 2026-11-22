@@ -33,7 +33,6 @@ export function storedContentIdentityCandidates(
   const rawBody = stripCitation(bodyWithoutAttributes);
   return [...new Set([rawBody, bodyWithoutAttributes, fullBody])];
 }
-// ---------------------------------------------------------------------------
 //
 
 /**

@@ -239,7 +239,6 @@ export async function exportCapsule(
   return { archivePath, manifestPath, manifest, encryptedArchivePath: null };
 }
 
-// ---------------------------------------------------------------------------
 
 function validateName(name: unknown): void {
   if (typeof name !== "string" || !CAPSULE_ID_PATTERN.test(name)) {

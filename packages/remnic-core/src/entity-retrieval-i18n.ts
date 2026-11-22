@@ -47,11 +47,8 @@ const FOLLOW_UP_WORD_CUES = [
 ] as const;
 
 const TIMELINE_CONTAINS_CUES = [
-  // ja
   "最近", "その後", "どうなった", "何があった",
-  // zh (simplified + traditional)
   "怎么样了", "怎麼樣了", "后来", "後來", "最新", "近况", "近況", "什么情况", "什麼情況",
-  // ko
   "요즘", "요새", "최근",
   // multi-word phrases, already in normalized form (punctuation → space)
   "qué hay de nuevo", "qué pasó con", "quoi de neuf", "что нового",

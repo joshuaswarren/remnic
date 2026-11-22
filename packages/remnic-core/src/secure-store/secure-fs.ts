@@ -63,7 +63,6 @@ import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 import { isErrnoCode } from "../utils/errno.js";
 import { readStoreFileBufferTolerant as readStoreFileBuffer } from "./entity-file-read.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * Thrown when a read is attempted but the keyring entry for this

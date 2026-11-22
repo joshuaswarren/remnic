@@ -23,7 +23,6 @@ import {
 import type { DiffHunk } from "./git-invoker.js";
 import type { FileIR } from "@remnic/core";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function sym(
   qualifiedName: string,

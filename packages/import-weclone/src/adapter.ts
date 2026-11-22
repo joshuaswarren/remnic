@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 import type { BulkImportSourceAdapter, BulkImportSource } from "@remnic/core";
 import { parseWeCloneExport, type ParseOptions } from "./parser.js";

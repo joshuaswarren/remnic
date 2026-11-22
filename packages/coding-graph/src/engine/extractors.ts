@@ -10,7 +10,6 @@ export interface LanguageExtractor {
   readonly routesQuery: string;
 }
 
-// ===========================================================================
 
 const JS_FAMILY_DEFINITIONS = `
 (function_declaration name: (identifier) @name) @def.function

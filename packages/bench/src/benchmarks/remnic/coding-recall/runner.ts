@@ -149,7 +149,6 @@ export async function runCodingRecallBenchmark(
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 //
 
 function scoreCase(sample: CodingRecallCase): CodingRecallCaseMemory[] {

@@ -127,7 +127,6 @@ test("MCP memory_chat: strips internal error from structuredContent (Thread 17)"
   await rm(memoryDir, { recursive: true, force: true });
 });
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Narrow a tools/call JSON-RPC response into just the fields the r6 tests

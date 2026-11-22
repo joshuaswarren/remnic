@@ -12,7 +12,6 @@ import {
   enqueuePassiveCorrectionNotification,
 } from "./passive-correction-notifications.js";
 
-// ---------------------------------------------------------------------------
 
 export type CorrectionCaptureMode = "off" | "queue" | "auto";
 

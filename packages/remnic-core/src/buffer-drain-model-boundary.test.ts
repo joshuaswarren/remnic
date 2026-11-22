@@ -259,8 +259,6 @@ test("legacy unpinned claim groups refuse under an active profile with no writab
       defaultScopeProfile: "denied-profile",
     });
     orchestrator = new Orchestrator(config);
-    // The real daemon initializes before serving; the model-input budget
-    // (model registry) only exists after that.
     await orchestrator.initialize();
     const runner = new BufferDrainRunner(orchestrator);
 
@@ -316,7 +314,6 @@ test("an unpinned legacy drain writes under the ACTIVE profile namespace, never 
       memoryDir,
       debug: true,
       openaiApiKey: "sk-test",
-      // The controlled boundary serves the extraction — no network fallback.
       openaiBaseUrl: model.url,
       qmdEnabled: false,
       workspaceDir: path.join(memoryDir, "workspace"),

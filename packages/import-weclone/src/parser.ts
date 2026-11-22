@@ -1,5 +1,4 @@
 // WeClone preprocessed export parser
-// ---------------------------------------------------------------------------
 
 import type { BulkImportSource, ImportTurn } from "@remnic/core";
 import { validateImportTurn, parseIsoTimestamp } from "@remnic/core";

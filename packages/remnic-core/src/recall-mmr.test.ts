@@ -288,7 +288,6 @@ test("applyMmrToCandidates end-to-end: duplicate sentences reduced vs disabled",
 });
 
 // (ChatGPT Codex P2 review comment on PR #391)
-// ---------------------------------------------------------------------------
 
 test(
   "reorderRecallResultsWithMmr preserves distinct results that share a docid",
@@ -676,7 +675,6 @@ test(
 // ---------------------------------------------------------------------------
 // Regression: single-element input must report considered=1 kept=1, not the
 // 0/0 sentinel meant for the empty case.
-// (Cursor Bugbot Low-severity review comment on PR #391)
 // ---------------------------------------------------------------------------
 
 test(

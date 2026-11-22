@@ -8,7 +8,6 @@ import {
   type ImportTurn,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 describe("isImportRole", () => {
   it("accepts 'user'", () => {

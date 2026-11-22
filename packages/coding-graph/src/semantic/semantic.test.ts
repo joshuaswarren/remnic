@@ -38,7 +38,6 @@ import {
   type SemanticConfig,
 } from "./index.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function createCountingProvider(
   opts: { failMode?: "timeout" | "null" | "throw" | "malformed" } = {},

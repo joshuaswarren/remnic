@@ -21,7 +21,6 @@
  * catch what passive detection misses.
  */
 
-// ---------------------------------------------------------------------------
 
 export type PassiveCorrectionPolarity = "update" | "retract" | "stop_storing";
 

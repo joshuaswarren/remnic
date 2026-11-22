@@ -540,7 +540,6 @@ export function createChunkProcessor(deps: ChunkProcessorDeps): ChunkProcessor {
     // that each belong to ONE chunk and ONE conversation. The runs are already
     // in chronological order, so a conversation is only finalized once the
     // stream has truly moved past it.
-    //
     // Already-applied segments are dropped BEFORE the assembler sees them.
     // They live in a durable conversation already, so re-adding them would
     // either duplicate in-memory state or — if the assembler were rewound to

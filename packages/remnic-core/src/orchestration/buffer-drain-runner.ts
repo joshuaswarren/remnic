@@ -329,8 +329,6 @@ function planOptionForGroup(group: ExtractionScopeGroup): GroupPlanOption {
   return {};
 }
 
-/** captureMode=explicit: ordinary buffered conversation turns never create
- *  memories — only deliberately accepted captures drain. */
 function explicitModeDenied(group: ExtractionScopeGroup, config: PluginConfig): boolean {
   return shouldSkipImplicitExtraction(config) && !group.turns.some((turn) => turn.acceptedCapture === true);
 }

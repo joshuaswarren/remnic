@@ -17,7 +17,6 @@ import path from "node:path";
 import { throwIfAborted } from "../abort-error.js";
 import { serializeMutations } from "../utils/serialize-mutations.js";
 
-// ---------------------------------------------------------------------------
 
 export interface PassiveCorrectionNotification {
   planId: string;

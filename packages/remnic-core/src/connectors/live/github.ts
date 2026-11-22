@@ -9,7 +9,6 @@ import type {
 } from "./framework.js";
 import { throwIfAborted } from "../../abort-error.js";
 
-// ---------------------------------------------------------------------------
 
 export const GITHUB_CONNECTOR_ID = "github";
 
@@ -547,7 +546,6 @@ async function incrementalSync(
     if (totalConsumed >= MAX_ITEMS_PER_PASS) break;
     throwIfAborted(signal, "github: sync aborted");
 
-    // --- Issue comments ---
     {
       const wmKey = watermarkKey(repo, "issue-comment");
       const since = payload.watermarks[wmKey];
@@ -592,7 +590,6 @@ async function incrementalSync(
     if (totalConsumed >= MAX_ITEMS_PER_PASS) break;
     throwIfAborted(signal, "github: sync aborted");
 
-    // --- PR review comments ---
     {
       const wmKey = watermarkKey(repo, "pr-review-comment");
       const since = payload.watermarks[wmKey];

@@ -62,7 +62,7 @@ export function createChatEngine(opts: ChatEngineFactoryOptions): ChatEngine | n
     executor,
     maxToolCallsPerTurn: opts.config.maxToolCallsPerTurn,
     ...(opts.config.model ? { model: opts.config.model } : {}),
-    correctionAvailable: false,
+    correctionAvailable: opts.service.correctionSurfaceVisible,
     scopeInspectAvailable: false,
   });
 }

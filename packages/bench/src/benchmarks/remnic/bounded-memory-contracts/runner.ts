@@ -251,7 +251,6 @@ export async function runBoundedMemoryContractsBenchmark(
   };
 }
 
-// ---------------------------------------------------------------------------
 
 async function writeArtifacts(
   outputDir: string,

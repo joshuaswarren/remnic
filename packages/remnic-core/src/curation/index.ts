@@ -82,7 +82,6 @@ export interface DuplicateResult {
 }
 
 export interface ContradictionResult {
-  /** New statement */
   newStatement: CuratedStatement;
   conflictingId: string;
   conflictingContent: string;

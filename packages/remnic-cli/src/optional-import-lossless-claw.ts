@@ -1,4 +1,3 @@
-//
 
 import type { openLcmDatabase } from "@remnic/core";
 

@@ -245,7 +245,6 @@ test("a symlinked _fusion dir that escapes the memory dir is refused, not follow
 
 test("a symlinked wearables root that escapes the memory dir is refused, not followed", async () => {
   const { storage, dir } = makeStorage();
-  // Outside target: a sibling temp dir NOT under the memory dir root.
   const escapeDir = mkdtempSync(path.join(tmpdir(), "remnic-wearables-escape-"));
   try {
     await symlink(escapeDir, path.join(dir, "wearables"), "dir");
@@ -267,7 +266,6 @@ test("a symlinked wearables root that escapes the memory dir is refused, not fol
       store.deleteFusedDay("2026-06-10"),
       /resolves outside the memory dir/,
     );
-    // Nothing was written into the escape target.
     const leaked = await readdir(escapeDir).catch(() => []);
     assert.equal(leaked.length, 0, "no fused artifact must leak into the symlinked wearables root");
   } finally {
@@ -291,7 +289,6 @@ test("a symlinked _fusion dir that resolves INSIDE the memory dir is refused, no
       store.writeFusedDay("2026-06-10", "---\nkind: wearable-fusion\n---\n\n[]\n"),
       /is a symbolic link/,
     );
-    // Read, list, and delete are refused for the same reason.
     await assert.rejects(store.readFusedDay("2026-06-10"), /is a symbolic link/);
     await assert.rejects(store.listFusedDays(), /is a symbolic link/);
     await assert.rejects(store.deleteFusedDay("2026-06-10"), /is a symbolic link/);

@@ -148,7 +148,6 @@ export async function computeSurprise(
   return surprise;
 }
 
-// -----------------------------------------------------------------------------
 
 function clampK(k: number, ceiling: number): number {
   if (!Number.isFinite(k)) {

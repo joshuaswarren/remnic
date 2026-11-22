@@ -108,7 +108,6 @@ export function runConsoleTui(
       }
       safeWrite(output, ANSI_CLEAR_HOME);
       safeWrite(output, frame);
-      //
       if (snapshot && options.traceRecorder && !traceWritePending) {
         traceWritePending = true;
         void options.traceRecorder

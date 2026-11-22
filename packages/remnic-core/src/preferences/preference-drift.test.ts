@@ -157,7 +157,6 @@ function findingFor(findings: PreferenceDriftFinding[], id: string): PreferenceD
   return found;
 }
 
-// ════════════════════════════════════════════════════════════════════════════
 
 test("shadow scan classifies corroborated / stale / drifted and writes nothing", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-drift-shadow-"));

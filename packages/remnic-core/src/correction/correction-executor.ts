@@ -13,7 +13,6 @@ import {
 } from "./correction-contract.js";
 import type { CorrectionPlanner } from "./correction-planner.js";
 
-// ---------------------------------------------------------------------------
 
 /** A memory the executor is operating on (subset of MemoryFile). */
 export interface ExecutorMemory {

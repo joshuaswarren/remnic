@@ -523,7 +523,6 @@ export class EmbeddingIndexFileStore {
     }
     if (layout === "legacy") {
       const info = await stat(this.indexPath).catch((err) => {
-        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new EmbeddingIndexStorageError(
           `cannot stat embedding index file ${this.indexPath}: ${err instanceof Error ? err.message : String(err)}`,

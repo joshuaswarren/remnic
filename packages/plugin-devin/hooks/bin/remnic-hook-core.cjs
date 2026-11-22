@@ -704,7 +704,6 @@ function run(config) {
 
   // env var (Devin: DEVIN_PROJECT_DIR; Claude Code compat: CLAUDE_PROJECT_DIR;
   // Antigravity: AGY_PROJECT_DIR).
-  // Hosts that omit cwd from the hook payload still export a project-dir
   // env var. The active host's variable (config.projectDirEnv) wins; the
   // shared fallbacks preserve the pre-existing hosts' behavior when the
   // host's own variable is unset. AGY_PROJECT_DIR is intentionally absent

@@ -7,7 +7,6 @@
  * previous scan already confirmed separator-free (rule 32).
  */
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * Encode a JSON-RPC message as a Content-Length-prefixed frame ready to

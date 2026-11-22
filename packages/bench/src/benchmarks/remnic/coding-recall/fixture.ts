@@ -64,7 +64,6 @@ export interface CodingRecallCase {
   requiredWorkflowFacets?: DeveloperWorkflowFacet[];
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 const CROSS_PROJECT_CASE: CodingRecallCase = {
   id: "cross-project-basic",

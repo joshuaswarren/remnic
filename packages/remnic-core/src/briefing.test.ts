@@ -25,7 +25,6 @@ import type {
 } from "./types.js";
 import type { StorageManager } from "./storage.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeMemory(updated: string): MemoryFile {
   return {

@@ -5,7 +5,6 @@ import { LettaMemCorrectAdapter } from "./letta-adapter.js";
 import { MissingCredentialError } from "./shared.js";
 import { FakeFetchBuilder } from "./fake-fetch.js";
 
-// ---------------------------------------------------------------------------
 
 test("letta: keyless adapter throws MissingCredentialError", async () => {
   const adapter = new LettaMemCorrectAdapter({});

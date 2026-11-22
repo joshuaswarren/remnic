@@ -99,7 +99,6 @@ function makeMemoryDir(t: { after: (fn: () => void) => void }): string {
   return dir;
 }
 
-// ───────────────────────────────────────────────────────────────────────────
 
 test("isValidConnectorId accepts well-formed ids", () => {
   for (const id of ["a", "abc", "drive", "g-mail", "github-issues", "0", "abc123-xyz"]) {

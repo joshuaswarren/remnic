@@ -880,7 +880,6 @@ test("HTTP observe missing-storage-target refusal is a non-retryable request fau
     "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
   );
   refusal.name = "StorageTargetRequiredError";
-  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw refusal;
@@ -3215,7 +3214,6 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
   }
 });
 
-// ===========================================================================
 
 test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 finding 1)", async () => {
   const capsuleCalls: Array<Record<string, unknown>> = [];
@@ -6463,7 +6461,6 @@ test("a failed write releases its reserved quota slot (issue #3225 C4)", async (
   service.capsuleExport = async (request) => {
     calls += 1;
     if (calls === 1) throw new Error("export backend failed");
-    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
     return { ok: true, name: request.name } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6506,7 +6503,6 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
     hookCalls += 1;
     const response = { sessionKey: request.sessionKey };
     stored.set(key ?? "", response);
-    // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
     return response as never;
   };
   const server = new EngramAccessHttpServer({

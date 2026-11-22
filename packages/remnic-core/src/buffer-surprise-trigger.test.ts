@@ -65,7 +65,6 @@ function throwingProbe(message = "embedder offline"): RecordingProbe {
   return probe;
 }
 
-// ---------------------------------------------------------------------------
 
 test("flag off: probe is not consulted, behavior matches pre-#563 baseline", async () => {
   const storage = new FakeStorage(emptyBuffer());

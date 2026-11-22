@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 //
 // OpenAI publishes each account's export as a ZIP. Inside are several JSON
 // files; this parser understands the two that carry durable user-level
@@ -16,6 +15,12 @@
 //      one memory per conversation summarizing the user-side turns.
 //
 //
+<<<<<<< HEAD
+=======
+// The CLI reads the raw export ZIP itself (issue #3542): it passes the
+// memory.json, memories.json, user.json and conversations.json it finds as
+// one bundle object keyed by file name.
+>>>>>>> origin/main
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------

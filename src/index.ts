@@ -1243,7 +1243,6 @@ const pluginDefinition = {
         ...rawPluginConfig,
         gatewayConfig: api.config, // Pass gateway config for fallback AI
       },
-      //
       fileConfig ?? {},
       runtimeSet,
     );
@@ -4015,7 +4014,6 @@ const pluginDefinition = {
         ctx: import("openclaw/plugin-sdk").PluginHookAgentContext &
           Record<string, unknown>,
       ) => {
-        // Fall back to event.sessionKey when ctx is empty (new SDK may provide it on the event).
         const sessionKey =
           (ctx?.sessionKey as string) ??
           (event?.sessionKey as string) ??
@@ -4954,7 +4952,6 @@ const pluginDefinition = {
             }
           }
         } else {
-          // The CLI registered by the original register() call is still present
 
           if (
             (globalThis as any)[keys.INIT_PROMISE] &&

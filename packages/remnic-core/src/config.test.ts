@@ -1955,7 +1955,6 @@ test("parseConfig rejects invalid maintenance namespace fanout values", () => {
 
 
 test("parseConfig runtime-over-file precedence (PR #1593 review round 4)", () => {
-  //
   withIsolatedConnectorsDir(false, () => {
     assert.equal(
       parseConfig(
@@ -2018,7 +2017,6 @@ test("parseConfig null raw + runtime override honored (PR #1593 review round 5)"
       false,
       "null raw with runtime false overrides schema default true",
     );
-    // Sticky-legacy still works: merged false (schema default), raw empty →
     assert.equal(
       parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
       false,

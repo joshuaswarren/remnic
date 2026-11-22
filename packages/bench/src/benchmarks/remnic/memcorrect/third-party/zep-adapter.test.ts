@@ -5,7 +5,6 @@ import { ZepMemCorrectAdapter } from "./zep-adapter.js";
 import { MissingCredentialError } from "./shared.js";
 import { FakeFetchBuilder } from "./fake-fetch.js";
 
-// ---------------------------------------------------------------------------
 
 test("zep: keyless adapter throws MissingCredentialError", async () => {
   const adapter = new ZepMemCorrectAdapter({});

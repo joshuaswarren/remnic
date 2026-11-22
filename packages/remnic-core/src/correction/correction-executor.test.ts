@@ -13,7 +13,6 @@ import {
 import { CorrectionPlanner, type PlannerCandidate, type PlannerDeps } from "./correction-planner.js";
 import { CorrectionExecutor, CORRECTION_ERROR_MAX, sanitizeErrorMessage, type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
 
-// ---------------------------------------------------------------------------
 
 interface FakeState {
   /** memoryId → current memory state. */

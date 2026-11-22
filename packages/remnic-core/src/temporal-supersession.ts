@@ -675,7 +675,6 @@ export async function applyTemporalSupersession(args: {
   const processedIds = new Set<string>();
 
   //
-  //
 
   let coldMemories: MemoryFile[];
   try {

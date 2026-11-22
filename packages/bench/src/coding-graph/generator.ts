@@ -9,7 +9,6 @@ import type {
   SyntheticSymbol,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 /**
  * Create a deterministic PRNG from a 32-bit seed. Returns a function that

@@ -449,8 +449,6 @@ async function findDuplicateExplicitCapture(
             if (isIndexAuthoritative) return null;
           }
         } catch (err) {
-          // Fail open: an unavailable targeted index must not hide a durable
-          // pending-review duplicate.
           void err;
         }
       }

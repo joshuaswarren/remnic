@@ -670,7 +670,6 @@ test("recorder close() aborts pending write-chain drain when signal fires (Codex
     const tracePath = path.join(dir, "trace.jsonl");
     const recorder = await openTraceRecorder(tracePath);
     const stalledWrite = new Promise<void>(() => undefined);
-    //
     await recorder.close();
 
     const recorder2 = await openTraceRecorder(tracePath, {

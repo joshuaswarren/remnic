@@ -5,7 +5,6 @@
 // was kept alive by raising --max-old-space-size (4096 -> 8192 -> 12288);
 // unrelated lockfile refreshes were enough to flip it to
 // ERR_WORKER_OUT_OF_MEMORY, and it stopped completing at any heap size.
-//
 // `tsc --emitDeclarationOnly` builds the program once and writes one .d.ts per
 // source file. Measured on the same tree:
 //

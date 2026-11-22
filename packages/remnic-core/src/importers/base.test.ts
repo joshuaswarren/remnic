@@ -14,7 +14,6 @@ import {
 } from "./base.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 
-// ---------------------------------------------------------------------------
 
 function makeMemories(count: number, sourceLabel = "fake"): ImportedMemory[] {
   const out: ImportedMemory[] = [];

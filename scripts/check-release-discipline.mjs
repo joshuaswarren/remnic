@@ -261,7 +261,6 @@ export function evaluateReleaseDiscipline(input) {
   return violations;
 }
 
-// ---------------------------------------------------------------------------
 
 function makeGit(repoRoot) {
   return (args) =>

@@ -288,7 +288,6 @@ test("RemnicClient reports invalid JSON clearly for successful daemon responses"
   );
 });
 
-// ---------------------------------------------------------------------------
 
 function headerValue(headers: HeadersInit | undefined, name: string): string | undefined {
   if (!headers) return undefined;

@@ -842,7 +842,6 @@ test("applyTemporalSupersession: stale extraction (new write has T0, existing ha
 });
 
 test("applyTemporalSupersession: CAS re-read skips candidate already superseded by concurrent writer", async () => {
-  //
   const { storage, cleanup } = await makeStorage("engram-temporal-cas-");
   try {
     const oldCity = await writeFact(

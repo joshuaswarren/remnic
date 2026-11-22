@@ -80,7 +80,6 @@ test("detectLayout returns sharded on the first post-gap call and ignores a stra
   }
 });
 
-// ---------------------------------------------------------------------------
 
 test("consecutive shard publications move the generation stamp even when the directory stat is preserved", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-emb3176-stamp-"));

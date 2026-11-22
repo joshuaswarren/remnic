@@ -26,7 +26,6 @@ import { GraphStore, nodeIdFor } from "./graph-store.js";
 import type { StoreFileIR, SymbolIR } from "./graph-store.js";
 
 // Fixture IR — synthetic code only (public-repo policy).
-// ──────────────────────────────────────────────────────────────────────────
 
 function sym(
   qualifiedName: string,

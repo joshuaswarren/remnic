@@ -170,7 +170,6 @@ export function createSubprocessStructuralProvider(
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function parseSymbolJson(stdout: string): SymbolsForDiffResult {
   let value: unknown;

@@ -6,7 +6,6 @@ import {
 } from "./adapters.js";
 import type { BenchMemoryAdapter } from "../../../adapters/types.js";
 
-// ---------------------------------------------------------------------------
 
 test("baseline: recall surfaces turns overlapping the query terms", async () => {
   const adapter = new PromptOnlyBaselineAdapter();

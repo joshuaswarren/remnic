@@ -44,7 +44,6 @@ import {
   type MemoryDraft,
 } from "./correction-contract.js";
 
-// ---------------------------------------------------------------------------
 
 export interface PlannerCandidate {
   memoryId: string;

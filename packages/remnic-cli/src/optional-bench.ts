@@ -1,4 +1,3 @@
-//
 
 import type * as BenchPackage from "@remnic/bench";
 import type {

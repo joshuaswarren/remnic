@@ -10,7 +10,6 @@ import type {
   BufferTurn,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 class RecordingStorage {
   public saved: BufferState | null = null;

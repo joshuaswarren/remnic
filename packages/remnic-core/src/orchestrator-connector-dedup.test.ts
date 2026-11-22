@@ -16,7 +16,6 @@ import { buildProcedurePersistBody } from "./procedural/procedure-types.js";
 import type { PersistExtractionFn } from "./testing/orchestrator-lite.js";
 
 // persistExtraction is private; cast through unknown to reach it without `any`.
-// ---------------------------------------------------------------------------
 
 interface OrchestratorTestSurface {
   persistExtraction: PersistExtractionFn;
@@ -381,7 +380,6 @@ test("promotion dedup (QOjlD): operator vs operator skips promotion", async () =
     confidence: 0.9,
   });
 
-  // Extract WITHOUT a sourceConnector (operator write).
   const { persistedIds: ids } = await orchestrator.persistExtraction(
     factResult(body),
     storage,
@@ -524,7 +522,6 @@ test("connector dedup (QPDE5): same-connector procedure with steps dedupes", asy
     { intent: "Update the Helm chart values", expectedOutcome: "Values file committed" },
   ];
 
-  // First write with connector "chatgpt" — must succeed.
   const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
@@ -555,7 +552,6 @@ test("connector dedup (QPDE5): same procedure + different connector does NOT ded
     { intent: "Verify connectivity with new credentials" },
   ];
 
-  // First write with connector "chatgpt".
   const { persistedIds: ids1 } = await orchestrator.persistExtraction(
     procedureResult(title, steps),
     storage,
@@ -1386,7 +1382,6 @@ test("#1909 round 15 (PR #2016): startup rebuild preserves EVERY registered cate
   }
   clearMemoryCache(memoryDir); // model a fresh process
 
-  // Phase 2 — restart: the dedup index rebuilds authoritatively from the corpus.
   const orch2 = new Orchestrator(makeConfig()) as unknown as OrchestratorTestSurface;
   const storage2 = await orch2.getStorage("default");
 

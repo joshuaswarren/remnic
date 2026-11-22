@@ -168,7 +168,6 @@ export interface StoreFileIR {
   readonly routes?: readonly RouteIR[];
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export type GraphStoreFailureCode = "db_locked" | "db_corrupt" | "db_error" | "store_closed";
 
@@ -1025,17 +1024,6 @@ export class GraphStore {
       this.db.prepare(sqlTemplate.replace("%PH%", placeholders)).run(...chunk);
     }
   }
-  /**
-   * PR3 (issue #1553): upsert co-change edges into the `co_changes`
-   * table. Clears existing edges then inserts the new set in one
-   * transaction (idempotent — re-running on unchanged history produces
-   * the same table). Serialized through the write queue.
-   *
-   * Returns `{ ok: false, code: "store_closed" }` when the store is
-   * closed/closing so the caller does NOT believe mining succeeded
-   * while nothing was persisted (cursor Bugbot: 'Co-change store
-   * reports false success').
-   */
   async upsertCoChanges(edges: readonly {
     readonly fileA: string;
     readonly fileB: string;
@@ -2530,7 +2518,6 @@ export class GraphStore {
    */
   async snippetFor(query: SnippetQuery): Promise<SnippetResult> {
     if (this.closed) return { ok: false, code: "store_closed" };
-    // Guard the query object before any dereference (see traverse).
     if (query == null || typeof query !== "object") {
       return { ok: false, code: "invalid_query" };
     }

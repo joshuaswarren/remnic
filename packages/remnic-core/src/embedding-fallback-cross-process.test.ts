@@ -263,8 +263,6 @@ test("an identity probe that raced an in-flight peer publication revalidates at 
   await fallback.indexFile("mem-a", PARENT_TEXT, "namespaces/alpha/facts/parent-a.md");
   assert.equal((await fallback.search(PARENT_TEXT, 5))[0]?.id, "mem-a");
 
-  // The peer's io gate freezes its publication after the marker moved but
-  // before the index bytes are replaced: the window an unlocked reader sees.
   const peer = new EmbeddingFallback(parentConfig(memoryDir), peerIo);
   peerGated = true;
   const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
@@ -327,7 +325,6 @@ test("a failed completion marker keeps every probe revalidating until a publicat
   const peerWrite = peer.indexFile("mem-b", CHILD_TEXT, "namespaces/alpha/facts/child-b.md");
   await atWrite;
 
-  // Park the parent's probe on the in-flight window: its identity probe
   const { promise: probeRead, resolve: probeReadLanded } = Promise.withResolvers<void>();
   const countingReadUtf8 = counting.io.readUtf8;
   counting.io.readUtf8 = async (filePath) => {

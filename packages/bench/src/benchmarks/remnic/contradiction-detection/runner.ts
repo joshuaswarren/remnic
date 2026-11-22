@@ -189,7 +189,6 @@ export async function runContradictionDetectionBenchmark(
     options.onTaskComplete?.(tasks[tasks.length - 1]!, tasks.length, cases.length);
   }
 
-  // Per-verdict metrics
   const verdictScores: Record<string, number> = {};
   for (const v of ALL_VERDICTS) {
     const m = computeVerdictMetrics(cases, predicted, v);

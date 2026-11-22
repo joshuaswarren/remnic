@@ -171,7 +171,6 @@ test("#1669 P2: compileRedactionPattern empty body never matches", () => {
   assert.equal(rule.matcher(""), false);
 });
 
-// ---------------------------------------------------------------------------
 
 test("#1713 Item 1: combined rules from source + target dirs catch cross-namespace patterns", async () => {
   await withTempDir(async (sourceDir) => {

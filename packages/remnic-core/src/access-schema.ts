@@ -16,7 +16,6 @@ import {
   OFFLINE_SYNC_MAX_MTIME_MS,
 } from "./offline-sync.js";
 
-// ---------------------------------------------------------------------------
 
 export interface SchemaValidationError {
   error: string;

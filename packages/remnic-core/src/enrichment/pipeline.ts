@@ -19,7 +19,6 @@ import type {
   EntityEnrichmentInput,
 } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 interface RateLimitBucket {
   minuteCount: number;

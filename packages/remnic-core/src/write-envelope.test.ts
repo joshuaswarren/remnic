@@ -24,7 +24,6 @@ function minimalInput(overrides: Partial<MemoryWriteInput> = {}): MemoryWriteInp
   return { content: "User prefers dark mode", category: "preference", ...overrides };
 }
 
-// ---------------------------------------------------------------------------
 
 test("composeMemoryEnvelope seals a minimal input with defaults", () => {
   const env = composeMemoryEnvelope(minimalInput(), CTX);

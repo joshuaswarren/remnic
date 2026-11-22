@@ -31,7 +31,6 @@ function mode(overrides: Partial<CodingModeConfig> = {}): CodingModeConfig {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("projectNamespaceName: stable form for origin-derived id (safe-route compatible)", () => {
   assert.equal(projectNamespaceName("origin:abcd1234"), "project-origin-abcd1234");

@@ -592,7 +592,6 @@ test("buildMergedTargetPromotionPayload: an unreadable CAS receipt shard refuses
   assert.ok(shard.revision, "the merge commit minted a standing receipt");
   await writeFile(shardPath, "{corrupt", "utf8");
 
-  // A concurrent writer published the PRE-merge body after the initial
   // guard — reconciliation may retire it ONLY off a confirmed outcome.
   const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
     source: "writer-b",

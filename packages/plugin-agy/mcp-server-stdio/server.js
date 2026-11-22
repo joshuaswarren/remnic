@@ -2,7 +2,6 @@
 // Bridges the Remnic HTTP MCP endpoint to a stdio MCP server Antigravity CLI (agy) can
 // speak. Same transport contract as @remnic/plugin-claude-code's proxy; the
 // difference is credential resolution (see below).
-//
 // URL: reads `REMNIC_PLUGIN_DAEMON_URL`, defaulting to `http://localhost:4318/mcp`
 //
 // Transport: line-delimited JSON-RPC over stdin (with chunk-boundary safe

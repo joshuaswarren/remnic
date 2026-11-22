@@ -78,7 +78,6 @@ function makeFactory(client: GoogleDriveClient): GoogleDriveClientFactory {
   return async () => client;
 }
 
-// ---------------------------------------------------------------------------
 
 test("validateGoogleDriveConfig accepts a minimal valid config", () => {
   const cfg = validateGoogleDriveConfig({ ...SYNTHETIC_CREDS });

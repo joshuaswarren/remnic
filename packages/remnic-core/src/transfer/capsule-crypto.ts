@@ -13,7 +13,6 @@ import {
   type ScryptParams,
 } from "../secure-store/kdf.js";
 
-// ---------------------------------------------------------------------------
 
 const MAGIC = Buffer.from("REMNIC-ENC\x00", "ascii");
 

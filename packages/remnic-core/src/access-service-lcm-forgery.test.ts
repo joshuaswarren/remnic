@@ -295,7 +295,6 @@ test("#1495 P1 LEGITIMATE ACCESS PRESERVED: a session key that legitimately cont
   );
 });
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("#1505 codex P1 r2 FORGERY BLOCKED: explicit-namespace + sessionless lcmSearch does NOT archive-scan another tenant's overlay rows", async () => {
   const probe = makeForgeryProbe(twoTenantConfig());

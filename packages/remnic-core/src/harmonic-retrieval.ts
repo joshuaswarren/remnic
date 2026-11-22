@@ -431,7 +431,6 @@ export async function readCueAnchors(options: {
     try {
       return validateCueAnchor(await readJsonFile(filePath));
     } catch {
-      // fail-open: invalid artifacts stay visible via status tooling instead of recall
       return null;
     }
   });

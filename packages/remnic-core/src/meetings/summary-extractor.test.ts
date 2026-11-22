@@ -133,7 +133,6 @@ function judgeAll(kind: JudgeVerdict["kind"]): (candidates: JudgeCandidate[]) =>
   };
 }
 
-// ---------------------------------------------------------------------------
 
 test("extractor categorizes decisions, commitments, and open questions from a JSON response", async () => {
   const llm = fakeLlm([DECISION_COMMITMENT_QUESTION_JSON]);

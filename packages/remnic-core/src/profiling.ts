@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { log } from "./logger.js";
 import { isMacOsReplicationJunkBasename } from "./utils/macos-replication-junk.js";
 
-// ---------------------------------------------------------------------------
 
 export interface ProfileSpan {
   name: string;

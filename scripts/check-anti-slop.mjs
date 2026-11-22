@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-//
 // Ratcheted baseline: tracked files are also linted at the base revision, and a
 // finding is reported when it lands on an added/changed line OR when the same
 // rule does not fire on the same source text in the base revision. That second

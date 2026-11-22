@@ -1,4 +1,3 @@
-//
 // Uses synthetic in-memory SQLite databases — no real user data, no fixture
 // files. Per CLAUDE.md (public repo policy): test data must be synthetic.
 // ---------------------------------------------------------------------------

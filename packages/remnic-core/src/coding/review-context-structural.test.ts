@@ -36,7 +36,6 @@ const DIFF_TOUCHING_AUTH = [
   "+ export function login() {}",
 ].join("\n");
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("gate-off parity: pure packReviewContext boosts only on touched file paths", () => {
   const candidates = [

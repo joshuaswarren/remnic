@@ -19,7 +19,6 @@
  * edge semantics.
  */
 
-// ---------------------------------------------------------------------------
 
 /**
  * Kinds of nodes the retrieval graph can hold.

@@ -53,7 +53,6 @@ import {
   HEURISTIC_PROVENANCE_SCOPE,
 } from "./heuristic-resolution.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 /**
  * The persisted index state the planner reasons about.

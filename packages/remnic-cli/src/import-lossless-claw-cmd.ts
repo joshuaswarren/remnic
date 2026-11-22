@@ -1,7 +1,6 @@
 // `remnic import-lossless-claw` runner. Wraps the pure parser
 // (./import-lossless-claw-args.ts) with I/O: opening the source DB, opening
 // the destination LCM DB, and printing the summary.
-// ---------------------------------------------------------------------------
 
 import fs from "node:fs";
 import path from "node:path";

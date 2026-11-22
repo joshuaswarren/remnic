@@ -31,7 +31,6 @@ export const ExportBundleV1Schema = z.object({
 
 export type ExportBundleV1 = z.infer<typeof ExportBundleV1Schema>;
 
-// ---------------------------------------------------------------------------
 //
 
 /**

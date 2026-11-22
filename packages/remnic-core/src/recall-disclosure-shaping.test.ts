@@ -24,7 +24,6 @@ function buildMemoryFixture(content: string): MemoryFile {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────
 
 test("shapeMemorySummary: chunk emits preview only — no content / rawExcerpts", () => {
   const memory = buildMemoryFixture("Synthetic full body text for chunk test.");

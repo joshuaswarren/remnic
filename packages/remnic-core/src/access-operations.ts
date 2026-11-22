@@ -30,7 +30,6 @@ import {
   type DeltaSurfaceResponse,
 } from "./coding/session-delta-surfaces.js";
 
-// ---------------------------------------------------------------------------
 
 const memoryGetSchema = z.object({
   memoryId: z.string().trim().min(1, "memoryId is required").max(512),

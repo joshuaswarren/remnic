@@ -16,7 +16,6 @@
  *     across runs (the issue calls this out explicitly).
  */
 
-// ---------------------------------------------------------------------------
 
 /**
  * Parameters for the deterministic synthetic repo generator. Same seed +

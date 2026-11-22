@@ -39,7 +39,6 @@ import {
 } from "./decision-surfaces.js";
 import { isCodingKnowledgeFeatureEnabled } from "./coding-knowledge-config.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 export const CODEGRAPH_TOOL_NAMES = [
   "index",
@@ -443,10 +442,6 @@ async function handleIndex(
     ctx.throwInputError(`mode must be one of ${INDEX_MODES.join(", ")}; got ${JSON.stringify(modeRaw)}`);
   }
   //
-  // Open the per-project store. The reindex itself is invoked explicitly
-  // via ctx.runReindex below — GraphStore.open only creates/applies the
-  // schema; it does NOT parse or ingest files (P1 fix: previously the
-  // handler returned ok:true after open + schemaStats without reindexing).
   //
   const resolveReq = { ...request, repoRoot } as CodegraphSurfaceRequest;
   let store: CodegraphStore;

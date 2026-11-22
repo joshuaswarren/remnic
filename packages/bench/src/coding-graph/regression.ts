@@ -9,7 +9,6 @@ import type {
 import { DEFAULT_TOLERANCE_PERCENT } from "./types.js";
 
 // Extract comparable metric values from a report.
-//
 // lowerIsBetter keys: time-based metrics (ms).
 // higherIsBetter keys: throughput (LOC/s).
 // ---------------------------------------------------------------------------

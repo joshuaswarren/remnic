@@ -10,7 +10,6 @@ import { mkdir, readFile, appendFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
-// ---------------------------------------------------------------------------
 
 export interface EnrichmentAuditEntry {
   timestamp: string;

@@ -21,7 +21,6 @@ import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 // Used to make subscribe() idempotent across hot-reload / stop-start cycles.
 const OPIK_EXPORTER_SLOT = "__openclawOpikExporter";
 
-// ---------------------------------------------------------------------------
 
 type EngramLlmTraceEvent = {
   kind: "llm_start" | "llm_end" | "llm_error";
@@ -384,7 +383,6 @@ export class OpikExporter {
 
     const traceId = state?.traceId ?? uuidV7();
 
-    // Ensure parent trace exists so the span is not orphaned in Opik.
     await this.ensureTrace(traceId, `engram:${evt.operation}`, startTime, endTime);
 
     const span: Record<string, unknown> = {
@@ -484,7 +482,6 @@ export class OpikExporter {
   private sessionToTraceId(sessionKey: string): string {
     const digest = createHash("sha256").update(sessionKey).digest();
     digest[6] = (digest[6] & 0x0f) | 0x70;
-    // Variant 10xx
     digest[8] = (digest[8] & 0x3f) | 0x80;
     const hex = digest.slice(0, 16).toString("hex");
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
@@ -509,7 +506,6 @@ export function createOpikExporter(
 ): OpikExporter | null {
   if (raw.opikTraceEnabled === false) return null;
 
-  // Auto-detect from opik-openclaw plugin config.
   const detected = readOpikOpenclawConfig(log);
 
   const apiUrl = raw.opikApiUrl ?? detected.apiUrl;

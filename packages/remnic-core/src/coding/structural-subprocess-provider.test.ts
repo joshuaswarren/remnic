@@ -70,7 +70,6 @@ function fakeSpawn(
   return Object.assign(fn, { calls });
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("probe: missing binary → unavailable, detail names the path", async () => {
   const provider = createSubprocessStructuralProvider({ command: MISSING_FILE });

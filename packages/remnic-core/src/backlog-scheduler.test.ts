@@ -476,7 +476,6 @@ test("stop aborts in-flight drains; a fresh start resumes the still-claimed back
       drainKey: async (key) => {
         const outcome = emptyOutcome(key, { turnsAtStart: 9 });
         state.drained.push({ key, outcome });
-        // A drained claim tombstones (no pending turns left to list).
         state.claimTurns.set(key, 0);
         return outcome;
       },

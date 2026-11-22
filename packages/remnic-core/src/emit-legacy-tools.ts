@@ -94,7 +94,6 @@ export function resolveNamespaceCatalogEnabled(
   rawOperatorConfig: Record<string, unknown> | undefined | null,
   runtimeSet?: ReadonlySet<string>,
 ): boolean {
-  // Defensive null normalization — see file header for the rationale.
   if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default is `true` (the catalog is opt-out).
   const SCHEMA_DEFAULT = true;
@@ -118,7 +117,6 @@ export function resolveNamespaceCatalogEnabled(
       }
     }
   } else if (configValue !== undefined && configValue !== null) {
-    // Legacy caller (no rawOperatorConfig) — trust the merged value.
     return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
   }
   return SCHEMA_DEFAULT;

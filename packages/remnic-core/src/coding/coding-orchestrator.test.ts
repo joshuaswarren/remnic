@@ -5,7 +5,6 @@ import test from "node:test";
 import { Orchestrator } from "../orchestrator.js";
 import type { CodingContext, CodingModeConfig, PluginConfig } from "../types.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 type OrchestratorLike = {
   config: PluginConfig;

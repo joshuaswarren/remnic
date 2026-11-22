@@ -51,7 +51,6 @@ function makeRaceCoordinator(
     compressionGuidelineCoordinator: {
       runCompressionGuidelineLearningPass: async () => {},
     } as never,
-    // SAFETY: unused pass in this config.
     semanticConsolidationCoordinator: {} as never,
     // SAFETY: unused pass in this config.
     entitySynthesisCoordinator: {} as never,

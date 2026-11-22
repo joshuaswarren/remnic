@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 export { adapter, chatgptAdapter } from "./adapter.js";
 export {

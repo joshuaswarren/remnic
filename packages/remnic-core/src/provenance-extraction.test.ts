@@ -28,7 +28,6 @@ function makeTurn(
   };
 }
 
-// ---------------------------------------------------------------------------
 
 test("buildFactProvenance: exact quote located → verified with offsets", () => {
   const turns = [makeTurn("We migrated the production database to pgBouncer yesterday.")];

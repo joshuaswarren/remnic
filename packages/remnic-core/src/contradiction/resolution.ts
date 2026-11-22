@@ -205,7 +205,6 @@ export async function executeResolution(
         affectedIds.push(idA);
         rollbackAfterResolveFailure = async () =>
           restoreMemorySnapshot(resolutionStorage, sourceA!, "contradiction-resolution:keep-b-rollback");
-        // the resolution durably commits (NH3X3).
         recordCatalogWriteTouch = catalogWriteTouch;
         message = `Kept ${idB}, superseded ${idA}`;
       }

@@ -143,7 +143,6 @@ function templateMatcher(template: string): RegExp | null {
       }
     }
 
-    //
     const interToken = buildTokenPattern(nonWordSepChars);
     const lastToken = buildTokenPattern(new Set<string>());
 

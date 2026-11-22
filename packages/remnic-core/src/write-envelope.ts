@@ -5,7 +5,6 @@ import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { assemblePersistedBody } from "./structured-attributes.js";
 
-// ---------------------------------------------------------------------------
 
 export interface MemoryWriteInput {
   /** Raw memory content. Must be non-empty after trimming. */

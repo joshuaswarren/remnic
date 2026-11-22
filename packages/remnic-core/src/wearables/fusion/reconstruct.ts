@@ -148,7 +148,6 @@ export function reconstructFusionInputs(
         const { label, clock, text: rawText } = segmentMatch;
         const text = escaped ? unescapeSegmentText(rawText) : rawText;
         const segMin = clockMinutesOfDay(clock);
-        // the day and broadly clustering unrelated neighbors (#1849).
         const segWrapDuration =
           current.wrapStartMin !== undefined && segMin !== undefined
             ? MINUTES_PER_DAY - current.wrapStartMin + segMin

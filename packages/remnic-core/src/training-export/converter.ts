@@ -18,7 +18,6 @@ import type { TrainingExportOptions, TrainingExportRecord } from "./types.js";
 import { isSupportPassportPrivateMemory } from "../support-passport/card-projection.js";
 import { RECALL_FALLBACK_DIRS } from "../utils/category-dir.js";
 
-// ---------------------------------------------------------------------------
 
 interface ParsedMemory {
   id: string;
@@ -280,7 +279,6 @@ export async function convertMemoriesToRecords(
     // until filter (exclusive upper bound per CLAUDE.md #35: created < until)
     if (options.until) {
       const created = parseIsoDate(parsed.created);
-      // Exclude memories with missing/unparseable dates when date filters are active
       if (!created || created.getTime() >= options.until.getTime()) {
         continue;
       }

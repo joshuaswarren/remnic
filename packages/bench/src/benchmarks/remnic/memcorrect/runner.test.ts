@@ -36,7 +36,6 @@ function options(
   } as unknown as ResolvedRunBenchmarkOptions;
 }
 
-// ---------------------------------------------------------------------------
 
 test("registry: memcorrect-v1 is registered and resolvable", () => {
   const all = listBenchmarks();

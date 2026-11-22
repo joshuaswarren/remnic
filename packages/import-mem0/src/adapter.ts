@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 //
 // The mem0 adapter is API-driven rather than file-driven. Two call patterns
 // are supported:

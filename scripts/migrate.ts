@@ -555,7 +555,6 @@ async function migrateHoncho(): Promise<void> {
         const content = conclusion.content?.trim();
         if (!content || content.length < 10) continue;
 
-        // Determine category from content
         let category = "fact";
         let confidence = 0.8;
 

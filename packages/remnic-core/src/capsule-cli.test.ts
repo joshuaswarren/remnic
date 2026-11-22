@@ -149,7 +149,6 @@ test("readdir on a file path throws non-ENOENT error which must NOT be swallowed
   );
 });
 
-//
 // Verifies that the 3-step path resolution logic added to `capsule merge`
 // produces the correct archive path for each case. We test the pure resolution
 // logic inline here (not through the CLI action, which needs an orchestrator).

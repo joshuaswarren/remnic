@@ -36,7 +36,6 @@ import {
 import { withRawEntityPageMutation } from "./storage/entity-canonical-id-lock.js";
 import { withHeldFileLock, type HeldFileLockController } from "./utils/serialize-mutations.js";
 
-// ---------------------------------------------------------------------------
 
 export interface PageVersion {
   versionId: string;

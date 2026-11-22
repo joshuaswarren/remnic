@@ -106,7 +106,6 @@ export function setCachedArchivedMemories(
 ): void {
   const map = new Map<string, MemoryFile>();
   for (const m of memories) map.set(m.path, m);
-  // ttlMs: 0 — the archive cache has no age TTL; it is version-keyed and cleared
   archiveCacheByDir.set(baseDir, { memories: map, version, loadedAt: Date.now(), keyId, ttlMs: 0 });
 }
 

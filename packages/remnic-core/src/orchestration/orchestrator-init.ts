@@ -523,7 +523,6 @@ export class OrchestratorInitCoordinator {
         });
     } catch (err) {
       //
-      //
       if ((this.isCurrentStartupEpoch(epoch) || this.startupClosed) && this.deps.resolveInit) {
         this.deps.resolveInit();
         this.deps.resolveInit = null;

@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
 import type { SourceConnectorProvenance } from "../types.js";

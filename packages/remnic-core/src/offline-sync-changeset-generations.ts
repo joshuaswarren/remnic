@@ -37,7 +37,6 @@ async function pathExists(absPath: string): Promise<boolean> {
   }
 }
 
-//
 // ---------------------------------------------------------------------------
 
 export interface OfflineSyncChangesetGenerationMember {

@@ -16,7 +16,6 @@ import type {
 } from "./access-service.js";
 import { StorageManager } from "./storage.js";
 
-// ---------------------------------------------------------------------------
 
 function makeCaptureService(): {
   captured: EngramAccessMemoryStoreRequest[];

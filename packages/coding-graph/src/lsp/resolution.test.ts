@@ -12,7 +12,6 @@ import {
 import type { LspLocation } from "./types.js";
 import type { LspClient } from "./client.js";
 
-// ──────────────────────────────────────────────────────────────────────────
 
 function makeCallSite(
   filePath: string,

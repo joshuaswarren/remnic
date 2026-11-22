@@ -684,8 +684,6 @@ export class TranscriptManager {
       readbackDirs,
     );
 
-    // Dedup identical raw rows that a partially-applied migration may have left
-    // in both the primary dir and a read-back dir (issue #1496, cursor review).
     const keepRawLine = makeRawLineDeduper();
     for (const file of files) {
       const dateStr = file.name.slice(0, 10);
@@ -776,7 +774,6 @@ export class TranscriptManager {
                   log.debug(`failed to process channel directory ${entry.name}/${channelTypeEntry.name}:`, err);
                 }
               } else if (channelTypeEntry.isFile() && channelTypeEntry.name.endsWith(".jsonl") && !isMacOsReplicationJunkBasename(channelTypeEntry.name)) {
-                // Legacy: channel type dir contains .jsonl files directly
                 const filePath = path.join(channelTypeDir, channelTypeEntry.name);
                 const cleaned = await this.cleanupTranscriptFile(filePath, cutoff);
                 if (cleaned) {

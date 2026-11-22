@@ -37,7 +37,6 @@ export interface DuplicatePair {
 }
 
 export interface ContradictionOptions {
-  /** Memory root directory */
   memoryDir: string;
   /** Categories to scan (default: all) */
   categories?: string[];
@@ -46,10 +45,8 @@ export interface ContradictionOptions {
 }
 
 export interface ContradictionResult {
-  /** Total memories scanned */
   scanned: number;
   contradictions: ContradictionPair[];
-  /** Duration in ms */
   durationMs: number;
 }
 

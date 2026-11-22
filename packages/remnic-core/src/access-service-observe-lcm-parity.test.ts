@@ -906,7 +906,6 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
     options: {
       abortSignal: undefined,
       deadlineMs: 5,
-      // #3252: cleanup targets the pinned accepted-capture storage target.
       writeNamespaceOverride: "default",
       codingContext: undefined,
       scopeProfileWritePlan: undefined,
@@ -1060,7 +1059,6 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
       releaseObserveScope();
     }
     const response = await observe;
-    // Cancelled preparation aborts only the extraction; the durable capture
     assert.equal(response.extractionQueued, false);
     assert.equal(probe.extractionCalls.length, 1);
   }
@@ -1643,7 +1641,6 @@ test("#1505 round 3: extraction is pinned to the resolved writeNamespace even wh
   assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
 });
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default when the principal can WRITE but not READ its self namespace", async () => {
   const probe = makeParityProbe({
@@ -1781,7 +1778,6 @@ test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the princip
 test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLAY key even when the principal can WRITE but not READ its self base", async () => {
   const probe = makeParityProbe({
     namespacePolicies: [
-      // Write-only self policy: alice can write `alice` but cannot read it.
       { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
     ],
     principalFromSessionKeyMode: "prefix",
@@ -1790,7 +1786,6 @@ test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLA
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
-  // WRITE: alice observes sess-1 with a project tag → overlay applies on alice's
   await service.observe(
     observeRequest({
       sessionKey: "sess-1",
@@ -2010,7 +2005,6 @@ test("#1505 codex P1 'Don't treat any readable namespace as default LCM access':
 test("#1505 cursor 'LCM read gate wrong fallback' (positive): self READABLE-in-recall but overlay-self gate denies ⇒ lcmSearch uses the raw sessionKey (default store), never `shared:`", async () => {
   const probe = makeParityProbe({
     namespacePolicies: [
-      // Restrictive default: alice may NOT read `default`.
       { name: "default", readPrincipals: [], writePrincipals: [] },
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
     ],

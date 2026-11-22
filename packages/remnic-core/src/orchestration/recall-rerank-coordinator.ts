@@ -387,7 +387,6 @@ export class RecallRerankCoordinator {
     // branches without a safety-filter map → falls back to corpus/direct-read
     // (identical lookup result, rule 41 parity).
     preloadedFrontmatter?: ReadonlyMap<string, MemoryFile>,
-    // Cooperative cancellation (issue #1905, Codex); additive + last.
     abortSignal?: AbortSignal,
   ): Promise<{
     results: QmdSearchResult[];

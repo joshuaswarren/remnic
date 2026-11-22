@@ -124,14 +124,6 @@ export interface AccessRecallSurfaceDeps {
       | {
           query: string;
           sessionKey?: string;
-          /**
-           * Read-authorization-gated namespace for the raw-excerpt LCM lookup
-           * (#1505 thread 2f7). When the caller supplies it, the raw lookup uses
-           * THIS namespace prefix instead of `snapshot.namespace` (the
-           * write/overlay namespace), so raw disclosure honours the SAME read
-           * gate as normal recall + `lcmSearch`. Omitted ⇒ falls back to the
-           * snapshot namespace (single-store / sessionless callers, unchanged).
-           */
           rawExcerptNamespace?: string;
           /**
            * Ordered, read-authorized LCM read session_id SET (#1505 fallback
@@ -984,7 +976,12 @@ export class AccessRecallSurface {
         },
       );
       recallStartedAt = capturedRecallStartedAt;
+<<<<<<< HEAD
       // Cancellation covers queueing + recall/capture. Post-capture shaping is
+=======
+      // Cancellation covers queueing, capture, and post-capture shaping:
+      // a check sits at each mid-I/O boundary below (issue #3547).
+>>>>>>> origin/main
       throwIfAborted(request.abortSignal, "recall X-ray aborted before postprocessing");
       const namespaceMismatch =
         requestedNamespace !== undefined &&
@@ -1021,6 +1018,7 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during tag filtering");
           const tagged = snapshot.results.map((result, index) => ({
             result,
             tags: tagsByIndex[index] ?? [],
@@ -1063,6 +1061,7 @@ export class AccessRecallSurface {
                   authenticatedPrincipal,
                 )
               : undefined;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted before raw-excerpt fetch");
           const rawExcerpts =
             disclosure === "raw" && !rawExcerptsSuppressed
               ? await this.deps.fetchRawExcerpts(disclosure, {
@@ -1082,6 +1081,20 @@ export class AccessRecallSurface {
             rawExcerpts && rawExcerpts.length > 0
               ? rawExcerpts.map((e) => e.content).join("\n")
               : "";
+<<<<<<< HEAD
+=======
+          // Pre-load every memory in parallel so we can:
+          //   (a) re-attribute raw excerpts to the *first readable* result
+          //       rather than always to index 0 (Cursor Low review on PR
+          //       #699: a missing/unreadable result[0] orphaned the excerpt
+          //       budget); and
+          //   (b) include the metadata fields `shapeMemorySummary` actually
+          //       emits at every depth (id, path, category, status, created,
+          //       updated, tags, entityRef) in the token estimate, so the
+          //       summary reflects real spend rather than only payload-body
+          //       spend (Cursor Low review on PR #699).
+          throwIfAborted(request.abortSignal, "recall X-ray aborted before result reads");
+>>>>>>> origin/main
           const memoryByIndex = await Promise.all(
             snapshot.results.map(async (result) => {
               try {
@@ -1092,9 +1105,11 @@ export class AccessRecallSurface {
               }
             }),
           );
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during result reads");
           const firstReadableIndex = memoryByIndex.findIndex((m) => m !== null);
           const baseDir =
             (await this.deps.orchestrator.getStorage(namespace)).dir;
+          throwIfAborted(request.abortSignal, "recall X-ray aborted during result decoration");
           const decorated = snapshot.results.map((result, index) => {
             const memory = memoryByIndex[index];
             if (!memory) {
@@ -1156,8 +1171,6 @@ export class AccessRecallSurface {
               authenticatedPrincipal,
             )
           : undefined;
-      // `undefined` for an IMPLICIT raw recall means NO readable LCM namespace
-      // namespace the read gate excludes (#1505 thread NBHWz).
       const xrayHasExplicitNamespace =
         typeof request.namespace === "string" &&
         request.namespace.trim().length > 0;
@@ -1174,28 +1187,25 @@ export class AccessRecallSurface {
               authenticatedPrincipal,
             )
           : undefined;
-      return {
-        ...xrayResponse,
-        recall: await this.deps.buildRecallResponseFromXraySnapshot({
-          query,
-          sessionKey: recallSessionKey,
-          snapshot: xrayResponse.snapshot,
-          disclosure,
-          startedAt: recallStartedAt,
-          requestedMode: request.mode,
-          normalizedMode: mode,
-          storageCorpusVersionsAtRecallStart,
-          ...(xrayRawExcerptNamespace
-            ? { rawExcerptNamespace: xrayRawExcerptNamespace }
-            : {}),
-          ...(xrayRawExcerptSessionIds !== undefined
-            ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
-            : {}),
-          ...(xrayRawExcerptsSuppressed
-            ? { rawExcerptsSuppressed: xrayRawExcerptsSuppressed }
-            : {}),
-        }),
+      throwIfAborted(request.abortSignal, "recall X-ray aborted before recall response build");
+      const recallArgs: Parameters<
+        AccessRecallSurfaceDeps["buildRecallResponseFromXraySnapshot"]
+      >[0] = {
+        query,
+        sessionKey: recallSessionKey,
+        snapshot: xrayResponse.snapshot,
+        disclosure,
+        startedAt: recallStartedAt,
+        requestedMode: request.mode,
+        normalizedMode: mode,
+        storageCorpusVersionsAtRecallStart,
       };
+      if (xrayRawExcerptNamespace) recallArgs.rawExcerptNamespace = xrayRawExcerptNamespace;
+      if (xrayRawExcerptSessionIds !== undefined) recallArgs.rawExcerptSessionIds = xrayRawExcerptSessionIds;
+      if (xrayRawExcerptsSuppressed) recallArgs.rawExcerptsSuppressed = xrayRawExcerptsSuppressed;
+      const recallResponse = await this.deps.buildRecallResponseFromXraySnapshot(recallArgs);
+      throwIfAborted(request.abortSignal, "recall X-ray aborted after recall response build");
+      return { ...xrayResponse, recall: recallResponse };
     }
     return xrayResponse;
   }

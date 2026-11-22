@@ -818,7 +818,6 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
 test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // Two enabled sources recorded the same overlapping window.
     storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
     storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
 

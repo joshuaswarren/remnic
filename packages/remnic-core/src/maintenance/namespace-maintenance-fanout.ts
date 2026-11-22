@@ -138,7 +138,6 @@ export async function runNamespaceMaintenanceFanout(
   );
 }
 
-// ---------------------------------------------------------------------------
 
 export interface NamespaceMaintenanceJobHealth {
   jobName: string;

@@ -58,7 +58,6 @@ import {
   type BufferSurpriseTriggerCase,
 } from "./fixture.js";
 
-// ---------------------------------------------------------------------------
 
 export const bufferSurpriseTriggerDefinition: BenchmarkDefinition = {
   id: "buffer-surprise-trigger",

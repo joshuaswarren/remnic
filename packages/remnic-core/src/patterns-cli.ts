@@ -34,7 +34,6 @@ import { parseStrictCliDate } from "./training-export/date-parse.js";
 export const PATTERNS_OUTPUT_FORMATS = ["text", "markdown", "json"] as const;
 export type PatternsOutputFormat = (typeof PATTERNS_OUTPUT_FORMATS)[number];
 
-// ───────────────────────────────────────────────────────────────────────────
 
 /**
  * Validate `--format <fmt>`.  Throws a listed-options error for any
@@ -487,7 +486,6 @@ export function renderPatternExplain(
     }
     return lines.join("\n") + "\n";
   }
-  // text
   const lines: string[] = [];
   lines.push(`Pattern: ${detail.id}`);
   lines.push(`  reinforcement_count: ${detail.reinforcementCount}`);

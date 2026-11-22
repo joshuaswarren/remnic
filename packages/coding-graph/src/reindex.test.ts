@@ -442,7 +442,6 @@ test("executor: coalescing — concurrent triggers coalesce, not corrupt", async
 test("executor: mid-transaction crash leaves old head (rule 25)", async () => {
   const { store, dir } = await tempStore();
   try {
-    // Seed at SHA_A.
     await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
     const git1 = mockGit({ head: SHA_A });
     await executeReindex({

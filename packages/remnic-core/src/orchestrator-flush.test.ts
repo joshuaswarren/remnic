@@ -585,7 +585,6 @@ test("flushSession rejects and skips extraction when the durable buffer save fai
   );
 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
-  // Debounced keep_buffering: buffered in memory but NOT yet durable.
   assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
   assert.equal(buffer.getTurns("thread-a").length, 1);
 
@@ -1820,8 +1819,6 @@ test("runExtraction retains the buffer on a failed extraction when extractionRet
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
   let clearCalls = 0;
-  // SAFETY: runExtraction is driven only through the stub members assigned below;
-  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
@@ -2360,9 +2357,6 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
     bufferKey: "logical-thread:thread-15",
   });
 
-  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
-  // updateMeta re-read), so more than one load is expected; the single save is
-  // the coherent-write contract under test.
   assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);

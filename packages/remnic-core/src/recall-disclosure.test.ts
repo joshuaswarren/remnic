@@ -84,7 +84,6 @@ test("lcmSearchRequestSchema accepts requests without sessionPrefix", () => {
   }
 });
 
-//
 // ──────────────────────────────────────────────────────────────────────────
 
 function makeMcpRecallSpyService(): {

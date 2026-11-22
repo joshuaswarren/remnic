@@ -492,7 +492,6 @@ test("#3251 same session+owner across scope profiles never combine; sourceValidA
         onExtractionQueued: trackBackground(backgroundP2),
       }),
     );
-    // #3251 contract: both captures settle durably; only the background
     await Promise.all([replayP1, replayP2]);
     assert.ok(backgroundP1.extraction, "trigger must queue background extraction for P1");
     assert.ok(backgroundP2.extraction, "trigger must queue background extraction for P2");
@@ -776,7 +775,6 @@ test("#3251 a pinned capture outlives a namespaces-disabled config without flatt
   }
 });
 
-// ---------------------------------------------------------------------------
 
 test("#3251 retained-turn cleanup honors plan+binding: flush A leaves project B's retained turns", async () => {
   const memoryDir = await mkTempMemoryDir("observe-retained-cleanup");
@@ -1091,8 +1089,6 @@ test("#3251 native processTurn routes mixed accepted scopes as separate scope gr
     namespacesEnabled: true,
     defaultNamespace: "default",
   });
-  // SAFETY: SeedStorage implements SmartBuffer's storage seam; the wider
-  // StorageManager surface is unused in this fixture.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   const queued: BufferTurn[][] = [];
   const coordinator = makeTurnIngestionDouble(config, buffer, queued);
@@ -1491,7 +1487,6 @@ test("#3251 namespaced buffered admission without writeNamespaceOverride or plan
 test("#3251 retainDeferredTurns preserves other-scope retained turns on subsequent defer", async () => {
   const memoryDir = await mkTempMemoryDir("observe-retain-multi");
   const config = parseConfig({ memoryDir, bufferSaveDebounceMs: 0 });
-  // SAFETY: inline seed storage satisfies SmartBuffer's storage needs.
   const buffer = new SmartBuffer(config, { loadBuffer: async () => ({ turns: [], lastExtractionAt: null, extractionCount: 0 }), saveBuffer: async () => {} } as any);
   const turnA: BufferTurn = { role: "user", content: "scope A deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
   const turnB: BufferTurn = { role: "user", content: "scope B deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
@@ -1574,7 +1569,6 @@ test("#3251 mixed accepted+native groups: accepted-no-plan dispatches null, nati
     namespacesEnabled: true,
     defaultNamespace: "default",
   });
-  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   interface QueuedDispatch {
     turns: BufferTurn[];

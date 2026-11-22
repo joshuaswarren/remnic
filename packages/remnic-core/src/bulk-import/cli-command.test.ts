@@ -12,7 +12,6 @@ import {
 } from "./registry.js";
 import type { BulkImportSourceAdapter, BulkImportSource } from "./types.js";
 
-// ---------------------------------------------------------------------------
 
 function nullStream(): Writable {
   return new Writable({ write(_chunk, _enc, cb) { cb(); } });

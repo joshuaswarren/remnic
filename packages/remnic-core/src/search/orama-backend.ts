@@ -455,7 +455,6 @@ export class OramaBackend implements SearchBackend {
     try {
       raw = await readFile(filePath, "utf-8");
     } catch {
-      // No existing DB — create fresh
       return await this.createDb();
     }
 

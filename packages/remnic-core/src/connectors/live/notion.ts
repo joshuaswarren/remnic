@@ -10,7 +10,6 @@ import type {
 import { isTransientHttpError } from "./transient-errors.js";
 import { throwIfAborted } from "../../abort-error.js";
 
-// ---------------------------------------------------------------------------
 
 /** Stable connector id. Lives in the registry under this exact string. */
 export const NOTION_CONNECTOR_ID = "notion";

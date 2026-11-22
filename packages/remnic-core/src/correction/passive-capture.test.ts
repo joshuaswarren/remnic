@@ -24,7 +24,6 @@ import {
   drainPassiveCorrectionNotifications,
 } from "./passive-correction-notifications.js";
 
-// ---------------------------------------------------------------------------
 
 function makeCorrection(overrides: Partial<PassiveCorrection> = {}): PassiveCorrection {
   return {

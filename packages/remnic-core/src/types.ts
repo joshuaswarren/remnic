@@ -2791,7 +2791,6 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   decayScore?: number;
   /** Lifecycle heat score in [0,1]. */
   heatScore?: number;
-  // Access tracking (Phase 1A)
   /** Number of times this memory has been retrieved */
   accessCount?: number;
   /** Last time this memory was accessed (ISO 8601) */
@@ -2808,14 +2807,12 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   mw_fail?: number;
   /** Importance score with level, reasons, and keywords */
   importance?: ImportanceScore;
-  // Chunking (Phase 2A)
   /** Parent memory ID if this is a chunk */
   parentId?: string;
   /** Chunk index within parent (0-based) */
   chunkIndex?: number;
   /** Total number of chunks for this parent */
   chunkTotal?: number;
-  // Memory Linking (Phase 3A)
   /** Links to other memories */
   links?: MemoryLink[];
   intentGoal?: string;
@@ -2889,7 +2886,6 @@ export interface MemoryFrontmatter extends SourceConnectorProvenance, OriginMeta
   // buffered turn text. Absent on legacy memories written before #1575;
   // readers MUST treat both `undefined` (legacy) and `provenance: "none"`
   // uniformly — never crash, never drop the fact (rule 34 spirit).
-  //
   // `charStart` / `charEnd` are best-effort debugging aids — consumers MUST
   // tolerate their absence (turn text is not persisted forever). The span
   // interval is half-open [charStart, charEnd) per rule 35.
@@ -2988,7 +2984,6 @@ export interface ProvenanceSource {
   charEnd?: number;
 }
 
-// Conversation Threading (Phase 3B)
 export interface ConversationThread {
   id: string;
   title: string;
@@ -2999,7 +2994,6 @@ export interface ConversationThread {
   linkedThreadIds: string[];
 }
 
-// Memory Summarization (Phase 4A)
 export interface MemorySummary {
   id: string;
   createdAt: string;
@@ -3018,7 +3012,6 @@ export interface DaySummaryResult {
   risks_or_open_loops: string[];
 }
 
-// Topic Extraction (Phase 4B)
 export interface TopicScore {
   term: string;
   score: number;
@@ -3700,7 +3693,6 @@ export interface GatewayConfig {
 }
 
 // ============================================================================
-// Transcript & Context Preservation (v2.0)
 // ============================================================================
 
 export interface TranscriptEntry {

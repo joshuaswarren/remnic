@@ -538,7 +538,6 @@ export async function applyEmbeddingGenerationTransaction(
 }
 
 // ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
 
 export interface EmbeddingGenerationOmissionOptions {
   rootAbs: string;
@@ -729,7 +728,6 @@ export function storageBackedIndexStoreIo(storage: StorageBackedIndexIoHost): Em
 
 export interface EmbeddingGenerationRemovalInput {
   root: SafeArchiveRoot;
-  /** The generation dir, e.g. `state/embeddings`. */
   shardDirRel: string;
   io: Pick<EmbeddingGenerationTransactionIo, "deleteFile" | "readFile">;
   deletionMtimeByPath?: ReadonlyMap<string, number>;
@@ -769,7 +767,6 @@ export async function applyEmbeddingGenerationRemoval(
     // When the live generation no longer matches the shared base (daemon
     // indexed, added, or removed members), DEFER the removal — the local
     // work survives and a later sync re-evaluates with a fresh base.
-    // No shared base (fresh catch-up) = no divergence semantics to protect.
     const baseStates = baseStatesForGeneration(input.baseStates, shardDirRel);
     if (baseStates.size > 0) {
       const localCensus = await censusGenerationState(io, root, markerRel, markerAbs, shardDirAbs, shardDirRel);
@@ -895,13 +892,6 @@ export interface IncomingEmbeddingGenerationApplyOptions {
   now: number;
 }
 
-/**
- * Snapshot-side generation routing, extracted from applyOfflineSyncSnapshot
- * for issue #3150 (the changeset path needed the same machinery and the
- * offline-sync.ts line ratchet had no headroom). Incoming generations replace
- * as ONE unit through the shared locked transaction. Behavior-preserving —
- * the #3148 regression suites own this contract.
- */
 export async function applyIncomingEmbeddingGenerations(
   options: IncomingEmbeddingGenerationApplyOptions,
 ): Promise<IncomingEmbeddingGenerationApply> {

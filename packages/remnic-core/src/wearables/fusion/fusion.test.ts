@@ -1794,7 +1794,6 @@ test("equal-anchor fused segments keep their source/cluster sequence, not trust 
     );
 
   const fused = build();
-  // Deterministic: re-running produces identical output.
   assert.deepEqual(build(), fused);
 
   const conv = fused.conversations[0]!;

@@ -5,7 +5,6 @@ import { Mem0MemCorrectAdapter } from "./mem0-adapter.js";
 import { MissingCredentialError } from "./shared.js";
 import { FakeFetchBuilder } from "./fake-fetch.js";
 
-// ---------------------------------------------------------------------------
 
 test("mem0: keyless adapter throws MissingCredentialError on ingest", async () => {
   const adapter = new Mem0MemCorrectAdapter({});

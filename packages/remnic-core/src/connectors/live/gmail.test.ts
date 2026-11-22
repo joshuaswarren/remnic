@@ -32,7 +32,6 @@ import type { ConnectorCursor } from "./framework.js";
  * no real email addresses. All inputs are obviously-synthetic strings.
  */
 
-// ---------------------------------------------------------------------------
 
 const SYNTHETIC_CREDS = Object.freeze({
   clientId: "synthetic-gmail-client-id.apps.googleusercontent.com",
@@ -671,7 +670,6 @@ test("watermark advances past empty messages on full drain (immutable skip)", as
 
   const fetchFn = makeFetch([
     tokenHandler(),
-    // No nextPageToken — fully drained.
     listHandler([makeMessageRef("msg-good-adv"), makeMessageRef("msg-empty-adv")]),
     getHandler({ "msg-good-adv": goodMsg, "msg-empty-adv": emptyMsg }),
   ]);
@@ -1289,7 +1287,6 @@ test("cursor's pageToken is cleared when the after: window is fully drained (Thr
 // ---------------------------------------------------------------------------
 
 test("isTransientHttpError classifies transient and terminal HTTP errors (Thread 3)", () => {
-  // Transient — re-throw.
   assert.equal(isTransientHttpError({ status: 429 }), true);
   assert.equal(isTransientHttpError({ status: 500 }), true);
   assert.equal(isTransientHttpError({ status: 503 }), true);
@@ -1302,13 +1299,11 @@ test("isTransientHttpError classifies transient and terminal HTTP errors (Thread
   assert.equal(isTransientHttpError({ code: "EAI_AGAIN" }), true);
   assert.equal(isTransientHttpError(new Error("plain network error")), true);
 
-  // Terminal — skip-and-continue.
   assert.equal(isTransientHttpError({ status: 404 }), false);
   assert.equal(isTransientHttpError({ response: { status: 403 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 400 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 410 } }), false);
 
-  // Non-objects.
   assert.equal(isTransientHttpError(null), false);
   assert.equal(isTransientHttpError(undefined), false);
   assert.equal(isTransientHttpError("error string"), false);

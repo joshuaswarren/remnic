@@ -14,7 +14,6 @@ import {
   type EndpointChatMessage,
 } from "./local-model-endpoint.js";
 
-// ---------------------------------------------------------------------------
 
 test("resolveFaithfulnessGateEndpoint: null when either key empty (default = no pointer)", () => {
   assert.equal(resolveFaithfulnessGateEndpoint({ extractionFaithfulnessModel: "", extractionFaithfulnessBaseUrl: "" }), null);

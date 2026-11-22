@@ -19,7 +19,6 @@ import {
 // available so any consumer that wants the local name or the core
 // name gets the same value. Updating the constant in core propagates
 // here automatically.
-// ---------------------------------------------------------------------------
 
 export const ENGINE_VERSION = CODING_GRAPH_ENGINE_VERSION;
 

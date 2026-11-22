@@ -335,7 +335,6 @@ test("a summary pass that keeps failing is retried until it succeeds", async () 
 
     const internals = engine as any;
     internals.summarizeRetryBaseMs = 10;
-    // SAFETY: the stub replaces the engine's own summarizer for this test.
     const summarizer = internals.summarizer as {
       summarizeIncremental: (
         sessionId: string,
@@ -379,7 +378,6 @@ test("closing the engine cancels a pending summary retry", async () => {
     const engine = new LcmEngine(createConfig(dir), async () => "unused");
     await engine.ensureInitialized();
 
-    // SAFETY: the test drives the engine's own retry pacing and summarizer.
     const internals = engine as any;
     internals.summarizeRetryBaseMs = 10_000;
     // SAFETY: the stub replaces the engine's own summarizer for this test.

@@ -7,7 +7,6 @@ import type {
 
 import { MAX_TRAVERSE_PATHS_HOPS } from "../graph-store.js";
 
-//
 // ──────────────────────────────────────────────────────────────────────────
 
 const CYPHER_LABEL_TO_DB_LABEL: Record<string, string> = {

@@ -44,7 +44,6 @@ function contextFor(projectId: string, branch: string): CodingContext {
   };
 }
 
-// ──────────────────────────────────────────────────────────────────────────
 
 test("codingMode.branchScope=false → no branch layering even when a branch is present", () => {
   const orch = makeOrchestrator({ branchScope: false });

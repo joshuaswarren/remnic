@@ -829,7 +829,6 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
-      // Status management
       status: (fm.status as MemoryStatus) || "active",
       blockedBy: fm.blockedBy || undefined,
       tombstoneBlockTier:
@@ -860,13 +859,11 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       lastValidatedAt: fm.lastValidatedAt || undefined,
       decayScore: Number.isFinite(decayScore) ? decayScore : undefined,
       heatScore: Number.isFinite(heatScore) ? heatScore : undefined,
-      // Access tracking
       accessCount: accessCount && accessCount > 0 ? accessCount : undefined,
       lastAccessed: fm.lastAccessed || undefined,
       mw_success,
       mw_fail,
       ...parseDriftProvenance(fm),
-      // Importance scoring
       importance,
       parentId: fm.parentId || undefined,
       chunkIndex: fm.chunkIndex ? parseInt(fm.chunkIndex, 10) : undefined,
@@ -880,7 +877,6 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       // v8.0 Phase 2B: HiMem episode/note classification
       memoryKind: (fm.memoryKind as MemoryFrontmatter["memoryKind"]) || undefined,
       structuredAttributes: parseStructuredAttributes(fm.structuredAttributes),
-      // Raw-content dedup hash (format-agnostic archive/consolidation cleanup)
       contentHash: fm.contentHash || undefined,
       // PR; no code produces these fields yet.
       derived_from,
@@ -991,7 +987,6 @@ function dehyphenate(s: string): string {
 const FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS = 3;
 const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 
-// ---------------------------------------------------------------------------
 // Attribute normalization helper
 // ---------------------------------------------------------------------------
 
@@ -6536,7 +6531,6 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   // ---------------------------------------------------------------------------
-  // Chunking (Phase 2A)
   // ---------------------------------------------------------------------------
 
   /**

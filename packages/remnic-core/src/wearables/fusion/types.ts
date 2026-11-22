@@ -66,7 +66,6 @@ export interface FusedSegmentProvenance {
 
 export interface FusedSegment {
   speaker: string;
-  /** Whether this speaker is the wearer. */
   isSelf: boolean;
   text: string;
   /** Window start (ISO), when known. */

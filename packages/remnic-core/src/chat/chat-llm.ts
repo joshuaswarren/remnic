@@ -17,7 +17,6 @@
 
 import type { ChatLlmAdapter, ChatLlmMessage, ChatLlmResponse, ChatLlmToolCall, ChatToolSchema } from "./chat-types.js";
 
-// ---------------------------------------------------------------------------
 
 interface LlmLikeClient {
   chatCompletion(

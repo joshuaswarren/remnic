@@ -28,7 +28,6 @@ import {
   type PromotionStorageProvider,
 } from "./admin-surfaces.js";
 
-// ---------------------------------------------------------------------------
 
 function makeConfig(overrides: Record<string, unknown> = {}) {
   return parseConfig({

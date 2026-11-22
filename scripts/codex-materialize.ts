@@ -217,7 +217,6 @@ export function extractRemnicConfigFromRaw(
 export function loadRawConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, unknown> {
-  //
   for (const candidate of configCandidates(env)) {
     if (!fs.existsSync(candidate.path)) continue;
     let raw: unknown;

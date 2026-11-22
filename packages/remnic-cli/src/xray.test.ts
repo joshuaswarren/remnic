@@ -6,7 +6,6 @@ import type { RecallXraySnapshot } from "@remnic/core";
 import { extractXrayRawArgs, runXrayCommand } from "./index.js";
 
 // Fixtures
-// ---------------------------------------------------------------------------
 
 function minimalSnapshot(): RecallXraySnapshot {
   return {

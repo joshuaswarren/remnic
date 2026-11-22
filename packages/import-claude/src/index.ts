@@ -1,4 +1,3 @@
-// ---------------------------------------------------------------------------
 
 export { adapter, claudeAdapter } from "./adapter.js";
 export {

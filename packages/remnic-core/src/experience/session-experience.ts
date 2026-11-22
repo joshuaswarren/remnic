@@ -46,7 +46,6 @@ export interface SessionExperienceRunOptions {
   deadlineMs?: number;
 }
 
-// ---------------------------------------------------------------------------
 
 const SITUATION_MAX_CHARS = 280;
 const SNIPPET_MAX_CHARS = 160;

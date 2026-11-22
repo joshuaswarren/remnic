@@ -155,7 +155,6 @@ export class ExtractionRunCoordinator {
     return this.deps.config;
   }
 
-  // -------------------------------------------------------------------------
 
   private latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
     let latestMs: number | null = null;
@@ -799,8 +798,6 @@ export class ExtractionRunCoordinator {
       if (options.failOnExtractionFailure) {
         throw new Error("extraction failed: invalid_extraction_result");
       }
-      // Actual extraction failure: the window is retained for a retry (same
-      // no-drop contract as a recorded provider failure), never destroyed.
       return {
         status: "skipped",
         reason: "invalid_extraction_result",

@@ -133,7 +133,6 @@ test("isEdgeType rejects unknown values", () => {
   assert.equal(isEdgeType({ type: "references" }), false);
 });
 
-// ---------------------------------------------------------------------------
 
 test("extractGraphEdges returns empty result for empty input", () => {
   const { nodes, edges } = extractGraphEdges([]);
