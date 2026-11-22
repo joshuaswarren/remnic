@@ -16,6 +16,7 @@ export function parseFrontmatterLinks(
   const linksIndent = fmLines[linksKeyIdx].search(/\S/);
   const items: Record<string, string>[] = [];
   let fieldIndent = -1;
+  let itemIndent = -1;
   for (let k = linksKeyIdx + 1; k < fmLines.length; k++) {
     const line = fmLines[k];
     const t = line.trim();
@@ -23,6 +24,8 @@ export function parseFrontmatterLinks(
     const indent = line.search(/\S/);
     if (indent <= linksIndent) break;
     if (t.startsWith("- ")) {
+      if (itemIndent === -1) itemIndent = indent;
+      if (indent !== itemIndent) continue;
       items.push({});
       const inline = t.slice(2);
       const colon = inline.indexOf(":");

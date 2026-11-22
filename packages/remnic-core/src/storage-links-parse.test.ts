@@ -103,6 +103,24 @@ ${BODY}`;
   ]);
 });
 
+test("links: a dash line inside nested scalar content is not a new item", () => {
+  const raw = `---
+links:
+  - targetId: mem-a
+    linkType: related
+    strength: 0.8
+    note: |
+      - targetId: mem-x
+        linkType: contradicts
+        strength: 0.9
+---
+${BODY}`;
+  const links = parseFrontmatter(raw)?.frontmatter.links;
+  assert.deepEqual(links, [
+    { targetId: "mem-a", linkType: "related", strength: 0.8, reason: undefined },
+  ]);
+});
+
 test("links: an empty strength drops the item, strength 0 stays valid", () => {
   const raw = `---
 links:
