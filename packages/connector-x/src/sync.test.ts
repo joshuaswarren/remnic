@@ -6,6 +6,7 @@ import { test } from "node:test";
 
 import { type XConnectorConfig, parseXConnectorConfig } from "./config.js";
 import { createFileSink } from "./file-sink.js";
+import { isXObject } from "./guards.js";
 import { getXStatus, runXSync } from "./sync.js";
 import type { XMemorySink, XMemorySuggestion } from "./types.js";
 
@@ -260,9 +261,10 @@ test("the dedupe cap prunes the least recently seen entry, not the first seen (#
 
   // "live" was first seen long ago but is seen on every sync; "stale" was seen once, later.
   const statePath = path.join(stateDir, "state.json");
-  const state = JSON.parse(await readFile(statePath, "utf8")) as {
-    seen: Record<string, { fingerprint: string; firstSeenAt: string; lastSeenAt: string; kind: string }>;
-  };
+  const state: unknown = JSON.parse(await readFile(statePath, "utf8"));
+  if (!isXObject(state) || !isXObject(state.seen) || !isXObject(state.seen.live)) {
+    assert.fail("the first sync must persist a dedupe entry for the live post");
+  }
   state.seen.live.firstSeenAt = "2020-01-01T00:00:00.000Z";
   const filler = { fingerprint: "f", kind: "bookmark" };
   state.seen.stale = { ...filler, firstSeenAt: "2021-01-01T00:00:00.000Z", lastSeenAt: "2021-01-01T00:00:00.000Z" };
@@ -277,7 +279,8 @@ test("the dedupe cap prunes the least recently seen entry, not the first seen (#
   assert.equal(report.sources[0].recordsNew, 1);
   assert.equal(report.sources[0].recordsKnown, 1);
 
-  const after = JSON.parse(await readFile(statePath, "utf8")) as { seen: Record<string, unknown> };
+  const after: unknown = JSON.parse(await readFile(statePath, "utf8"));
+  if (!isXObject(after) || !isXObject(after.seen)) assert.fail("the second sync must persist the dedupe map");
   assert.equal(Object.keys(after.seen).length, 20_000);
   assert.ok("live" in after.seen, "a post seen on every sync keeps its dedupe entry");
   assert.ok("fresh" in after.seen);
