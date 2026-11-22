@@ -196,6 +196,37 @@ test("#3611 a failed clone leaves no temp dir behind", async () => {
   }
 });
 
+test("#3611 scheme-less github.com/owner/repo resolves via the github route", async () => {
+  // Post-#3628 regression (Main's diff read): the removed regex also accepted
+  // scheme-less `github.com/owner/repo` and routed it to resolveGithub. With
+  // resolveGit = clone, the same string is treated as a local path and fails.
+  // The fix must restore the github route for that form — proven here by a
+  // stubbed fetch observing the raw.githubusercontent.com request.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
+  const prevFetch = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (input: Parameters<typeof fetch>[0]) => {
+    calls.push(String(input));
+    return new Response(MANIFEST, { status: 200 });
+  };
+  try {
+    const result = await installFromMarketplace(
+      "github.com/owner/repo",
+      "git",
+      marketplaceConfig(memoryDir),
+    );
+    assert.equal(result.ok, true, result.message);
+    assert.deepEqual(result.pluginsFound, ["demo"]);
+    assert.ok(
+      calls.some((u) => u.includes("raw.githubusercontent.com/owner/repo")),
+      `expected a GitHub raw manifest fetch, got: ${calls.join(", ") || "(none)"}`,
+    );
+  } finally {
+    globalThis.fetch = prevFetch;
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("#3611 flag-shaped git source is rejected before clone", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
   try {

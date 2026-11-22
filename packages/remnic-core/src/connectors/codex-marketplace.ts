@@ -465,6 +465,16 @@ async function resolveGit(
   gitUrl: string,
   logger: MarketplaceLogger,
 ): Promise<MarketplaceManifest> {
+  // Scheme-less github.com/owner/repo is a form the pre-#3628 code accepted:
+  // git clone would treat it as a local path, so route it to the GitHub
+  // resolver instead.
+  const ghSchemaless = gitUrl.match(
+    /^github\.com\/([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+?)(?:\.git)?$/u,
+  );
+  if (ghSchemaless?.[1]) {
+    return resolveGithub(ghSchemaless[1], logger);
+  }
+
   if (gitUrl.startsWith("-")) {
     throw new Error(`Invalid git source: ${gitUrl} (must not look like a flag)`);
   }
