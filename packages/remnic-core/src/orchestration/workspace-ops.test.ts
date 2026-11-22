@@ -510,3 +510,25 @@ test("flushAccessTracking tries the plain path before the QMD collection candida
   await coordinator.flushAccessTracking();
   assert.deepEqual(out.flushed.map((e) => [e.memoryPath, e.newCount]), [[viaPlainPath, 51]]);
 });
+
+test("validateLocalLlmModel warns to update persisted config instead of mutating it — #3562", async () => {
+  // The validator detected config.localLlmMaxContext > the loaded model's
+  // real window and silently rewrote the shared config object via a cast.
+  // The contract: validation warns the user to fix their persisted config;
+  // the config object is never mutated behind consumers' backs.
+  const config = { localLlmMaxContext: 131072 };
+  const coordinator = new WorkspaceOpsCoordinator({
+    config,
+    localLlm: {
+      getLoadedModelInfo: async () => ({ id: "qwen-local", contextWindow: 32768 }),
+    },
+    // SAFETY: validateLocalLlmModel reads only config + localLlm above.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
+  } as unknown as WorkspaceOpsDeps);
+  await coordinator.validateLocalLlmModel();
+  assert.equal(
+    config.localLlmMaxContext,
+    131072,
+    "validateLocalLlmModel must not rewrite config.localLlmMaxContext",
+  );
+});
