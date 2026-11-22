@@ -68,6 +68,41 @@ ${BODY}`;
   assert.equal(links, undefined);
 });
 
+test("links: a standalone comment between items does not truncate the list", () => {
+  const raw = `---
+links:
+  - targetId: mem-a
+    linkType: related
+    strength: 0.8
+# next link
+  - targetId: mem-b
+    linkType: supports
+    strength: 0.5
+---
+${BODY}`;
+  const links = parseFrontmatter(raw)?.frontmatter.links;
+  assert.equal(links?.length, 2);
+  assert.equal(links?.[1]?.targetId, "mem-b");
+});
+
+test("links: block-scalar content inside an item cannot overwrite link fields", () => {
+  const raw = `---
+links:
+  - targetId: mem-a
+    linkType: related
+    strength: 0.8
+    note: |
+      targetId: mem-x
+      linkType: contradicts
+      strength: 0.9
+---
+${BODY}`;
+  const links = parseFrontmatter(raw)?.frontmatter.links;
+  assert.deepEqual(links, [
+    { targetId: "mem-a", linkType: "related", strength: 0.8, reason: undefined },
+  ]);
+});
+
 test("links: unknown keys on an item do not drop the link", () => {
   const raw = `---
 links:
