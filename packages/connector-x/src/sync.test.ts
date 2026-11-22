@@ -251,3 +251,35 @@ test("file sink honors the trust gate by directory", async () => {
   const storeFiles = await readdir(path.join(storeState, "records"));
   assert.deepEqual(storeFiles, ["1.json"]);
 });
+
+test("the dedupe cap prunes the least recently seen entry, not the first seen (#3541)", async () => {
+  const corpus = await corpusWith({ "live.json": { id: "live", text: "still bookmarked" } });
+  const stateDir = await mkdtemp(path.join(tmpdir(), "remnic-x-state-"));
+  const config = configFor({ stateDir, sources: [{ id: "local", kind: "corpusDir", path: corpus }] });
+  await runXSync(config, { sink: recordingSink() });
+
+  // "live" was first seen long ago but is seen on every sync; "stale" was seen once, later.
+  const statePath = path.join(stateDir, "state.json");
+  const state = JSON.parse(await readFile(statePath, "utf8")) as {
+    seen: Record<string, { fingerprint: string; firstSeenAt: string; lastSeenAt: string; kind: string }>;
+  };
+  state.seen.live.firstSeenAt = "2020-01-01T00:00:00.000Z";
+  const filler = { fingerprint: "f", kind: "bookmark" };
+  state.seen.stale = { ...filler, firstSeenAt: "2021-01-01T00:00:00.000Z", lastSeenAt: "2021-01-01T00:00:00.000Z" };
+  for (let i = 0; i < 19_998; i += 1) {
+    state.seen[`filler-${i}`] = { ...filler, firstSeenAt: "2021-06-01T00:00:00.000Z", lastSeenAt: "2021-06-01T00:00:00.000Z" };
+  }
+  await writeFile(statePath, JSON.stringify(state));
+
+  // One new post takes the map to the cap plus one, so exactly one entry is pruned on save.
+  await writeFile(path.join(corpus, "fresh.json"), JSON.stringify({ id: "fresh", text: "new bookmark" }));
+  const report = await runXSync(config, { sink: recordingSink() });
+  assert.equal(report.sources[0].recordsNew, 1);
+  assert.equal(report.sources[0].recordsKnown, 1);
+
+  const after = JSON.parse(await readFile(statePath, "utf8")) as { seen: Record<string, unknown> };
+  assert.equal(Object.keys(after.seen).length, 20_000);
+  assert.ok("live" in after.seen, "a post seen on every sync keeps its dedupe entry");
+  assert.ok("fresh" in after.seen);
+  assert.ok(!("stale" in after.seen), "the least recently seen entry is the one pruned");
+});
