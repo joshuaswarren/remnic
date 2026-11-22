@@ -182,6 +182,64 @@ export interface AccessRecallSurfaceDeps {
   ): Promise<{ storage: StorageManager; dir: string } | null>;
 }
 
+/**
+ * Attribute LCM raw excerpts to recall results via provenance quotes
+ * (issue #3546). Every memory extracted since #1575 carries verbatim
+ * `frontmatter.sources[].quote` spans — the same utterance text the LCM
+ * archive stores — so an excerpt whose content contains a result's quote
+ * is attributed to that result (earliest matching result wins). Excerpts
+ * no result claims stay anchored to the first result: query-relevant
+ * transcript context with no provenance match keeps the pre-#3546
+ * placement, and no excerpt is silently dropped. Memories without
+ * provenance quotes (legacy, or spans disabled) claim nothing; an empty
+ * excerpt set attaches as `[]` to the first result exactly as before.
+ */
+export function attributeRawExcerpts(
+  memories: readonly MemoryFile[],
+  excerpts: EngramAccessMemorySummary["rawExcerpts"] | undefined,
+): Array<EngramAccessMemorySummary["rawExcerpts"] | undefined> {
+  const attributed: Array<EngramAccessMemorySummary["rawExcerpts"] | undefined> =
+    memories.map(() => undefined);
+  if (!excerpts) return attributed;
+  if (excerpts.length === 0 || memories.length === 0) {
+    if (memories.length > 0) attributed[0] = excerpts;
+    return attributed;
+  }
+  const claimed = new Set<number>();
+  const claimedIndices: number[][] = memories.map(() => []);
+  memories.forEach((memory, index) => {
+    const quotes = (memory.frontmatter.sources ?? [])
+      .map((source) => source.quote?.trim())
+      .filter((quote): quote is string => Boolean(quote));
+    if (quotes.length === 0) return;
+    for (const [excerptIndex, excerpt] of excerpts.entries()) {
+      if (claimed.has(excerptIndex)) continue;
+      if (quotes.some((quote) => excerptIncludesQuote(excerpt, quote))) {
+        claimed.add(excerptIndex);
+        claimedIndices[index].push(excerptIndex);
+      }
+    }
+  });
+  for (const [index, indices] of claimedIndices.entries()) {
+    if (index !== 0 && indices.length > 0) {
+      attributed[index] = indices.map((excerptIndex) => excerpts[excerptIndex]);
+    }
+  }
+  // First result: its own matches plus every unclaimed excerpt, restored
+  // to transcript order.
+  attributed[0] = excerpts.filter(
+    (_, excerptIndex) => claimedIndices[0].includes(excerptIndex) || !claimed.has(excerptIndex),
+  );
+  return attributed;
+}
+
+function excerptIncludesQuote(
+  excerpt: NonNullable<EngramAccessMemorySummary["rawExcerpts"]>[number],
+  quote: string,
+): boolean {
+  return excerpt.content.includes(quote);
+}
+
 export class AccessRecallSurface {
   constructor(
     private readonly deps: AccessRecallSurfaceDeps,
@@ -488,9 +546,9 @@ export class AccessRecallSurface {
     };
 
     // Pre-fetch raw excerpts once when `disclosure === "raw"` so we don't
-    // hit the LCM archive per-result (issue #677 PR 2/4).  Excerpts are
-    // attached to the first result; per-result attribution is reserved
-    // for a future PR if/when the LCM index can be joined to memory ids.
+    // hit the LCM archive per-result (issue #677 PR 2/4).  Each excerpt is
+    // attributed to the result whose provenance quote it contains (issue
+    // #3546); excerpts no result claims stay anchored to the first result.
     // Coerce `null` (non-raw disclosure) to `undefined` so the optional
     // serializer field is never explicitly `null`.
     // Namespace for the LCM `${namespace}:${sessionKey}` prefix: prefer the
@@ -521,6 +579,7 @@ export class AccessRecallSurface {
               : null,
           );
     const rawExcerpts = rawExcerptsResult ?? undefined;
+    const pending: Array<{ memory: MemoryFile; baseDir: string }> = [];
     for (const included of coerceIncludedMemories(snapshot)) {
       const memoryPath = included.path;
       if (!memoryPath) continue;
@@ -531,35 +590,35 @@ export class AccessRecallSurface {
       if (!resolved) continue;
       const { memory, baseDir } = resolved;
       seen.add(seenKey);
-      results.push(
-        this.deps.serializeMemorySummary(
-          memory,
-          baseDir,
-          disclosure,
-          // Attach the (possibly empty) raw excerpts to the first raw
-          // result; subsequent results do not duplicate the array.
-          results.length === 0 ? rawExcerpts : undefined,
-        ),
-      );
+      pending.push({ memory, baseDir });
     }
 
-    if (results.length > 0) return results;
+    if (pending.length === 0) {
+      for (const memoryId of snapshot.memoryIds) {
+        const memory = await storage.getMemoryById(memoryId);
+        if (!memory || seen.has(memory.path)) continue;
+        seen.add(memory.path);
+        pending.push({ memory, baseDir: storageDir });
+      }
+    }
 
-    for (const memoryId of snapshot.memoryIds) {
-      const memory = await storage.getMemoryById(memoryId);
-      if (!memory || seen.has(memory.path)) continue;
-      seen.add(memory.path);
+    const attributed = attributeRawExcerpts(
+      pending.map((entry) => entry.memory),
+      rawExcerpts,
+    );
+    for (const [index, entry] of pending.entries()) {
       results.push(
         this.deps.serializeMemorySummary(
-          memory,
-          storageDir,
+          entry.memory,
+          entry.baseDir,
           disclosure,
-          results.length === 0 ? rawExcerpts : undefined,
+          attributed[index],
         ),
       );
     }
     return results;
   }
+
 
   /**
    * Fetch raw transcript excerpts from the LCM archive for `disclosure ===
