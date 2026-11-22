@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { crc32, deflateRawSync } from "node:zlib";
-import { parseChatGPTExport } from "@remnic/import-chatgpt";
 import { readZipEntries } from "./zip-entries.js";
 import { describe, it } from "node:test";
 
@@ -775,7 +774,7 @@ describe("runImportCommand ChatGPT export ZIP (#3542)", () => {
     );
   });
 
-  it("unwraps an object-shaped memory.json so the real parser sees its memories", async () => {
+  it("unwraps an object-shaped memory.json into the bundle's memory section", async () => {
     const { target } = makeTarget();
     const { adapter, inputs } = makeCapturingAdapter();
     const { io } = makeIo({ adapter, target });
@@ -784,7 +783,8 @@ describe("runImportCommand ChatGPT export ZIP (#3542)", () => {
       { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
       { ...io, readFileBytes: async () => zipOf([{ name: "memory.json", data: JSON.stringify(wrapped) }]) },
     );
-    assert.equal(parseChatGPTExport(inputs[0]).savedMemories.length, 1);
+    // the ChatGPT parser reads saved memories from a top-level `memory` array (parser.test.ts covers that shape)
+    assert.deepEqual(inputs, [{ memory: wrapped.memory }]);
   });
 
   it("finds the end record when the archive comment contains its signature", async () => {
