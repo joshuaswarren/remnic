@@ -6,10 +6,9 @@
  * session's principal/namespace/sessionKey so every tool call flows through
  * access-service with the caller's identity (rule 42).
  *
- * Correction tools (correction_plan / correction_apply / memory_promote) are
- * stubbed behind the same interface until the Correction Contract (#1580)
- * merges.  The stub returns a clear not-available marker so the engine and
- * surfaces degrade gracefully.
+ * Correction tools (correction_plan / correction_apply / memory_promote)
+ * delegate to the Correction Contract (#1580) plan/apply pipeline through
+ * the access-service.
  */
 
 import type { EngramAccessService } from "../access-service.js";
@@ -86,28 +85,44 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
       });
     },
 
-    // ── Correction tools — stubbed until #1580 merges ──────────────────
-    // When the Correction Contract lands, replace these stubs with calls to
-    // the correction module's plan/apply interface.  The engine, CLI, and
-    // MCP tool all consume this interface, so the stub-to-real swap is a
-    // single-file change here.
+    // ── Correction tools — Correction Contract (#1580) ─────────────────
+    // Thin adapters over the service's plan/apply pipeline. The engine's
+    // confirmation interception asks for a pending plan's preview via the
+    // "retrieve plan <id>" sentinel; that is a lookup, not a new plan.
 
     async correctionPlan(request: string): Promise<{ planId: string; preview: string }> {
-      // Stub: the Correction Contract (#1580) is not yet merged.
-      // Return a not-available marker that the engine surfaces gracefully.
-      return {
-        planId: `stub-${Date.now()}`,
-        preview: `[Correction Contract (#1580) not yet available]\n\nRequested correction: "${request}"\n\nThe plan/apply pipeline is pending. Inspection tools are fully functional.`,
-      };
+      const retrieve = /^retrieve plan (\S+)$/i.exec(request.trim());
+      if (retrieve) {
+        const pending = await service.correctionListPending({
+          ...(namespace ? { namespace } : {}),
+          ...(sessionKey ? { sessionKey } : {}),
+          ...(principal ? { principal } : {}),
+        });
+        const plan = pending.find((p) => p.planId === retrieve[1]);
+        if (!plan) {
+          throw new Error(`Correction plan ${retrieve[1]} not found or expired.`);
+        }
+        return { planId: plan.planId, preview: plan.diff };
+      }
+      const plan = await service.correctionPlan({
+        text: request,
+        ...(namespace ? { namespace } : {}),
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(principal ? { principal } : {}),
+      });
+      return { planId: plan.planId, preview: plan.diff };
     },
 
     async correctionApply(planId: string): Promise<string> {
-      // Stub: no-op until #1580 merges.
-      return JSON.stringify({
-        applied: false,
-        planId,
-        reason: "Correction Contract (#1580) not yet available. No mutation was applied.",
+      // The engine's confirmation protocol is the explicit consent; pass it
+      // through as confirm so the apply gate sees a confirmed call.
+      const outcome = await service.correctionApply(planId, {
+        confirm: true,
+        ...(namespace ? { namespace } : {}),
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(principal ? { principal } : {}),
       });
+      return JSON.stringify(outcome);
     },
 
     async memoryPromote(memoryId: string): Promise<string> {
