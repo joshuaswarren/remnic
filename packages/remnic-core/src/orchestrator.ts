@@ -1520,6 +1520,7 @@ export class Orchestrator {
     // Propagate the inline-attribution template so the storage layer can strip
     // citations from legacy facts during the hash-index rebuild path.
     this.storage.citationTemplate = config.inlineSourceAttributionFormat;
+    this.storage.citationTemplateHistory = config.inlineSourceAttributionFormatHistory;
     // #1522: bind the post-write catalog touch at the storage chokepoint.
     if (config.defaultNamespace) this.storageRouter.bindCatalogWriteHook(this.storage, config.defaultNamespace);
     // Wire page-level versioning (issue #371)
