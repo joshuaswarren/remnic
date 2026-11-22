@@ -22,9 +22,9 @@
 // the CLI pass either the plain `conversations.json` contents or a combined
 // manifest when a future bundle-auto-detect (PR 7) lands.
 //
-// We do not read ZIP archives directly here — the CLI parses the JSON
-// contents of whichever file the user points at with `--file`. A follow-up
-// may add a ZIP-aware reader; until then, users unzip manually.
+// The CLI reads the raw export ZIP itself (issue #3542): it passes the
+// memory.json, memories.json, user.json and conversations.json it finds as
+// one bundle object keyed by file name.
 
 // ---------------------------------------------------------------------------
 // Raw export shapes (subset we care about)

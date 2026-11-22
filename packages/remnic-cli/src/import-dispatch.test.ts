@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { crc32, deflateRawSync } from "node:zlib";
+import { readZipEntries } from "./zip-entries.js";
 import { describe, it } from "node:test";
 
 import {
@@ -355,7 +357,7 @@ describe("runImportCommand — slice 1 integration", () => {
       () =>
         runImportCommand(
           {
-            adapter: "chatgpt",
+            adapter: "claude",
             file: "/tmp/export.ZIP",
             dryRun: true,
             includeConversations: false,
@@ -660,6 +662,206 @@ describe("runBundleImportCommand", () => {
     assert.ok(
       stderrLines.some((l) => l.includes("adapter 'chatgpt' failed")),
       `expected failure surfaced to stderr, got: ${stderrLines.join("\n")}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ChatGPT export ZIP (#3542): the raw export is read without a manual unzip
+// ---------------------------------------------------------------------------
+
+function zipOf(
+  files: Array<{ name: string; data: string; store?: boolean; badCrc?: boolean; declaredSize?: number }>,
+  comment = "",
+): Uint8Array {
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const f of files) {
+    const raw = Buffer.from(f.data, "utf8");
+    const body = f.store ? raw : deflateRawSync(raw);
+    const name = Buffer.from(f.name, "utf8");
+    const method = f.store ? 0 : 8;
+    const crc = (crc32(raw) ^ (f.badCrc ? 1 : 0)) >>> 0;
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(method, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(body.length, 18);
+    local.writeUInt32LE(f.declaredSize ?? raw.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    parts.push(local, name, body);
+    const entry = Buffer.alloc(46);
+    entry.writeUInt32LE(0x02014b50, 0);
+    entry.writeUInt16LE(20, 4);
+    entry.writeUInt16LE(20, 6);
+    entry.writeUInt16LE(method, 10);
+    entry.writeUInt32LE(crc, 16);
+    entry.writeUInt32LE(body.length, 20);
+    entry.writeUInt32LE(f.declaredSize ?? raw.length, 24);
+    entry.writeUInt16LE(name.length, 28);
+    entry.writeUInt32LE(offset, 42);
+    central.push(entry, name);
+    offset += local.length + name.length + body.length;
+  }
+  const dir = Buffer.concat(central);
+  const note = Buffer.from(comment, "latin1");
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(note.length, 20);
+  end.writeUInt16LE(files.length, 8);
+  end.writeUInt16LE(files.length, 10);
+  end.writeUInt32LE(dir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return new Uint8Array(Buffer.concat([...parts, dir, end, note]));
+}
+
+function makeCapturingAdapter() {
+  const inputs: unknown[] = [];
+  const adapter: ImporterAdapter<ImportedMemory[]> = {
+    name: "chatgpt",
+    sourceLabel: "chatgpt",
+    parse(input) {
+      inputs.push(input);
+      return [];
+    },
+    transform: (parsed) => parsed,
+    async writeTo(target, batch) {
+      return defaultWriteMemoriesToOrchestrator(target, batch);
+    },
+  };
+  return { adapter, inputs };
+}
+
+describe("runImportCommand ChatGPT export ZIP (#3542)", () => {
+  const memory = [{ id: "m1", content: "Prefers metric units" }];
+  const conversations = [{ id: "c1", title: "t", mapping: {} }];
+
+  it("reads memory.json and a nested conversations.json from the raw export ZIP", async () => {
+    const { target } = makeTarget();
+    const { adapter, inputs } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    const zip = zipOf([
+      { name: "memory.json", data: JSON.stringify(memory) },
+      { name: "Export/conversations.json", data: JSON.stringify(conversations), store: true },
+      { name: "chat.html", data: "<html></html>" },
+    ]);
+    await runImportCommand(
+      { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+      {
+        ...io,
+        readFile: async () => {
+          throw new Error("a ZIP must not be read as text");
+        },
+        readFileBytes: async () => zip,
+      },
+    );
+    assert.deepEqual(inputs, [{ memory, conversations }]);
+  });
+
+  it("names the expected files when the ZIP holds none of them", async () => {
+    const { target } = makeTarget();
+    const { adapter } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+          { ...io, readFileBytes: async () => zipOf([{ name: "chat.html", data: "<html></html>" }]) },
+        ),
+      /memory\.json.*conversations\.json/,
+    );
+  });
+
+  it("unwraps an object-shaped memory.json into the bundle's memory section", async () => {
+    const { target } = makeTarget();
+    const { adapter, inputs } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    const wrapped = { memory: [{ id: "m1", content: "Prefers metric units", created_at: "2026-01-02T03:04:05Z" }] };
+    await runImportCommand(
+      { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+      { ...io, readFileBytes: async () => zipOf([{ name: "memory.json", data: JSON.stringify(wrapped) }]) },
+    );
+    // the ChatGPT parser reads saved memories from a top-level `memory` array (parser.test.ts covers that shape)
+    assert.deepEqual(inputs, [{ memory: wrapped.memory }]);
+  });
+
+  it("finds the end record when the archive comment contains its signature", async () => {
+    const { target } = makeTarget();
+    const { adapter, inputs } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    const comment = "PK\x05\x06" + "\0".repeat(28);
+    await runImportCommand(
+      { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+      { ...io, readFileBytes: async () => zipOf([{ name: "conversations.json", data: JSON.stringify(conversations) }], comment) },
+    );
+    assert.deepEqual(inputs, [{ conversations }]);
+  });
+
+  it("stops inflating an entry at its declared size", async () => {
+    const { target } = makeTarget();
+    const { adapter } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+          {
+            ...io,
+            readFileBytes: async () =>
+              zipOf([{ name: "conversations.json", data: "[" + " ".repeat(4 << 20) + "]", declaredSize: 16 }]),
+          },
+        ),
+      /inflates past its declared size/,
+    );
+  });
+
+  it("refuses a tiny entry that declares a huge size before inflating it", async () => {
+    const { target } = makeTarget();
+    const { adapter } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+          {
+            ...io,
+            readFileBytes: async () =>
+              zipOf([{ name: "conversations.json", data: "[]", declaredSize: 3_000_000_000 }]),
+          },
+        ),
+      /exceeds the per-entry limit/,
+    );
+  });
+
+  it("caps the total size of the extracted entries", () => {
+    const zip = zipOf([
+      { name: "memory.json", data: "[" + " ".repeat(98) + "]" },
+      { name: "conversations.json", data: "[" + " ".repeat(98) + "]" },
+    ]);
+    assert.throws(
+      () => readZipEntries(zip, () => true, { maxEntryBytes: 100, maxTotalBytes: 150 }),
+      /exceeds the total limit/,
+    );
+    assert.equal(readZipEntries(zip, () => true, { maxEntryBytes: 100, maxTotalBytes: 200 }).size, 2);
+  });
+
+  it("refuses an entry whose CRC does not match", async () => {
+    const { target } = makeTarget();
+    const { adapter } = makeCapturingAdapter();
+    const { io } = makeIo({ adapter, target });
+    await assert.rejects(
+      () =>
+        runImportCommand(
+          { adapter: "chatgpt", file: "/tmp/export.zip", dryRun: true, includeConversations: false },
+          {
+            ...io,
+            readFileBytes: async () =>
+              zipOf([{ name: "conversations.json", data: JSON.stringify(conversations), badCrc: true }]),
+          },
+        ),
+      /CRC/,
     );
   });
 });
