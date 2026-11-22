@@ -517,13 +517,14 @@ test("validateLocalLlmModel warns to update persisted config instead of mutating
   // The contract: validation warns the user to fix their persisted config;
   // the config object is never mutated behind consumers' backs.
   const config = { localLlmMaxContext: 131072 };
+  // SAFETY: validateLocalLlmModel reads only config + localLlm; the
+  // remaining WorkspaceOpsDeps members are unused by this method.
+  // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- the test stub is a deps partial
   const coordinator = new WorkspaceOpsCoordinator({
     config,
     localLlm: {
       getLoadedModelInfo: async () => ({ id: "qwen-local", contextWindow: 32768 }),
     },
-    // SAFETY: validateLocalLlmModel reads only config + localLlm above.
-    // oxlint-disable-next-line anti-slop/no-chained-type-assertions
   } as unknown as WorkspaceOpsDeps);
   await coordinator.validateLocalLlmModel();
   assert.equal(
