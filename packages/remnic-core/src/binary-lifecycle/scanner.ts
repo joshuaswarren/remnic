@@ -12,23 +12,42 @@ import crypto from "node:crypto";
 import type { BinaryLifecycleConfig, BinaryLifecycleManifest } from "./types.js";
 
 /**
- * Test whether a filename matches any of the provided glob patterns.
- * Supports simple `*.ext` patterns (the default scan patterns).
- * For more complex globs a proper library should be used; this covers
- * the 95% case without adding a dependency.
+ * Case-insensitive glob match of one filename (no directory part) against one
+ * pattern: `*` matches any run of characters, `?` exactly one, every other
+ * character itself. Two-pointer backtracking, O(name x pattern) worst case and
+ * no regular expression, so a hostile pattern cannot blow up.
+ */
+function globMatches(name: string, pattern: string): boolean {
+  let n = 0;
+  let p = 0;
+  let starP = -1;
+  let starN = 0;
+  while (n < name.length) {
+    const c = pattern[p];
+    if (c === "*") {
+      starP = p++;
+      starN = n;
+    } else if (p < pattern.length && (c === "?" || c === name[n])) {
+      p++;
+      n++;
+    } else if (starP >= 0) {
+      p = starP + 1;
+      n = ++starN;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === "*") p++;
+  return p === pattern.length;
+}
+
+/**
+ * Test whether a filename matches any of the provided glob patterns
+ * (`*.png`, `IMG_*.jpg`, `scan-??.png`, or an exact name), case-insensitively.
  */
 export function matchesPatterns(filename: string, patterns: string[]): boolean {
   const lower = filename.toLowerCase();
-  for (const pattern of patterns) {
-    // Simple *.ext matching
-    if (pattern.startsWith("*.")) {
-      const ext = pattern.slice(1).toLowerCase(); // e.g. ".png"
-      if (lower.endsWith(ext)) return true;
-    } else if (lower === pattern.toLowerCase()) {
-      return true;
-    }
-  }
-  return false;
+  return patterns.some((pattern) => globMatches(lower, pattern.toLowerCase()));
 }
 
 /**
