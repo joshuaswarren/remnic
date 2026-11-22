@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { EngramAccessService } from "../access-service.js";
+import { EngramAccessService } from "../access-service.js";
 import type {
   CorrectionOutcome,
   CorrectionPlan,
@@ -30,43 +30,42 @@ interface CapturedCalls {
 }
 
 /** Minimal correction surface; captures the args the executor sends. */
-function fakeCorrectionService(calls: CapturedCalls, pending: CorrectionPlan[]) {
-  const fake = {
-    correctionPlan: async (request: CorrectionRequest): Promise<CorrectionPlan> => {
-      calls.planRequests.push(request);
-      return {
-        planId: "corr-real-1",
-        request,
-        namespace: "ns",
-        affected: [],
-        classification: "wrong",
-        actions: [],
-        diff: "DIFF: rewrite fact",
-        confidence: 0.9,
-        warnings: [],
-        createdAt: "t",
-        expiresAt: "t+1h",
-      };
-    },
-    correctionApply: async (planId: string, opts: ApplyOpts): Promise<CorrectionOutcome> => {
-      calls.applyPlanIds.push(planId);
-      calls.applyOpts.push(opts);
-      return {
-        planId,
-        status: "applied",
-        results: [],
-        auditMemoryId: "audit-1",
-        appliedAt: "t",
-      };
-    },
-    correctionListPending: async (opts: ListPendingOpts): Promise<CorrectionPlan[]> => {
-      calls.listOpts.push(opts);
-      return pending;
-    },
-  };
-  // SAFETY: the fake implements only the three correction methods the
+function fakeCorrectionService(calls: CapturedCalls, pending: CorrectionPlan[]): EngramAccessService {
+  // SAFETY: the double implements only the three correction methods the
   // executor calls; no other EngramAccessService member is reached here.
-  return fake as unknown as EngramAccessService;
+  const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  service.correctionPlan = async (request: CorrectionRequest): Promise<CorrectionPlan> => {
+    calls.planRequests.push(request);
+    return {
+      planId: "corr-real-1",
+      request,
+      namespace: "ns",
+      affected: [],
+      classification: "wrong",
+      actions: [],
+      diff: "DIFF: rewrite fact",
+      confidence: 0.9,
+      warnings: [],
+      createdAt: "t",
+      expiresAt: "t+1h",
+    };
+  };
+  service.correctionApply = async (planId: string, opts: ApplyOpts): Promise<CorrectionOutcome> => {
+    calls.applyPlanIds.push(planId);
+    calls.applyOpts.push(opts);
+    return {
+      planId,
+      status: "applied",
+      results: [],
+      auditMemoryId: "audit-1",
+      appliedAt: "t",
+    };
+  };
+  service.correctionListPending = async (opts: ListPendingOpts): Promise<CorrectionPlan[]> => {
+    calls.listOpts.push(opts);
+    return pending;
+  };
+  return service;
 }
 
 function emptyCalls(): CapturedCalls {

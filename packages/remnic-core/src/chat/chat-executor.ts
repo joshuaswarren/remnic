@@ -26,6 +26,10 @@ export interface ChatExecutorBindings {
  */
 export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExecutor {
   const { service, principal, namespace, sessionKey } = bindings;
+  const correctionScope: Parameters<EngramAccessService["correctionListPending"]>[0] = {};
+  if (namespace) correctionScope.namespace = namespace;
+  if (sessionKey) correctionScope.sessionKey = sessionKey;
+  if (principal) correctionScope.principal = principal;
 
   return {
     async memorySearch(query: string, maxResults?: number): Promise<string> {
@@ -93,11 +97,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     async correctionPlan(request: string): Promise<{ planId: string; preview: string }> {
       const retrieve = /^retrieve plan (\S+)$/i.exec(request.trim());
       if (retrieve) {
-        const pending = await service.correctionListPending({
-          ...(namespace ? { namespace } : {}),
-          ...(sessionKey ? { sessionKey } : {}),
-          ...(principal ? { principal } : {}),
-        });
+        const pending = await service.correctionListPending(correctionScope);
         const plan = pending.find((p) => p.planId === retrieve[1]);
         if (!plan) {
           throw new Error(`Correction plan ${retrieve[1]} not found or expired.`);
@@ -106,9 +106,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
       }
       const plan = await service.correctionPlan({
         text: request,
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        ...(principal ? { principal } : {}),
+        ...correctionScope,
       });
       return { planId: plan.planId, preview: plan.diff };
     },
@@ -118,9 +116,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
       // through as confirm so the apply gate sees a confirmed call.
       const outcome = await service.correctionApply(planId, {
         confirm: true,
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        ...(principal ? { principal } : {}),
+        ...correctionScope,
       });
       return JSON.stringify(outcome);
     },
