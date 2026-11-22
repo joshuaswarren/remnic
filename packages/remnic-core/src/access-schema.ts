@@ -179,6 +179,15 @@ export const recallRequestSchema = z.object({
   stateView: z.boolean().optional(),
   /** QMD search options for this recall only (`query` tool path). */
   searchOptions: recallQmdSearchOptionsSchema.optional(),
+  /**
+   * Client's own budget for this recall (issue #3499).  Epoch-sized values
+   * are an absolute deadline; smaller values read as a relative budget —
+   * the force-flush convention (issue #3140).  The daemon clamps its outer
+   * deadline to the tighter of this and `recallOuterTimeoutMs`, so a client
+   * whose hook dies sooner gets a degraded recall inside what remains
+   * instead of an answer it can no longer use.
+   */
+  deadlineMs: deadlineMsSchema,
 });
 
 export const recallExplainRequestSchema = z.object({

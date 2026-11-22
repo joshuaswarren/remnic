@@ -39,6 +39,10 @@ import { canReadNamespace, resolvePrincipal } from "../namespaces/principal.js";
 import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativeKnowledge } from "../native-knowledge.js";
 import { objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
 import { type GraphRecallRankedResult, type GraphRecallShadowComparison, mergeGraphExpandedResults } from "./graph-recall-coordinator.js";
+import {
+  buildCompoundingRecallSection,
+  buildIrcPreferencesRecallSection,
+} from "./compounding-recall-sections.js";
 import { buildProcedureRecallSection, mergeProcedureInjections } from "../procedural/procedure-recall.js";
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
@@ -57,6 +61,7 @@ import {
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
   resolveRecallCoreSectionDeadlineMs,
+  resolveRecallOuterDeadlineAtMs,
 } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallSnapshot } from "../recall-state.js";
@@ -172,17 +177,16 @@ export class RecallInternalCoordinator {
     // section, against the request budget still left when that section starts.
     const recallSectionDeadlineMs = this.deps.config.recallCoreDeadlineMs ?? 75_000;
     const recallOuterTimeoutMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
-    const enrichmentSectionDeadlineMs =
-      this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
+    const enrichmentSectionDeadlineMs = this.deps.config.recallEnrichmentDeadlineMs ?? 60_000;
     // Wrap entire recall body in try/finally so profiling trace is always closed,
     // even on unexpected exceptions (e.g., throwIfRecallAborted, phase-1 errors).
     try {
-    const recordRecallSectionMetric = createRecallSectionMetricRecorder({
-      timings,
-      logger: log,
+    const recordRecallSectionMetric =
+      createRecallSectionMetricRecorder({ timings, logger: log });
+    // The client's deadlineMs (issue #3499) caps the configured ceiling.
+    const outerDeadlineAtMs = resolveRecallOuterDeadlineAtMs({
+      recallStart, recallOuterTimeoutMs, clientDeadlineMs: options.deadlineMs,
     });
-    const outerDeadlineAtMs =
-      recallOuterTimeoutMs > 0 ? recallStart + recallOuterTimeoutMs : null;
     const enrichmentAbort = () =>
       createEnrichmentAbortHandle(options.abortSignal, resolveRecallCoreSectionDeadlineMs({
         configuredCoreDeadlineMs: enrichmentSectionDeadlineMs,
@@ -566,7 +570,7 @@ export class RecallInternalCoordinator {
         this.deps.trackRecallBackgroundWrite(
           this.deps.lastRecall.record({
             sessionKey,
-            query: retrievalQuery,
+            query: prompt,
             memoryIds: [],
             namespace: selfNamespace,
             traceId,
@@ -1368,9 +1372,8 @@ export class RecallInternalCoordinator {
           return null;
         }
         const section = buildCalibrationRecallSection(
-          rules.slice(0, this.deps.config.calibrationMaxRulesPerRecall),
-          retrievalQuery,
-          this.deps.config.calibrationMaxChars,
+          rules, retrievalQuery, this.deps.config.calibrationMaxChars,
+          this.deps.config.calibrationMaxRulesPerRecall,
         );
         recordRecallSectionMetric({
           section: "calibrationRules",
@@ -2662,54 +2665,23 @@ export class RecallInternalCoordinator {
 
     const compoundingStartedMs = performance.now();
     const compoundingPromise = observeEnrichmentPromise(
-      (async (): Promise<string | null> => {
-        const t0 = Date.now();
-        if (
-          !this.deps.compounding ||
-          !resolveRecallEnhancementCapabilities(this.deps.config).compoundingInject ||
-          !this.deps.isRecallSectionEnabled("compounding", true)
-        ) {
-          recordRecallSectionMetric({
-            section: "compounding",
-            priority: "enrichment",
-            durationMs: 0,
-            deadlineMs: enrichmentSectionDeadlineMs,
-            source: "skip",
-            success: true,
-            timing: "skip",
-          });
-          return null;
-        }
-        const maxPatterns =
-          this.deps.getRecallSectionNumber("compounding", "maxPatterns") ?? 40;
-        const maxRubrics =
-          this.deps.getRecallSectionNumber("compounding", "maxRubrics") ?? 4;
-        if (maxPatterns === 0 && maxRubrics === 0) {
-          recordRecallSectionMetric({
-            section: "compounding",
-            priority: "enrichment",
-            durationMs: 0,
-            deadlineMs: enrichmentSectionDeadlineMs,
-            source: "skip",
-            success: true,
-            timing: "skip(limit=0)",
-          });
-          return null;
-        }
-        const section = await this.deps.compounding.buildRecallSection(
-          retrievalQuery,
-          { maxPatterns, maxRubrics },
-        );
-        recordRecallSectionMetric({
-          section: "compounding",
-          priority: "enrichment",
-          durationMs: Date.now() - t0,
-          deadlineMs: enrichmentSectionDeadlineMs,
-          source: "fresh",
-          success: true,
-        });
-        return section;
-      })(),
+      buildCompoundingRecallSection({
+        deps: this.deps,
+        record: recordRecallSectionMetric,
+        retrievalQuery,
+        deadlineMs: enrichmentSectionDeadlineMs,
+      }),
+    );
+
+    const preferencesStartedMs = performance.now();
+    const preferencesPromise = observeEnrichmentPromise(
+      buildIrcPreferencesRecallSection({
+        deps: this.deps,
+        record: recordRecallSectionMetric,
+        retrievalQuery,
+        profileStorages,
+        deadlineMs: enrichmentSectionDeadlineMs,
+      }),
     );
 
     // Start memory-boxes read in parallel with the rest of phase-1 (it can take
@@ -4855,6 +4827,19 @@ export class RecallInternalCoordinator {
         compoundingSection,
       );
     }
+    const preferencesSection = await phase2Timer.enrichment(
+      "Preferences",
+      preferencesStartedMs,
+      () => timings.preferences?.startsWith("skip") === true,
+      (onStatus) => awaitEnrichmentSection("preferences", preferencesPromise, onStatus),
+    );
+    if (preferencesSection) {
+      this.deps.appendRecallSection(
+        sectionBuckets,
+        "preferences",
+        preferencesSection,
+      );
+    }
     let curiosityFooter: string | undefined, curiosityQuestionSelected = false, curiosityFooterTruncated = false;
     const questionsEnabled = this.deps.config.injectQuestions &&
       this.deps.isRecallSectionEnabled("questions", true);
@@ -4932,7 +4917,7 @@ export class RecallInternalCoordinator {
         sectionBuckets, recalledMemoryPaths,
         recalledMemoryNamespaces: episodicMemoryNamespaces,
         scopePlan, namespacesEnabled,
-        enrichmentSectionDeadlineMs, recallOuterTimeoutMs, recallStart,
+        enrichmentSectionDeadlineMs, outerDeadlineAtMs,
         recordMetric: recordRecallSectionMetric, abortSignal: options.abortSignal,
       });
     } catch (err) {
@@ -5230,7 +5215,7 @@ export class RecallInternalCoordinator {
       this.deps.trackRecallBackgroundWrite(
         this.deps.lastRecall.record({
           sessionKey,
-          query: retrievalQuery,
+          query: prompt,
           memoryIds: recalledMemoryIds,
           namespace: selfNamespace,
           recallNamespaces,

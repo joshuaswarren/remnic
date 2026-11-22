@@ -3,9 +3,11 @@ import assert from "node:assert/strict";
 import { throwIfAborted } from "./abort-error.js";
 import { createEnrichmentAbortHandle } from "./recall-enrichment-promise.js";
 import {
+  clientDeadlineTimerMs,
   createBoundedCoreSectionRunner,
   createRecallSectionMetricRecorder,
   resolveRecallCoreSectionDeadlineMs,
+  resolveRecallOuterDeadlineAtMs,
   runRecallSectionWithinDeadline,
   yieldToEventLoop,
   type RecallSectionMetric,
@@ -395,4 +397,64 @@ test("an enrichment abort handle with no deadline still follows the parent signa
   parent.abort();
   assert.equal(handle.signal.aborted, true);
   handle.dispose();
+});
+
+test("client deadlineMs clamps the outer recall deadline to the smaller budget (#3499)", () => {
+  const start = 1_800_000_000_000;
+  // No client deadline -> the configured ceiling, unchanged.
+  assert.equal(
+    resolveRecallOuterDeadlineAtMs({ recallStart: start, recallOuterTimeoutMs: 75_000 }),
+    start + 75_000,
+  );
+  // A tighter client budget wins; a looser one loses.
+  assert.equal(
+    resolveRecallOuterDeadlineAtMs({
+      recallStart: start, recallOuterTimeoutMs: 75_000, clientDeadlineMs: start + 60_000,
+    }),
+    start + 60_000,
+  );
+  assert.equal(
+    resolveRecallOuterDeadlineAtMs({
+      recallStart: start, recallOuterTimeoutMs: 75_000, clientDeadlineMs: start + 90_000,
+    }),
+    start + 75_000,
+  );
+  // An already-passed deadline stays passed — the request behaves like a
+  // 0-remaining budget (fast degraded recall), never a rejection.
+  const expired = resolveRecallOuterDeadlineAtMs({
+    recallStart: start, recallOuterTimeoutMs: 75_000, clientDeadlineMs: start - 1,
+  });
+  assert.ok(expired !== null && expired <= start);
+  // Small values are a relative budget, matching force-flush (issue #3140).
+  assert.equal(
+    resolveRecallOuterDeadlineAtMs({
+      recallStart: start, recallOuterTimeoutMs: 75_000, clientDeadlineMs: 30_000,
+    }),
+    start + 30_000,
+  );
+  // An unbounded configured outer still honours the client's deadline.
+  assert.equal(
+    resolveRecallOuterDeadlineAtMs({
+      recallStart: start, recallOuterTimeoutMs: 0, clientDeadlineMs: start + 40_000,
+    }),
+    start + 40_000,
+  );
+  // Garbage values are ignored — configured semantics unchanged.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+    assert.equal(
+      resolveRecallOuterDeadlineAtMs({
+        recallStart: start, recallOuterTimeoutMs: 75_000, clientDeadlineMs: bad,
+      }),
+      start + 75_000,
+    );
+  }
+});
+
+test("clientDeadlineTimerMs yields an integer delay that AbortSignal.timeout accepts (#3514 review)", () => {
+  const now = Date.now();
+  const delay = clientDeadlineTimerMs(now + 50.5, now);
+  assert.equal(Number.isInteger(delay), true, "a fractional deadline must floor to an integer delay");
+  // AbortSignal.timeout rejects non-integer delays with ERR_OUT_OF_RANGE; the
+  // floored value must always be acceptable.
+  assert.doesNotThrow(() => AbortSignal.timeout(delay));
 });

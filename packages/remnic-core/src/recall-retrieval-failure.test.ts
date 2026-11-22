@@ -39,12 +39,12 @@ const QUERY = "what writing rules apply here?";
 function searchBackend(
   observed: { calls: number },
   degrade: boolean,
-  onSearch?: () => Promise<void>,
+  onSearch?: (query: string) => Promise<void>,
 ): SearchBackend {
-  const search = async (execution?: SearchExecutionOptions) => {
+  const search = async (query: string, execution?: SearchExecutionOptions) => {
     observed.calls += 1;
     if (degrade) execution?.onDegradation?.(TIMEOUT_DEGRADATION);
-    await onSearch?.();
+    await onSearch?.(query);
     return [];
   };
   const backend: Partial<SearchBackend> = {
@@ -57,20 +57,20 @@ function searchBackend(
     debugStatus() {
       return degrade ? "backend=timeout-stub" : "backend=empty-stub";
     },
-    async search(_query, _collection, _maxResults, _options, execution) {
-      return search(execution);
+    async search(query, _collection, _maxResults, _options, execution) {
+      return search(query, execution);
     },
-    async searchGlobal(_query, _maxResults, execution) {
-      return search(execution);
+    async searchGlobal(query, _maxResults, execution) {
+      return search(query, execution);
     },
-    async bm25Search(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async bm25Search(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
-    async vectorSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async vectorSearch(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
-    async hybridSearch(_query, _collection, _maxResults, execution) {
-      return search(execution);
+    async hybridSearch(query, _collection, _maxResults, execution) {
+      return search(query, execution);
     },
     async update() {},
     async updateCollection() {},
@@ -152,8 +152,10 @@ test("recall reports storage corpus versions captured before retrieval, not inde
     const beforeRetrieval = storage.getMemoryCorpusVersion();
     let writeDuringSearch = true;
     let indexUpdates = 0;
-    const backend = searchBackend(observed, false, async () => {
-      if (!writeDuringSearch) return;
+    // The post-ready startupSearchSync fires its own warm-up search (#3525);
+    // only this test's recall query may consume the one-shot write.
+    const backend = searchBackend(observed, false, async (query) => {
+      if (!writeDuringSearch || query !== QUERY) return;
       writeDuringSearch = false;
       await storage.writeMemory("fact", "write committed while retrieval was in flight");
     });
@@ -181,8 +183,10 @@ test("includeRecall X-ray responses report storage versions sampled before retri
     const storage = await orchestrator.getStorage("default");
     const beforeRetrieval = storage.getMemoryCorpusVersion();
     let writeDuringSearch = true;
-    const backend = searchBackend(observed, false, async () => {
-      if (!writeDuringSearch) return;
+    // The post-ready startupSearchSync fires its own warm-up search (#3525);
+    // only this test's recall query may consume the one-shot write.
+    const backend = searchBackend(observed, false, async (query) => {
+      if (!writeDuringSearch || query !== QUERY) return;
       writeDuringSearch = false;
       await storage.writeMemory("fact", "write committed while X-ray retrieval was in flight");
     });
@@ -518,7 +522,7 @@ test("stalled corpus-version storage cannot block recall planning", async () => 
     undefined,
     (versions) => { captured = versions; },
     true,
-    20,
+    { timeoutMs: 20 },
   );
   const result = await Promise.race([
     Promise.resolve(capture("no_recall", ["stalled"])).then(() => "captured"),
@@ -694,4 +698,264 @@ test("MCP recall payload keeps retrievalFailure so a tool caller can branch on i
   assert.deepEqual(timedOut.results, genuineEmpty.results);
   assert.equal(timedOut.retrievalFailure?.reason, "backend_unavailable");
   assert.equal(genuineEmpty.retrievalFailure, undefined);
+});
+
+test("a client deadlineMs bounds the entry-level recall race (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-client-deadline-",
+    false,
+    async (orchestrator) => {
+      // Park the internal pipeline — only the entry race can bring recall back.
+      Object.assign(orchestrator, {
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const timedRecall = async (deadlineMs?: number) => {
+        const start = Date.now();
+        await orchestrator.recall(QUERY, "client-deadline", { deadlineMs });
+        return Date.now() - start;
+      };
+      // No client hint -> the configured 400 ms outer race, unchanged.
+      assert.ok((await timedRecall()) >= 300, "no hint keeps the configured outer race");
+      // A +60 ms client budget must bring recall back near it, not at 400 ms.
+      assert.ok((await timedRecall(60)) < 400, "the +60ms client deadline bounds the entry race");
+      // An already-expired absolute deadline degrades at once.
+      assert.ok(
+        (await timedRecall(Date.now() - 1_000)) < 400,
+        "an expired client deadline degrades immediately",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a client deadlineMs bounds the cold-start init gate too (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-deadline-init-gate-",
+    false,
+    async (orchestrator) => {
+      // A cold-start gate that resolves well after the client budget, and an
+      // internal pipeline that never returns — only the deadline can return.
+      Object.assign(orchestrator, {
+        initPromise: new Promise<void>((resolve) => setTimeout(resolve, 400)),
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const start = Date.now();
+      await orchestrator.recall(QUERY, "client-deadline-init", { deadlineMs: 50 });
+      assert.ok(
+        Date.now() - start < 400,
+        "the +50ms client deadline bounds the init gate wait, not just the inner race",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a client deadlineMs bounds the standing-plan capture too (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-standing-capture-deadline-",
+    false,
+    async (orchestrator) => {
+      // Park the corpus-version lookup the standing-plan capture awaits —
+      // its own 250 ms timeout can no longer outrun the client deadline.
+      Object.assign(orchestrator, {
+        getStorage: () => new Promise<never>(() => {}),
+        recallInternal: async () => "recall ok",
+      });
+      const start = Date.now();
+      await new EngramAccessService(orchestrator).recall({
+        query: QUERY,
+        sessionKey: "standing-capture-deadline",
+        deadlineMs: 50,
+      });
+      assert.ok(
+        Date.now() - start < 250,
+        "the +50ms client deadline bounds the standing-plan capture",
+      );
+    },
+    { recallStandingBlock: true },
+  );
+});
+
+test("a far-future client deadlineMs does not abort a healthy recall early (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-far-deadline-",
+    false,
+    async (orchestrator) => {
+      // Node clamps timer delays to 2^31-1 ms; a +30 day budget must not
+      // overflow the delay and abort the 75 ms init after ~4 ms.
+      Object.assign(orchestrator, {
+        initPromise: new Promise<void>((resolve) => setTimeout(resolve, 75)),
+        recallInternal: async () => "recall ok",
+      });
+      const result = await orchestrator.recall(QUERY, "far-deadline", {
+        deadlineMs: 30 * 24 * 60 * 60 * 1000,
+      });
+      assert.equal(result, "recall ok");
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a fired client deadlineMs degrades as a timeout, not caller abort (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-entry-deadline-classify-",
+    false,
+    async (orchestrator) => {
+      // An abort-aware stalled pipeline: it rejects AbortError when the
+      // request signal fires. The client deadline must still degrade to the
+      // missing-note context — "" is indistinguishable from "no matches".
+      Object.assign(orchestrator, {
+        recallInternal: (_prompt: string, _session: string, o: { abortSignal?: AbortSignal }) =>
+          new Promise<string>((_resolve, reject) => {
+            o.abortSignal?.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                reject(err);
+              },
+              { once: true },
+            );
+          }),
+      });
+      const result = await orchestrator.recall(QUERY, "deadline-classify", { deadlineMs: 30 });
+      assert.ok(result.length > 0, "deadline exhaustion must degrade to the missing note, not empty");
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a caller abort stays a cancellation even when teardown outlives the deadline timer (#3514)", async () => {
+  await withOrchestrator(
+    "remnic-entry-abort-clear-",
+    false,
+    async (orchestrator) => {
+      // The abort listener inside recallInternal settles ~80ms AFTER the
+      // caller's abort lands. The client deadline timer fires at ~30ms — the
+      // onAbort path must clear it, or clientDeadlineFired flips and the
+      // catch misclassifies the caller abort as a deadline timeout.
+      Object.assign(orchestrator, {
+        recallInternal: (_prompt: string, _session: string, o: { abortSignal?: AbortSignal }) =>
+          new Promise<string>((_resolve, reject) => {
+            o.abortSignal?.addEventListener(
+              "abort",
+              () => {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                setTimeout(() => reject(err), 80);
+              },
+              { once: true },
+            );
+          }),
+      });
+      const controller = new AbortController();
+      const resultPromise = orchestrator.recall(QUERY, "abort-clear", {
+        deadlineMs: 30,
+        abortSignal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 10);
+      const result = await resultPromise;
+      assert.equal(result, "", "caller abort must return empty, not the degraded timeout note");
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a timed-out recall does not serve the previous query's snapshot (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-stale-snapshot-",
+    false,
+    async (orchestrator) => {
+      await orchestrator.lastRecall.record({
+        sessionKey: "stale-snapshot",
+        query: "the first question on this session",
+        memoryIds: ["m-stale"],
+      });
+      Object.assign(orchestrator, {
+        recallInternal: () => new Promise<string>(() => {}),
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "a different second question",
+        sessionKey: "stale-snapshot",
+        deadlineMs: 50,
+      });
+      assert.deepEqual(
+        response.memoryIds,
+        [],
+        "a timed-out recall must not report the previous query's memory ids",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a client deadlineMs does not swallow the namespace auth rejection (#3499)", async () => {
+  await withOrchestrator(
+    "remnic-deadline-auth-",
+    false,
+    async (orchestrator) => {
+      await assert.rejects(
+        () => orchestrator.recall(QUERY, undefined, { deadlineMs: 50 }),
+        /authentication required/,
+      );
+    },
+    { namespacesEnabled: true },
+  );
+});
+
+test("a tag-filtered recall with no validated snapshot suppresses unverified memory text (#3514 review)", async () => {
+  await withOrchestrator(
+    "remnic-tagfilter-nosnap-",
+    false,
+    async (orchestrator) => {
+      // The pipeline produced real context, but no session snapshot attests to
+      // it (e.g. a concurrent recall on this session replaced it, so the hash
+      // check rejects it): the tag filter has zero tag-verified results, so NO
+      // memory text may survive into the response context.
+      Object.assign(orchestrator, {
+        recallInternal: () =>
+          Promise.resolve("draft note contents and an untagged secret"),
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "what did I write",
+        sessionKey: "tag-session",
+        tags: ["draft"],
+      });
+      assert.equal(response.results.length, 0);
+      assert.ok(
+        !response.context.includes("untagged secret"),
+        "unverified memory text must not survive a tag filter with no validated snapshot",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
+});
+
+test("a tag-filtered recall while the secure store is locked preserves the unlock diagnostic (#3514 review)", async () => {
+  await withOrchestrator(
+    "remnic-tagfilter-locked-",
+    false,
+    async (orchestrator) => {
+      // Flip the lock state post-init (a genuinely locked store cannot
+      // initialize): capability on + store locked makes the recall lock gate
+      // return the unlock diagnostic as `context` with NO composition/snapshot.
+      // A tag filter must not rebuild that non-memory diagnostic away — it is
+      // the only actionable signal the caller gets.
+      Object.assign(orchestrator.config, { secureStoreEnabled: true });
+      Object.assign(orchestrator.storage, {
+        isSecureStoreUnlocked: () => false,
+      });
+      const response = await new EngramAccessService(orchestrator).recall({
+        query: "what did I write",
+        sessionKey: "tag-session",
+        tags: ["draft"],
+      });
+      assert.match(
+        response.context,
+        /secure-store locked/,
+        "the locked-store diagnostic must survive a tag filter with no snapshot",
+      );
+    },
+    { recallOuterTimeoutMs: 400 },
+  );
 });

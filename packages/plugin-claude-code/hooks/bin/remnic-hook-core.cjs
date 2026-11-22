@@ -372,6 +372,20 @@ function run(config) {
   // observations land on the default key while a namespaced flush drains a
   // different (empty) queue, and most in-session memory never flushes before
   // compaction. An explicit bodyObj.namespace still takes precedence.
+  // One deadline for the whole request: connect, response headers, and body.
+  // req.setTimeout() is an idle timer that does not arm until the socket
+  // connects and restarts on every byte, so a daemon address that drops
+  // packets, or a front that accepts and then trickles, held the hook far
+  // past its budget. On expiry the request is destroyed and `onTimeout`
+  // reports the same failure the caller already handles for a dead daemon.
+  function armRequestDeadline(req, timeoutMs, onTimeout) {
+    const timer = setTimeout(() => {
+      req.destroy();
+      onTimeout();
+    }, timeoutMs);
+    req.on("close", () => clearTimeout(timer));
+  }
+
   function httpPost(urlPath, token, bodyObj, timeoutMs) {
     if (DAEMON_URL === null) {
       // Explicit-but-invalid REMNIC_DAEMON_URL — disabled, fail open (see
@@ -422,10 +436,7 @@ function run(config) {
         },
       );
       req.on("error", () => resolve({ ok: false, status: 0, body: "" }));
-      req.setTimeout(timeoutMs, () => {
-        req.destroy();
-        resolve({ ok: false, status: 0, body: "" });
-      });
+      armRequestDeadline(req, timeoutMs, () => resolve({ ok: false, status: 0, body: "" }));
       req.write(data);
       req.end();
     });
@@ -468,10 +479,7 @@ function run(config) {
         },
       );
       req.on("error", () => resolve(0));
-      req.setTimeout(budget, () => {
-        req.destroy();
-        resolve(0);
-      });
+      armRequestDeadline(req, budget, () => resolve(0));
       req.end();
     });
     return probe("/engram/v1/live", timeoutMs).then((status) => {

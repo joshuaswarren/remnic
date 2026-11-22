@@ -387,6 +387,7 @@ test("readCleanCommitSha permits an untracked config but rejects tracked changes
   t.after(async () => rm(repoRoot, { recursive: true, force: true }));
   const runGit = (args, options) => execFileAsync("git", args, options);
   await runGit(["init", "--quiet"], { cwd: repoRoot });
+  await runGit(["config", "core.hooksPath", "/dev/null"], { cwd: repoRoot });
   await runGit(["config", "user.name", "Remnic test"], { cwd: repoRoot });
   await runGit(["config", "user.email", "test@example.invalid"], { cwd: repoRoot });
   await writeFile(path.join(repoRoot, "tracked.txt"), "clean\n");

@@ -171,6 +171,7 @@ export class ExtractionPersistCoordinator {
   ): Promise<ExtractionPersistResult> {
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
+    const citationHistory = this.deps.config.inlineSourceAttributionFormatHistory;
     const factDedupEnabled = resolveRecallAuxiliaryCapabilities(this.deps.config).factDeduplication;
     const harmonicConstructionEnabled = resolveCapabilities(this.deps.config).harmonicRetrieval;
     const harmonicAnchorsEnabled =
@@ -189,7 +190,7 @@ export class ExtractionPersistCoordinator {
     const promotedCopyProbe = createBatchPromotedCopyProbe(this.deps.config, this.deps.getStorageRouter, scopeProfileWritePlan); // #2330 finding F: one promoted-copy scan per namespace per batch
 
     const normalizeStoredHashSource = (raw: string): string =>
-      normalizeStoredHashSourceContent(raw, citationEnabled, citationTemplate);
+      normalizeStoredHashSourceContent(raw, citationEnabled, citationTemplate, citationHistory);
     const citationContextBase: Omit<CitationContext, "ts"> = citationEnabled
       ? {
           agent: sourceContext?.principal,
@@ -197,7 +198,7 @@ export class ExtractionPersistCoordinator {
         }
       : {};
     const applyInlineCitation = (content: string): string =>
-      applyInlineCitationToContent(content, citationEnabled, citationTemplate, citationContextBase);
+      applyInlineCitationToContent(content, citationEnabled, citationTemplate, citationContextBase, citationHistory);
     const persistedIds: string[] = [];
     const memoryPathById = new Map<string, string>();
     const anchorSnapshots = new ExtractionAnchorSnapshot({
@@ -385,8 +386,8 @@ export class ExtractionPersistCoordinator {
       );
       if (targets.length === 0) return [];
       const rawContent =
-        citationEnabled && hasCitationForTemplate(options.content, citationTemplate)
-          ? stripCitationForTemplate(options.content, citationTemplate)
+        citationEnabled && hasCitationForTemplate(options.content, citationTemplate, citationHistory)
+          ? stripCitationForTemplate(options.content, citationTemplate, citationHistory)
           : options.content;
       const citedContent = applyInlineCitation(rawContent);
       const sanitizedBase = sanitizeMemoryContent(rawContent);
@@ -617,8 +618,8 @@ export class ExtractionPersistCoordinator {
         // uses the exact body writeMemory stores (#369/#401, #402 round-6).
         const rawContent =
           citationEnabled &&
-          hasCitationForTemplate(options.content, citationTemplate)
-            ? stripCitationForTemplate(options.content, citationTemplate)
+          hasCitationForTemplate(options.content, citationTemplate, citationHistory)
+            ? stripCitationForTemplate(options.content, citationTemplate, citationHistory)
             : options.content;
         const citedContent = applyInlineCitation(rawContent);
         const sanitizedBase = sanitizeMemoryContent(rawContent);
@@ -996,8 +997,8 @@ export class ExtractionPersistCoordinator {
       // Build the same dedupContent the promotion functions hash on so the
       // content-hash lookup in the helper matches what was stored.
       const rawContent =
-        citationEnabled && hasCitationForTemplate(args.content, citationTemplate)
-          ? stripCitationForTemplate(args.content, citationTemplate)
+        citationEnabled && hasCitationForTemplate(args.content, citationTemplate, citationHistory)
+          ? stripCitationForTemplate(args.content, citationTemplate, citationHistory)
           : args.content;
       const sanitizedBase = sanitizeMemoryContent(rawContent);
       // #2014 round 3: promoted copies were written from SALVAGE envelopes,
@@ -1659,8 +1660,8 @@ export class ExtractionPersistCoordinator {
       // the title alone, so distinct step lists are not collapsed (issue #519).
       const canonicalContentForHash =
         citationEnabled &&
-        hasCitationForTemplate(fact.content, citationTemplate)
-          ? stripCitationForTemplate(fact.content, citationTemplate)
+        hasCitationForTemplate(fact.content, citationTemplate, citationHistory)
+          ? stripCitationForTemplate(fact.content, citationTemplate, citationHistory)
           : fact.content;
       const contentHashDedupKey =
         writeCategory === "procedure"
@@ -2161,8 +2162,8 @@ export class ExtractionPersistCoordinator {
           // via stripCitationForTemplate before calling hasFactContentHash.
           const rawChunkedContent =
             citationEnabled &&
-            hasCitationForTemplate(fact.content, citationTemplate)
-              ? stripCitationForTemplate(fact.content, citationTemplate)
+            hasCitationForTemplate(fact.content, citationTemplate, citationHistory)
+              ? stripCitationForTemplate(fact.content, citationTemplate, citationHistory)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
           const parentWriteEnvelope = composeSalvagedExtractionEnvelope(
@@ -2416,8 +2417,8 @@ export class ExtractionPersistCoordinator {
           try {
             const canonicalChunkedContent =
               citationEnabled &&
-              hasCitationForTemplate(fact.content, citationTemplate)
-                ? stripCitationForTemplate(fact.content, citationTemplate)
+              hasCitationForTemplate(fact.content, citationTemplate, citationHistory)
+                ? stripCitationForTemplate(fact.content, citationTemplate, citationHistory)
                 : fact.content;
             // #1645: do NOT register a tombstone-blocked fact's content in the
             // dedup index — writeMemory already skipped it (rule 44). Re-adding

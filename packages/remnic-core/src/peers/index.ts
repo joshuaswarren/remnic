@@ -30,12 +30,12 @@ export {
   deletePeer,
   forgetPeer,
   listPeers,
-  appendInteractionLog,
   readInteractionLogRaw,
   readPeerInteractionLog,
   readPeerProfile,
   writePeerProfile,
 } from "./storage.js";
+export { appendInteractionLog } from "./interaction-log-append.js";
 
 export {
   runPeerProfileReasoner,

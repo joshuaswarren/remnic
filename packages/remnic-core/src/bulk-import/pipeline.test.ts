@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import {
   runBulkImportPipeline,
   formatBatchTranscript,
+  processBatchFromIngest,
   resolveBulkImportContext,
   validateBatchSize,
   type ProcessBatchContext,
@@ -441,5 +442,35 @@ describe("validateBatchSize", () => {
         return true;
       },
     );
+  });
+});
+
+describe("processBatchFromIngest (issue #3554)", () => {
+  const context: ProcessBatchContext = { dedup: true, trustLevel: "import" };
+
+  it("counts only the memories this batch persisted, not concurrent writes", async () => {
+    // Another extraction writing to the same root during this batch must not
+    // change the count: the result comes from the batch's own persistedCount.
+    const concurrentWrites: string[] = [];
+    const fn = processBatchFromIngest(async (turns) => {
+      concurrentWrites.push("facts/organic-a.md", "facts/organic-b.md");
+      assert.equal(turns.length, 2);
+      return { persistedCount: 1 };
+    });
+    const result = await fn([makeTurn(0), makeTurn(1)], context);
+    assert.equal(concurrentWrites.length, 2);
+    assert.deepEqual(result, { memoriesCreated: 1, duplicatesSkipped: 0 });
+  });
+
+  it("reports zero when the batch persisted nothing", async () => {
+    const fn = processBatchFromIngest(async () => ({ persistedCount: 0 }));
+    assert.deepEqual(await fn([makeTurn(0)], context), { memoriesCreated: 0, duplicatesSkipped: 0 });
+  });
+
+  it("propagates an ingest failure instead of reporting a count", async () => {
+    const fn = processBatchFromIngest(async () => {
+      throw new Error("extraction failed");
+    });
+    await assert.rejects(() => fn([makeTurn(0)], context), /extraction failed/);
   });
 });

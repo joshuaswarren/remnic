@@ -6,6 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { fixtureGitEnv } from "./helpers/fixture-git.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts", "dev-worktree.sh");
 const worktreeDiscipline =
@@ -89,13 +91,13 @@ test("seeds worktree discipline when the source napkin is absent", () => {
   mkdirSync(isolatedScripts);
   copyFileSync(scriptPath, isolatedScript);
   chmodSync(isolatedScript, 0o755);
-  execFileSync("git", ["-C", isolatedRoot, "init", "--initial-branch=main"], { stdio: "ignore" });
+  execFileSync("git", ["-C", isolatedRoot, "init", "--initial-branch=main"], { stdio: "ignore", env: fixtureGitEnv() });
   writeFileSync(path.join(isolatedRoot, "README.md"), "test repository\n");
-  execFileSync("git", ["-C", isolatedRoot, "add", "README.md"]);
+  execFileSync("git", ["-C", isolatedRoot, "add", "README.md"], { stdio: "ignore", env: fixtureGitEnv() });
   execFileSync(
     "git",
     ["-C", isolatedRoot, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "initial"],
-    { stdio: "ignore" }
+    { stdio: "ignore", env: fixtureGitEnv() }
   );
 
   try {

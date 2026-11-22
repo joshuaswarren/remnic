@@ -17,6 +17,7 @@ export const PHASE2_AWAIT_NAMES = [
   "IntentSnapshot",
   "Compression",
   "Compounding",
+  "Preferences",
   "Questions",
   "Prefilter",
 ] as const;
@@ -27,6 +28,7 @@ export type Phase2AwaitName = (typeof PHASE2_AWAIT_NAMES)[number];
 export const PHASE2_AWAIT_TOTAL_NAMES: readonly Phase2AwaitName[] = [
   "Harmonic",
   "Compounding",
+  "Preferences",
   "Prefilter",
 ];
 

@@ -407,40 +407,34 @@ function templateMatcher(template: string): RegExp | null {
  * `[Source: ...]` marker detection which is always available via
  * {@link hasCitation}.
  */
-export function hasCitationForTemplate(text: string, template: string): boolean {
+export function hasCitationForTemplate(
+  text: string,
+  template: string,
+  priorTemplates: readonly string[] = [],
+): boolean {
   if (typeof text !== "string" || text.length === 0) return false;
   // Always accept the default format as a fallback so facts tagged before a
   // configuration change are not double-tagged on reprocessing.
   if (hasCitation(text)) return true;
-  // If the configured template matches the default, we're done.
-  //
-  // Known limitation (Thread 2 — Codex P2): this fast path exits without
-  // checking whether the content carries a citation from a DIFFERENT custom
-  // template that was active before the config was changed back to the default.
-  // Such a fact would be detected by `hasCitation` above only if the prior
-  // custom template happened to match the default `[Source: ...]` pattern.
-  // In practice, template changes mid-stream are rare, and the false-negative
-  // (missing an old custom citation) produces a benign duplicate citation rather
-  // than data loss. A full fix would require storing the citation template used
-  // at write time in the frontmatter and checking that here.
-  if (template === DEFAULT_CITATION_FORMAT) return false;
-
-  // Fully-literal template (no placeholders): exact inclusion check.
-  if (!PLACEHOLDER_REGEX.test(template)) {
-    // Reset lastIndex because PLACEHOLDER_REGEX is declared with /g.
+  // Probe the current template plus every declared prior format
+  // (`inlineSourceAttributionFormatHistory`, issue #3567). A fact written
+  // while a different template was configured is detected here instead of
+  // being double-cited or hashed with its marker intact on reprocess.
+  // citationTemplatesToRecognize drops undetectable shapes, so an
+  // all-placeholder prior cannot false-positive.
+  for (const candidate of citationTemplatesToRecognize(template, priorTemplates)) {
+    if (candidate === DEFAULT_CITATION_FORMAT) continue;
     PLACEHOLDER_REGEX.lastIndex = 0;
-    return text.includes(template);
+    if (!PLACEHOLDER_REGEX.test(candidate)) {
+      PLACEHOLDER_REGEX.lastIndex = 0;
+      if (text.includes(candidate)) return true;
+      continue;
+    }
+    PLACEHOLDER_REGEX.lastIndex = 0;
+    const matcher = templateMatcher(candidate);
+    if (matcher?.test(text)) return true;
   }
-  // Reset lastIndex after the .test() probe above.
-  PLACEHOLDER_REGEX.lastIndex = 0;
-
-  const matcher = templateMatcher(template);
-  if (!matcher) {
-    // All-placeholder template: cannot build a reliable matcher. See the
-    // docstring — callers should not rely on dedup for this shape.
-    return false;
-  }
-  return matcher.test(text);
+  return false;
 }
 
 /**
@@ -573,9 +567,10 @@ export function attachCitation(
   text: string,
   ctx: CitationContext,
   template: string = DEFAULT_CITATION_FORMAT,
+  priorTemplates: readonly string[] = [],
 ): string {
   if (typeof text !== "string") return text as unknown as string;
-  if (hasCitationForTemplate(text, template)) return text;
+  if (hasCitationForTemplate(text, template, priorTemplates)) return text;
   const trimmedEnd = trimTrailingWhitespace(text);
   if (trimmedEnd.length === 0) return text;
   const citation = formatCitation(ctx, template);
@@ -730,28 +725,36 @@ export function stripCitation(text: string): string {
 export function stripCitationForTemplate(
   text: string,
   template: string,
+  priorTemplates: readonly string[] = [],
 ): string {
   if (typeof text !== "string" || text.length === 0) return text;
 
-  // First pass: the default-format marker, if any. A second pass below still
-  // runs — a body can carry the default marker AND the custom template's
-  // marker, and canonicalization must remove every recognized form.
-  const afterDefault = hasCitation(text) ? stripCitation(text) : text;
+  // First pass: the default-format marker, if any. Later passes still run —
+  // a body can carry the default marker AND markers from the current or a
+  // prior configured template, and canonicalization must remove every
+  // recognized form.
+  let out = hasCitation(text) ? stripCitation(text) : text;
 
-  if (!hasCitationForTemplate(afterDefault, template)) return afterDefault;
+  for (const candidate of citationTemplatesToRecognize(template, priorTemplates)) {
+    if (candidate === DEFAULT_CITATION_FORMAT) continue;
+    out = stripSingleTemplateCitation(out, candidate);
+  }
+  return out;
+}
 
+// Strips every marker `template` produces — literal templates by exact
+// match, placeholder templates via the compiled matcher. Undetectable
+// (all-placeholder) shapes leave the text unchanged.
+function stripSingleTemplateCitation(text: string, template: string): string {
   PLACEHOLDER_REGEX.lastIndex = 0;
   if (!PLACEHOLDER_REGEX.test(template)) {
     PLACEHOLDER_REGEX.lastIndex = 0;
-    return stripExactLiteralCitation(afterDefault, template);
+    return stripExactLiteralCitation(text, template);
   }
   PLACEHOLDER_REGEX.lastIndex = 0;
 
-  // Build the template matcher. hasCitationForTemplate already returned true,
-  // which means templateMatcher produced a non-null result. The null branch
-  // here is a defensive fallback only — the default pass already ran.
   const matcher = templateMatcher(template);
-  if (!matcher) return afterDefault;
+  if (!matcher) return text;
 
   // The matcher regex was built without the global flag; add it for exec loop.
   const globalMatcher = new RegExp(
@@ -762,12 +765,12 @@ export function stripCitationForTemplate(
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
-  while ((match = globalMatcher.exec(afterDefault)) !== null) {
+  while ((match = globalMatcher.exec(text)) !== null) {
     const matchEnd = match.index + match[0].length;
-    const enclosure = enclosingDelimiterRange(afterDefault, match.index, matchEnd);
+    const enclosure = enclosingDelimiterRange(text, match.index, matchEnd);
     const removalStart = enclosure?.start ?? match.index;
     const removalEnd = enclosure?.end ?? matchEnd;
-    const before = afterDefault.slice(lastIndex, removalStart).replace(/[ \t]+$/, "");
+    const before = text.slice(lastIndex, removalStart).replace(/[ \t]+$/, "");
     result += before;
     lastIndex = removalEnd;
     // Guard against zero-width matches causing an infinite loop.
@@ -776,7 +779,7 @@ export function stripCitationForTemplate(
     }
   }
 
-  const after = afterDefault.slice(lastIndex).replace(/^[ \t]+/, "");
+  const after = text.slice(lastIndex).replace(/^[ \t]+/, "");
   if (after.length > 0) {
     if (result.length > 0) result += " ";
     result += after;

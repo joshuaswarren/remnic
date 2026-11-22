@@ -16,6 +16,7 @@ import { log } from "../logger.js";
 import { resolvePrincipal } from "../namespaces/principal.js";
 import { type RecallSectionAppendOptions, type RecallSectionBuckets } from "./recall-section-coordinator.js";
 import { type RecallInvocationOptions, abortRecallError } from "./orchestrator-helpers.js";
+import { isAbortError } from "../abort-error.js";
 import { ProfilingCollector } from "../profiling.js";
 import { trustResultFor, type TrustStageResultItem } from "../trust-score-stage.js";
 import type { RecallResultFormatter } from "./recall-result-formatter.js";
@@ -24,6 +25,7 @@ import { stateViewPacketActive } from "../recall-state-view-anchors.js";
 import { resultStateViewKey, stateViewPacketKeys } from "../recall-state-view.js";
 import { applyRecallStateViews } from "../recall-state-view-wire.js";
 import { composeRecallContext, type RecallContextComposition } from "../recall-context-composition.js";
+import { clientDeadlineTimerMs, resolveClientDeadlineAtMs } from "../recall-qos.js";
 import {
   memoriesToStandingEntries,
   prefixStandingMemoryBlock,
@@ -87,7 +89,17 @@ export class RecallEntryCoordinator {
     const caps = resolveCapabilities(this.deps.config);
     const graphCaps = resolveGraphConstructionCapabilities(this.deps.config); // #1566 Cluster A
     const abortController = new AbortController();
+    let clientDeadlineFired = false;
+    let clientDeadlineHandle: NodeJS.Timeout | null = null;
+    let outerTimeoutFired = false;
     const onAbort = () => {
+      // Real caller cancellation retires the deadline timer too: a late fire
+      // must not flip clientDeadlineFired and reclassify the abort as a
+      // timeout (#3514 review).
+      if (clientDeadlineHandle) {
+        clearTimeout(clientDeadlineHandle);
+        clientDeadlineHandle = null;
+      }
       abortController.abort();
     };
     if (options.abortSignal?.aborted) {
@@ -104,6 +116,19 @@ export class RecallEntryCoordinator {
     const namespacesEnabled = resolveNamespaceCapabilities(this.deps.config).namespaces;
     if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
+    }
+
+    // Resolve the client's absolute deadline ONCE at method entry (issue
+    // #3499): a relative budget then counts from arrival, and this abort
+    // timer bounds the init gate, standing reads, and the inner race. It is
+    // armed after validation so a rejecting call never leaks the timer.
+    const clientDeadlineAtMs = resolveClientDeadlineAtMs(options.deadlineMs, Date.now());
+    if (clientDeadlineAtMs !== null) {
+      clientDeadlineHandle = setTimeout(() => {
+        if (options.abortSignal?.aborted) return;
+        clientDeadlineFired = true;
+        abortController.abort();
+      }, clientDeadlineTimerMs(clientDeadlineAtMs, Date.now()));
     }
 
     // Wait for initialization to complete before attempting recall. The timeout
@@ -134,8 +159,11 @@ export class RecallEntryCoordinator {
       if (initGateTimeoutHandle) clearTimeout(initGateTimeoutHandle);
       if (onInitGateAbort)
         abortController.signal.removeEventListener("abort", onInitGateAbort);
-      if (gateResult === "aborted") {
+      // A fired client deadline is a timeout, not cancellation — the flow
+      // below then degrades to the missing-note response instead of "".
+      if (gateResult === "aborted" && !clientDeadlineFired) {
         this.deps.logRecallFailure(abortRecallError("recall aborted before init"));
+        if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
         return "";
       }
       if (gateResult === "timeout") {
@@ -153,6 +181,7 @@ export class RecallEntryCoordinator {
         "[secure-store locked] Memory store is encrypted and locked. " +
         "Unlock the secure-store inside this daemon process, or restart the daemon through a secure-store aware launcher that installs the key.";
       log.warn("recall blocked: secure-store is locked");
+      if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
       return lockedMsg;
     }
 
@@ -214,9 +243,23 @@ export class RecallEntryCoordinator {
               })
           : innerObserver,
     };
+    // Forward the RESOLVED absolute deadline: a relative deadlineMs re-read
+    // from recallStart downstream would restart the budget after the init
+    // gate and standing reads already consumed part of it (#3514 review).
+    if (clientDeadlineAtMs !== null) recallOptions.deadlineMs = clientDeadlineAtMs;
     try {
       const recallPromise = this.deps.recallInternal(prompt, sessionKey, recallOptions, caps, graphCaps);
-      const RECALL_TIMEOUT_MS = this.deps.config.recallOuterTimeoutMs ?? 75_000;
+      const configuredOuterMs = this.deps.config.recallOuterTimeoutMs ?? 75_000;
+      // The client's own deadlineMs (issue #3499) bounds this entry race
+      // too — phase-one work can stall outside every section budget. The
+      // deadline resolved at method entry already deducts elapsed init and
+      // standing-read time from the remaining budget here.
+      const clientRemainingMs =
+        clientDeadlineAtMs === null ? null : clientDeadlineTimerMs(clientDeadlineAtMs, Date.now());
+      const RECALL_TIMEOUT_MS =
+        clientRemainingMs === null
+          ? configuredOuterMs
+          : Math.min(configuredOuterMs > 0 ? configuredOuterMs : Number.POSITIVE_INFINITY, clientRemainingMs);
       if (RECALL_TIMEOUT_MS <= 0) {
         return prefixStandingMemoryBlock(await recallPromise, standingText, standingBudget);
       }
@@ -224,6 +267,12 @@ export class RecallEntryCoordinator {
       let timeoutHandle: NodeJS.Timeout | null = null;
       const timeoutPromise = new Promise<string>((_, reject) => {
         timeoutHandle = setTimeout(() => {
+          // Mark BEFORE the synchronous abort(): abort-aware code rejecting
+          // inside abort() reaches the catch with an AbortError, and only
+          // this flag keeps it classified as a timeout. A caller abort that
+          // already landed keeps its cancellation meaning — the late-firing
+          // race timer must not reclassify it (#3514 review).
+          if (!options.abortSignal?.aborted) outerTimeoutFired = true;
           abortController.abort();
           reject(new Error("recall timeout"));
         }, RECALL_TIMEOUT_MS);
@@ -258,9 +307,14 @@ export class RecallEntryCoordinator {
     } catch (err) {
       this.deps.logRecallFailure(err);
       this.deps.profiler.endTrace();
-      const missing = options.abortSignal?.aborted
+      // A fired client deadline is a timeout, not caller cancellation: the
+      // caller still expects the degraded response, not "" (issue #3499).
+      const deadlineFired = clientDeadlineFired || outerTimeoutFired;
+      const missing = options.abortSignal?.aborted && !deadlineFired
         ? null
-        : recallFailureComposition(err);
+        : recallFailureComposition(
+            deadlineFired && isAbortError(err) ? new Error("recall timeout") : err,
+          );
       if (!missing) return "";
       if (standingText.length > 0) {
         missing.context = prefixStandingMemoryBlock(missing.context ?? "", standingText, standingBudget);
@@ -270,6 +324,7 @@ export class RecallEntryCoordinator {
       });
       return composeRecallContext(missing);
     } finally {
+      if (clientDeadlineHandle) clearTimeout(clientDeadlineHandle);
       options.abortSignal?.removeEventListener("abort", onAbort);
     }
   }

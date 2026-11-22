@@ -513,9 +513,6 @@ import {
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
-// IRC preference consolidation — used by eval adapter directly;
-// orchestrator integration planned for future PR.
-// import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
 import { TierMigrationExecutor } from "./tier-migration.js";
 import { decideTierTransition, type MemoryTier } from "./tier-routing.js";
 import {
@@ -684,6 +681,7 @@ export class Orchestrator {
    * through the same namespace layer).
    */
   private _codingContextBySession = new Map<string, CodingContext>();
+  private _codingContextOwnerBySession = new Map<string, string>();
   /**
    * Per-session peer ID registry (issue #679 PR 3/5).
    * Set by connectors / hooks via `setPeerIdForSession` so `recallInternal`
@@ -703,6 +701,7 @@ export class Orchestrator {
    */
   ensureSessionBindingMaps(): void {
     this._codingContextBySession ??= new Map<string, CodingContext>();
+    this._codingContextOwnerBySession ??= new Map<string, string>();
     this._peerIdBySession ??= new Map<string, string>();
   }
   private routingRulesStore: RoutingRulesStore | null = null;
@@ -1110,13 +1109,20 @@ export class Orchestrator {
     );
   }
 
-  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
+  setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null, owner?: string): void {
     return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
       selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
     )).setCodingContextForSession(
       sessionKey,
       codingContext,
+      owner,
     );
+  }
+
+  getCodingContextOwnerForSession(sessionKey: string | undefined): string | undefined {
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getCodingContextOwnerForSession(sessionKey);
   }
 
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null {
@@ -1511,6 +1517,7 @@ export class Orchestrator {
     // Propagate the inline-attribution template so the storage layer can strip
     // citations from legacy facts during the hash-index rebuild path.
     this.storage.citationTemplate = config.inlineSourceAttributionFormat;
+    this.storage.citationTemplateHistory = config.inlineSourceAttributionFormatHistory;
     // #1522: bind the post-write catalog touch at the storage chokepoint.
     if (config.defaultNamespace) this.storageRouter.bindCatalogWriteHook(this.storage, config.defaultNamespace);
     // Wire page-level versioning (issue #371)
@@ -2038,6 +2045,12 @@ export class Orchestrator {
 
   async startupSearchReadySync(signal?: AbortSignal): Promise<boolean> {
     return this.orchestratorInitCoordinator.startupSearchReadySync(
+      signal,
+    );
+  }
+
+  async joinStartupSearchSync(signal?: AbortSignal): Promise<boolean> {
+    return this.orchestratorInitCoordinator.joinStartupSearchSync(
       signal,
     );
   }

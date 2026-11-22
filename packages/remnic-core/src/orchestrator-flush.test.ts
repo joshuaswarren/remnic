@@ -2877,7 +2877,7 @@ test("runExtraction still clears the session buffer after persistence even if re
 // "sync current disk state" pass embeds only the configured set, that
 // namespace's QMD collection stays stale after restart. Since #3518 the corpus
 // update lives in startupSearchSync (the post-ready retry entry point), so we
-// drive that with stubbed internals and assert updateNamespaces() received the
+// drive that with stubbed internals and assert updateNamespacesDetailed() received the
 // UNION of configured + cataloged namespaces.
 test("startupSearchSync covers cataloged dynamic namespaces (NHZEV)", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
@@ -2933,16 +2933,16 @@ test("startupSearchSync covers cataloged dynamic namespaces (NHZEV)", async () =
     async ensureNamespaceCollection() {
       return "present";
     },
-    async updateNamespaces(ns: string[]) {
+    async updateNamespacesDetailed(ns: string[]) {
       updateArg = ns;
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     },
   };
 
   const synced = await orchestrator.startupSearchSync();
 
   assert.ok(synced, "the complete discovery sync must succeed");
-  assert.ok(updateArg, "startup updateNamespaces must be called");
+  assert.ok(updateArg, "startup updateNamespacesDetailed must be called");
   assert.ok(
     updateArg!.includes(dynamicNamespace),
     "startup sync must cover the cataloged dynamic namespace even when it exceeds the recurring maintenance cycle budget",
@@ -2987,15 +2987,15 @@ test("startupSearchSync falls back to configured set on catalog read failure (NH
     async ensureNamespaceCollection() {
       return "present";
     },
-    async updateNamespaces(ns: string[]) {
+    async updateNamespacesDetailed(ns: string[]) {
       updateArg = ns;
-      return ns.length;
+      return { backendCount: ns.length, eligibleNamespaces: [...ns] };
     },
   };
 
   await orchestrator.startupSearchSync();
 
-  assert.ok(updateArg, "startup updateNamespaces must be called");
+  assert.ok(updateArg, "startup updateNamespacesDetailed must be called");
   assert.deepEqual(
     [...updateArg!].sort(),
     ["default", "shared"],

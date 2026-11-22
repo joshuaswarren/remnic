@@ -1,6 +1,7 @@
 /** Buffered durable replay ingest (#3368 split from turn-ingestion.ts — 1200-line ratchet). */
 
 import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
+import type { BoundedAdmissionRefusal } from "../buffer-add-turns-bounded.js";
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { BufferTurn, CodingContext } from "../types.js";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
@@ -38,16 +39,15 @@ export async function ingestReplayBatchBuffered(
   };
   const admissionKey = options.bufferAdmissionIdempotencyKey?.trim();
   const batches = [...bySession].map(([bufferKey, sessionTurns]) => ({ bufferKey, turns: sessionTurns.map(pin) }));
+  let refusal: BoundedAdmissionRefusal | undefined;
+  const onRefused = (reason: BoundedAdmissionRefusal): void => {
+    refusal = reason;
+  };
   const outcomes = admissionKey
-    ? await deps.buffer.addTurnsBoundedForObserveReplay(batches, admissionKey)
-    : await deps.buffer.addTurnsBounded(batches);
+    ? await deps.buffer.addTurnsBoundedForObserveReplay(batches, admissionKey, onRefused)
+    : await deps.buffer.addTurnsBounded(batches, onRefused);
   if (outcomes === "duplicate") return;
-  if (outcomes === null) {
-    const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
-    throw new ReplayAdmissionRefusedError(
-      `durable observe capture refused: extraction buffer at entry capacity for batch containing ${refusedKey}`,
-    );
-  }
+  if (outcomes === null) throw replayRefusal(refusal, batches);
 
   await deps.buffer.flushPendingSave({ throwOnFailure: true });
 
@@ -71,4 +71,22 @@ export async function ingestReplayBatchBuffered(
       queueBufferedCaptureScopeGroups(deps.queueBufferedExtraction, outcome.extractionTurns, bufferKey, options);
     }
   }
+}
+
+function replayRefusal(
+  refusal: BoundedAdmissionRefusal | undefined,
+  batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+): ReplayAdmissionRefusedError {
+  if (refusal?.reason === "session_turn_cap") {
+    return new ReplayAdmissionRefusedError(
+      `durable observe capture refused: session ${refusal.bufferKey} holds the per-session turn cap ` +
+        `(${refusal.maxTurnsPerSession}) of unextracted turns; retry after extraction drains it`,
+    );
+  }
+  const refusedKey = batches.find((batch) => batch.turns.length > 0)?.bufferKey ?? "unknown";
+  const cap = refusal?.reason === "session_entry_cap" ? ` (${refusal.maxSessionEntries})` : "";
+  return new ReplayAdmissionRefusedError(
+    `durable observe capture refused: extraction buffer at entry capacity, session-entry cap${cap} ` +
+      `full for batch containing ${refusedKey}`,
+  );
 }

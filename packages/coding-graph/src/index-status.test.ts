@@ -120,6 +120,7 @@ test("diffHunks: captures staged changes via git diff HEAD (chatgpt-codex-connec
     const exec = (cmd: string) =>
       execSync(cmd, { cwd: dir, stdio: "ignore" });
     exec("git init -q");
+    exec("git config core.hooksPath /dev/null");
     exec('git config user.email "t@t.t"');
     exec('git config user.name "t"');
     await import("node:fs/promises").then((fs) => fs.mkdir(path.join(dir, "src"), { recursive: true }));

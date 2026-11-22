@@ -74,6 +74,10 @@ export interface GitInvokeOptions {
 export interface GitInvokeResult {
   stdout: string;
   exitCode: number;
+  /** Captured when the invoker can supply it; used to tell a confirmed
+   * "not a git repository" answer from operational failures (e.g. exit 128
+   * for dubious ownership) that must stay inconclusive. */
+  stderr?: string;
 }
 
 /**
@@ -99,6 +103,7 @@ export interface SyncGitInvoker {
 const DEFAULT_GIT_TIMEOUT_MS = 2_000;
 const GIT_TIMEOUT_EXIT_CODE = 124;
 const GIT_SPAWN_ERROR_EXIT_CODE = 127;
+const NOT_A_GIT_REPOSITORY = /not a git repository|outside repository|this operation must be run in a work tree/i;
 
 export function defaultGitInvokerSync(): SyncGitInvoker {
   return (cwd: string, args: string[]) => {
@@ -111,6 +116,7 @@ export function defaultGitInvokerSync(): SyncGitInvoker {
     if (result.error) return { stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE };
     return {
       stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: result.stderr ?? "",
       exitCode: typeof result.status === "number" ? result.status : 1,
     };
   };
@@ -128,10 +134,11 @@ export function defaultGitInvoker(): GitInvoker {
       cwd,
       encoding: "utf-8",
       shell: false,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const { promise, resolve, reject } = Promise.withResolvers<GitInvokeResult>();
     let stdout = "";
+    let stderr = "";
     let settled = false;
     let timer: NodeJS.Timeout | undefined;
 
@@ -164,9 +171,13 @@ export function defaultGitInvoker(): GitInvoker {
     child.stdout?.on("data", (chunk: string | Buffer) => {
       stdout += chunk.toString();
     });
+    child.stderr?.setEncoding("utf-8");
+    child.stderr?.on("data", (chunk: string | Buffer) => {
+      stderr += chunk.toString();
+    });
     child.once("error", () => finish({ stdout: "", exitCode: GIT_SPAWN_ERROR_EXIT_CODE }));
     child.once("close", (exitCode: number | null) => {
-      finish({ stdout, exitCode: typeof exitCode === "number" ? exitCode : 1 });
+      finish({ stdout, stderr, exitCode: exitCode ?? 1 });
     });
     options.abortSignal?.addEventListener("abort", onAbort, { once: true });
 
@@ -573,3 +584,53 @@ export const sharedGitContextCache = new GitContextCache();
  * read a repo fresh; they only skip repeat probes of non-repo directories.
  */
 export const sharedNonRepoGitContextCache = new GitContextCache({ cacheRepos: false });
+
+/**
+ * A probe verdict: `context` is the resolved context or `null`, and
+ * `conclusive` tells the two nulls apart. `conclusive: true` means git
+ * answered (a real repo or a confirmed non-repo); `conclusive: false` means
+ * the probe itself failed — spawn error, timeout, or an invoker throw —
+ * so the null carries no evidence about the directory.
+ */
+export interface GitContextProbeResult {
+  context: GitContext | null;
+  conclusive: boolean;
+}
+
+/**
+ * `resolveGitContext` with the inconclusive distinction surfaced: the
+ * existing cache path already refuses to cache timeout/spawn-failure
+ * results, so a cached `null` is conclusive by construction. Callers that
+ * clear state on `null` (the plugin's coding-context sync) must only do so
+ * on a conclusive verdict.
+ */
+export async function probeGitContext(
+  cwd: string,
+  options: ResolveGitContextOptions = {},
+): Promise<GitContextProbeResult> {
+  let inconclusive = false;
+  const inner = options.invoker ?? defaultGitInvoker();
+  const invoker: GitInvoker = async (probeCwd, args, invokeOptions) => {
+    let result: GitInvokeResult;
+    try {
+      result = await inner(probeCwd, args, invokeOptions);
+    } catch (err) {
+      inconclusive = true;
+      throw err;
+    }
+    if (result.exitCode === GIT_TIMEOUT_EXIT_CODE || result.exitCode === GIT_SPAWN_ERROR_EXIT_CODE) {
+      inconclusive = true;
+    } else if (
+      args[0] === "rev-parse" && args.includes("--show-toplevel")
+      && result.exitCode !== 0 && result.stderr !== undefined && !NOT_A_GIT_REPOSITORY.test(result.stderr)
+    ) {
+      // The repo probe's nonzero exit decides "not a repo", but dubious
+      // ownership, a corrupt .git or an unreadable cwd exit the same 128 —
+      // only git's own "not a repository" answer is conclusive.
+      inconclusive = true;
+    }
+    return result;
+  };
+  const context = await resolveGitContext(cwd, { ...options, invoker });
+  return { context, conclusive: !inconclusive };
+}

@@ -14,6 +14,11 @@ import type { ZodError } from "zod";
 /** Authenticated caller lacks the required authorization (HTTP 403). */
 export class EngramAccessForbiddenError extends Error {}
 
+/** A recall whose client deadline expired while it was still queued for a
+ *  per-principal concurrency slot (issue #3499/#3514 review). A timeout,
+ *  not caller cancellation — it must never surface as an abort. */
+export class EngramAccessDeadlineExceededError extends Error {}
+
 /** Invalid caller input (HTTP 400). */
 export class EngramAccessInputError extends Error {}
 

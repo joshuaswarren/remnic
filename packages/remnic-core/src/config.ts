@@ -28,6 +28,7 @@ import type {
 } from "./types.js";
 import { parseBackgroundGeneration } from "./background-generation-config.js";
 import { parseSearchBackend } from "./config-search-backend.js";
+import { warnDeprecatedCausalImpactWeight } from "./config-deprecations.js";
 import { parseLocalLlmConfig } from "./local-llm-config.js";
 import { parseCorrectionConfig } from "./correction/correction-config.js";
 import { parseConvergeConfig } from "./converge-config.js";
@@ -3081,7 +3082,7 @@ export function parseConfig(
     cmcBehaviorMinFrequency: typeof cfg.cmcBehaviorMinFrequency === "number" ? cfg.cmcBehaviorMinFrequency : 3,
     cmcBehaviorMinSessions: typeof cfg.cmcBehaviorMinSessions === "number" ? cfg.cmcBehaviorMinSessions : 2,
     cmcBehaviorConfidenceThreshold: typeof cfg.cmcBehaviorConfidenceThreshold === "number" ? cfg.cmcBehaviorConfidenceThreshold : 0.6,
-    cmcLifecycleCausalImpactWeight: typeof cfg.cmcLifecycleCausalImpactWeight === "number" ? cfg.cmcLifecycleCausalImpactWeight : 0.05,
+    cmcLifecycleCausalImpactWeight: warnDeprecatedCausalImpactWeight(coerceNumber(cfg.cmcLifecycleCausalImpactWeight)),
 
     // PEDC (Prediction-Error-Driven Calibration) — model-user alignment
     calibrationEnabled: cfg.calibrationEnabled === true,

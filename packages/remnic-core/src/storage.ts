@@ -29,6 +29,7 @@ import { MemoryReadStore, readWindowedMemories, type WindowedMemoryReadOptions, 
 import { runCommittedInvalidation } from "./storage/committed-invalidation.js";
 import { renderProfileWithLastUpdated, stripOkfProfileFrontmatter, withOkfProfileFrontmatter } from "./storage/profile-header.js";
 import { appendToProfileSerialized, commitConsolidatedProfileSerialized, type ProfileMutationPorts } from "./storage/profile-mutation.js";
+import { parseFrontmatterLinks } from "./storage/links-frontmatter.js";
 import { parseQuestionFile as parseQuestionFileText } from "./storage/questions-file.js";
 import { assertNotOkfReservedBasename, OKF_QUESTION_TYPE, okfTypeForEntityKind, okfTypeForMemory } from "./okf/type-mapping.js";
 import { appendContextTransformRecords, readContextTransformRecords } from "./storage/context-transform-ledger.js";
@@ -954,24 +955,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     content,
   };
 
-  // Parse links (YAML array format)
-  // Note: Simple parsing - for full YAML we'd need a library.
-  if (fmBlock.includes("links:")) {
-    const links: MemoryLink[] = [];
-    const linkMatches = fmBlock.matchAll(
-      /- targetId: (\S+)\s+linkType: (\S+)\s+strength: ([\d.]+)(?:\s+reason: "((?:\\.|[^"\\])*)")?/g
-    );
-    for (const match of linkMatches) {
-      links.push({
-        targetId: match[1],
-        linkType: match[2] as MemoryLink["linkType"],
-        strength: parseFloat(match[3]),
-        reason: match[4] ? parseLinkReasonValue(match[4]) : undefined,
-      });
-    }
-    if (links.length > 0) {
-      result.frontmatter.links = links;
-    }
+  const links = parseFrontmatterLinks(fmBlock, parseLinkReasonValue);
+  if (links) {
+    result.frontmatter.links = links;
   }
 
   return result;
@@ -1923,6 +1909,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   private offlineSyncDigestCacheWriteTimer: ReturnType<typeof setTimeout> | null = null;
   /** Optional: set by the orchestrator after construction to enable template-aware citation stripping during legacy hash rebuild. */
   citationTemplate: string = DEFAULT_CITATION_FORMAT;
+  citationTemplateHistory: string[] = [];
   /** Post-write catalog hook (#1522). Installed by the namespace router; fire-and-forget. */
   onCatalogWrite?: () => void;
   /** Post-write embedding hook (#2019). Installed by the orchestrator; fire-and-forget. */
@@ -3142,7 +3129,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
       // and the normalized-text tier must match re-extraction, which hashes
       // the citation-stripped contentHashSource. Idempotent on pre-stripped
       // text (e.g. recordSupersession).
-      const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
+      const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate, this.citationTemplateHistory);
       // Canonicalization + post-append recheck (#2213) live in the helper.
       return await entityRefs.appendCanonicalizedTombstone(
         this.stateDir,
@@ -3212,7 +3199,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     const all = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
     // Pure projection (lifecycle/tombstones.ts) keeps this method thin (#1520).
     const retired = collectRetiredMemoriesForRebuild(all, {
-      stripCitation: (text) => stripCitationForTemplate(text, this.citationTemplate),
+      stripCitation: (text) => stripCitationForTemplate(text, this.citationTemplate, this.citationTemplateHistory),
       supersessionKeysForFact,
     });
     return await store.rebuild(retired);
@@ -3428,7 +3415,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
   private storedContentIdentityCandidates(content: string): string[] {
     return storedContentIdentityCandidates(content, (value) =>
-      hasCitationForTemplate(value, this.citationTemplate) ? stripCitationForTemplate(value, this.citationTemplate) : value
+      hasCitationForTemplate(value, this.citationTemplate, this.citationTemplateHistory) ? stripCitationForTemplate(value, this.citationTemplate, this.citationTemplateHistory) : value
     );
   }
 

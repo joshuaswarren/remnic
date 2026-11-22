@@ -32,12 +32,12 @@
  */
 
 import {
-  appendInteractionLog,
   listPeers,
   readPeerInteractionLog,
   readPeerProfile,
   writePeerProfile,
 } from "./storage.js";
+import { appendInteractionLog } from "./interaction-log-append.js";
 import type {
   Peer,
   PeerInteractionLogEntry,

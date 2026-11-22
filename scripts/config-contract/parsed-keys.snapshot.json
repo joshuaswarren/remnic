@@ -1325,6 +1325,7 @@
     "causalTrajectoryStoreDir.trim",
     "chat.maxToolCallsPerTurn.trim",
     "chat.sessionTtlHours.trim",
+    "cmcLifecycleCausalImpactWeight.trim",
     "codex.codexHome.trim",
     "codex.installExtension.trim",
     "codexMaterializeMaxSummaryTokens.trim",

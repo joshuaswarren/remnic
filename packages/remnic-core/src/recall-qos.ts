@@ -115,6 +115,81 @@ export function createRecallSectionMetricRecorder(options: {
 const CORE_SECTION_MAX_SHARE_OF_REQUEST = 0.8;
 
 /**
+ * Epoch-ms floor separating the two `deadlineMs` readings: anything at or
+ * above it is an absolute timestamp, anything below is a relative budget —
+ * the convention force-flush established (issue #3140).
+ */
+const CLIENT_DEADLINE_EPOCH_FLOOR_MS = 1e11;
+
+/**
+ * The client's own deadline for this request, as an absolute timestamp —
+ * or null when the request carries no usable value (issue #3499).
+ *
+ * Garbage (NaN, infinite, negative) is ignored rather than rejected: a
+ * malformed hint must never cost the caller its recall.  Values under the
+ * epoch floor are a relative budget from `now`, matching force-flush.
+ */
+export function resolveClientDeadlineAtMs(
+  deadlineMs: number | undefined,
+  now: number,
+): number | null {
+  if (deadlineMs === undefined || !Number.isFinite(deadlineMs) || deadlineMs < 0) {
+    return null;
+  }
+  return deadlineMs > CLIENT_DEADLINE_EPOCH_FLOOR_MS ? deadlineMs : now + deadlineMs;
+}
+
+// Node clamps timer delays to 2^31-1 ms (~24.8 days) and a larger delay
+// overflows to an immediate fire — every client-deadline timer must clamp
+// or a far-future budget aborts a healthy call at once (issue #3499).
+const CLIENT_DEADLINE_TIMER_MAX_MS = 2_147_483_647;
+
+export function clientDeadlineTimerMs(clientDeadlineAtMs: number, now: number): number {
+  // Floor before clamping: a fractional deadlineMs produces a fractional
+  // delay, which AbortSignal.timeout rejects with ERR_OUT_OF_RANGE — flooring
+  // also keeps the abort at or before the deadline (#3514 review).
+  return Math.max(1, Math.min(Math.floor(clientDeadlineAtMs - now), CLIENT_DEADLINE_TIMER_MAX_MS));
+}
+
+export function recallDeadlineSignal(
+  baseSignal: AbortSignal | undefined,
+  deadlineMs: number | undefined,
+  now = Date.now(),
+): AbortSignal | undefined {
+  const deadlineAtMs = resolveClientDeadlineAtMs(deadlineMs, now);
+  if (deadlineAtMs === null) return baseSignal;
+  const deadlineSignal =
+    deadlineAtMs <= now
+      ? AbortSignal.abort()
+      : AbortSignal.timeout(clientDeadlineTimerMs(deadlineAtMs, now));
+  return baseSignal === undefined ? deadlineSignal : AbortSignal.any([baseSignal, deadlineSignal]);
+}
+
+/**
+ * Effective outer deadline for a recall: the configured ceiling capped by
+ * the client's own deadline when the request carries one (issue #3499).
+ *
+ * A client deadline that has already passed yields a deadline in the past —
+ * sections then see a non-positive remainder and degrade immediately, which
+ * is the fast-degraded-recall contract, never a request rejection.  `null`
+ * means the request is genuinely unbounded (no configured ceiling AND no
+ * client deadline).
+ */
+export function resolveRecallOuterDeadlineAtMs(options: {
+  recallStart: number;
+  recallOuterTimeoutMs: number;
+  clientDeadlineMs?: number;
+}): number | null {
+  const configured =
+    options.recallOuterTimeoutMs > 0
+      ? options.recallStart + options.recallOuterTimeoutMs
+      : null;
+  const client = resolveClientDeadlineAtMs(options.clientDeadlineMs, options.recallStart);
+  if (client === null) return configured;
+  return configured === null ? client : Math.min(configured, client);
+}
+
+/**
  * Effective per-section deadline for optional core recall providers.
  *
  * Two things make the configured value unusable as-is (issue #2291):

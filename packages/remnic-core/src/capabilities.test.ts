@@ -1086,17 +1086,18 @@ test("resolvePresentationCapabilities returns a frozen object", () => {
 // ConsolidationCapabilitySet — gate-parity tests (issue #1523 batch 8).
 // ---------------------------------------------------------------------------
 
-const CONSOLIDATION_FIELD_TO_FLAG: Record<keyof ConsolidationCapabilitySet, string> = {
+const CONSOLIDATION_FIELD_TO_FLAG = {
   compoundingSemantic: "compoundingSemanticEnabled",
   abstractionAnchors: "abstractionAnchorsEnabled",
   compounding: "compoundingEnabled",
   compoundingWeeklyCron: "compoundingWeeklyCronEnabled",
+  irc: "ircEnabled",
   calibration: "calibrationEnabled",
   semanticConsolidation: "semanticConsolidationEnabled",
   patternReinforcement: "patternReinforcementEnabled",
   continuityAudit: "continuityAuditEnabled",
   graphEdgeDecay: "graphEdgeDecayEnabled",
-};
+} satisfies Record<keyof ConsolidationCapabilitySet, string>;
 
 const CONSOLIDATION_FIELDS = Object.keys(CONSOLIDATION_FIELD_TO_FLAG) as Array<keyof ConsolidationCapabilitySet>;
 
@@ -1292,7 +1293,7 @@ test("resolvePipelineProcessingCapabilities returns a frozen object", () => {
 // ConversationContextCapabilitySet — gate-parity tests (issue #1523 batch 9).
 // ---------------------------------------------------------------------------
 
-const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, string> = {
+const CONV_CTX_FIELD_TO_FLAG = {
   sharedContext: "sharedContextEnabled",
   intentRouting: "intentRoutingEnabled",
   crossSignalsSemantic: "crossSignalsSemanticEnabled",
@@ -1300,11 +1301,12 @@ const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, str
   operatorAwareConsolidation: "operatorAwareConsolidationEnabled",
   peerProfileReasoner: "peerProfileReasonerEnabled",
   cmcConsolidation: "cmcConsolidationEnabled",
+  cmcBehaviorLearning: "cmcBehaviorLearningEnabled",
   maintenanceNamespaceFanout: "maintenanceNamespaceFanoutEnabled",
   citations: "citationsEnabled",
   semanticRulePromotion: "semanticRulePromotionEnabled",
   codexMarketplace: "codexMarketplaceEnabled",
-};
+} satisfies Record<keyof ConversationContextCapabilitySet, string>;
 
 const CONV_CTX_FIELDS = Object.keys(CONV_CTX_FIELD_TO_FLAG) as Array<keyof ConversationContextCapabilitySet>;
 

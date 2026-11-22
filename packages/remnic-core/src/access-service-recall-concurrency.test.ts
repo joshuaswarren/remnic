@@ -1988,3 +1988,245 @@ test("a keyed follower joining an UNKEYED leader's flight rejects with AbortErro
   assert.equal(pipelineRuns, 1, "both callers shared one pipeline");
   assert.equal(h.liveBudget(), 1, "the aborted follower's reservation was released; only the leader's stands");
 });
+
+test("a queued recall expires on its client deadline — as a timeout, not abort (#3514)", async () => {
+  const leaderStarted = deferred<void>();
+  const releaseLeader = deferred<void>();
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    limit: 1,
+    singleFlight: false,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "leader") {
+        leaderStarted.resolve();
+        await releaseLeader.promise;
+      }
+      return stubResponse([]);
+    },
+  });
+  const leader = service.recall({ query: "leader" });
+  await leaderStarted.promise;
+
+  const queued = await service.recall({ query: "queued", deadlineMs: 25 });
+  assert.ok(
+    queued.retrievalFailure,
+    "a deadline-expired queued recall must degrade to the missing-note response, not reject",
+  );
+  assert.equal(pipelineRuns, 1, "the expired queued recall never started a pipeline");
+
+  releaseLeader.resolve();
+  await leader;
+});
+
+test("identical concurrent recalls coalesce across per-call client deadlines (#3514)", async () => {
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineRuns += 1;
+      return stubResponse([]);
+    },
+  });
+  const now = Date.now();
+  const [a, b] = await Promise.all([
+    service.recall({ query: "same", deadlineMs: now + 60_000 }),
+    service.recall({ query: "same", deadlineMs: now + 90_000 }),
+  ]);
+  assert.ok(a && b);
+  assert.equal(pipelineRuns, 1, "per-call deadline values must not split the flight");
+});
+
+test("an already-expired recall degrades and leaves no semaphore entry (#3514 review)", async () => {
+  const { service, recallSemaphores } = makeService({
+    limit: 1,
+    singleFlight: false,
+    pipeline: async () => stubResponse([]),
+  });
+  // A deadline already past must degrade at the recall boundary (no retrieval
+  // starts) and must NOT leave an idle {active:0,waiters:[]} entry behind —
+  // each leaked entry would grow recallSemaphores per distinct principal.
+  const outcome = await service
+    .recall({ query: "expired", deadlineMs: Date.now() - 1 })
+    .then((r) => r, (e) => e);
+  assert.ok(
+    !(outcome instanceof Error) && outcome.retrievalFailure,
+    `expired admission must degrade, not reject — got ${String(outcome)}`,
+  );
+  assert.equal(recallSemaphores.size, 0, "the rejected acquire must leave no semaphore entry");
+});
+
+test("a queued shared flight survives its leader's deadline while a follower has budget (#3514 review)", async () => {
+  const holderStarted = deferred<void>();
+  const releaseHolder = deferred<void>();
+  let pipelineRuns = 0;
+  const { service } = makeService({
+    limit: 1,
+    singleFlight: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") {
+        holderStarted.resolve();
+        await releaseHolder.promise;
+      }
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const holder = service.recall({ query: "holder" });
+  await holderStarted.promise;
+
+  // Leader (25ms) and identical follower (500ms) share the queued flight.
+  const leader = service.recall({ query: "shared", deadlineMs: 25 });
+  const follower = service.recall({ query: "shared", deadlineMs: 500 });
+  const leaderOutcome = await leader.then((r) => r, (e) => e);
+  assert.ok(
+    !(leaderOutcome instanceof Error) && leaderOutcome.retrievalFailure,
+    "the leader must degrade on its own deadline",
+  );
+
+  setTimeout(() => releaseHolder.resolve(), 60);
+  const followerResp = await follower;
+  assert.equal(
+    readResults(followerResp).length,
+    1,
+    "the follower still had budget when the slot freed — it must get the shared result",
+  );
+  assert.equal(pipelineRuns, 2, "holder + the one shared pipeline");
+  await holder;
+});
+
+test("a coalesced follower's own deadline bounds its wait on a running flight (#3514 review)", async () => {
+  const pipelineStarted = deferred<void>();
+  const releasePipeline = deferred<void>();
+  const { service } = makeService({
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineStarted.resolve();
+      await releasePipeline.promise;
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  const leader = service.recall({ query: "shared", deadlineMs: 5_000 });
+  await pipelineStarted.promise;
+  // The follower joins the RUNNING flight with a 30ms budget: it must degrade
+  // on its own deadline and must not cancel the flight the leader still uses.
+  const follower = service.recall({ query: "shared", deadlineMs: 30 });
+  setTimeout(() => releasePipeline.resolve(), 150);
+  const followerOutcome = await follower.then((r) => r, (e) => e);
+  assert.ok(
+    !(followerOutcome instanceof Error) && followerOutcome.retrievalFailure,
+    `the follower must degrade on its own deadline, got ${String(followerOutcome)}`,
+  );
+  const leaderResp = await leader;
+  assert.equal(
+    readResults(leaderResp).length,
+    1,
+    "the follower's deadline must not cancel the flight the leader still consumes",
+  );
+});
+
+test("an already-expired unkeyed joiner leaves no orphaned abort race to reject unhandled (#3514 review)", async () => {
+  const pipelineStarted = deferred<void>();
+  const releasePipeline = deferred<void>();
+  const { service } = makeService({
+    limit: 0,
+    singleFlight: true,
+    pipeline: async () => {
+      pipelineStarted.resolve();
+      await releasePipeline.promise;
+      return stubResponse([]);
+    },
+  });
+  const leader = service.recall({ query: "shared" });
+  await pipelineStarted.promise;
+
+  let unhandled = 0;
+  const onUnhandledRejection = () => {
+    unhandled += 1;
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  try {
+    const controller = new AbortController();
+    const outcome = await service
+      .recall({
+        query: "shared",
+        deadlineMs: Date.now() - 1,
+        abortSignal: controller.signal,
+      })
+      .then((r) => r, (e) => e);
+    assert.ok(
+      !(outcome instanceof Error) && outcome.retrievalFailure,
+      "the expired joiner must degrade, not reject",
+    );
+    // The expired early-return used to discard an already-created abort race;
+    // a late caller abort then rejects that orphaned promise unhandled.
+    controller.abort();
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    assert.equal(
+      unhandled,
+      0,
+      "the expired joiner's discarded abort race must not reject unhandled",
+    );
+  } finally {
+    process.off("unhandledRejection", onUnhandledRejection);
+    releasePipeline.resolve();
+    await leader;
+  }
+});
+
+test("a keyed follower does not inherit its leader's queued-deadline rejection (#3514 review)", async () => {
+  const holderStarted = deferred<void>();
+  const releaseHolder = deferred<void>();
+  let pipelineRuns = 0;
+  const h = makeService({
+    limit: 1,
+    singleFlight: true,
+    crossNamespace: true,
+    pipeline: async (request) => {
+      pipelineRuns += 1;
+      if (request.query === "holder") {
+        holderStarted.resolve();
+        await releaseHolder.promise;
+      }
+      return stubResponse([{ id: "m1" }]);
+    },
+  });
+  // Both callers keyed (distinct keys): each store lookup misses, so execute()
+  // runs — the leader creates the queued flight, the follower joins it and
+  // gates on the leader's `persisted` outcome.
+  Object.assign(h.service, {
+    handleIdempotentRead: async (options: {
+      execute: () => Promise<EngramAccessRecallResponse>;
+    }) => options.execute(),
+  });
+
+  const holder = h.service.recall({ query: "holder" });
+  await holderStarted.promise;
+
+  // Keyed leader (25ms) and keyed follower (500ms) share the QUEUED flight.
+  const leader = h.service.recall({
+    query: "shared",
+    idempotencyKey: "key-A",
+    deadlineMs: 25,
+  });
+  const follower = h.service.recall({
+    query: "shared",
+    idempotencyKey: "key-B",
+    deadlineMs: 500,
+  });
+  const leaderOutcome = await leader.then((r) => r, (e) => e);
+  assert.ok(
+    !(leaderOutcome instanceof Error) && leaderOutcome.retrievalFailure,
+    "the leader must degrade on its own deadline",
+  );
+
+  setTimeout(() => releaseHolder.resolve(), 60);
+  const followerResp = await follower;
+  assert.equal(
+    readResults(followerResp).length,
+    1,
+    "the follower's own deadline still had budget — it must consume the shared result and run its own put, not inherit the leader's deadline",
+  );
+  assert.equal(pipelineRuns, 2, "holder + the one shared pipeline");
+  await holder;
+});

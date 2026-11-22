@@ -207,7 +207,7 @@ export class SemanticConsolidationCoordinator {
           {
             role: "system" as const,
             content: operatorAwareEnabled
-              ? 'You are a memory consolidation system. Return ONLY a JSON object with two keys, "operator" and "output". The "operator" value MUST be one of the exact strings "merge", "update", or "split" — never a pipe-separated placeholder, never prose. The "output" value is the canonical memory text.'
+              ? 'You are a memory consolidation system. Return ONLY a JSON object with an "operator" key and either "output" or, for split, "outputs". The "operator" value MUST be one of the exact strings "merge", "update", or "split" — never a pipe-separated placeholder, never prose. "output" is the canonical memory text; "outputs" is an array with one canonical memory text per separated fact.'
               : "You are a memory consolidation system. Output only the consolidated memory text.",
           },
           { role: "user" as const, content: prompt },
@@ -248,20 +248,20 @@ export class SemanticConsolidationCoordinator {
         // wider `ConsolidationOperator` type in #687 PR 2/4 but is
         // reserved for the maintenance job and must never be assignable
         // here (Cursor Bugbot review, PR #730).
-        let canonicalContent: string;
+        let canonicalOutputs: string[];
         let operator: SemanticConsolidationLlmOperator;
         if (operatorAwareEnabled) {
           const parsed = parseOperatorAwareConsolidationResponse(
             response.content,
             cluster,
           );
-          canonicalContent = parsed.output;
+          canonicalOutputs = parsed.outputs;
           operator = parsed.operator;
         } else {
-          canonicalContent = parseConsolidationResponse(response.content);
+          canonicalOutputs = [parseConsolidationResponse(response.content)];
           operator = chooseConsolidationOperator(cluster);
         }
-        cluster.canonicalContent = canonicalContent;
+        cluster.canonicalContent = canonicalOutputs.join("\n\n");
 
         // Pick the most recent memory's metadata as the basis for lineage
         const sorted = [...cluster.memories].sort(
@@ -294,36 +294,43 @@ export class SemanticConsolidationCoordinator {
         // Sealed-envelope write (issue #1989 PR4): canonical content is
         // LLM-merged and tags are unioned from stored rows — salvage so a
         // limit-violating union cannot abort consolidation (warn-logged).
-        const canonicalEnvelope = composeMemoryEnvelope(
-          {
-            content: canonicalContent,
-            category: newest.frontmatter.category,
-            confidence: newest.frontmatter.confidence,
-            tags: [
-              ...new Set(
-                cluster.memories.flatMap((m) => m.frontmatter.tags ?? []),
-              ),
-            ],
-          },
-          { source: "semantic-consolidation" },
-          { salvage: true },
-        );
-        if (canonicalEnvelope.salvageNotes.length > 0) {
-          log.warn(`semantic-consolidation write salvaged invalid fields: ${canonicalEnvelope.salvageNotes.join("; ")}`);
+        // SPLIT writes one canonical memory per output (#3566); every write shares the lineage.
+        const canonicalIds: string[] = [];
+        let canonicalBlocked = false;
+        for (const canonicalContent of canonicalOutputs) {
+          const canonicalEnvelope = composeMemoryEnvelope(
+            {
+              content: canonicalContent,
+              category: newest.frontmatter.category,
+              confidence: newest.frontmatter.confidence,
+              tags: [
+                ...new Set(
+                  cluster.memories.flatMap((m) => m.frontmatter.tags ?? []),
+                ),
+              ],
+            },
+            { source: "semantic-consolidation" },
+            { salvage: true },
+          );
+          if (canonicalEnvelope.salvageNotes.length > 0) {
+            log.warn(`semantic-consolidation write salvaged invalid fields: ${canonicalEnvelope.salvageNotes.join("; ")}`);
+          }
+          const written = await targetStorage.writeSealedMemory(
+            canonicalEnvelope,
+            {
+              actor: "semantic-consolidation",
+              lineage: lineageIds,
+              derivedFrom: derivedFromEntries.length > 0 ? derivedFromEntries : undefined,
+              derivedVia: operator,
+            },
+          );
+          canonicalIds.push(written.id);
+          if (written.tombstoneBlocked) canonicalBlocked = true;
         }
-        const { id: canonicalId, tombstoneBlocked: canonicalBlocked } = await targetStorage.writeSealedMemory(
-          canonicalEnvelope,
-          {
-            actor: "semantic-consolidation",
-            lineage: lineageIds,
-            derivedFrom: derivedFromEntries.length > 0 ? derivedFromEntries : undefined,
-            derivedVia: operator,
-          },
-        );
         if (canonicalBlocked) {
           // #1645: canonical matched a tombstone (pending_review). Don't archive
           // the sources — consolidation must never delete the only active copy.
-          log.info(`[semantic-consolidation] cluster in "${cluster.category}" tombstone-blocked — keeping ${cluster.memories.length} source(s) active (pending_review ${canonicalId})`);
+          log.info(`[semantic-consolidation] cluster in "${cluster.category}" tombstone-blocked — keeping ${cluster.memories.length} source(s) active (pending_review ${canonicalIds.join(", ")})`);
           continue;
         }
         canonicalWriteCompleted = true;
@@ -340,7 +347,7 @@ export class SemanticConsolidationCoordinator {
             const archiveResult = await targetStorage.archiveMemory(m, {
               actor: "semantic-consolidation",
               reasonCode: "semantic-consolidation",
-              relatedMemoryIds: [canonicalId],
+              relatedMemoryIds: canonicalIds,
             });
             if (archiveResult) {
               // Remove from the same storage-scoped content-hash index that
@@ -392,7 +399,7 @@ export class SemanticConsolidationCoordinator {
         }
 
         log.info(
-          `[semantic-consolidation] consolidated ${cluster.memories.length} memories → ${canonicalId}`,
+          `[semantic-consolidation] consolidated ${cluster.memories.length} memories → ${canonicalIds.join(", ")}`,
         );
       } catch (err) {
         log.warn(

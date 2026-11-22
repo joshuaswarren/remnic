@@ -8,7 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 const repoRoot = dirname(dirname(dirname(new URL(import.meta.url).pathname)));
@@ -72,6 +72,48 @@ test("manifest-headroom reports current size under fail-at", () => {
   ).length;
   assert.ok(m, "no byte count in output");
   assert.equal(Number(m[1]), actual);
+});
+
+// The gate derives its repo root from its own file path (three dirname levels
+// up), so a copied gate plus a synthetic manifest exercises each size branch
+// without touching the real manifest (issue 3618).
+function runHeadroomOnSyntheticManifest(minifiedFillerLength: number) {
+  const dir = mkdtempSync(join(tmpdir(), "remnic-headroom-"));
+  try {
+    const gateDir = join(dir, "scripts/process-gates");
+    const manifestDir = join(dir, "packages/plugin-openclaw");
+    mkdirSync(gateDir, { recursive: true });
+    mkdirSync(manifestDir, { recursive: true });
+    copyFileSync(gate("manifest-headroom"), join(gateDir, "manifest-headroom.mjs"));
+    writeFileSync(
+      join(manifestDir, "openclaw.plugin.json"),
+      JSON.stringify({ name: "synthetic", config: "x".repeat(minifiedFillerLength) }),
+    );
+    return runScript(join(gateDir, "manifest-headroom.mjs"));
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
+}
+
+test("manifest-headroom WARN branch blocks pre-push (exit 1)", () => {
+  // Filler sized so the minified bytes land strictly between FAIL_AT
+  // (250,000) and HARD_CAP (262,144).
+  const r = runHeadroomOnSyntheticManifest(250_500);
+  assert.equal(r.status, 1, `WARN branch must exit 1, got ${r.status}: ${r.stderr}`);
+  assert.match(r.stderr, /WARN/);
+});
+
+test("manifest-headroom FAIL branch blocks on a hard-cap breach", () => {
+  // Filler sized so the minified bytes exceed HARD_CAP (262,144).
+  const r = runHeadroomOnSyntheticManifest(263_000);
+  assert.equal(r.status, 1, `hard-cap branch must exit 1, got ${r.status}: ${r.stderr}`);
+  assert.match(r.stderr, /FAIL/);
+});
+
+test("manifest-headroom OK branch passes on a synthetic under-fail-at manifest", () => {
+  const r = runHeadroomOnSyntheticManifest(100);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /OK/);
 });
 
 test("branch-shape accepts b<n>/<issue> pattern", () => {

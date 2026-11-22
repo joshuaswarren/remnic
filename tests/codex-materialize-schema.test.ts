@@ -157,3 +157,73 @@ test("validateMemoryMd rejects a task block missing required sub-headers", () =>
   assert.ok(validation.errors.some((e) => e.includes("rollout_summary_files")));
   assert.ok(validation.errors.some((e) => e.includes("keywords")));
 });
+
+test("a rollout summary file is claimed by at most one task block", () => {
+  const memories = [
+    makeMemory({ id: "f-1", category: "fact", tags: ["alpha"] }),
+    makeMemory({ id: "c-1", category: "correction", tags: ["beta"] }),
+  ];
+  const rolloutSummaries = [
+    {
+      slug: "session-1",
+      cwd: "/fake",
+      rolloutPath: "/fake/a.jsonl",
+      updatedAt: "2026-04-01T00:00:00Z",
+      threadId: "t-1",
+      body: "Recap A.",
+    },
+    {
+      slug: "session-2",
+      cwd: "/fake",
+      rolloutPath: "/fake/b.jsonl",
+      updatedAt: "2026-04-02T00:00:00Z",
+      threadId: "t-2",
+      body: "Recap B.",
+    },
+  ];
+  const rendered = renderMemoryMd({ namespace: "dup-ns", memories, rolloutSummaries });
+
+  // Collect the rollout_summaries/ references inside each `## Task` block.
+  const sections = rendered.split(/^##\s+/mu).slice(1);
+  const taskBlocks = sections.filter((s) => /^Task\s+\d+:/u.test(s));
+  const claimed = new Set<string>();
+  for (const block of taskBlocks) {
+    for (const match of block.matchAll(/rollout_summaries\/\S+/gu)) {
+      const file = match[0];
+      assert.ok(
+        !claimed.has(file),
+        `${file} is listed under more than one task block — the document claims per-task rollout scoping it does not have`,
+      );
+      claimed.add(file);
+    }
+  }
+});
+
+test("the single task's keywords cover every active memory's category and tags", () => {
+  const memories = Array.from({ length: 10 }, (_, i) =>
+    makeMemory({ id: `f-${i}`, category: "fact", tags: [`t${i}`] }),
+  );
+  memories.push(makeMemory({ id: "c-11", category: "correction", tags: ["unique-tag"] }));
+
+  const rendered = renderMemoryMd({ namespace: "kw-ns", memories, rolloutSummaries: [] });
+  // The keywords list sits right under `### keywords` in the single task block.
+  const keywordsSection = rendered.split("### keywords")[1];
+  assert.ok(keywordsSection, "task block missing keywords section");
+  assert.match(keywordsSection, /\bcorrection\b/u);
+  assert.match(keywordsSection, /\bunique-tag\b/u);
+});
+
+test("a late memory's category survives the keyword cap", () => {
+  // 15 fact memories with distinct tags + a correction memory: the tag set
+  // fills every slot ahead of `correction` unless categories are collected
+  // before tags (w7X review repro).
+  const memories = Array.from({ length: 15 }, (_, i) =>
+    makeMemory({ id: `f-${i}`, category: "fact", tags: [`tag-${i}`] }),
+  );
+  memories.push(makeMemory({ id: "c-late", category: "correction", tags: ["late-tag"] }));
+
+  const rendered = renderMemoryMd({ namespace: "cap-ns", memories, rolloutSummaries: [] });
+  const keywordsSection = rendered.split("### keywords")[1];
+  assert.ok(keywordsSection, "task block missing keywords section");
+  assert.match(keywordsSection, /\bcorrection\b/u);
+});

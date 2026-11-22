@@ -139,12 +139,12 @@ defineOperation({ name: "set_coding_context", description: "Set coding context."
     const projectTag = optStr(input.projectTag);
     const hasProjectTag = projectTag !== undefined && projectTag.trim().length > 0;
     const hasCodingContext = "codingContext" in input;
-    if (!hasCodingContext && hasProjectTag) { const tag = projectTag!.trim(); const pid = projectTagProjectId(tag); ctx.service.setCodingContext({ sessionKey, codingContext: { projectId: pid, branch: null, rootPath: pid, defaultBranch: null } }); return { result: { ok: true } }; }
+    if (!hasCodingContext && hasProjectTag) { const tag = projectTag!.trim(); const pid = projectTagProjectId(tag); ctx.service.setCodingContext({ sessionKey, codingContext: { projectId: pid, branch: null, rootPath: pid, defaultBranch: null }, authenticatedPrincipal: ctx.authenticatedPrincipal, remote: true }); return { result: { ok: true } }; }
     if (!hasCodingContext && !hasProjectTag) throw new EngramAccessInputError("set_coding_context requires either codingContext or projectTag");
     const rawCtx = (input as Record<string, unknown>).codingContext;
     let codingContext: { projectId: string; branch: string | null; rootPath: string; defaultBranch: string | null } | null = null;
     if (rawCtx !== null) { if (typeof rawCtx !== "object") throw new EngramAccessInputError("codingContext must be an object or null"); const o = rawCtx as Record<string, unknown>; const branch = o.branch === null ? null : optStr(o.branch); const dB = o.defaultBranch === null ? null : optStr(o.defaultBranch); if (branch === undefined) throw new EngramAccessInputError("codingContext.branch must be a string or null"); if (dB === undefined) throw new EngramAccessInputError("codingContext.defaultBranch must be a string or null"); codingContext = { projectId: defStr(o.projectId, ""), branch, rootPath: defStr(o.rootPath, ""), defaultBranch: dB }; }
-    ctx.service.setCodingContext({ sessionKey, codingContext });
+    ctx.service.setCodingContext({ sessionKey, codingContext, authenticatedPrincipal: ctx.authenticatedPrincipal, remote: true });
     return { result: { ok: true } };
   },
 });

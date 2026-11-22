@@ -19,6 +19,7 @@
  * or architecture-card logic.
  */
 import type { PluginConfig, CodingContext } from "../types.js";
+import { codingContextLocalRoot } from "../access-coding-context-resolution.js";
 import {
   codegraphRuntimeAvailable,
   codegraphSurfaceVisible,
@@ -633,7 +634,7 @@ async function handleGetArchitecture(
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
   const codingContext = resolveCodingContext(request, ctx);
-  const repoRoot = request.repoRoot ?? codingContext.rootPath;
+  const repoRoot = request.repoRoot ?? codingContextLocalRoot(codingContext);
   // Composition (issue #1554): deterministic architecture card from Track A
   // (no live graph) + live graph stats from the per-project store. Two
   // existing sources, one composed response -- no duplicated card logic.
@@ -785,7 +786,7 @@ function resolveRepoRoot(request: CodegraphSurfaceRequest, ctx: CodegraphSurface
   if (typeof request.repoRoot === "string" && request.repoRoot.trim().length > 0) {
     return request.repoRoot.trim();
   }
-  return resolveCodingContext(request, ctx).rootPath;
+  return codingContextLocalRoot(resolveCodingContext(request, ctx));
 }
 
 /**

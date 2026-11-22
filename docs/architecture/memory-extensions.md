@@ -116,7 +116,6 @@ instructions are not included.
 remnic extensions list        # List discovered extensions
 remnic extensions show <name> # Print instructions.md content
 remnic extensions validate    # Validate all, exit non-zero on error
-remnic extensions reload      # No-op stub, reserved for future caching
 ```
 
 The `remnic daemon status` command also shows a memory extensions summary line.

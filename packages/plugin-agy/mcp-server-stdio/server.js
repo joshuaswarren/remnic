@@ -431,9 +431,14 @@ function forward(msg, isNotification) {
         });
       }
     );
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => {
+    // One deadline for connect plus the full response. req.setTimeout() is an
+    // idle timer: it does not arm until the socket connects and restarts on
+    // every byte, so a daemon front that drops packets or trickles a reply
+    // held the tool call open far past REQUEST_TIMEOUT_MS.
+    const deadline = setTimeout(() => {
       req.destroy(new Error(`request timed out after ${REQUEST_TIMEOUT_MS}ms`));
-    });
+    }, REQUEST_TIMEOUT_MS);
+    req.on("close", () => clearTimeout(deadline));
     req.on("error", (err) => {
       respond(() => {
         if (isNotification) {

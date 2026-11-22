@@ -185,6 +185,7 @@ import {
 import { PLUGIN_ID as REMNIC_OPENCLAW_PLUGIN_ID, resolveRemnicPluginEntry } from "@remnic/core/plugin-id.js";
 import { runMeetingsBinaryCommand } from "./commands/meetings.js"; import { runTimelineBinaryCommand } from "./commands/timeline.js"; import { runWearablesBinaryCommand } from "./commands/wearables.js"; import { runLocationBinaryCommand } from "./commands/location.js";
 import { initCliLogger } from "./cli-logger.js";
+import { joinStartupSyncOrWarn } from "./startup-sync-join.js";
 import { BUFFER_DRAIN_USAGE, runBufferDrain } from "./buffer-drain-cmd.js";
 import { runOkfBinaryCommand } from "./commands/okf.js";
 import { runExportOkfBinaryCommand } from "./commands/export-okf.js";
@@ -5056,13 +5057,15 @@ async function cmdXray(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  // Freshness-dependent: join the shared post-ready startup sync so the
+  // recall lands after the corpus update instead of reading a stale index
+  // and aborting the update in flight (#3525).
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
 
   try {
     await runXrayCommand(rest, xrayCliIo((request) => service.recallXray(request)));
   } finally {
-    // Xray is diagnostic, so it waits for deferred startup sync before recall;
-    // abort remains a no-op guard if startup behavior changes later.
     orchestrator.abortDeferredInit();
   }
 }
@@ -5179,6 +5182,7 @@ async function cmdWhy(rest: string[]): Promise<void> {
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  await joinStartupSyncOrWarn(orchestrator);
   const service = new EngramAccessService(orchestrator);
   try {
     await runWhyCommand(rest, whyCliIo((request) => service.recallWhy(request)));
@@ -5225,6 +5229,8 @@ async function withLocalService<T>(
   const orchestrator = new Orchestrator(parseConfig(resolveRemnicConfigRecord(raw)));
   await orchestrator.initialize();
   await orchestrator.deferredReady;
+  // No startup-sync join here: who-knows and promotion-candidates read memories
+  // from storage, not the search index, so a join would only add latency (#3527).
   const service = new EngramAccessService(orchestrator);
   try {
     return await fn(service, orchestrator);
@@ -5707,19 +5713,12 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
       break;
     }
 
-    case "reload": {
-      // No-op stub reserved for future caching
-      console.log("Extension cache reloaded (no-op: caching not yet implemented).");
-      break;
-    }
-
     default:
-      console.log(`Usage: remnic extensions <list|show|validate|reload>
+      console.log(`Usage: remnic extensions <list|show|validate>
 
   list                 List discovered extensions
   show <name>          Print instructions.md content
   validate             Validate all extensions, exit non-zero on errors
-  reload               Reserved for future caching (no-op)
 `);
       break;
   }
@@ -13436,7 +13435,7 @@ Usage:
     marketplace validate    Validate a marketplace.json file
     marketplace install     Install from a marketplace source
   remnic quarantine <list|replay> [--namespace <ns>] [--principal <p>] [--json]  Inspect/replay ACL-rejected writes
-  remnic extensions <list|show|validate|reload>  Manage memory extensions
+  remnic extensions <list|show|validate>         Manage memory extensions
   remnic space <list|switch|create|delete|push|pull|share|promote|audit>  Manage spaces
     create accepts --parent <id> to set parent-child relationship
   remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|attribute|drift-gen|coding|security> [benchmark...] [--quick] [--all] [--dataset-dir <path>] [--results-dir <path>] [--baselines-dir <path>] [--threshold <value>] [--detail] [--format <json|csv|html>] [--output <path>] [--target remnic-ai] [--json]

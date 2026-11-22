@@ -1,6 +1,7 @@
 import test from "node:test";
 import { skipUnlessBetterSqlite3 } from "./helpers/native-binding.mjs";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
@@ -1207,8 +1208,10 @@ test("access service recall forwards overrides and returns explainable metadata"
     let capturedOptions: unknown;
     const snapshot = {
       sessionKey: "sess-1",
-      recordedAt: "2026-03-08T00:00:00.000Z",
-      queryHash: "hash",
+      // Reads as recorded inside this request (the response path gates on
+      // recordedAt >= request start + the request query's hash — #3499).
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+      queryHash: createHash("sha256").update("hello").digest("hex"),
       queryLen: 12,
       memoryIds: ["fact-1"],
       namespace: "global",
@@ -1317,8 +1320,9 @@ test("access service recall carries per-section timings from the snapshot", asyn
     };
     const snapshot = {
       sessionKey: "sess-t",
-      recordedAt: "2026-03-08T00:00:00.000Z",
-      queryHash: "hash",
+      // See the snapshot gate note above — recorded inside this request.
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+      queryHash: createHash("sha256").update("hello").digest("hex"),
       queryLen: 12,
       memoryIds: [],
       resultPaths: [],
@@ -1377,6 +1381,7 @@ test("access service recall reports the effective snapshot namespace in response
     const storage = new StorageManager(memoryDir);
     let intentNamespace = "";
     let graphNamespace = "";
+    // SAFETY: partial service double; recall() touches only the deps stubbed below.
     const service = new EngramAccessService({
       config: {
         memoryDir,
@@ -1405,7 +1410,11 @@ test("access service recall reports the effective snapshot namespace in response
           plannerMode: "minimal",
           fallbackUsed: false,
           sourcesUsed: ["memories"],
-          recordedAt: "2026-03-10T00:00:00.000Z",
+          // See the snapshot gate note above — recorded inside this request.
+          recordedAt: new Date(Date.now() + 60_000).toISOString(),
+          queryHash: createHash("sha256")
+            .update("What is in my namespace?")
+            .digest("hex"),
           traceId: "trace-effective-ns",
           budgetsApplied: undefined,
           latencyMs: 12,
@@ -1456,8 +1465,11 @@ test("access service serializes result paths from the snapshot namespace", async
     );
     const snapshot = {
       sessionKey: "sess-1",
-      recordedAt: "2026-03-08T00:00:00.000Z",
-      queryHash: "hash",
+      // See the snapshot gate note above — recorded inside this request.
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+      queryHash: createHash("sha256")
+        .update("namespace path recall")
+        .digest("hex"),
       queryLen: 12,
       memoryIds: [],
       namespace: "project-x",
@@ -1530,8 +1542,9 @@ test("access service recall count stays aligned with snapshot memory ids when so
     const storage = new StorageManager(memoryDir);
     const snapshot = {
       sessionKey: "sess-count",
-      recordedAt: "2026-03-10T00:00:00.000Z",
-      queryHash: "hash",
+      // See the snapshot gate note above — recorded inside this request.
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+      queryHash: createHash("sha256").update("missing?").digest("hex"),
       queryLen: 8,
       memoryIds: ["fact-present", "fact-missing"],
       namespace: "global",
@@ -5290,8 +5303,9 @@ test("recall debug snapshot relativizes absolute internal paths (#2077)", async 
     const includedAbs = path.join(memoryDir, "facts/2026-07-19/fact-1.md");
     const snapshot = {
       sessionKey: "sess-dbg",
-      recordedAt: "2026-07-19T00:00:00.000Z",
-      queryHash: "hash",
+      // See the snapshot gate note above — recorded inside this request.
+      recordedAt: new Date(Date.now() + 60_000).toISOString(),
+      queryHash: createHash("sha256").update("hello").digest("hex"),
       queryLen: 5,
       memoryIds: ["fact-1"],
       namespace: "global",
