@@ -74,3 +74,68 @@ test("plugin register triggers the first-run Engram migration path", async () =>
     else process.env.HOME = previousHome;
   }
 });
+
+test("register prefers the gateway-passed config over a disk read (#3612)", async (t) => {
+  const previousHome = process.env.HOME;
+  const previousConfigPath = process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "remnic-register-gateway-cfg-"));
+  const configPath = path.join(homeDir, "openclaw.json");
+
+  try {
+    process.env.HOME = homeDir;
+    // The disk file is MALFORMED on purpose: any fallback read warns
+    // "Failed to load" — an observable tell that register touched the disk.
+    await writeFile(configPath, "{ not json", "utf8");
+    process.env.OPENCLAW_ENGRAM_CONFIG_PATH = configPath;
+
+    const warnings: string[] = [];
+    const infos: string[] = [];
+    const api = {
+      logger: {
+        debug() {},
+        info(m: string) { infos.push(String(m)); },
+        warn(m: string) { warnings.push(String(m)); },
+        error() {},
+      },
+      pluginConfig: {},
+      // The gateway snapshot carries the operator-authored plugin entry —
+      // same shape as the on-disk file (plugins.entries.<id>.config).
+      config: {
+        plugins: {
+          entries: {
+            "openclaw-remnic": {
+              id: "openclaw-remnic",
+              config: { debug: true },
+              hooks: {},
+            },
+          },
+        },
+      },
+      registerTool() {},
+      registerCli() {},
+      registerService() {},
+      on() {},
+    };
+
+    const { default: plugin } = await import("../src/index.js");
+    // SAFETY: buildApi() only stubs the register() surface this test
+    // exercises; register() treats the api as the SDK's OpenClawPluginApi.
+    plugin.register(api as any);
+
+    const loadWarnings = warnings.filter((m) => m.includes("Failed to load"));
+    assert.deepEqual(
+      loadWarnings,
+      [],
+      "register must not read openclaw.json when the gateway passed the plugin entry",
+    );
+    assert.ok(
+      infos.some((m) => m.includes("debug=true")),
+      `gateway-passed config must drive the parsed config (debug=true); got: ${infos.join(" | ")}`,
+    );
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousConfigPath === undefined) delete process.env.OPENCLAW_ENGRAM_CONFIG_PATH;
+    else process.env.OPENCLAW_ENGRAM_CONFIG_PATH = previousConfigPath;
+  }
+});
