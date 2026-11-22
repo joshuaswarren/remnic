@@ -14,6 +14,14 @@ This rewrites all three SVGs in this directory deterministically (byte-identical
 across runs — asserted by `tests/paper-figures.test.mjs`). The generator is
 `scripts/generate-paper-figures.mjs`; it reads only from committed paths.
 
+### Configuration
+
+| Env var | Effect |
+|---|---|
+| `REMNIC_FIGURES_RESULTS_DIR` | Read artifacts from this directory instead of `docs/benchmarks/results/`. An overridden dir is **unmanaged**: the git-tracked/artifact-manifest filter and manifest refresh are skipped, so every `*.json` found there is a candidate. Intended for fixture/synthetic dirs in tests and for previewing figures against a local results dump. |
+| `REMNIC_FIGURES_OUT_DIR` | Write the SVGs to this directory instead of this one. |
+| `REMNIC_FIGURES_DEBUG` | When set, print per-artifact selection notes. |
+
 ## Figures and data status
 
 | Figure | File | Real data | Pending data |

@@ -20,6 +20,16 @@
  *
  * Run:  pnpm run figures:paper     (writes docs/paper/figures/*.svg)
  *
+ * Configuration (permanent options, also in docs/paper/figures/README.md):
+ *
+ *   REMNIC_FIGURES_RESULTS_DIR — read artifacts from this directory instead
+ *     of docs/benchmarks/results/. An overridden dir is UNMANAGED: the
+ *     git-tracked/artifact-manifest filter and manifest refresh are skipped
+ *     for it, so every *.json found there is a candidate.
+ *   REMNIC_FIGURES_OUT_DIR — write the SVGs here instead of
+ *     docs/paper/figures/.
+ *   REMNIC_FIGURES_DEBUG — when set, print per-artifact selection notes.
+ *
  * Determinism: no Date.now(), no Math.random(), stable ordering, fixed number
  * formatting. Two runs produce byte-identical SVG (asserted by the test).
  */
@@ -59,8 +69,10 @@ const TRUST_SCORE_SRC = join(
  * `refreshArtifactManifest()` rewrites it from `git ls-files` when git is
  * available (local dev), keeping it self-maintaining.
  *
- * Returns `null` (no filtering) for a temp results dir (the test seam) or when
- * neither the manifest nor git yields anything (defensive: treat as unmanaged).
+ * Returns `null` (no filtering) for an unmanaged results dir (a
+ * REMNIC_FIGURES_RESULTS_DIR override — every file found there is a
+ * candidate) or when neither the manifest nor git yields anything
+ * (defensive: treat as unmanaged).
  */
 const ARTIFACT_MANIFEST = join(REPO_ROOT, "docs", "benchmarks", "artifact-manifest.json");
 
@@ -93,7 +105,7 @@ function trackedResultsNamesFromGit() {
 }
 
 function trackedResultsNames() {
-  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null; // temp seam: fixtures are deliberate
+  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null; // unmanaged results dir: all files are candidates
   return readManifestNames() ?? trackedResultsNamesFromGit();
 }
 // NOTE: the manifest refresh + tracked-name resolution are NOT run at module

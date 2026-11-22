@@ -498,3 +498,33 @@ test("Figure 2 auto-upgrades: a committed memcorrect artifact yields real bars",
     rmSync(tmpOut, { recursive: true, force: true });
   }
 });
+
+test("results/out dir overrides are a documented permanent option — #3617", () => {
+  // The REMNIC_FIGURES_* env knobs were added as a temp fixture seam; the
+  // issue-3617 contract promotes them to a documented, permanent configuration
+  // option. The docs must name them and state the unmanaged-dir contract
+  // (no tracked-name filtering, no manifest refresh) so a user pointing at a
+  // results dir knows exactly what regime they get.
+  const readme = readFileSync(
+    join(REPO_ROOT, "docs", "paper", "figures", "README.md"),
+    "utf8",
+  );
+  assert.match(
+    readme,
+    /REMNIC_FIGURES_RESULTS_DIR/,
+    "docs/paper/figures/README.md must document REMNIC_FIGURES_RESULTS_DIR",
+  );
+  assert.match(
+    readme,
+    /REMNIC_FIGURES_OUT_DIR/,
+    "docs/paper/figures/README.md must document REMNIC_FIGURES_OUT_DIR",
+  );
+  // The script header must document the same contract — the option is only
+  // discoverable there and in the README, so both carry it.
+  const header = readFileSync(GEN, "utf8").slice(0, 4000);
+  assert.match(
+    header,
+    /REMNIC_FIGURES_RESULTS_DIR/,
+    "generate-paper-figures.mjs header must document REMNIC_FIGURES_RESULTS_DIR",
+  );
+});
