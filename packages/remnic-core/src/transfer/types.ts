@@ -142,14 +142,24 @@ export const CapsuleParentSchema = z.object({
 
 export type CapsuleParent = z.infer<typeof CapsuleParentSchema>;
 
+/**
+ * Known taxonomy schema versions a capsule may be authored against
+ * (issue 3572). Exporters must emit one of these; importers refuse anything
+ * else instead of silently accepting a version they cannot interpret.
+ */
+export const CAPSULE_TAXONOMY_VERSIONS = ["taxonomy-v1"] as const;
+
 export const CapsuleBlockSchema = z.object({
   id: CapsuleIdSchema,
   version: SemverLikeSchema,
   /**
-   * Taxonomy schema version the capsule was authored against. Free-form for
-   * now; later PRs may tighten this to a known taxonomy registry.
+   * Taxonomy schema version the capsule was authored against. Must be a
+   * member of {@link CAPSULE_TAXONOMY_VERSIONS}; the error names the known
+   * versions so writers can pick one.
    */
-  schemaVersion: z.string().min(1, "capsule.schemaVersion must not be empty"),
+  schemaVersion: z.enum(CAPSULE_TAXONOMY_VERSIONS, {
+    message: `capsule.schemaVersion must be one of: ${CAPSULE_TAXONOMY_VERSIONS.join(", ")}`,
+  }),
   /**
    * Optional reference to the parent capsule this one was forked or derived
    * from. `null` (not `undefined`) is the explicit "no parent" sentinel so
