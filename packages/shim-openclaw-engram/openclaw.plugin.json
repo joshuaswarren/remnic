@@ -5128,6 +5128,11 @@
         "default": 300000,
         "description": "Rolling window (ms) over which audit entries are analyzed by the anomaly detector. Default 5 minutes."
       },
+      "recallAuditLogEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "When true, the access surface appends each recall's audit entry to <memoryDir>/transcripts/<date>/<sessionKey>.jsonl. Ships disabled; independent of recallAuditAnomalyDetectionEnabled."
+      },
       "recallBudgetChars": {
         "type": "number",
         "description": "Hard character headroom for total recall context. Defaults to maxMemoryTokens * 4 for Latin-script capacity; recall assembly also enforces maxMemoryTokens with the shared script-aware estimator."

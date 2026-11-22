@@ -14,11 +14,12 @@ import {
  * config flag, and the default-off semantics for both flags must be preserved.
  */
 
-const ACCESS_FIELD_TO_FLAG: Record<keyof AccessSetupCapabilitySet, string> = {
+const ACCESS_FIELD_TO_FLAG = {
   recallCrossNamespaceBudget: "recallCrossNamespaceBudgetEnabled",
   recallAuditAnomalyDetection: "recallAuditAnomalyDetectionEnabled",
+  recallAuditLog: "recallAuditLogEnabled",
   recallSingleFlight: "recallSingleFlightEnabled",
-};
+} satisfies Record<keyof AccessSetupCapabilitySet, string>;
 
 const ACCESS_FIELDS = Object.keys(ACCESS_FIELD_TO_FLAG) as Array<
   keyof AccessSetupCapabilitySet

@@ -1968,6 +1968,7 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `recallAuditAnomalyNamespaceWalkLimit` | `3` | Max distinct namespaces before namespace-walk flag |
 | `recallAuditAnomalyHighCardinalityLimit` | `50` | Max candidate memory IDs in a single recall response before high-cardinality flag |
 | `recallAuditAnomalyRapidFireLimit` | `30` | Max queries in window before rapid-fire flag |
+| `recallAuditLogEnabled` | `false` | Append each recall's audit entry to `<memoryDir>/transcripts/<date>/<sessionKey>.jsonl`; independent of anomaly detection |
 | `memoryExtensionsRoot` | `""` | Override memory extensions root directory |
 | `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786). Finder `._*` and `.DS_Store` are already excluded on both sides in every namespace and are not configured here. |
 | `converge.conflictPolicy` | `newest-wins` | Default conflict policy for `remnic converge`; `--conflict-policy` overrides it per command |
