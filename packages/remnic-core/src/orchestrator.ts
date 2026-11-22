@@ -513,9 +513,6 @@ import {
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { categoryDirName, RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
-// IRC preference consolidation — used by eval adapter directly;
-// orchestrator integration planned for future PR.
-// import { consolidatePreferences, buildQueryAwarePreferenceSection, synthesizePreferencesFromLcm } from "./compounding/preference-consolidator.js";
 import { TierMigrationExecutor } from "./tier-migration.js";
 import { decideTierTransition, type MemoryTier } from "./tier-routing.js";
 import {
