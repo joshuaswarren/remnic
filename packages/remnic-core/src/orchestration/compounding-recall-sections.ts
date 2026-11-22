@@ -7,7 +7,6 @@ import {
   augmentWithCausalPreferences,
   buildQueryAwarePreferenceSection,
   consolidatePreferences,
-  synthesizePreferencesFromLcm,
 } from "../compounding/preference-consolidator.js";
 import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import type { StorageManager } from "../storage.js";
@@ -77,15 +76,13 @@ export async function buildCompoundingRecallSection(
 }
 
 interface PreferenceSectionBuildOptions extends SectionBuildOptions {
-  sessionKey?: string;
   profileStorages: StorageManager[];
 }
 
 export async function buildIrcPreferencesRecallSection(
   options: PreferenceSectionBuildOptions,
 ): Promise<string | null> {
-  const { deps, record, retrievalQuery, sessionKey, profileStorages, deadlineMs } =
-    options;
+  const { deps, record, retrievalQuery, profileStorages, deadlineMs } = options;
   const t0 = Date.now();
   const config = deps.config;
   if (
@@ -120,19 +117,11 @@ export async function buildIrcPreferencesRecallSection(
       behaviorConfidenceThreshold: config.cmcBehaviorConfidenceThreshold,
     });
   }
-  let section = buildQueryAwarePreferenceSection(
+  const section = buildQueryAwarePreferenceSection(
     preferences,
     retrievalQuery,
     config.ircMaxPreferences,
   );
-  if (section === null && deps.lcmEngine !== null) {
-    section = await synthesizePreferencesFromLcm(
-      deps.lcmEngine,
-      retrievalQuery,
-      sessionKey,
-      config.ircMaxPreferences,
-    );
-  }
   record({
     section: "preferences",
     priority: "enrichment",

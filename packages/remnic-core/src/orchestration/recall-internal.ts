@@ -2680,7 +2680,6 @@ export class RecallInternalCoordinator {
         deps: this.deps,
         record: recordRecallSectionMetric,
         retrievalQuery,
-        sessionKey,
         profileStorages,
         deadlineMs: enrichmentSectionDeadlineMs,
       }),
