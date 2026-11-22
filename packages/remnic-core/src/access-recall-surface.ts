@@ -45,8 +45,6 @@ import {
   type EngramAccessRecallResponse,
   type EngramAccessSetCodingContextRequest,
 } from "./access-service.js";
-// Canonical copies (access-service.ts still carries private duplicates for
-// its remaining callers; dedupe tracked separately).
 import { qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 export interface AccessRecallSurfaceDeps {
   readonly auditAdapter: AccessAuditAdapter | null;
