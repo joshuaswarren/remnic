@@ -112,7 +112,7 @@ test("parseOperatorAwareConsolidationResponse tolerates JSON example blocks prep
   ].join("\n");
   const res = parseOperatorAwareConsolidationResponse(prefixed, cluster);
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, "actual canonical body");
+  assert.deepEqual(res.outputs, ["actual canonical body"]);
 });
 
 test("parseOperatorAwareConsolidationResponse falls back when LLM returns the pipe-delimited placeholder", () => {
@@ -129,7 +129,7 @@ test("parseOperatorAwareConsolidationResponse falls back when LLM returns the pi
     cluster,
   );
   assert.equal(res.operator, "merge"); // heuristic for multi-memory cluster
-  assert.equal(res.output, "placeholder body");
+  assert.deepEqual(res.outputs, ["placeholder body"]);
 });
 
 test("buildOperatorAwareConsolidationPrompt embeds every source memory", () => {
@@ -150,7 +150,7 @@ test("parseOperatorAwareConsolidationResponse accepts strict JSON", () => {
     cluster,
   );
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, "canonical body");
+  assert.deepEqual(res.outputs, ["canonical body"]);
 });
 
 test("parseOperatorAwareConsolidationResponse accepts update and split operators", () => {
@@ -161,7 +161,7 @@ test("parseOperatorAwareConsolidationResponse accepts update and split operators
       cluster,
     );
     assert.equal(res.operator, op);
-    assert.equal(res.output, `body-${op}`);
+    assert.deepEqual(res.outputs, [`body-${op}`]);
   }
 });
 
@@ -174,7 +174,7 @@ test("parseOperatorAwareConsolidationResponse tolerates fenced code blocks", () 
   ].join("\n");
   const res = parseOperatorAwareConsolidationResponse(fenced, cluster);
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, "fenced body");
+  assert.deepEqual(res.outputs, ["fenced body"]);
 });
 
 test("parseOperatorAwareConsolidationResponse tolerates prose-prefixed JSON", () => {
@@ -183,7 +183,7 @@ test("parseOperatorAwareConsolidationResponse tolerates prose-prefixed JSON", ()
     'Here is the consolidation result:\n\n{"operator":"update","output":"updated body"}\n';
   const res = parseOperatorAwareConsolidationResponse(withProse, cluster);
   assert.equal(res.operator, "update");
-  assert.equal(res.output, "updated body");
+  assert.deepEqual(res.outputs, ["updated body"]);
 });
 
 test("parseOperatorAwareConsolidationResponse falls back to heuristic on plain text", () => {
@@ -192,7 +192,7 @@ test("parseOperatorAwareConsolidationResponse falls back to heuristic on plain t
   const res = parseOperatorAwareConsolidationResponse(plain, cluster);
   // Multi-memory cluster → heuristic returns "merge".
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, plain);
+  assert.deepEqual(res.outputs, [plain]);
 });
 
 test("parseOperatorAwareConsolidationResponse falls back to heuristic for unknown operator", () => {
@@ -203,7 +203,7 @@ test("parseOperatorAwareConsolidationResponse falls back to heuristic for unknow
     cluster,
   );
   assert.equal(res.operator, "update");
-  assert.equal(res.output, "body");
+  assert.deepEqual(res.outputs, ["body"]);
 });
 
 test("parseOperatorAwareConsolidationResponse falls back on malformed JSON", () => {
@@ -212,7 +212,7 @@ test("parseOperatorAwareConsolidationResponse falls back on malformed JSON", () 
   const res = parseOperatorAwareConsolidationResponse(broken, cluster);
   // Heuristic fallback: multi-memory → merge; output is the raw trimmed text.
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, broken.trim());
+  assert.deepEqual(res.outputs, [broken.trim()]);
 });
 
 test("parseOperatorAwareConsolidationResponse falls back when output field is empty", () => {
@@ -224,7 +224,7 @@ test("parseOperatorAwareConsolidationResponse falls back when output field is em
   assert.equal(res.operator, "merge");
   // Empty output field → use raw trimmed response instead of dropping the
   // cluster.  Callers still write something rather than losing data.
-  assert.equal(res.output, '{"operator":"merge","output":""}');
+  assert.deepEqual(res.outputs, ['{"operator":"merge","output":""}']);
 });
 
 test("parseOperatorAwareConsolidationResponse never throws on weird inputs", () => {
@@ -233,7 +233,7 @@ test("parseOperatorAwareConsolidationResponse never throws on weird inputs", () 
   for (const input of inputs) {
     const res = parseOperatorAwareConsolidationResponse(input, cluster);
     assert.ok(res.operator === "merge" || res.operator === "update" || res.operator === "split");
-    assert.equal(typeof res.output, "string");
+    assert.ok(res.outputs.length >= 1);
   }
 });
 
@@ -244,7 +244,7 @@ test("parseOperatorAwareConsolidationResponse handles mixed-case operator values
     cluster,
   );
   assert.equal(res.operator, "merge");
-  assert.equal(res.output, "upper case");
+  assert.deepEqual(res.outputs, ["upper case"]);
 });
 
 // ─── Config coercion (regression for PR #632 review feedback) ────────────────
@@ -306,4 +306,38 @@ test("isSemanticConsolidationLlmOperator excludes pattern-reinforcement", async 
   // emit it through this gate.
   assert.equal(isSemanticConsolidationLlmOperator("pattern-reinforcement"), false);
   assert.equal(isSemanticConsolidationLlmOperator("garbage"), false);
+});
+
+test("parseOperatorAwareConsolidationResponse keeps every SPLIT output (#3566)", () => {
+  const res = parseOperatorAwareConsolidationResponse(
+    '{"operator":"split","outputs":["  first fact  ","second fact",""]}',
+    makeCluster(2),
+  );
+  assert.equal(res.operator, "split");
+  assert.deepEqual(res.outputs, ["first fact", "second fact"]);
+});
+
+test("parseOperatorAwareConsolidationResponse accepts a SPLIT that still sends one output (#3566)", () => {
+  const res = parseOperatorAwareConsolidationResponse('{"operator":"split","output":"only body"}', makeCluster(2));
+  assert.deepEqual(res.outputs, ["only body"]);
+});
+
+test("parseOperatorAwareConsolidationResponse keeps merge to one canonical output (#3566)", () => {
+  const res = parseOperatorAwareConsolidationResponse(
+    '{"operator":"merge","output":"merged body","outputs":["a","b"]}',
+    makeCluster(3),
+  );
+  assert.deepEqual(res.outputs, ["merged body"]);
+});
+
+test("buildOperatorAwareConsolidationPrompt asks SPLIT for an outputs array (#3566)", () => {
+  const prompt = buildOperatorAwareConsolidationPrompt(makeCluster(2));
+  assert.match(prompt, /"outputs"/u);
+  assert.doesNotMatch(prompt, /chunk it later/u);
+});
+
+test("parseOperatorAwareConsolidationResponse keeps the operator when another field has the wrong type (#3566)", () => {
+  const res = parseOperatorAwareConsolidationResponse('{"operator":"update","output":123}', makeCluster(3));
+  assert.equal(res.operator, "update");
+  assert.deepEqual(res.outputs, ['{"operator":"update","output":123}']);
 });
