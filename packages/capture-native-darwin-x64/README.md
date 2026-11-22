@@ -4,7 +4,7 @@ macOS Intel (x64) platform package for the unified Remnic native capture
 helper, `remnic-capture-helper`. One binary serves both the audio capture
 pipeline (#1897) and the screen-activity pipeline (#1899).
 
-Install with `npm install @remnic/capture-native-darwin-x64`.
+Install with `npm install @remnic/capture-native-darwin-x64@alpha`.
 The binary is staged by the `capture-native-helper` workflow on release.
 To build from source, use `packages/capture-native-darwin-helper` and set
 `REMNIC_CAPTURE_HELPER_BIN` to the binary.

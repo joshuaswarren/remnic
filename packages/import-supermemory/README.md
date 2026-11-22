@@ -9,8 +9,8 @@ store.
 ## Install
 
 ```bash
-npm install -g @remnic/cli
-npm install -g @remnic/import-supermemory
+npm install -g @remnic/cli@alpha
+npm install -g @remnic/import-supermemory@alpha
 ```
 
 If you use Remnic from a project instead of globally, add both packages to the

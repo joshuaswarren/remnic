@@ -9,7 +9,7 @@ Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory an
 ## Install
 
 ```bash
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 ```
 
 This installs the `remnic` command (and a legacy `engram` forwarder).

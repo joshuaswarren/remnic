@@ -9,7 +9,7 @@ This is an **à-la-carte optional companion** of `@remnic/core`. The base
 install never pulls it in; install it only if you wear a Pendant:
 
 ```bash
-npm install -g @remnic/connector-limitless
+npm install -g @remnic/connector-limitless@alpha
 ```
 
 Remnic discovers it at runtime. No further registration is needed.

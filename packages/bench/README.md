@@ -8,7 +8,7 @@ Benchmark suite and CI regression gates for [Remnic](https://github.com/joshuasw
 
 ```bash
 # Alongside the CLI:
-npm install -g @remnic/cli @remnic/bench
+npm install -g @remnic/cli@alpha @remnic/bench@alpha
 
 # Or in a project that drives benchmarks programmatically:
 pnpm add @remnic/bench

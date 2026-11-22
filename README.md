@@ -292,7 +292,7 @@ Hosting and price labels mirror the canonical matrix at [remnic.ai/compare](http
 Install the CLI, start the daemon, and verify it is running.
 
 ```bash
-npm install -g @remnic/cli       # installs `remnic` (plus the legacy `engram` forwarder)
+npm install -g @remnic/cli@alpha       # installs `remnic` (plus the legacy `engram` forwarder)
 remnic init                      # write remnic.config.json
 export OPENAI_API_KEY=sk-...     # extraction provider (or route to a local LLM)
 export REMNIC_AUTH_TOKEN=$(openssl rand -hex 32)

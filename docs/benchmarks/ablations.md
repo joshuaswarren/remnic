@@ -135,7 +135,7 @@ are small relative to the expected variance. Treat any single-cell delta below
 ```bash
 # From the repo root, on the artifact's recorded gitSha
 git checkout <artifact.system.gitSha>
-pnpm install && pnpm --filter @remnic/core run build
+pnpm install && pnpm --filter @remnic/core@alpha run build
 remnic bench run --benchmark locomo \
   --local-lab-manifest packages/bench/profiles/local-lab-3090.json \
   --model qwen2.5-7b-32k:latest --seed 1

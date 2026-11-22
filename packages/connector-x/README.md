@@ -9,7 +9,7 @@ sources** and maps them to Remnic memories with dedupe, provenance, and
 trust gating.
 
 ```
-npm install @remnic/connector-x        # à-la-carte; @remnic/core works alone without it
+npm install @remnic/connector-x@alpha        # à-la-carte; @remnic/core@alpha works alone without it
 ```
 
 ## Cost reality — read this first

@@ -9,7 +9,7 @@ Part of [Remnic](https://github.com/joshuaswarren/remnic), open-source memory an
 ## Install
 
 ```bash
-npm install @remnic/server
+npm install @remnic/server@alpha
 ```
 
 Most users should install [`@remnic/cli`](https://www.npmjs.com/package/@remnic/cli) instead, which includes the server and provides daemon management via `remnic daemon start`.

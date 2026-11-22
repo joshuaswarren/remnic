@@ -694,6 +694,14 @@ jobs:
           # Publish to the `alpha` channel; promotion moves the tag (issue #3032).
           npm publish --access public --provenance --tag alpha
 
+      # The documented install must resolve the current line (issue #3439):
+      # every `npm install @remnic/*` in the docs names an explicit tag, and
+      # each channel tag named there must resolve on npm to the major line
+      # just published. Fails the release if the docs drift — e.g. they name
+      # `latest` while it still points at a frozen older line.
+      - name: Verify documented install tag agreement
+        run: node scripts/process-gates/install-tag-agreement.mjs --resolve
+
       # Publish the GitHub release BEFORE the best-effort ClawHub publish below.
       # ClawHub is a third-party host whose backend can fail transiently (e.g.
       # the "Too many bytes read" search-digest-sync error); creating the release

@@ -76,7 +76,7 @@ for the full LCM configuration reference.
 The importer ships as a separate optional package:
 
 ```bash
-npm install -g @remnic/import-lossless-claw
+npm install -g @remnic/import-lossless-claw@alpha
 # or:
 pnpm add @remnic/import-lossless-claw
 ```

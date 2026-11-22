@@ -560,7 +560,7 @@ To re-run a published number:
 ```bash
 # From the repo root
 git checkout <artifact.system.gitSha>
-pnpm install && pnpm --filter @remnic/core run build
+pnpm install && pnpm --filter @remnic/core@alpha run build
 # Follow docs/benchmarks/runbook.md with the same --seed and --model.
 ```
 

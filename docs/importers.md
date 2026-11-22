@@ -38,15 +38,15 @@ need.
 > Some adapter packages may be declared as optional peer dependencies of
 > `@remnic/cli` in specific release trains (so workspace + pnpm installs
 > stay linked), but that wiring is not guaranteed at the package-manager
-> level — always follow the `npm install @remnic/import-<source>` step
+> level — always follow the `npm install @remnic/import-<source>@alpha` step
 > below rather than relying on peer resolution.
 
 ```bash
 # Install the CLI (core + base)
-npm install -g @remnic/cli
+npm install -g @remnic/cli@alpha
 
 # Add the importer you actually need
-npm install -g @remnic/import-chatgpt
+npm install -g @remnic/import-chatgpt@alpha
 # or any mix of: @remnic/import-claude, @remnic/import-gemini, @remnic/import-mem0, @remnic/import-supermemory
 ```
 
@@ -195,7 +195,7 @@ curl -sS https://api.supermemory.ai/v3/memories/list \
 2. Install the Remnic importer package:
 
 ```bash
-npm install -g @remnic/import-supermemory
+npm install -g @remnic/import-supermemory@alpha
 ```
 
 3. Preview import first, then commit:
@@ -215,7 +215,7 @@ data model is turns plus a summary DAG, not facts — so it ships as a dedicated
 top-level command:
 
 ```bash
-npm install -g @remnic/import-lossless-claw
+npm install -g @remnic/import-lossless-claw@alpha
 remnic import-lossless-claw --src ~/.openclaw/lcm.db --dry-run
 remnic import-lossless-claw --src ~/.openclaw/lcm.db
 ```

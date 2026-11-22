@@ -11,7 +11,7 @@ local-first memory and context layer for AI agents.
 ## Install
 
 ```bash
-npm install @remnic/belief-ledger
+npm install @remnic/belief-ledger@alpha
 ```
 
 This package is intentionally host-neutral:

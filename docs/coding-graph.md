@@ -22,7 +22,7 @@ imports it directly; it uses a computed-specifier dynamic import so the base
 install compiles and runs without it:
 
 ```bash
-npm install @remnic/coding-graph
+npm install @remnic/coding-graph@alpha
 ```
 
 When the package is absent, the loader returns a user-facing install hint

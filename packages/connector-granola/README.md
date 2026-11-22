@@ -16,7 +16,7 @@ the pendant connectors.
 À-la-carte — install alongside `@remnic/core` only if you use Granola:
 
 ```sh
-npm install -g @remnic/connector-granola
+npm install -g @remnic/connector-granola@alpha
 ```
 
 Installing `@remnic/core` alone never pulls this in; core discovers it at

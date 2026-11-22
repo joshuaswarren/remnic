@@ -12,7 +12,7 @@ effect — no explicit setup needed.
 ## Install
 
 ```bash
-npm install @remnic/import-weclone
+npm install @remnic/import-weclone@alpha
 ```
 
 WeClone already handles the hard parts of chat ingestion — platform-specific

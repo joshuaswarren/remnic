@@ -8,7 +8,7 @@ want `remnic import --adapter chatgpt` to work.
 ## Install
 
 ```bash
-npm install -g @remnic/cli @remnic/import-chatgpt
+npm install -g @remnic/cli@alpha @remnic/import-chatgpt@alpha
 ```
 
 ## Usage
