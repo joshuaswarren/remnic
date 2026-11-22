@@ -124,6 +124,26 @@ const STORE_JITTER_MS = 250;
 const MAX_COOLDOWN_MS = 60_000;
 const TRUNCATION_MARKER = "\n\n[Remnic observe truncated: payload exceeded client size cap]";
 
+/** Response-egress reserve subtracted from the published recall deadline so the
+ * daemon's degraded answer (or its deadline error) reaches the client BEFORE
+ * the client's own AbortController fires at the full budget (#3499). */
+const RECALL_DEADLINE_EGRESS_RESERVE_MS = 1_000;
+
+/** The daemon reads an absolute `deadlineMs` as the answer-by instant and a
+ * small value as a relative budget (force-flush convention, #3140), so the
+ * client publishes the absolute deadline its socket timeout implies. */
+function publishableRecallDeadlineMs(budgetMs: number | undefined): number | undefined {
+  if (budgetMs === undefined || !Number.isFinite(budgetMs) || budgetMs <= 0) return undefined;
+  return Date.now() + Math.max(1, budgetMs - RECALL_DEADLINE_EGRESS_RESERVE_MS);
+}
+
+/** MCP tool names whose arguments validate into the recall request schema —
+ * the only surface where `deadlineMs` is accepted (recall_xray's strict schema
+ * and the write tools reject it). */
+function isRecallDeadlineTool(name: string): boolean {
+  return name.replace(/^(?:remnic|engram)[._]/, "") === "recall";
+}
+
 export class RemnicClient {
   private requestId = 0;
   private versionCheckStarted = false;
@@ -292,19 +312,19 @@ export class RemnicClient {
       timeoutMs: options.timeoutMs ?? this.config.turnRequestTimeoutMs,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
-    return this.requestWithRetry(
-      "POST",
-      "/engram/v1/recall",
-      {
-        query,
-        sessionKey,
-        cwd,
-        namespace: this.config.namespace,
-        topK: this.config.recallTopK,
-        mode: this.config.recallMode,
-      },
-      merged,
-    );
+    return this.requestWithRetry("POST", "/engram/v1/recall", {
+      query,
+      sessionKey,
+      cwd,
+      namespace: this.config.namespace,
+      topK: this.config.recallTopK,
+      mode: this.config.recallMode,
+      // Issue #3499: the daemon clamps its outer deadline to the client's
+      // published budget, so a cold recall (QMD warmup etc.) degrades inside
+      // the window the client is actually waiting on. `undefined` here drops
+      // out of the JSON body — a missing/invalid budget publishes nothing.
+      deadlineMs: publishableRecallDeadlineMs(merged.timeoutMs),
+    }, merged);
   }
 
   async recallExplain(sessionKey: string, options: RequestOptions = {}): Promise<Record<string, unknown>> {
@@ -466,9 +486,18 @@ export class RemnicClient {
         arguments: storeArgs,
       }, options), options);
     }
+    let callArgs = args;
+    if (isRecallDeadlineTool(name)) {
+      // Issue #3499: explicit remnic_recall after a cold start burned the
+      // daemon's unclamped ceiling while the client's socket already closed.
+      // Publish the request budget so the daemon degrades inside it.
+      const budgetMs = options.timeoutMs ?? this.config.requestTimeoutMs;
+      const deadlineMs = publishableRecallDeadlineMs(budgetMs);
+      if (deadlineMs !== undefined) callArgs = { ...args, deadlineMs };
+    }
     return this.mcpRequest("tools/call", {
       name,
-      arguments: args,
+      arguments: callArgs,
     }, options);
   }
 

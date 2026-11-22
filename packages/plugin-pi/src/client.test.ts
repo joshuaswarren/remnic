@@ -890,3 +890,92 @@ test("RemnicClient.setCodingContext posts null to clear the attached context", a
   await client.setCodingContext("sess-1", null, { timeoutMs: 1000 });
   assert.deepEqual(seen, [{ body: { sessionKey: "sess-1", codingContext: null } }]);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #3499: the client publishes its request budget to the daemon so a cold
+// recall degrades (or fails fast) INSIDE the window instead of burning the
+// daemon's own ceiling after the client disconnected.
+// ---------------------------------------------------------------------------
+
+type RecallBodySpy = {
+  query?: string;
+  deadlineMs?: number;
+};
+
+test("recall publishes deadlineMs inside the request budget so the daemon answers before the client aborts (#3499)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: RecallBodySpy[] = [];
+  globalThis.fetch = async (_input, init) => {
+    // SAFETY: this test's own fetch mock serialized the recall body; the spy
+    // only reads query/deadlineMs and every read is asserted.
+    bodies.push(JSON.parse(String(init?.body ?? "{}")) as RecallBodySpy);
+    return new Response(JSON.stringify({ context: "ctx" }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient(baseConfig());
+  const before = Date.now();
+  await client.recall("q", "sess", "/cwd", { timeoutMs: 60_000 });
+  const deadlineMs = Number(bodies[0].deadlineMs);
+  assert.ok(
+    Number.isFinite(deadlineMs),
+    "recall body must publish deadlineMs to the daemon",
+  );
+  // The published deadline lands BEFORE the client's own abort at
+  // before+60_000 so the daemon's degraded response can still reach us.
+  assert.ok(
+    deadlineMs > before && deadlineMs < before + 60_000,
+    `deadlineMs ${String(deadlineMs)} must sit inside the request budget`,
+  );
+  assert.ok(
+    before + 60_000 - deadlineMs <= 5_000,
+    `egress reserve must be small (got ${String(before + 60_000 - deadlineMs)}ms)`,
+  );
+});
+
+type McpCallSpy = {
+  params?: { name?: string; arguments?: { deadlineMs?: number } };
+};
+
+test("mcpTool publishes deadlineMs in arguments for recall tools but not xray or store (#3499)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const bodies: McpCallSpy[] = [];
+  globalThis.fetch = async (_input, init) => {
+    // SAFETY: this test's own fetch mock serialized the tools/call envelope; the
+    // spy only reads params.name/params.arguments.deadlineMs and every read is
+    // asserted.
+    bodies.push(JSON.parse(String(init?.body ?? "{}")) as McpCallSpy);
+    return new Response(JSON.stringify({ result: { ok: true } }), { status: 200 });
+  };
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 60_000 });
+  const before = Date.now();
+  await client.mcpTool("remnic.recall", { query: "q" });
+  await client.mcpTool("remnic.recall_xray", { query: "q" });
+  await client.mcpTool("remnic.memory_store", { content: "m" });
+
+  const recallDeadlineMs = Number(bodies[0].params?.arguments?.deadlineMs);
+  assert.ok(
+    Number.isFinite(recallDeadlineMs),
+    "remnic.recall tools/call must publish deadlineMs",
+  );
+  assert.ok(
+    recallDeadlineMs > before && recallDeadlineMs < before + 60_000,
+    `recall deadlineMs ${String(recallDeadlineMs)} must sit inside the request budget`,
+  );
+  assert.equal(
+    bodies[1].params?.arguments?.deadlineMs,
+    undefined,
+    "recall_xray uses a strict schema without deadlineMs — injecting it would break the op",
+  );
+  assert.equal(
+    bodies[2].params?.arguments?.deadlineMs,
+    undefined,
+    "store retries keep their full timeout per attempt — no shared recall deadline",
+  );
+});
