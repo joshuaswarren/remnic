@@ -17,8 +17,11 @@
  * manifest files.
  */
 
+import { execFile, type ExecFileException } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
@@ -104,6 +107,11 @@ export const MARKETPLACE_MANIFEST_FILENAME = "marketplace.json";
 
 /** Valid install types for validation. */
 const VALID_INSTALL_TYPES = new Set<string>(["github", "git", "local", "url"]);
+
+/** Bound on a manifest-fetching shallow clone (issue #3611). */
+const GIT_CLONE_TIMEOUT_MS = 120_000;
+
+const execFileAsync = promisify(execFile);
 
 // ── Generate ──────────────────────────────────────────────────────────────
 
@@ -445,27 +453,42 @@ async function resolveGithub(
 /**
  * Resolve marketplace.json from a git URL.
  *
- * For now this delegates to URL-based resolution by constructing a raw URL.
- * Full git clone support can be added later.
+ * Shallow-clones the source into a temp dir and reads the manifest from the
+ * checkout, so every transport git supports (HTTPS, SSH, file://, local
+ * paths, self-hosted) resolves the same way. GIT_TERMINAL_PROMPT=0 keeps a
+ * credential prompt from hanging the install.
  */
 async function resolveGit(
   gitUrl: string,
   logger: MarketplaceLogger,
 ): Promise<MarketplaceManifest> {
-  // For git URLs that look like GitHub HTTPS URLs, extract owner/repo and
-  // delegate to the GitHub resolver.
-  const ghMatch = gitUrl.match(
-    /^(?:https?:\/\/)?github\.com\/([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+?)(?:\.git)?$/u,
-  );
-  if (ghMatch?.[1]) {
-    logger.debug?.(`git URL looks like GitHub — delegating to github resolver`);
-    return resolveGithub(ghMatch[1], logger);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-marketplace-git-"));
+  const cloneDir = path.join(tmpDir, "repo");
+
+  logger.debug?.(`cloning git source for marketplace manifest: ${gitUrl}`);
+  try {
+    await execFileAsync(
+      "git",
+      ["clone", "--quiet", "--depth", "1", gitUrl, cloneDir],
+      {
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+        timeout: GIT_CLONE_TIMEOUT_MS,
+      },
+    );
+  } catch (err) {
+    // SAFETY: the only awaited call in the try block is the git clone, and
+    // execFile rejections are always ExecFileException carrying the child's
+    // stderr.
+    const stderr = (err as ExecFileException).stderr?.toString().trim();
+    const detail = stderr || (err instanceof Error ? err.message : String(err));
+    throw new Error(`Failed to clone git source ${gitUrl}: ${detail}`);
   }
 
-  throw new Error(
-    `Git URL resolution requires a GitHub-format URL for now. ` +
-    `Got: ${gitUrl}. Use --type github or --type url instead.`,
-  );
+  try {
+    return resolveLocal(cloneDir, logger);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
