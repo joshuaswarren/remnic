@@ -60,6 +60,9 @@ test("export refuses an unknown schemaVersion override", async () => {
       outDir,
       pluginVersion: "0.0.0-test",
       now: 1_700_000_000_000,
+      // SAFETY: the invalid literal is the point of this test; the cast
+      // defeats the enum's compile-time narrowing so safeParse can reject
+      // "taxonomy-v9" at runtime.
       capsule: { schemaVersion: "taxonomy-v9" as "taxonomy-v1" },
     }),
     /taxonomy-v1/,
