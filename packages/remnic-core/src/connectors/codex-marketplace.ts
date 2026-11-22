@@ -455,8 +455,11 @@ async function resolveGithub(
  *
  * Shallow-clones the source into a temp dir and reads the manifest from the
  * checkout, so every transport git supports (HTTPS, SSH, file://, local
- * paths, self-hosted) resolves the same way. GIT_TERMINAL_PROMPT=0 keeps a
- * credential prompt from hanging the install.
+ * paths, self-hosted) resolves the same way. The clone runs hermetically:
+ * ambient git config is ignored (a hostile ~/.gitconfig could re-enable the
+ * ext:: transport, which runs arbitrary commands), the protocol allowlist
+ * is closed to https/ssh/file, hooks and templates are neutralized, and
+ * GIT_TERMINAL_PROMPT=0 keeps a credential prompt from hanging the install.
  */
 async function resolveGit(
   gitUrl: string,
@@ -468,15 +471,38 @@ async function resolveGit(
 
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-marketplace-git-"));
   const cloneDir = path.join(tmpDir, "repo");
+  const emptyTemplate = path.join(tmpDir, "template");
+  fs.mkdirSync(emptyTemplate);
 
   try {
     logger.debug?.(`cloning git source for marketplace manifest: ${gitUrl}`);
     try {
       await execFileAsync(
         "git",
-        ["clone", "--quiet", "--depth", "1", "--", gitUrl, cloneDir],
+        [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "clone",
+          "--quiet",
+          "--depth",
+          "1",
+          "--template",
+          emptyTemplate,
+          "--",
+          gitUrl,
+          cloneDir,
+        ],
         {
-          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          env: {
+            ...process.env,
+            GIT_TERMINAL_PROMPT: "0",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            // Ambient GIT_CONFIG_KEY_*/GIT_CONFIG_VALUE_* pairs cannot inject
+            // config either.
+            GIT_CONFIG_COUNT: "0",
+            GIT_ALLOW_PROTOCOL: "https:ssh:file",
+          },
           timeout: GIT_CLONE_TIMEOUT_MS,
         },
       );

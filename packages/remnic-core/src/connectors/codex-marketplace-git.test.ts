@@ -13,7 +13,8 @@
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -103,6 +104,94 @@ test("#3611 git source resolves a local-path remote by cloning", async () => {
     assert.deepEqual(result.pluginsFound, ["demo"]);
   } finally {
     await rm(remote.dir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#3611 ambient git config cannot re-enable ext:: or run hooks", async () => {
+  // w7X's second exploit: a hostile global gitconfig can re-enable the ext::
+  // transport (arbitrary command execution) and point hooksPath at a
+  // post-checkout hook that runs during our clone. The clone must run with
+  // GIT_CONFIG_NOSYSTEM/GIT_CONFIG_GLOBAL neutralized, a closed protocol
+  // allowlist, and hooks disabled.
+  const hostile = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-hostile-"));
+  const remote = await makeGitRemote();
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
+  const hooksDir = path.join(hostile, "hooks");
+  const hookMarker = path.join(hostile, "hook-ran");
+  const extMarker = path.join(hostile, "ext-ran");
+  try {
+    await mkdir(hooksDir);
+    await writeFile(
+      path.join(hooksDir, "post-checkout"),
+      `#!/bin/sh\ntouch ${hookMarker}\n`,
+      { mode: 0o755 },
+    );
+    const cfgFile = path.join(hostile, "gitconfig");
+    await writeFile(
+      cfgFile,
+      `[protocol "ext"]\n\tallow = always\n[core]\n\thooksPath = ${hooksDir}\n`,
+    );
+
+    const prev = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = cfgFile;
+    try {
+      const cloned = await installFromMarketplace(
+        remote.fileUrl,
+        "git",
+        marketplaceConfig(memoryDir),
+      );
+      assert.equal(cloned.ok, true, cloned.message);
+      assert.equal(
+        existsSync(hookMarker),
+        false,
+        "ambient hooksPath ran a post-checkout hook during clone",
+      );
+
+      const ext = await installFromMarketplace(
+        `ext::sh -c "touch ${extMarker}"`,
+        "git",
+        marketplaceConfig(memoryDir),
+      );
+      assert.equal(ext.ok, false, "ext:: transport must not be allowed");
+      assert.equal(
+        existsSync(extMarker),
+        false,
+        "ambient protocol.ext.allow=always let ext:: execute a command",
+      );
+    } finally {
+      if (prev === undefined) {
+        delete process.env.GIT_CONFIG_GLOBAL;
+      } else {
+        process.env.GIT_CONFIG_GLOBAL = prev;
+      }
+    }
+  } finally {
+    await rm(hostile, { recursive: true, force: true });
+    await rm(remote.dir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#3611 a failed clone leaves no temp dir behind", async () => {
+  // w7X's third finding: mkdtemp ran before the clone, and the rm sat in a
+  // finally that only wrapped resolveLocal — every clone failure (including
+  // timeout) leaked remnic-marketplace-git-* dirs.
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mkt-cfg-"));
+  try {
+    const count = async () =>
+      (await readdir(os.tmpdir())).filter((d) =>
+        d.startsWith("remnic-marketplace-git-"),
+      ).length;
+    const before = await count();
+    const result = await installFromMarketplace(
+      "file:///definitely/not/a/repo-3611",
+      "git",
+      marketplaceConfig(memoryDir),
+    );
+    assert.equal(result.ok, false);
+    assert.equal(await count(), before, "failed clone leaked a temp dir");
+  } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
