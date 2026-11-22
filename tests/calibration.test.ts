@@ -110,3 +110,66 @@ test("getCalibrationRulesForRecall reads pre-computed rules", async () => {
   assert.equal(rules[0].id, "cal-precomp");
   assert.equal(rules[0].ruleType, "scope_boundary");
 });
+
+// ─── #3552: similarity-ranked recall section ────────────────────────────────
+
+function calRule(id: string, condition: string): CalibrationRule {
+  return {
+    id,
+    ruleType: "model_tendency",
+    condition,
+    modelTendency: `tendency for ${id}`,
+    userExpectation: `expectation for ${id}`,
+    calibration: `calibration for ${id}`,
+    confidence: 0.8,
+    evidenceCount: 3,
+    evidenceCorrectionIds: [],
+    createdAt: "2026-03-17T00:00:00Z",
+    lastReinforcedAt: "2026-03-17T00:00:00Z",
+  };
+}
+
+test("buildCalibrationRecallSection ranks query-relevant rules first", () => {
+  // Irrelevant rule sits FIRST in the index — pre-#3552 it wins the char
+  // budget by position alone. The query mentions databases, so the
+  // database rule must outrank the hiking rule regardless of order.
+  const rules = [
+    calRule("cal-hike", "When discussing hiking trails"),
+    calRule("cal-db", "When discussing database migrations"),
+  ];
+  const section = buildCalibrationRecallSection(rules, "what database are we using?");
+  assert.ok(section !== null);
+  assert.ok(
+    section.indexOf("database migrations") < section.indexOf("hiking trails"),
+    `relevant rule must outrank irrelevant rule:\n${section}`,
+  );
+});
+
+test("buildCalibrationRecallSection preserves index order when nothing matches the query", () => {
+  // Include-all fallback: a query with no token overlap must leave the
+  // section identical to the pre-#3552 ordering.
+  const rules = [
+    calRule("cal-a", "When discussing hiking trails"),
+    calRule("cal-b", "When discussing database migrations"),
+  ];
+  const section = buildCalibrationRecallSection(rules, "zzz qqq xxx");
+  assert.ok(section !== null);
+  assert.ok(
+    section.indexOf("hiking trails") < section.indexOf("database migrations"),
+    `unmatched query must preserve index order:\n${section}`,
+  );
+});
+
+test("buildCalibrationRecallSection maxRules cap applies after ranking, not before", () => {
+  // Three rules, cap 1: the query-relevant rule must survive the cap even
+  // though it sits last in index order.
+  const rules = [
+    calRule("cal-hike", "When discussing hiking trails"),
+    calRule("cal-surf", "When discussing surfing spots"),
+    calRule("cal-db", "When discussing database migrations"),
+  ];
+  const section = buildCalibrationRecallSection(rules, "database help", 1200, 1);
+  assert.ok(section !== null);
+  assert.ok(section.includes("database migrations"));
+  assert.ok(!section.includes("hiking trails"));
+});
