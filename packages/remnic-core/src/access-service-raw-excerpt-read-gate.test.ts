@@ -38,8 +38,9 @@ import {
   projectNamespaceName,
   projectTagProjectId,
 } from "./coding/coding-namespace.js";
+import type { RecallXraySnapshot } from "./recall-xray.js";
 import type { StorageManager } from "./storage.js";
-import type { CodingContext, PluginConfig } from "./types.js";
+import type { CodingContext, MemoryFile, PluginConfig } from "./types.js";
 
 interface RawExcerptProbe {
   service: EngramAccessService;
@@ -62,6 +63,12 @@ function makeRawExcerptProbe(options: {
   snapshotNamespace: string;
   sessionContext?: CodingContext;
   sessionKey: string;
+  /** Called inside the readMemoryByPath stub — used to fire a mid-I/O abort. */
+  onMemoryRead?: (path: string) => void;
+  /** Value the readMemoryByPath stub resolves. */
+  memoryFixture?: MemoryFile;
+  /** Snapshot the recallWithXrayCapture stub returns (null → empty x-ray). */
+  xraySnapshot?: RecallXraySnapshot | null;
 }): RawExcerptProbe {
   const searchSessionIds: Array<string | undefined> = [];
   const contexts = new Map<string, CodingContext>();
@@ -100,7 +107,7 @@ function makeRawExcerptProbe(options: {
     includedMemories: [],
   };
 
-  const storage = {
+  const storage = probeCast<StorageManager>({
     dir: "/synthetic/remnic-raw-excerpt-read-gate/store",
     async readMemoryByPath(path: string) {
       options.onMemoryRead?.(path);
@@ -109,13 +116,13 @@ function makeRawExcerptProbe(options: {
     async getMemoryById() {
       return null;
     },
-  } as unknown as StorageManager;
+  });
 
   const service = Object.create(
     EngramAccessService.prototype,
   ) as EngramAccessService;
 
-  const orch = {
+  const orch = probeCast<Orchestrator>({
     config,
     getCodingContextForSession: (sk: string | undefined) =>
       (sk ? contexts.get(sk) : null) ?? null,
@@ -155,9 +162,9 @@ function makeRawExcerptProbe(options: {
         return [];
       },
     },
-  } as unknown as Orchestrator;
+  });
 
-  (service as unknown as { orchestrator: Orchestrator }).orchestrator = orch;
+  probeCast<{ orchestrator: Orchestrator }>(service).orchestrator = orch;
 
   // `executeRecall` consults the cross-namespace budget; `Object.create` skips
   // the constructor that builds the real limiter, so install one. Budget is
@@ -171,6 +178,16 @@ function makeRawExcerptProbe(options: {
     });
 
   return { service, searchSessionIds, contexts };
+}
+
+/**
+ * Boundary cast for probe stubs: the one assertion lives inside this helper
+ * (with its SAFETY comment), so call sites carry no assertions at all.
+ */
+function probeCast<T>(value: NonNullable<unknown>): T {
+  // SAFETY: test stubs implement exactly the members the path under test
+  // reads; the full production surface is intentionally not provided.
+  return value as T;
 }
 
 type ExecuteRecallInternals = {
@@ -523,8 +540,8 @@ test("#3547: abort during x-ray decoration reads throws AbortError instead of co
     namespace: "pi-geek",
     tierExplain: null,
     results: [
-      { memoryId: "mem-a", path: "facts/a.md", servedBy: "retrieval", scoreDecomposition: {} },
-    ] as RecallXraySnapshot["results"],
+      { memoryId: "mem-a", path: "facts/a.md", servedBy: "hybrid", scoreDecomposition: { final: 0.9 }, admittedBy: ["budget", "namespace"] },
+    ],
     appliedResultLimit: 10,
     appliedResults: [],
     headroomResults: [],
@@ -557,15 +574,14 @@ test("#3547: abort during x-ray decoration reads throws AbortError instead of co
   });
 
   await assert.rejects(
-    (probe.service as unknown as { recallXray(r: unknown): Promise<unknown> }).recallXray({
+    probe.service.recallXray({
       query: "what database are we using?",
       sessionKey: SESSION_KEY,
       authenticatedPrincipal: "pi-geek",
       disclosure: "section",
       abortSignal: controller.signal,
     }),
-    (err: unknown) =>
-      err instanceof Error && err.name === "AbortError",
+    (err: Error) => err.name === "AbortError",
     "a cancel that lands during result decoration must abort the pipeline",
   );
 });
