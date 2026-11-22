@@ -31,19 +31,19 @@ export function refuseOverCapSingle(entry: BufferEntryState | null, maxTurns: nu
   return true;
 }
 
-/** Batch path: sums incoming turns per key across all batches, new keys included. */
+/** Batch path: sums incoming turns per key across all batches, new keys included. Returns the first over-cap key. */
 export function refuseOverCapBatch(
   peekEntry: (key: string) => BufferEntryState | null,
   batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
   maxTurns: number,
-): boolean {
+): string | null {
   const incomingByKey = new Map<string, number>();
   for (const batch of batches) incomingByKey.set(batch.bufferKey, (incomingByKey.get(batch.bufferKey) ?? 0) + batch.turns.length);
   for (const [bufferKey, incoming] of incomingByKey) {
     if (heldTurnCount(peekEntry(bufferKey)) + incoming > maxTurns) {
       warnTurnCapRefused(bufferKey, maxTurns);
-      return true;
+      return bufferKey;
     }
   }
-  return false;
+  return null;
 }

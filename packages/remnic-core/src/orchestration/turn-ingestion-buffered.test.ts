@@ -3,8 +3,9 @@ import test from "node:test";
 
 import { ReplayAdmissionRefusedError, StorageTargetRequiredError } from "../buffer-admission.js";
 import type { AddTurnOutcome } from "../buffer-types.js";
+import { SmartBuffer } from "../buffer.js";
 import { parseConfig } from "../config.js";
-import type { BufferTurn, PluginConfig } from "../types.js";
+import type { BufferEntryState, BufferState, BufferTurn, PluginConfig } from "../types.js";
 import { ingestReplayBatchBuffered } from "./turn-ingestion-buffered.js";
 import type { TurnIngestionDeps } from "./turn-ingestion.js";
 
@@ -221,4 +222,54 @@ test("buffered ingest: LCM archive observes raw turns per session and honors arc
   observed.length = 0;
   await ingestReplayBatchBuffered(deps, bySession, { writeNamespaceOverride: "ns-work", archiveLcm: false });
   assert.equal(observed.length, 0);
+});
+
+function realBufferDeps(config: PluginConfig, entries: Record<string, BufferEntryState>) {
+  const initial: BufferState = { turns: [], lastExtractionAt: null, extractionCount: 0, entries };
+  const storage = { loadBuffer: async () => structuredClone(initial), saveBuffer: async () => {} };
+  // SAFETY: the stub implements the load/save surface SmartBuffer reads; the cast only satisfies StorageManager.
+  const buffer = new SmartBuffer(config, storage as never);
+  const deps: Deps = { config, buffer, lcmEngine: null, queueBufferedExtraction: async () => {} };
+  return deps;
+}
+
+function heldTurns(sessionKey: string, count: number): BufferTurn[] {
+  return Array.from({ length: count }, (_, i) => ({ ...turn(`held ${i}`), sessionKey, acceptedCapture: true }));
+}
+
+test("buffered ingest: a session at its turn cap is refused with the per-session turn cap reason, not entry capacity", async () => {
+  const config = parseConfig({ memoryDir: "/tmp/remnic-buffered-test", bufferSaveDebounceMs: 0, bufferMaxTurnsPerSession: 4 });
+  const deps = realBufferDeps(config, {
+    "pi:full": { turns: heldTurns("pi:full", 4), lastExtractionAt: null, extractionCount: 0 },
+  });
+
+  await assert.rejects(
+    ingestReplayBatchBuffered(deps, new Map([["pi:full", [turn("one too many")]]]), { writeNamespaceOverride: "ns-work" }),
+    (err: Error) => {
+      assert.ok(err instanceof ReplayAdmissionRefusedError, "still the retryable admission class");
+      assert.match(err.message, /per-session turn cap \(4\)/);
+      assert.match(err.message, /pi:full/);
+      assert.doesNotMatch(err.message, /entry capacity/);
+      return true;
+    },
+  );
+});
+
+test("buffered ingest: a new session refused at the session-entry cap keeps the entry capacity reason", async () => {
+  const config = parseConfig({ memoryDir: "/tmp/remnic-buffered-test", bufferSaveDebounceMs: 0, bufferMaxSessions: 3 });
+  const deps = realBufferDeps(config, {
+    "pi:a": { turns: heldTurns("pi:a", 1), lastExtractionAt: null, extractionCount: 0 },
+    "pi:b": { turns: heldTurns("pi:b", 1), lastExtractionAt: null, extractionCount: 0 },
+  });
+
+  await assert.rejects(
+    ingestReplayBatchBuffered(deps, new Map([["pi:new", [turn("new session")]]]), { writeNamespaceOverride: "ns-work" }),
+    (err: Error) => {
+      assert.ok(err instanceof ReplayAdmissionRefusedError);
+      assert.match(err.message, /session-entry cap \(3\)/);
+      assert.match(err.message, /entry capacity/, "operators grepping the old text still find entry-cap refusals");
+      assert.doesNotMatch(err.message, /per-session turn cap/);
+      return true;
+    },
+  );
 });
