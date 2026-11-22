@@ -137,9 +137,9 @@ async function loadState(stateDir: string): Promise<{ state: XSyncState; warning
 async function saveState(stateDir: string, state: XSyncState): Promise<void> {
   const entries = Object.entries(state.seen);
   if (entries.length > SEEN_CAP) {
-    // ponytail: FIFO prune by firstSeenAt; switch to an LRU store if a
-    // single principal ever exceeds 20k live records.
-    entries.sort((a, b) => compareIso(a[1].firstSeenAt, b[1].firstSeenAt, a[0], b[0]));
+    // Least recently seen first: a post that every sync still returns keeps
+    // its dedupe entry, so the cap never re-ingests a live bookmark (#3541).
+    entries.sort((a, b) => compareIso(a[1].lastSeenAt, b[1].lastSeenAt, a[0], b[0]));
     for (const [postId] of entries.slice(0, entries.length - SEEN_CAP)) {
       delete state.seen[postId];
     }
