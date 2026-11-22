@@ -36,6 +36,7 @@ import { lastRecallTimingsFor } from "./recall-timings.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
 import { StorageManager } from "./index.js";
 import { DEFAULT_RECALL_DISCLOSURE, type MemoryFile, type RecallDisclosure, type RecallPlanMode, isRecallDisclosure } from "./types.js";
+import { attributeRawExcerpts } from "./access-recall-excerpt-attribution.js";
 import {
   EngramAccessInputError,
   shapeMemorySummary,
@@ -488,9 +489,9 @@ export class AccessRecallSurface {
     };
 
     // Pre-fetch raw excerpts once when `disclosure === "raw"` so we don't
-    // hit the LCM archive per-result (issue #677 PR 2/4).  Excerpts are
-    // attached to the first result; per-result attribution is reserved
-    // for a future PR if/when the LCM index can be joined to memory ids.
+    // hit the LCM archive per-result (issue #677 PR 2/4).  Each excerpt is
+    // attributed to the result whose provenance quote it contains (issue
+    // #3546); excerpts no result claims stay anchored to the first result.
     // Coerce `null` (non-raw disclosure) to `undefined` so the optional
     // serializer field is never explicitly `null`.
     // Namespace for the LCM `${namespace}:${sessionKey}` prefix: prefer the
@@ -521,6 +522,7 @@ export class AccessRecallSurface {
               : null,
           );
     const rawExcerpts = rawExcerptsResult ?? undefined;
+    const pending: Array<{ memory: MemoryFile; baseDir: string }> = [];
     for (const included of coerceIncludedMemories(snapshot)) {
       const memoryPath = included.path;
       if (!memoryPath) continue;
@@ -531,35 +533,35 @@ export class AccessRecallSurface {
       if (!resolved) continue;
       const { memory, baseDir } = resolved;
       seen.add(seenKey);
-      results.push(
-        this.deps.serializeMemorySummary(
-          memory,
-          baseDir,
-          disclosure,
-          // Attach the (possibly empty) raw excerpts to the first raw
-          // result; subsequent results do not duplicate the array.
-          results.length === 0 ? rawExcerpts : undefined,
-        ),
-      );
+      pending.push({ memory, baseDir });
     }
 
-    if (results.length > 0) return results;
+    if (pending.length === 0) {
+      for (const memoryId of snapshot.memoryIds) {
+        const memory = await storage.getMemoryById(memoryId);
+        if (!memory || seen.has(memory.path)) continue;
+        seen.add(memory.path);
+        pending.push({ memory, baseDir: storageDir });
+      }
+    }
 
-    for (const memoryId of snapshot.memoryIds) {
-      const memory = await storage.getMemoryById(memoryId);
-      if (!memory || seen.has(memory.path)) continue;
-      seen.add(memory.path);
+    const attributed = attributeRawExcerpts(
+      pending.map((entry) => entry.memory),
+      rawExcerpts,
+    );
+    for (const [index, entry] of pending.entries()) {
       results.push(
         this.deps.serializeMemorySummary(
-          memory,
-          storageDir,
+          entry.memory,
+          entry.baseDir,
           disclosure,
-          results.length === 0 ? rawExcerpts : undefined,
+          attributed[index],
         ),
       );
     }
     return results;
   }
+
 
   /**
    * Fetch raw transcript excerpts from the LCM archive for `disclosure ===
