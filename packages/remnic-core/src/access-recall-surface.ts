@@ -1384,7 +1384,9 @@ export class AccessRecallSurface {
             )
           : undefined;
       throwIfAborted(request.abortSignal, "recall X-ray aborted before recall response build");
-      const recallResponse = await this.deps.buildRecallResponseFromXraySnapshot({
+      const recallArgs: Parameters<
+        AccessRecallSurfaceDeps["buildRecallResponseFromXraySnapshot"]
+      >[0] = {
         query,
         sessionKey: recallSessionKey,
         snapshot: xrayResponse.snapshot,
@@ -1393,16 +1395,11 @@ export class AccessRecallSurface {
         requestedMode: request.mode,
         normalizedMode: mode,
         storageCorpusVersionsAtRecallStart,
-        ...(xrayRawExcerptNamespace
-          ? { rawExcerptNamespace: xrayRawExcerptNamespace }
-          : {}),
-        ...(xrayRawExcerptSessionIds !== undefined
-          ? { rawExcerptSessionIds: xrayRawExcerptSessionIds }
-          : {}),
-        ...(xrayRawExcerptsSuppressed
-          ? { rawExcerptsSuppressed: xrayRawExcerptsSuppressed }
-          : {}),
-      });
+      };
+      if (xrayRawExcerptNamespace) recallArgs.rawExcerptNamespace = xrayRawExcerptNamespace;
+      if (xrayRawExcerptSessionIds !== undefined) recallArgs.rawExcerptSessionIds = xrayRawExcerptSessionIds;
+      if (xrayRawExcerptsSuppressed) recallArgs.rawExcerptsSuppressed = xrayRawExcerptsSuppressed;
+      const recallResponse = await this.deps.buildRecallResponseFromXraySnapshot(recallArgs);
       throwIfAborted(request.abortSignal, "recall X-ray aborted after recall response build");
       return { ...xrayResponse, recall: recallResponse };
     }
