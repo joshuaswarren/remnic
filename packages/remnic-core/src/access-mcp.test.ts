@@ -16,6 +16,7 @@ import { initLogger, resetLogger } from "./logger.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import type { StorageManager } from "./storage.js";
 
+// ──────────────────────────────────────────────────────────────────────────
 
 function makeMockService(briefingFn?: () => Promise<unknown>): EngramAccessService {
   return {
@@ -103,6 +104,7 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
   let attempts = 0;
   const refusal = new Error("buffer at session-entry cap");
   refusal.name = "ReplayAdmissionRefusedError";
+  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       attempts += 1;
@@ -117,6 +119,7 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
   });
 
   const refused = await server.handleRequest(request);
+  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
   const refusedResult = refused as {
     result?: {
       isError?: boolean;
@@ -124,12 +127,14 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
     };
   };
   assert.equal(refusedResult.result?.isError, true, "refused admission must not be acknowledged as success");
+  // SAFETY: same tools/call result envelope as the assertion above.
   assert.deepEqual(refusedResult.result?.structuredContent, {
     code: "buffer_admission_refused",
     retryable: true,
   }, JSON.stringify(refused));
 
   const retried = await server.handleRequest(request);
+  // SAFETY: same tools/call result envelope as refusedResult above.
   const retriedResult = retried as typeof refusedResult;
   assert.equal(retriedResult.result?.isError, false);
   assert.equal(attempts, 2, "the same request can be retried after capacity is available");
@@ -139,6 +144,7 @@ test("MCP reports buffer admission refusal as retryable and does not return succ
 test("MCP reports a missing storage target as a non-retryable storage_target_required error", async () => {
   const failure = new Error("accepted capture requires an explicit storage target");
   failure.name = "StorageTargetRequiredError";
+  // SAFETY: the mock overrides only observe; every other MCP dispatch path is unreachable in this test.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw failure;
@@ -151,6 +157,7 @@ test("MCP reports a missing storage target as a non-retryable storage_target_req
       messages: [{ role: "user", content: "cannot succeed on retry" }],
     }),
   );
+  // SAFETY: a tools/call request always resolves to a JSON-RPC result envelope; only isError and structuredContent are asserted.
   const result = response as {
     result?: { isError?: boolean; structuredContent?: { code?: string; retryable?: boolean } };
   };
@@ -645,6 +652,10 @@ test("MCP session override is injected only into tools that accept sessionKey", 
 });
 
 test("MCP memory_get advertises sessionKey so the override reaches the resolver (#1582)", async () => {
+  // The engram.memory_get inputSchema must advertise sessionKey, otherwise
+  // toolAcceptsArgument skips the override injection and an MCP caller citing a
+  // review). With the field advertised, the transport session key flows through
+  // the registry op into service.memoryGet as the 4th positional arg.
   let receivedSessionKey: string | undefined;
   const service = {
     ...makeMockService(),
@@ -1289,6 +1300,7 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
     return { isError, text };
   };
   try {
+    // ── scoped to ns_a: denied-namespace pair → isError (fail closed), NOT mutated ──
     const denied = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
       readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
     );
@@ -1300,6 +1312,7 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
       "scoped resolve: the denied pair must remain unresolved (no mutation leak)",
     );
 
+    // ── scoped to ns_a: allowed-namespace pair → resolves, mutated ──
     const allowed = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
       readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: allowedPair.pairId, verb: "both-valid" }))),
     );
@@ -1389,6 +1402,8 @@ const FLEET_WIDE_MAINTENANCE_TOOLS = [
 test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op, no side effect (issue #1850 round 10)", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-fleetwide-scoped-"));
   let sideEffects = 0;
+  // this tracker; graph_edge_decay_run short-circuits via graphEdgeDecayEnabled
+  // false. Under a scoped token NONE may run — the guard throws first.
   const track = (): Promise<{ ok: true }> => { sideEffects += 1; return Promise.resolve({ ok: true }); };
   const service = {
     ...makeMockService(),
@@ -1424,6 +1439,7 @@ test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op
       );
       assert.equal(legacy.isError, true, `engram.${tool}: a namespace-scoped token must be denied`);
       assert.match(legacy.text, /across all namespaces/, `engram.${tool}: denial names the fleet-wide restriction`);
+      // Canonical alias (remnic.*) routes through the SAME gate.
       const canonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
         readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic." + tool))),
       );
@@ -1550,6 +1566,7 @@ test("MCP external_wiki_search rejects an empty query before service dispatch", 
 });
 
 // ===========================================================================
+// (paths from fs/backend). Intended typed access errors stay readable.
 // ===========================================================================
 
 function serviceWithRecallThrow(error: Error): EngramAccessService {

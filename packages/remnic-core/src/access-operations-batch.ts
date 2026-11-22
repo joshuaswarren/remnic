@@ -41,6 +41,7 @@ import { runPreferenceDriftScan } from "./preferences/preference-drift.js";
 import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
 import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js";
 
+// ---------------------------------------------------------------------------
 
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
@@ -285,8 +286,12 @@ defineOperation({ name: "identity_anchor_get", description: "Get identity anchor
 defineOperation({ name: "identity_anchor_update", description: "Update identity anchor.", schema: strictSchema({ namespace: S.str, identityTraits: S.str, communicationPreferences: S.str, operatingPrinciples: S.str, continuityNotes: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.identityAnchorUpdate({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, identityTraits: optStr(input.identityTraits), communicationPreferences: optStr(input.communicationPreferences), operatingPrinciples: optStr(input.operatingPrinciples), continuityNotes: optStr(input.continuityNotes) }) }) });
 defineOperation({ name: "memory_identity", description: "Memory identity.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryIdentity({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
 
+// SAFETY: optStr yields undefined or a string; workTask rejects any action
 defineOperation({ name: "work_task", description: "Manage work task.", fleetWide: true, schema: strictSchema({ action: S.str, id: S.str, title: S.str, description: S.str, status: S.str, priority: S.str, owner: S.str, assignee: S.str, projectId: S.str, tags: S.strArr, dueAt: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workTask({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "transition") ?? "list", id: optStr(input.id), title: optStr(input.title), description: optStr(input.description), status: optStr(input.status), priority: optStr(input.priority), owner: optStr(input.owner), assignee: optStr(input.assignee), projectId: optStr(input.projectId), tags: optStrArr(input.tags), dueAt: optStr(input.dueAt) }) }) });
+// SAFETY: optStr yields undefined or a string; workProject rejects any action
+// string outside its union with an input error before touching a store.
 defineOperation({ name: "work_project", description: "Manage work project.", fleetWide: true, schema: strictSchema({ action: S.str, id: S.str, name: S.str, description: S.str, status: S.str, owner: S.str, tags: S.strArr, taskId: S.str, projectId: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workProject({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "link_task") ?? "list", id: optStr(input.id), name: optStr(input.name), description: optStr(input.description), status: optStr(input.status), owner: optStr(input.owner), tags: optStrArr(input.tags), taskId: optStr(input.taskId), projectId: optStr(input.projectId) }) }) });
+// SAFETY: optStr yields undefined or a string; workBoard rejects any action
 // string outside its union with an input error before touching a store.
 defineOperation({ name: "work_board", description: "Manage work board.", fleetWide: true, schema: strictSchema({ action: S.str, projectId: S.str, snapshotJson: S.str, linkToMemory: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.workBoard({ action: (optStr(input.action) as "export_markdown" | "export_snapshot" | "import_snapshot") ?? "export_markdown", projectId: optStr(input.projectId) ?? "", snapshotJson: optStr(input.snapshotJson) ?? "", linkToMemory: input.linkToMemory === true }) }) });
 defineOperation({
@@ -340,6 +345,7 @@ defineOperation({
     const rf = optStr(input.format);
     const fe = validateBriefingFormat(rf);
     if (fe) throw new EngramAccessInputError(fe);
+    // SAFETY: validateBriefingFormat rejects every format except json, markdown, or undefined.
     const request: EngramAccessBriefingRequest = {
       since: optStr(input.since), focus: optStr(input.focus), namespace: optStr(input.namespace),
       includeLocation: optBool(input.includeLocation), format: rf as "json" | "markdown" | undefined,

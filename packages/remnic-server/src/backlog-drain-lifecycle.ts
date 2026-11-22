@@ -20,6 +20,9 @@ async function destroyWithDeadline(
   deadlineMs: number,
 ): Promise<void> {
   const timedOut = Symbol("destroy-deadline-expired");
+  // SAFETY: the deadline path abandons this promise on purpose; marking the
+  // rejection handled keeps a late destroy failure from crashing exit while
+  // `return await bounded` below still propagates in-time failures.
   const bounded = run();
   bounded.catch(() => undefined);
   let timer: NodeJS.Timeout | undefined;

@@ -64,6 +64,8 @@ function profilePlan(overrides: Partial<ResolvedScopeProfilePlan> = {}): Resolve
     promotionTargets: [],
     warnings: [],
     ...overrides,
+    // Recompute layers from the (possibly overridden) readOrder/baseNamespace
+    // unless the caller supplied their own.
     layers: overrides.layers ?? layers,
   } as unknown as ResolvedScopeProfilePlan;
 }

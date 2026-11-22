@@ -252,6 +252,8 @@ test("HTTP chat/message: concurrent identical requests are deduplicated (issue #
       fallbackLlmRef: ({
         chatCompletion: async () => {
           llmCalls++;
+          // Simulate enough work that the second request lands while the
+          // first is still in-flight (the dedup window).
           await new Promise((r) => setTimeout(r, 30));
           return { content: "shared-reply", modelUsed: "test-model" };
         },

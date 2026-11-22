@@ -500,6 +500,7 @@ export function utilityContract(
     modelDigest: input.modelDigest?.trim() || "unverified",
     modelProfileId: input.modelProfileId,
     baseUrl: executor.baseUrl,
+    // The backend selects non-generic request fields, so resuming under a
     // different override is a different condition (PR #3079 post-cap).
     backend: executor.backend,
     benchmarks: [...benchmarks],

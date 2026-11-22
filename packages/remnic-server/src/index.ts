@@ -104,6 +104,7 @@ function parseOptionalPositiveInteger(value: unknown, source: string): number | 
 
 function parseOptionalNonNegativeInteger(value: unknown, source: string): number | undefined {
   if (value === undefined) return undefined;
+  // Reject blank strings BEFORE coercion: Number("") is 0, which would
   const parsed = typeof value === "string"
     ? value.trim() === "" ? Number.NaN : Number(value.trim())
     : value;
@@ -263,11 +264,13 @@ export function mergeRemnicConfigForServer(
 ): Record<string, unknown> {
   const effectiveEnvRemnic = { ...(envRemnic ?? {}) };
   if (isOpenaiApiKeyDisabled(fileRemnic.openaiApiKey)) {
+    // A local/gateway-only deployment can explicitly disable the direct
     delete effectiveEnvRemnic.openaiApiKey;
   }
   return { ...fileRemnic, ...effectiveEnvRemnic };
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 const WRITABLE_BOOLEAN_CONFIG_KEYS = new Set([
   "citationsAutoDetect",
@@ -839,6 +842,8 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
   let backlogScheduler: BacklogScheduler | undefined;
   try {
     ({ host, port } = await httpServer.start()); orchestrator.maintenanceScheduler.armCompoundingWeeklyCron(); logListenerBound(host, port);
+    // The daemon owns extraction-backlog draining: the bounded scheduler
+    // starts AFTER the listener and stops before the orchestrator.
     backlogScheduler = startBacklogScheduler(orchestrator);
   } catch (err) {
     await cleanupFailedStartup(orchestrator, httpServer, codexRunner);
@@ -898,6 +903,7 @@ export async function startServer(options?: ServerRuntimeOptions): Promise<Serve
     return stopPromise;
   };
   httpServer.stop = stop;
+  // SAFETY: assigned inside the try above; the catch rethrows, so past this
   const startedBacklogScheduler = backlogScheduler as BacklogScheduler;
 
   orchestrator.deferredReady.then(() => {

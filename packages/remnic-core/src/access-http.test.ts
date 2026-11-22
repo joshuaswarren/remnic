@@ -830,6 +830,7 @@ test("HTTP observe answers 503 buffer_admission_refused when durable capture hit
   t.after(() => resetLogger());
   const refusal = new Error("buffer at session-entry cap");
   refusal.name = "ReplayAdmissionRefusedError";
+  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw refusal;
@@ -880,6 +881,7 @@ test("HTTP observe missing-storage-target refusal is a non-retryable request fau
     "accepted capture requires an explicit storage target (writeNamespaceOverride or scopeProfileWritePlan.writeNamespace)",
   );
   refusal.name = "StorageTargetRequiredError";
+  // SAFETY: this fixture drives only the observe route; the remaining service members are unreachable.
   const service = Object.assign({} as EngramAccessService, {
     observe: async () => {
       throw refusal;
@@ -966,6 +968,7 @@ test("HTTP briefing endpoint dispatches through the briefing operation", async (
     assert.equal(body.markdown, "# Briefing");
     assert.deepEqual(body.json.sections.activeThreads, []);
     assert.equal(calls.length, 1);
+    // SAFETY: the registered handler builds this request after validating the HTTP body; assertions below check its values.
     const captured = calls[0] as EngramAccessBriefingRequest;
     const { abortSignal, ...briefingRequest } = captured;
     assert.ok(
@@ -3214,6 +3217,7 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
   }
 });
 
+// ===========================================================================
 
 test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 finding 1)", async () => {
   const capsuleCalls: Array<Record<string, unknown>> = [];
@@ -3327,6 +3331,7 @@ test("HTTP coding POST routes gate the body namespace through the allow-list (is
       }),
     });
   try {
+    // scoped: body.namespace to an unlisted tenant → 403 before op.run.
     assert.equal(
       (await postDecision("scoped-ns-a", "ns_b")).status,
       403,
@@ -3545,6 +3550,8 @@ test("HTTP adapters route is op-gated: deny-all → 403, unrestricted → 200 (i
 });
 
 test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 finding 2)", async () => {
+  // session header, NOT a ?namespace= query param. A namespace-scoped bearer
+  // that knows a chatSessionId must not post to / stream a session in a
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-ns-gate-"));
   const session = await createChatSession(dir, { namespace: "ns_a" });
   const service = {
@@ -3751,6 +3758,8 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
       defaultNamespace: "default",
     }),
     memoryBrowse: async () => {
+      // store would read another request's caps. Deterministic fake timers
+      // cannot force that cross-request overlap (mirrors the r7 sibling test).
       await new Promise<void>((resolve) => setTimeout(resolve, 8));
       observed.push(tokenCapabilityStore.getStore());
       return { total: 0, memories: [] };
@@ -3762,6 +3771,7 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
     service,
     port: 0,
     authTokenEntriesGetter: () => [
+      // ALLOW: op + namespace both permitted → 200.
       {
         token: "allow",
         capabilities: {
@@ -3770,7 +3780,9 @@ test("HTTP allow-capability is never inherited by a concurrent deny token across
           namespaces: ["ns_allow"],
         },
       },
+      // DENY (op-level): empty ops → 403 at the op-gate.
       { token: "deny-all", capabilities: { version: 1, ops: [] } },
+      // DENY (namespace-level): op permitted but scoped to a DIFFERENT
       {
         token: "deny-ns",
         capabilities: {
@@ -3866,6 +3878,7 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
       service,
       port: 0,
       authTokenEntriesGetter: () => [
+        // scoped to ns_a (NOT the server default) — must be denied a new chat.
         {
           token: "scoped-ns-a",
           capabilities: {
@@ -3874,6 +3887,7 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
             namespaces: ["ns_a"],
           },
         },
+        // scoped to the server default — may start a new chat there.
         {
           token: "scoped-default",
           capabilities: {
@@ -4115,6 +4129,7 @@ test("issue #2829: memory_store category aliases canonicalize with a retained sp
 });
 
 test("PR #1852: static operator token has no connector provenance under rotation", async () => {
+  // An operator-supplied static token must never acquire connector provenance,
   let capturedSourceConnector: string | undefined;
   const service = {
     memoryStore: (req: { sourceConnector?: string }) => {
@@ -4349,6 +4364,7 @@ test("HTTP namespace/writable preflight admits write-scoped tokens and rejects r
     const writeScoped = await request("write-scoped");
     assert.equal(writeScoped.status, 200);
     assert.equal(await okOf(writeScoped), true);
+    // path (default), which it cannot perform.
     assert.equal(await okOf(await request("store-only", "memory_store")), true);
     assert.equal(await okOf(await request("store-only")), false);
     const diag = await request("diagnostic-only");
@@ -6401,7 +6417,9 @@ test("a budget above the backend cap still gets the rows it asked for", async ()
 });
 
 function quotaStubService(): EngramAccessService {
+  // SAFETY: the prototype supplies the untouched service surface; each quota test overrides only the member its route dispatches.
   const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  // SAFETY: startup reads only orchestrator.config from the service; an empty config keeps every surface flag false.
   Reflect.set(service, "orchestrator", { config: {} });
   return service;
 }
@@ -6417,6 +6435,7 @@ test("concurrent distinct-payload writes cannot overshoot the write quota (issue
     dispatches += 1;
     if (dispatches === 1) firstDispatched.resolve();
     await releaseWrites.promise;
+    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
     return { ok: true, name: request.name } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6461,6 +6480,7 @@ test("a failed write releases its reserved quota slot (issue #3225 C4)", async (
   service.capsuleExport = async (request) => {
     calls += 1;
     if (calls === 1) throw new Error("export backend failed");
+    // SAFETY: the route serializes this stub result into the HTTP response; the test asserts statuses, not this shape.
     return { ok: true, name: request.name } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6497,12 +6517,14 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
     const key = request.idempotencyKey?.trim();
     const cached = key ? stored.get(key) : undefined;
     if (cached) {
+      // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
       return { ...cached, idempotencyReplay: true } as never;
     }
     await hooks?.enforceWriteQuota?.();
     hookCalls += 1;
     const response = { sessionKey: request.sessionKey };
     stored.set(key ?? "", response);
+    // SAFETY: the route only forwards this result into the HTTP response and reads its dryRun/idempotencyReplay flags.
     return response as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6530,6 +6552,7 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
     assert.equal((await post("quota-replay-1")).status, 202);
     const replay = await post("quota-replay-1");
     assert.equal(replay.status, 202);
+    // SAFETY: our own server serialized this body; the test reads only the idempotencyReplay flag.
     const replayBody = (await replay.json()) as { idempotencyReplay?: boolean };
     assert.equal(replayBody.idempotencyReplay, true);
     assert.equal(hookCalls, 1, "the replay must not re-run the quota hook");
@@ -6542,6 +6565,7 @@ test("a replayed observe never 429s and never consumes a second quota slot (issu
 test("a dreams dry run neither 429s nor consumes quota at a full window (#3225 C4)", async () => {
   const service = quotaStubService();
   service.dreamsRun = async (options) => {
+    // SAFETY: the route serializes this stub result into the HTTP response and reads its dryRun flag.
     return { phase: options.phase, dryRun: options.dryRun === true } as never;
   };
   const server = new EngramAccessHttpServer({
@@ -6565,6 +6589,7 @@ test("a dreams dry run neither 429s nor consumes quota at a full window (#3225 C
     assert.equal((await post({})).status, 200);
     const dry = await post({ dryRun: true });
     assert.equal(dry.status, 200);
+    // SAFETY: our own server serialized this body; the test reads only the dryRun flag.
     const dryBody = (await dry.json()) as { dryRun?: boolean };
     assert.equal(dryBody.dryRun, true);
     assert.equal((await post({})).status, 429);

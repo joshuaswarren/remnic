@@ -55,6 +55,7 @@ test("#1645: tombstone-blocked promotion is diverted, not reported as promoted",
       },
       async writeSealedMemory(envelope: SealedMemoryEnvelope, extras: Record<string, unknown>) {
         writeCallCount += 1;
+        // §21 mock fidelity: assert the production-shaped arguments arrive.
         assert.equal(isSealedMemoryEnvelope(envelope), true, "promotion must pass a sealed envelope");
         assert.equal(extras.memoryKind, "note", "promotion extras must carry memoryKind");
         return { id: "blocked-promo-1", tombstoneBlocked: true, blockedBy: "tomb-1" };

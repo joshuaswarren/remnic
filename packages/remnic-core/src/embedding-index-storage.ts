@@ -507,6 +507,7 @@ export class EmbeddingIndexFileStore {
   async identityStamp(): Promise<string> {
     const layout = await this.detectLayout();
     if (layout === "sharded") {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
       const info = await lstat(this.shardDir).catch((err) => {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new EmbeddingIndexStorageError(
@@ -522,6 +523,7 @@ export class EmbeddingIndexFileStore {
       return `shard:${info.ino}:${info.mtimeMs}`;
     }
     if (layout === "legacy") {
+        // SAFETY: only the errno code is inspected; any other rejection shape rethrows uninterpreted.
       const info = await stat(this.indexPath).catch((err) => {
         if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
         throw new EmbeddingIndexStorageError(

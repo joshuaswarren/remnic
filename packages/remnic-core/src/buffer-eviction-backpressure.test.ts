@@ -184,6 +184,8 @@ test("processTurn propagates retryable admission refusal without queueing extrac
     bufferMaxSessions: CAP,
   });
   const queued: BufferTurn[][] = [];
+  // SAFETY: this fixture exercises only admission + refusal; the remaining
+  // coordinator deps are never reached on this path.
   type CoordinatorDeps = ConstructorParameters<typeof TurnIngestionCoordinator>[0];
   const deps = Object.assign({} as CoordinatorDeps, {
     buffer,

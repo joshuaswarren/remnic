@@ -76,6 +76,9 @@ function makeObserveProbe(overrides: Partial<PluginConfig> = {}): ObserveProbe {
     },
     applyCodingNamespaceOverlay: (sk: string | undefined, base: string) =>
       Orchestrator.prototype.applyCodingNamespaceOverlay.call(orch, sk, base),
+    // The objective-state snapshot writer goes through getStorage(namespace).
+    // Capturing the namespace it resolves lets us assert the objective-state
+    // target without touching the filesystem.
     getStorage: async (ns: string) => {
       objectiveStateNamespaces.push(ns);
       return { dir: `/synthetic/storage/${ns}` };
@@ -119,6 +122,7 @@ function observeRequest(
   } as EngramAccessObserveRequest;
 }
 
+/** A principal whose self namespace exists, so the overlay base is non-default. */
 function withSelfPolicyPrefix(principal: string): Partial<PluginConfig> {
   return {
     namespacePolicies: [
@@ -620,6 +624,7 @@ test("#1495 explicit namespace wins and project context does NOT silently overri
   assert.equal(res.effectiveNamespace, "team", "explicit namespace must win");
   assert.equal(probe.lcmCalls[0].sessionKey, encodeNs("team", "pi-geek:abc123"));
   assert.equal(probe.extractionCalls[0].writeNamespaceOverride, "team");
+  // #1505 thread 1: extraction turns carry the ORIGINAL session key (identity),
   assert.deepEqual(
     new Set(probe.extractionCalls[0].sessionKeys),
     new Set(["pi-geek:abc123"]),
@@ -687,6 +692,8 @@ test("#1495 unauthorized explicit namespace throws BEFORE session context is att
 test("#1505 thread 1/3: unauthorized OVERLAY self-base throws BEFORE coding context is attached (no orphan context)", async () => {
   const probe = makeObserveProbe({
     namespacePolicies: [
+      // Self namespace exists (so defaultNamespaceForPrincipal → "pi-geek")
+      // but pi-geek may NOT write it — only some other principal can.
       { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["other"] },
     ],
     principalFromSessionKeyMode: "prefix",
@@ -714,7 +721,9 @@ test("#1505 thread 1/3: unauthorized OVERLAY self-base throws BEFORE coding cont
 test("#1505 thread jvO: restrictive default-namespace write policy does NOT reject a valid project-scoped observe via the legacy-response path (no orphan binding)", async () => {
   const probe = makeObserveProbe({
     namespacePolicies: [
+      // Restrictive DEFAULT namespace: only `admin` may write it, NOT pi-geek.
       { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      // pi-geek may write its own self (and thus its `pi-geek-project-*`) base.
       { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
     ],
     principalFromSessionKeyMode: "prefix",
@@ -745,6 +754,7 @@ test("#1505 thread jvO: a genuine reject (unwritable self base) under a restrict
   const probe = makeObserveProbe({
     namespacePolicies: [
       { name: "default", readPrincipals: ["admin"], writePrincipals: ["admin"] },
+      // pi-geek's self base EXISTS but is NOT writable by pi-geek.
       { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["other"] },
     ],
     principalFromSessionKeyMode: "prefix",

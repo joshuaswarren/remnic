@@ -302,6 +302,7 @@ test("#3251 buffered observe append is durable before accept: a failed save reje
         throw new Error("simulated durable buffer save failure");
       },
     };
+    // SAFETY: `storage` is a private SmartBuffer field, structurally replaced
     const bufferSeam = orchestrator.buffer as any;
     bufferSeam.storage = failingStorage;
 
@@ -334,6 +335,7 @@ test("#3251 multi-session refusal is atomic: earlier sessions are not partially 
     extractionMinChars: 1_000_000,
     extractionMinUserTurns: 1000,
   });
+  // SAFETY: SeedStorage implements the loadBuffer/saveBuffer surface this fixture drives.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   const occupied = makeReplayTurn("occupied", "existing backlog");
   await buffer.addTurn("occupied", {
@@ -377,9 +379,11 @@ test("#3251 durable observe admission is bounded: at the entry cap a new session
   });
   const buffer = new SmartBuffer(
     config,
+    // SAFETY: SeedStorage implements SmartBuffer's storage seam (loadBuffer/
     new SeedStorage() as StorageManager,
   );
   const queued: BufferTurn[][] = [];
+  // SAFETY: capacity fixture exercises only buffered admission — the queue
   const deps = { buffer, config } as any;
   deps.queueBufferedExtraction = async (turns: BufferTurn[]) => {
     queued.push(turns);
@@ -492,6 +496,7 @@ test("#3251 same session+owner across scope profiles never combine; sourceValidA
         onExtractionQueued: trackBackground(backgroundP2),
       }),
     );
+    // #3251 contract: both captures settle durably; only the background
     await Promise.all([replayP1, replayP2]);
     assert.ok(backgroundP1.extraction, "trigger must queue background extraction for P1");
     assert.ok(backgroundP2.extraction, "trigger must queue background extraction for P2");
@@ -775,6 +780,7 @@ test("#3251 a pinned capture outlives a namespaces-disabled config without flatt
   }
 });
 
+// ---------------------------------------------------------------------------
 
 test("#3251 retained-turn cleanup honors plan+binding: flush A leaves project B's retained turns", async () => {
   const memoryDir = await mkTempMemoryDir("observe-retained-cleanup");
@@ -786,6 +792,7 @@ test("#3251 retained-turn cleanup honors plan+binding: flush A leaves project B'
   });
   const buffer = new SmartBuffer(
     config,
+    // SAFETY: inline seed storage satisfies SmartBuffer's storage needs.
     {
       async loadBuffer(): Promise<BufferState> {
         return { turns: [], lastExtractionAt: null, extractionCount: 0 };
@@ -1073,6 +1080,7 @@ test("#3251 a revoked namespace write grant preserves the accepted capture witho
 // ---------------------------------------------------------------------------
 
 function makeTurnIngestionDouble(config: PluginConfig, buffer: SmartBuffer, queued: BufferTurn[][]): TurnIngestionCoordinator {
+  // SAFETY: these fixtures exercise only buffered admission + trigger
   const deps = { buffer, config } as any;
   deps.queueBufferedExtraction = async (turns: BufferTurn[]) => {
     queued.push(turns);
@@ -1089,6 +1097,9 @@ test("#3251 native processTurn routes mixed accepted scopes as separate scope gr
     namespacesEnabled: true,
     defaultNamespace: "default",
   });
+    // SAFETY: SeedStorage implements SmartBuffer's storage seam; the wider
+  // SAFETY: SeedStorage implements SmartBuffer's storage seam; the wider
+  // StorageManager surface is unused in this fixture.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   const queued: BufferTurn[][] = [];
   const coordinator = makeTurnIngestionDouble(config, buffer, queued);
@@ -1146,12 +1157,14 @@ test("#3251 heartbeat observer routes mixed accepted scopes as separate scope gr
   // StorageManager surface is unused in this fixture.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   const queued: BufferTurn[][] = [];
+  // SAFETY: heartbeat fixture exercises only the observer trigger routing;
   const deps = { buffer, config } as any;
   deps.queueBufferedExtraction = async (turns: BufferTurn[]) => {
     queued.push(turns);
   };
   deps.heartbeatObserverChains = new Map();
   deps.shouldQueueExtraction = () => true;
+  // SAFETY: transcript double — remaining TranscriptManager members are
   deps.transcript = {
     estimateSessionFootprint: async () => ({ bytes: 1, tokens: 1 }),
     getTranscriptPath: (sessionKey: string) => ({
@@ -1162,6 +1175,7 @@ test("#3251 heartbeat observer routes mixed accepted scopes as separate scope gr
       primaryPath: join(memoryDir, "transcripts", sessionKey),
     }),
   } as never;
+  // SAFETY: session observer double — only observe() is called.
   deps.sessionObserver = {
     observe: async () => ({ triggered: true, deltaBytes: 1, deltaTokens: 1 }),
   } as never;
@@ -1344,6 +1358,7 @@ test("#3251 namespaces-disabled flush with failOnExtractionFailure rejects and p
 // ---------------------------------------------------------------------------
 test("#3251 flat capture (namespaces OFF) survives namespaces-ON restart in original default store", async () => {
   const memoryDir = await mkTempMemoryDir("observe-flat-off-on");
+  // SAFETY: phase-specific configs — off-phase collapses to the default
   const offConfig = makeLifecycleConfig(memoryDir, {
     bufferMaxTurns: 1000,
     bufferSaveDebounceMs: 0,
@@ -1442,9 +1457,11 @@ test("#3251 namespaced buffered admission without writeNamespaceOverride or plan
     namespacesEnabled: true,
     defaultNamespace: "default",
   });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   const lcmCalls: string[] = [];
   const queued: BufferTurn[][] = [];
+  // SAFETY: admission-guard fixture exercises only the rejection path; the
   const deps = {
     buffer,
     config,
@@ -1487,6 +1504,7 @@ test("#3251 namespaced buffered admission without writeNamespaceOverride or plan
 test("#3251 retainDeferredTurns preserves other-scope retained turns on subsequent defer", async () => {
   const memoryDir = await mkTempMemoryDir("observe-retain-multi");
   const config = parseConfig({ memoryDir, bufferSaveDebounceMs: 0 });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage needs.
   const buffer = new SmartBuffer(config, { loadBuffer: async () => ({ turns: [], lastExtractionAt: null, extractionCount: 0 }), saveBuffer: async () => {} } as any);
   const turnA: BufferTurn = { role: "user", content: "scope A deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
   const turnB: BufferTurn = { role: "user", content: "scope B deferred context", timestamp: new Date().toISOString(), sessionKey: "multi-sess" };
@@ -1569,12 +1587,14 @@ test("#3251 mixed accepted+native groups: accepted-no-plan dispatches null, nati
     namespacesEnabled: true,
     defaultNamespace: "default",
   });
+  // SAFETY: inline seed storage satisfies SmartBuffer's storage seam.
   const buffer = new SmartBuffer(config, new SeedStorage() as StorageManager);
   interface QueuedDispatch {
     turns: BufferTurn[];
     opts: { scopeProfileWritePlan?: ResolvedScopeProfilePlan | null };
   }
   const queued: QueuedDispatch[] = [];
+  // SAFETY: mixed-dispatch fixture exercises only the scope-group routing.
   const coordinator = new TurnIngestionCoordinator({
     buffer,
     config,
@@ -1637,6 +1657,7 @@ test("#3251 native group clears via identity after accepted prefix remains in bu
     opts: { clearMatchingTurns?: boolean };
   }
   const queued: QueuedNativeCall[] = [];
+  // SAFETY: native-clear fixture exercises only the scope-group routing.
   const coordinator = new TurnIngestionCoordinator({
     buffer,
     config,

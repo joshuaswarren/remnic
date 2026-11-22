@@ -38,6 +38,7 @@ import {
   type SemanticConfig,
 } from "./index.js";
 
+// ──────────────────────────────────────────────────────────────────────────
 
 function createCountingProvider(
   opts: { failMode?: "timeout" | "null" | "throw" | "malformed" } = {},
@@ -71,6 +72,7 @@ function createCountingProvider(
       for (let i = 0; i < text.length; i++) {
         vec[i % dims]! += text.charCodeAt(i)!;
       }
+      // Normalize to unit length so cosine is meaningful.
       const norm = Math.sqrt(vec.reduce((s, v) => s + v * v, 0)) || 1;
       return vec.map((v) => v / norm);
     },
@@ -83,6 +85,7 @@ function createCountingProvider(
   } as unknown as HostEmbeddingProvider & { embedCount: number; reset(): void };
 }
 
+// Fix the counting provider properly.
 function countingProvider(
   opts: { failMode?: "timeout" | "null" | "throw" | "malformed" } = {},
 ): HostEmbeddingProvider & { embedCount: number; reset(): void } {
@@ -153,6 +156,7 @@ async function tempStore(): Promise<{ store: GraphStore; dir: string; cleanup: (
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Cache-hit: unchanged symbol → zero embed calls on reindex (rule 37)
 // ──────────────────────────────────────────────────────────────────────────
 
 test("cache-hit: unchanged symbol on reindex → zero embed calls", async () => {
@@ -890,6 +894,7 @@ test("cache-hit: provider without dimensions still caches on reindex", async () 
     ], src);
     await store.upsertFileBatch([ir]);
 
+    // Provider that does NOT declare `dimensions` (the field is optional).
     let calls = 0;
     const provider = {
       id: "nodims-embedder",
@@ -991,6 +996,10 @@ function throwingReadStore(
   }) as GraphStore;
 }
 
+// config: a negative/zero canonicalBodyLines must NOT clamp to 0 (which
+// extractBodyText treats as unlimited, sending full symbol bodies to the
+// remote embedder and defeating the cost/privacy cap). It falls back to the
+// documented default instead (#1680).
 test("config: negative/zero canonicalBodyLines falls back to default (not 0/unlimited)", () => {
   const neg = resolveSemanticConfig({ enabled: true, canonicalBodyLines: -5 });
   assert.equal(neg.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "negative → default");
@@ -1002,6 +1011,8 @@ test("config: negative/zero canonicalBodyLines falls back to default (not 0/unli
   assert.equal(negStr.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "numeric-string -3 → default");
 });
 
+// semanticQuery: a transient store read failure (SQLITE_BUSY/CORRUPT) on
+// readAllSymbolVectors maps to a tagged db_error instead of escaping as a
 test("semanticQuery: transient store read error → db_error (tagged, not thrown)", async () => {
   const { store, dir, cleanup } = await tempStore();
   try {

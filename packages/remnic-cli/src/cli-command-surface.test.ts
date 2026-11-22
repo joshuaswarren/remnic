@@ -97,8 +97,14 @@ const DOCUMENTED_COMMANDS = [
   "oauth",
  ] as const;
 
+/**
+ * The full set of top-level command names handled by `main()`'s switch
+ * (CommandName union in index.ts), including the undocumented advisory
+ * command. Used by the dispatch test to confirm each routes to a handler.
+ */
 const ALL_COMMAND_NAMES = [...DOCUMENTED_COMMANDS, "action-confidence"] as const;
 
+// ════════════════════════════════════════════════════════════════════════════
 
 test("unknown command prints the catch-all help banner", async () => {
   const result = await runCli(["__definitely_not_a_command__"]);

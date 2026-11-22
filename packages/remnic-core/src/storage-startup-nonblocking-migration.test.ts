@@ -39,6 +39,7 @@ async function gateMigration(dir: string): Promise<() => Promise<void>> {
 }
 
 async function journalComplete(dir: string): Promise<boolean> {
+    // SAFETY: the journal is written by this test fixture and carries an optional boolean `complete`.
   try {
     const state = JSON.parse(await readFile(path.join(dir, MIGRATION_JOURNAL_FILE), "utf8")) as {
       complete?: boolean;

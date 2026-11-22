@@ -99,6 +99,7 @@ function makeMemoryDir(t: { after: (fn: () => void) => void }): string {
   return dir;
 }
 
+// ───────────────────────────────────────────────────────────────────────────
 
 test("isValidConnectorId accepts well-formed ids", () => {
   for (const id of ["a", "abc", "drive", "g-mail", "github-issues", "0", "abc123-xyz"]) {
@@ -332,6 +333,7 @@ test("registry: rejects connectors missing required fields", () => {
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// State store: round-trip
 // ───────────────────────────────────────────────────────────────────────────
 
 test("state store: write/read round-trip", async (t) => {
@@ -561,7 +563,10 @@ test("state store: rejects malformed cursor at boundary (PR #724 review)", async
 });
 
 test("state store: listConnectorStates skips corrupt files but rethrows EACCES (PR #724 review)", async (t) => {
+  // P2 review: only ConnectorStateCorruptionError should be swallowed.
+  // Genuine I/O failures must propagate so the scheduler / CLI sees them.
   const memoryDir = makeMemoryDir(t);
+  // Write one good file.
   await writeConnectorState(memoryDir, "good", {
     id: "good",
     cursor: null,
@@ -569,6 +574,7 @@ test("state store: listConnectorStates skips corrupt files but rethrows EACCES (
     lastSyncStatus: "never",
     totalDocsImported: 0,
   });
+  // Drop a corrupt file.
   const dir = path.join(memoryDir, "state", "connectors");
   fs.writeFileSync(path.join(dir, "corrupt.json"), "{ not valid json");
   const states = await listConnectorStates(memoryDir);

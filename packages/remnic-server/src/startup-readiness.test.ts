@@ -262,6 +262,7 @@ function fakeEnsurerOrchestrator() {
     syncCalls: 0,
     readyGate: Promise.withResolvers<boolean>(),
     syncGate: Promise.withResolvers<boolean>(),
+  // SAFETY: createStartupSyncEnsurers touches only the stubbed surface
   };
   // (deferredSyncSucceeded, qmd.isAvailable/debugStatus, the two sync entry
   // points); the fake omits the rest of Orchestrator by design.

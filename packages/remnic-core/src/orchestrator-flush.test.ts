@@ -24,6 +24,7 @@ import { stubPersistExtraction } from "./testing/orchestrator-lite.js";
 function withMetaSeam<S extends { loadMeta: () => Promise<MetaState>; saveMeta: (meta: MetaState) => Promise<void> }>(
   storage: S,
 ): S & { updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void> } {
+  // SAFETY: the constraint above declares exactly the loadMeta/saveMeta shape every
   const updatable = storage as S & {
     updateMeta: (mutate: (meta: MetaState) => boolean | void | Promise<boolean | void>) => Promise<void>;
   };
@@ -454,6 +455,7 @@ test("queued extraction settles immediately when its caller aborts while waiting
   const queue = new ExtractionQueueCoordinator(1);
   let extractionStarted = false;
   let releaseExtraction!: () => void;
+  // SAFETY: fixture deps stub — only the queued-extraction path fields are exercised.
   const coordinator = new TurnIngestionCoordinator({
     config: parseConfig({}),
     extractionQueueCoordinator: queue,
@@ -585,6 +587,7 @@ test("flushSession rejects and skips extraction when the durable buffer save fai
   );
 
   await buffer.addTurn("thread-a", makeTurn("thread-a", "remember alpha"));
+  // Debounced keep_buffering: buffered in memory but NOT yet durable.
   assert.equal(saved, null, "debounced keep_buffering turn is not yet on disk");
   assert.equal(buffer.getTurns("thread-a").length, 1);
 
@@ -1501,6 +1504,7 @@ test("runExtraction writes buffered turns to active scope profile write layer", 
     ...makeTurn("pi-observer:abc123", "remember the team profile target"),
     persistProcessedFingerprint: true,
   };
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => undefined };
@@ -1819,6 +1823,8 @@ test("runExtraction retains the buffer on a failed extraction when extractionRet
   config.extractionMinChars = 0;
   config.extractionMinUserTurns = 1;
   let clearCalls = 0;
+  // SAFETY: runExtraction is driven only through the stub members assigned below;
+  // the prototype harness leaves the rest of Orchestrator unreachable in this test.
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = config;
   orchestrator.buffer = { clearAfterExtraction: async () => { clearCalls += 1; } };
@@ -2357,6 +2363,9 @@ test("runExtraction loads meta before updating extraction counters when fingerpr
     bufferKey: "logical-thread:thread-15",
   });
 
+  // The counters and fingerprint land on a FRESHLY loaded meta (the serialized
+  // updateMeta re-read), so more than one load is expected; the single save is
+  // the coherent-write contract under test.
   assert.ok(loadMetaCalls >= 2, 'expected a fresh meta read before the save');
   assert.equal(saveMetaCalls, 1);
   assert.equal(clearCalls, 1);

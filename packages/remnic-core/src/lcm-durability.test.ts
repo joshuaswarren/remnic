@@ -33,6 +33,7 @@ function createConfig(memoryDir: string) {
 
 function durableRowCount(memoryDir: string, sessionId: string): number {
   const db = openLcmDatabase(memoryDir);
+    // SAFETY: the query returns exactly one aggregate column, `n`.
   try {
     const row = db
       .prepare("SELECT COUNT(*) AS n FROM lcm_messages WHERE session_id = ?")
@@ -45,6 +46,7 @@ function durableRowCount(memoryDir: string, sessionId: string): number {
 
 function durableContents(memoryDir: string, sessionId: string): string[] {
   const db = openLcmDatabase(memoryDir);
+    // SAFETY: the query returns the lcm_messages `content` column.
   try {
     const rows = db
       .prepare(
@@ -59,6 +61,7 @@ function durableContents(memoryDir: string, sessionId: string): string[] {
 
 function leafRanges(memoryDir: string, sessionId: string): Array<[number, number]> {
   const db = openLcmDatabase(memoryDir);
+    // SAFETY: the query returns the summary node range columns.
   try {
     const rows = db
       .prepare(
@@ -288,6 +291,8 @@ test("a failed summary pass is retried from the durable archive without a new ob
   try {
     const engine = new LcmEngine(createConfig(dir), async () => "retry summary");
     await engine.ensureInitialized();
+    // Fail the first summary pass, then let the retry succeed.
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
 
     const summarizer = (engine as any).summarizer as {
       summarizeIncremental: (
@@ -332,8 +337,10 @@ test("a summary pass that keeps failing is retried until it succeeds", async () 
   try {
     const engine = new LcmEngine(createConfig(dir), async () => "persistent summary");
     await engine.ensureInitialized();
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
 
     const internals = engine as any;
+    // SAFETY: the stub replaces the engine's own summarizer for this test.
     internals.summarizeRetryBaseMs = 10;
     const summarizer = internals.summarizer as {
       summarizeIncremental: (
@@ -377,6 +384,7 @@ test("closing the engine cancels a pending summary retry", async () => {
   try {
     const engine = new LcmEngine(createConfig(dir), async () => "unused");
     await engine.ensureInitialized();
+    // SAFETY: the test drives the engine's own retry pacing and summarizer.
 
     const internals = engine as any;
     internals.summarizeRetryBaseMs = 10_000;
@@ -612,6 +620,8 @@ test("an aborted global idle wait rejects while a summary job is still in flight
   try {
     const engine = new LcmEngine(createConfig(dir), async () => "unused");
     await engine.ensureInitialized();
+    // SAFETY: the stub replaces the engine's own summarizer: hold the first
+    // pass in flight so the wait is parked on the observe queue, not a retry.
 
     let releaseFirstPass!: () => void;
     const firstPassBlocked = new Promise<void>((resolve) => {
@@ -671,6 +681,10 @@ function spawnOneShotHost(
     `  lcmRecallBudgetShare: 0.15, lcmObserveConcurrency: 1, messagePartsEnabled: false,`,
     `}), async () => "host summary");`,
     `await engine.ensureInitialized();`,
+    // SAFETY: stub replaces the engine's own summarizer. "global-idle" fails
+    // exactly once so a genuine retry pass runs against the real archive;
+    // "background" fails forever so a wrongly referenced timer would keep
+    // the host alive on an endless retry loop.
     `engine.summarizeRetryBaseMs = 150;`,
     `const summarizer = engine.summarizer;`,
     `if (mode === "global-idle") {`,

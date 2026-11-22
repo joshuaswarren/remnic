@@ -145,6 +145,8 @@ export async function offlineSyncRegularFilePresent(
   if (!isPathInsideRoot(root.abs, target)) {
     throw new Error(`${root.errorPrefix}: record path escapes target root: ${relPath}`);
   }
+    // SAFETY: Node fs errors carry `code`; only ENOENT means absent, all other
+    // errno codes must propagate so census uncertainty fails closed.
   const st = await lstat(target).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
     throw error;

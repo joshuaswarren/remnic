@@ -83,6 +83,7 @@ export interface AttributionEnvironment {
 }
 
 export interface AttributeOptions {
+  threshold?: number; /* default 0.6 */
   similarity?: (gold: string, candidate: string) => number;
 }
 

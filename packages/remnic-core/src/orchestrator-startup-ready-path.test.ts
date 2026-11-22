@@ -10,6 +10,7 @@ import { Orchestrator } from "./orchestrator.js";
 
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+// SAFETY: tests stub private orchestrator deps through the self-deps seam, as the neighbouring init tests do.
 
 const asDeps = (orchestrator: Orchestrator) => orchestrator as any;
 

@@ -399,6 +399,9 @@ async function drainScopeGroups(
       .catch((cause: DrainExtractionError) => onSettle(cause));
     const [verdict] = await Promise.all([settleGate.promise, exited.promise]);
     const settled = verdict;
+      // SAFETY: settle captures whatever the queued closure rejected with;
+      // every drain rejection site throws Error values, and a rejection is
+      // always a DrainExtractionError in this path.
     if (settled.cause !== undefined) {
       groupError = settled.cause as Error;
       break;

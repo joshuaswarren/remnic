@@ -189,6 +189,7 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.memory_store": "memory_store",
   "engram.coding_decision": "coding_decision",
   "engram.coding_architecture": "coding_architecture",
+  // codegraph parity tools (issue #1554) — each maps to its boundary op.
   "engram.codegraph_index": "codegraph_index",
   "engram.codegraph_list_projects": "codegraph_list_projects",
   "engram.codegraph_delete_project": "codegraph_delete_project",
@@ -204,8 +205,10 @@ export const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = 
   "engram.codegraph_manage_adr": "codegraph_manage_adr",
   "engram.codegraph_ingest_traces": "codegraph_ingest_traces",
   "engram.coding_delta": "coding_delta",
+  // Correction Contract (issue #1580) — one plan/apply pipeline.
   "engram.memory_correct_plan": "memory_correct_plan",
   "engram.memory_correct_apply": "memory_correct_apply",
+  // Fully migrated through the strict-schema boundary (#1668).
   "engram.recall": "recall",
   "engram.recall_explain": "recall_explain",
   "engram.set_coding_context": "set_coding_context",
@@ -2208,6 +2211,8 @@ export class EngramMcpServer {
     }
     if (method === "initialize") {
       const params = request.params ?? {};
+      // counter-offer below instead: the server answers with the newest
+      // version it supports and the client decides whether to proceed.
       if (typeof params.protocolVersion !== "string" || params.protocolVersion.length === 0) {
         return {
           jsonrpc: "2.0",
@@ -2579,6 +2584,7 @@ export class EngramMcpServer {
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
+      // (issue #1850 finding 3). Enumerating the global map here would let a
       const caps = tokenCapabilityStore.getStore();
       const visible = this.tools
         .filter(
@@ -2606,6 +2612,10 @@ export class EngramMcpServer {
       if (chatSessionId) {
         await enforceChatSessionNamespace(this.service, chatSessionId);
       } else {
+        // NEW chat session (no chatSessionId): processChatMessage mints a fresh
+        // session under the EFFECTIVE namespace (scope.namespace OR server
+        // effective-namespace chokepoint as the HTTP new-chat path
+        // scoped token CANNOT start a chat in a namespace outside its allow-
         enforceNamespaceAllowList(
           tokenCapabilityStore.getStore(),
           scope?.namespace,

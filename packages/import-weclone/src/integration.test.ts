@@ -1,4 +1,5 @@
 // End-to-end integration test — synthetic WeClone export → bulk-import pipeline
+// ---------------------------------------------------------------------------
 //
 // This test exercises the full WeClone import path against the `@remnic/core`
 // bulk-import pipeline using synthetic fixture data.  No real conversations
@@ -47,6 +48,7 @@ function buildSyntheticExport(): unknown {
     platform: "telegram",
     export_date: "2025-03-15T00:00:00.000Z",
     messages: [
+      // Thread 1: morning conversation
       {
         sender: "Alice",
         text: "good morning team",
@@ -73,6 +75,7 @@ function buildSyntheticExport(): unknown {
         message_id: "m-004",
       },
 
+      // Thread 2: mid-day collaboration with a bot
       {
         sender: "Alice",
         text: "anyone seen the deployment doc?",
@@ -112,6 +115,7 @@ function buildSyntheticExport(): unknown {
         message_id: "m-015",
       },
 
+      // Thread 3: evening reply that references thread 1
       // (time gap > 30 min but reply chain should merge it into thread 1)
       {
         sender: "Carol",
@@ -128,6 +132,7 @@ function buildSyntheticExport(): unknown {
         reply_to_id: "m-020",
       },
 
+      // Thread 4: late-night lonely message (filtered by minThreadSize=2)
       {
         sender: "Alice",
         text: "note to self: push the docs",

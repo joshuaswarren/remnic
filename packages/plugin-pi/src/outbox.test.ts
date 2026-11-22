@@ -38,6 +38,8 @@ test("enqueue persists entries durably and preserves arrival order", async () =>
 
   assert.equal(await outbox.size(), 3);
   const raw = fs.readFileSync(outbox.filePath, "utf8");
+  // SAFETY: each line was serialized by enqueue from a known entry shape; the
+  // assertions below re-verify exactly the fields they read.
   const lines = raw.trim().split("\n");
   const parsedLines = lines.map(
     (line) => JSON.parse(line) as { id: string; queuedAt: string; messages: ObserveMessage[] }
@@ -436,6 +438,7 @@ function readContents(file: string): string[] {
   const lines = fs
     .readFileSync(file, "utf8")
     .split("\n")
+  // SAFETY: every line was written by ObserveOutbox in this test and is read back only for messages[0].content.
     .filter((line) => line.trim().length > 0);
   const entries = lines.map((line) => JSON.parse(line) as ObserveOutboxEntry);
   return entries.map((entry) => entry.messages[0].content);
@@ -793,6 +796,7 @@ test("enqueue bounds a large rawContent so the durable replay stays small but ke
       messageHashes: ["hash-big"],
     },
     (message) => notifications.push(message)
+  // SAFETY: this test's drain wrote the entry itself, so the file holds { messages, messageHashes }; the assertions below verify the shape.
   );
   const persisted = JSON.parse(fs.readFileSync(filePath, "utf8").trim()) as { messages: ObserveMessage[]; messageHashes: string[] };
   assert.equal(persisted.messageHashes[0], "hash-big", "the replay identity is preserved");

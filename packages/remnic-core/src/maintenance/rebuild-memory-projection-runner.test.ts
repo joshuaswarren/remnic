@@ -33,6 +33,7 @@ async function runRunner(args: string[]): Promise<{
   child.stderr?.on("data", (chunk: string) => {
     stderr += chunk;
   });
+    // SAFETY: the runner posts only RunnerMessage values over IPC; the assertions below check each field.
   child.on("message", (message) => {
     messages.push(message as RunnerMessage);
   });

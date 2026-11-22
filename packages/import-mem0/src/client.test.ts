@@ -217,6 +217,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
       const url = typeof input === "string" ? input : input.toString();
       called += 1;
       if (!url.includes("page=2")) {
+        // Page 1: returns `page`+`total`+`per_page`, no `next`.
         return new Response(
           JSON.stringify({
             results: [
@@ -230,6 +231,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
+      // Page 2: reaches the end.
       return new Response(
         JSON.stringify({
           results: [{ id: "p2-a", memory: "page 2 item" }],
@@ -276,6 +278,7 @@ describe("fetchAllMem0Memories (record/replay)", () => {
         JSON.stringify({
           results: [{ id: "only", memory: "hello" }],
           next: null,
+          // Numeric fields that would normally trigger the fallback:
           page: 1,
           per_page: 1,
           total: 9999,

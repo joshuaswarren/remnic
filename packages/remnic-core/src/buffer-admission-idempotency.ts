@@ -18,6 +18,7 @@ export function scopeObserveBufferAdmissionIdempotencyKey(input: {
 
 export function ensureAdmissionIdempotencyMap(state: BufferAdmissionIdempotencyState): Record<string, number> {
   const existing = state.admissionIdempotency;
+  // SAFETY: prototype-free map contract for observe idempotency keys (#3368).
   if (existing && Object.getPrototypeOf(existing) === null) return existing;
   const map = Object.create(null) as Record<string, number>;
   if (existing) {

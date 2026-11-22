@@ -148,6 +148,7 @@ function parseModelChainConfig(
     );
   }
   const raw = value as Record<string, unknown>;
+  // Reject unknown keys (matches the manifest's additionalProperties:false) so a
   const unknownKeys = Object.keys(raw).filter((k) => k !== "primary" && k !== "fallbacks");
   if (unknownKeys.length > 0) {
     throw new Error(
@@ -611,6 +612,12 @@ const MEMORY_OS_PRESETS: Record<MemoryOsPresetName, Record<string, unknown>> = {
     maxProactiveQuestionsPerExtraction: 0,
     maxCompressionTokensPerHour: 0,
     behaviorLoopAutoTuneEnabled: false,
+    // Issue #567 PR 4/5 flipped `procedural.enabled` default to `true`.
+    // The conservative preset intentionally keeps the feature OFF to
+    // match its restrictive intent (no proactive extraction, no
+    // compression guideline learning, etc.). Users who want procedural
+    // memory on a conservative preset must set `procedural.enabled: true`
+    // explicitly.
     procedural: { enabled: false },
     sessionExperience: { enabled: false },
     seedGraduation: { enabled: false },
@@ -839,6 +846,7 @@ export function parseConfig(
     watchFile: rawDreaming.watchFile !== false,
   };
 
+  //
   const rawDreamsBlock =
     cfg.dreams && typeof cfg.dreams === "object" && !Array.isArray(cfg.dreams)
       ? (cfg.dreams as Record<string, unknown>)
@@ -860,6 +868,8 @@ export function parseConfig(
       ? (rawDreamsPhases.deepSleep as Record<string, unknown>)
       : {};
 
+  // Resolve legacy top-level defaults that the phases mirror. We compute them
+  // here (before the return statement) so the phase parser can apply precedence
   const legacyLifecyclePolicyEnabled = coerceBooleanLike(cfg.lifecyclePolicyEnabled) ?? true;
   const legacyLifecyclePromoteHeatThreshold =
     typeof cfg.lifecyclePromoteHeatThreshold === "number"
@@ -1017,6 +1027,8 @@ export function parseConfig(
     fingerprintDedup: rawCodexCompat.fingerprintDedup !== false,
   };
 
+  // Validate the shape of the `procedural` config block BEFORE applying the
+  // default-on behavior. Codex P2 on #609: a shorthand opt-out like
   if (
     cfg.procedural !== undefined &&
     (cfg.procedural === null ||
@@ -1160,6 +1172,7 @@ export function parseConfig(
     : [];
   const entitySchemas = normalizeEntitySchemas(cfg.entitySchemas);
 
+  // Optional file hygiene (memory file limits / truncation risk mitigation)
   const rawHygiene =
     cfg.fileHygiene && typeof cfg.fileHygiene === "object" && !Array.isArray(cfg.fileHygiene)
       ? (cfg.fileHygiene as Record<string, unknown>)
@@ -1411,6 +1424,7 @@ export function parseConfig(
       : typeof cfg.crossSignalsSemanticTimeoutMs === "number"
         ? Math.max(1, Math.floor(cfg.crossSignalsSemanticTimeoutMs))
         : 4000;
+  // `cfg.sharedContextEnabled === true`, so it must see this boolean —
   const sharedContextEnabled =
     coerceBool(cfg.sharedContextEnabled, "sharedContextEnabled") ?? false;
   const recallPipelineConfig = buildRecallPipelineConfig({
@@ -1493,11 +1507,15 @@ export function parseConfig(
     bufferMaxTurns:
       typeof cfg.bufferMaxTurns === "number" ? cfg.bufferMaxTurns : 5,
     bufferMaxSessions: parsePositiveInteger(cfg.bufferMaxSessions, "bufferMaxSessions") ?? 1000,
+    // Per-session retained-turn cap (#3415 bound). Far above the extraction
+    // trigger, so healthy sessions never touch it; a full session refuses live
     bufferMaxTurnsPerSession: parsePositiveInteger(cfg.bufferMaxTurnsPerSession, "bufferMaxTurnsPerSession") ?? 200,
     extractionQueueConcurrency:
       parsePositiveInteger(cfg.extractionQueueConcurrency, "extractionQueueConcurrency") ?? 2,
     bufferMaxMinutes:
       typeof cfg.bufferMaxMinutes === "number" ? cfg.bufferMaxMinutes : 15,
+    // semantics. Default off so PR 2 ships as a pure no-op until an operator
+    // opts in. PR 4 benchmarks the flag and may flip the default.
     //
     bufferSurpriseTriggerEnabled:
       coerceBool(cfg.bufferSurpriseTriggerEnabled) === true,
@@ -1543,6 +1561,7 @@ export function parseConfig(
     qmdColdCollection,
     qmdColdMaxResults:
       typeof cfg.qmdColdMaxResults === "number" ? cfg.qmdColdMaxResults : 8,
+    // tier migration is forced off regardless of legacy flag.
     qmdTierMigrationEnabled: dreamsDeepSleep.enabled && cfg.qmdTierMigrationEnabled === true,
     qmdTierDemotionMinAgeDays:
       typeof cfg.qmdTierDemotionMinAgeDays === "number"
@@ -1630,6 +1649,7 @@ export function parseConfig(
       typeof cfg.sessionObserverDebounceMs === "number"
         ? Math.max(0, Math.floor(cfg.sessionObserverDebounceMs))
         : 120_000,
+    // rather than flooring/clamping. Must be an integer in [0, 2^31-1] (Node's
     bufferSaveDebounceMs: parseIntegerInClosedRange(
       cfg.bufferSaveDebounceMs,
       0,
@@ -1653,6 +1673,7 @@ export function parseConfig(
     fileHygiene,
     nativeKnowledge,
     agentAccessHttp,
+    // Access tracking (Phase 1A)
     accessTrackingEnabled: cfg.accessTrackingEnabled !== false,
     accessTrackingBufferMaxSize:
       typeof cfg.accessTrackingBufferMaxSize === "number"
@@ -1662,6 +1683,7 @@ export function parseConfig(
       typeof cfg.recencyWeight === "number" ? cfg.recencyWeight : 0.2,
     boostAccessCount: cfg.boostAccessCount !== false,
     recordEmptyRecallImpressions: cfg.recordEmptyRecallImpressions === true,
+    // v2.2 Advanced Retrieval (safe defaults: off unless enabled)
     queryExpansionEnabled: cfg.queryExpansionEnabled === true,
     queryExpansionMaxQueries:
       typeof cfg.queryExpansionMaxQueries === "number"
@@ -1691,6 +1713,7 @@ export function parseConfig(
       typeof cfg.negativeExamplesPenaltyCap === "number"
         ? cfg.negativeExamplesPenaltyCap
         : 0.25,
+    // Chunking (Phase 2A)
     chunkingEnabled: cfg.chunkingEnabled === true, // Off by default initially
     chunkingTargetTokens:
       typeof cfg.chunkingTargetTokens === "number" ? cfg.chunkingTargetTokens : 200,
@@ -1698,6 +1721,7 @@ export function parseConfig(
       typeof cfg.chunkingMinTokens === "number" ? cfg.chunkingMinTokens : 150,
     chunkingOverlapSentences:
       typeof cfg.chunkingOverlapSentences === "number" ? cfg.chunkingOverlapSentences : 2,
+    // Semantic Chunking (Issue #368)
     semanticChunkingEnabled: cfg.semanticChunkingEnabled === true,
     semanticChunkingConfig: parseSemanticChunkingConfig(cfg.semanticChunkingConfig),
     contradictionDetectionEnabled: cfg.contradictionDetectionEnabled === true, // Off by default initially
@@ -1832,6 +1856,8 @@ export function parseConfig(
           (v): v is string => typeof v === "string" && v.length > 0,
         )
       : ["decisions", "principles", "conventions", "runbooks", "entities"],
+    // Cross-namespace query-budget limiter (issue #565 PR 4/5). Defaults to
+    // false — ships disabled; when enabled, throttles cross-namespace recall bursts.
     recallCrossNamespaceBudgetEnabled:
       coerceBool(cfg.recallCrossNamespaceBudgetEnabled) ?? false,
     recallCrossNamespaceBudgetWindowMs: (() => {
@@ -1929,6 +1955,7 @@ export function parseConfig(
     transcriptSkipChannelTypes: Array.isArray(cfg.transcriptSkipChannelTypes)
       ? (cfg.transcriptSkipChannelTypes as string[])
       : ["cron"], // default: skip cron transcripts
+    // Transcript injection
     transcriptRecallHours:
       typeof cfg.transcriptRecallHours === "number" ? cfg.transcriptRecallHours : 12,
     maxTranscriptTurns:
@@ -1938,6 +1965,7 @@ export function parseConfig(
     checkpointEnabled: cfg.checkpointEnabled !== false, // default: true
     checkpointTurns:
       typeof cfg.checkpointTurns === "number" ? cfg.checkpointTurns : 15,
+    // Compaction reset (opt-in, default: false)
     compactionResetEnabled: cfg.compactionResetEnabled === true,
     beforeResetTimeoutMs:
       typeof cfg.beforeResetTimeoutMs === "number"
@@ -2142,6 +2170,8 @@ export function parseConfig(
       typeof cfg.summaryRecallHours === "number" ? cfg.summaryRecallHours : 24,
     maxSummaryCount:
       typeof cfg.maxSummaryCount === "number" ? cfg.maxSummaryCount : 6,
+    // explicit summaryModel → explicit base model → gateway task-chain primary →
+    // "" (omit, so the Gateway default wins). In gateway mode bare ids (incl. the
     summaryModel:
       gatewayTaskModel(
         typeof cfg.summaryModel === "string" && cfg.summaryModel.length > 0
@@ -2260,6 +2290,9 @@ export function parseConfig(
           (c): c is string => typeof c === "string" && c.length > 0,
         )
       : ["correction", "commitment", "procedure"],
+    // semanticConsolidationIntervalHours is derived from dreamsRem.cadenceMs
+    // when an override is set (rounded up to the nearest hour). Preserve
+    // explicit zero so legacy schedulers see the same disable-by-zero signal
     semanticConsolidationIntervalHours:
       rawDreamsRem.cadenceMs !== undefined
         ? Math.max(0, Math.ceil(dreamsRem.cadenceMs / 3_600_000))
@@ -2288,6 +2321,7 @@ export function parseConfig(
           .map((v) => v.trim())
           .filter((v) => v.length > 0)
       : ["preference", "fact", "decision"],
+    // issue #687 PR 3/4: reinforcement recall boost config.
     reinforcementRecallBoostEnabled:
       coerceBool(cfg.reinforcementRecallBoostEnabled) ?? false,
     reinforcementRecallBoostWeight: (() => {
@@ -2319,6 +2353,7 @@ export function parseConfig(
       cfg.peerProfileReasonerModel.trim().length > 0
         ? cfg.peerProfileReasonerModel.trim()
         : "auto",
+    // values (Gotcha #28 — `--config peerProfileReasonerMaxFieldsPerRun=2`
     peerProfileReasonerMinInteractions: coerceNonNegativeInt(
       cfg.peerProfileReasonerMinInteractions,
       5,
@@ -2382,10 +2417,12 @@ export function parseConfig(
         ? cfg.abstractionNodeStoreDir.trim()
         : path.join(memoryDir, "state", "abstraction-nodes"),
     ...parseLocalLlmConfig(cfg, localLlmApiKeyEnv, resolveEnvVars),
+    // Observability (disabled by default to avoid log spam)
     slowLogEnabled: cfg.slowLogEnabled === true,
     slowLogThresholdMs:
       typeof cfg.slowLogThresholdMs === "number" ? cfg.slowLogThresholdMs : 30_000,
     traceRecallContent: cfg.traceRecallContent === true,
+    // Performance profiling (opt-in, disabled by default)
     profilingEnabled: cfg.profilingEnabled === true,
     profilingStorageDir:
       typeof cfg.profilingStorageDir === "string" && cfg.profilingStorageDir.length > 0
@@ -2415,6 +2452,8 @@ export function parseConfig(
       typeof cfg.extractionMaxQuestionsPerRun === "number" ? cfg.extractionMaxQuestionsPerRun : 3,
     extractionMaxProfileUpdatesPerRun:
       typeof cfg.extractionMaxProfileUpdatesPerRun === "number" ? cfg.extractionMaxProfileUpdatesPerRun : 4,
+    // Importance write-gate for trivial extracted content (issue #372).
+    // heartbeat pings); set to "normal" or higher to make the gate stricter.
     extractionMinImportanceLevel: ((): PluginConfig["extractionMinImportanceLevel"] => {
       const raw = cfg.extractionMinImportanceLevel;
       if (
@@ -2438,6 +2477,8 @@ export function parseConfig(
       typeof cfg.extractionJudgeBatchSize === "number" && Number.isFinite(cfg.extractionJudgeBatchSize)
         ? Math.max(1, Math.round(cfg.extractionJudgeBatchSize))
         : 20,
+    // Judge LLM timeout (issue #376 follow-up, Studio 2026-10-29; tightened in
+    // PR 3264): the judge requests a compact verdict with a batch-scaled
     extractionJudgeTimeoutMs: ((): number => {
       const coerced = coerceNumber(cfg.extractionJudgeTimeoutMs);
       if (coerced === undefined || coerced < 1) return 20_000;
@@ -2450,11 +2491,14 @@ export function parseConfig(
       cfg.extractionJudgeMaxDeferrals >= 1
         ? Math.floor(cfg.extractionJudgeMaxDeferrals)
         : 2,
+    // Judge telemetry (issue #562 PR 3): opt-in structured emit to the
+    // observation ledger; `coerceBool` accepts CLI-style strings (gotcha 36).
     extractionJudgeTelemetryEnabled:
       coerceBool(cfg.extractionJudgeTelemetryEnabled) === true,
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
+    // model-lab pointer (issue #1581 / #1585). Parsed in faithfulness-config.ts
     ...parseFaithfulnessGateConfig(cfg),
     ...parseCorrectionIntentConfig(cfg),
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,
@@ -2469,6 +2513,7 @@ export function parseConfig(
           .map((value) => value.trim())
       : [],
     consolidationRequireNonZeroExtraction: cfg.consolidationRequireNonZeroExtraction !== false,
+    // Issue #678 PR 2/4: dreams.phases.rem.minIntervalMs WINS when set.
     consolidationMinIntervalMs: dreamsRem.minIntervalMs,
     qmdMaintenanceEnabled: cfg.qmdMaintenanceEnabled !== false,
     qmdMaintenanceDebounceMs:
@@ -2541,6 +2586,7 @@ export function parseConfig(
     extractionBreakerAuthCooldownMs:
       typeof cfg.extractionBreakerAuthCooldownMs === "number" && cfg.extractionBreakerAuthCooldownMs >= 0
         ? cfg.extractionBreakerAuthCooldownMs : 1_800_000,
+    // before the failing buffer chunk is dropped (side-file copied first).
     extractionCallMaxChars:
       parsePositiveInteger(cfg.extractionCallMaxChars, "extractionCallMaxChars") ?? 12_000,
     extractionChunkDropAfterFailures: parseIntegerAtLeast(
@@ -2562,6 +2608,9 @@ export function parseConfig(
           : "http://localhost:1234/v1",
     localLlmFastTimeoutMs:
       typeof cfg.localLlmFastTimeoutMs === "number" ? cfg.localLlmFastTimeoutMs : 15_000,
+    // Thinking-mode suppression on the main local LLM (issue #548).
+    // JSON and gain nothing from chain-of-thought; thinking-capable
+    // models burn their token budget on reasoning and blow the
     //
     localLlmDisableThinking:
       coerceBool(cfg.localLlmDisableThinking) ?? true,
@@ -2577,7 +2626,9 @@ export function parseConfig(
         : "",
     taskModelChain,
 
+    // v3.0 namespaces (default off)
     namespacesEnabled: cfg.namespacesEnabled === true,
+    // Namespace catalog (issue #1499): default ON, but only does anything when
     namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig, runtimeSet),
     namespacesCatalogCompactBytes: resolveNonNegativeIntegerConfig(
       cfg.namespacesCatalogCompactBytes,
@@ -2663,6 +2714,7 @@ export function parseConfig(
         : "state/routing-rules.json",
 
     sharedContextEnabled,
+    // Same coercion contract for the binding-authority sibling (#2918 parity).
     sharedContextAllowBindingAuthority:
       coerceBool(cfg.sharedContextAllowBindingAuthority, "sharedContextAllowBindingAuthority") ?? false,
     sharedContextDir:
@@ -2690,6 +2742,7 @@ export function parseConfig(
     ircIncludeCorrections: cfg.ircIncludeCorrections !== false,
     ircMinConfidence: typeof cfg.ircMinConfidence === "number" ? cfg.ircMinConfidence : 0.3,
 
+    // CMC (Causal Memory Consolidation) — cross-session causal reasoning
     cmcEnabled: cfg.cmcEnabled === true,
     cmcStitchLookbackDays: typeof cfg.cmcStitchLookbackDays === "number" ? cfg.cmcStitchLookbackDays : 7,
     cmcStitchMinScore: typeof cfg.cmcStitchMinScore === "number" ? cfg.cmcStitchMinScore : 2.5,
@@ -2708,6 +2761,7 @@ export function parseConfig(
     cmcBehaviorConfidenceThreshold: typeof cfg.cmcBehaviorConfidenceThreshold === "number" ? cfg.cmcBehaviorConfidenceThreshold : 0.6,
     cmcLifecycleCausalImpactWeight: warnDeprecatedCausalImpactWeight(coerceNumber(cfg.cmcLifecycleCausalImpactWeight)),
 
+    // PEDC (Prediction-Error-Driven Calibration) — model-user alignment
     calibrationEnabled: cfg.calibrationEnabled === true,
     calibrationMaxRulesPerRecall: typeof cfg.calibrationMaxRulesPerRecall === "number" ? cfg.calibrationMaxRulesPerRecall : 10,
     calibrationMaxChars: typeof cfg.calibrationMaxChars === "number" ? cfg.calibrationMaxChars : 1200,
@@ -2781,11 +2835,13 @@ export function parseConfig(
           })()
         : 500,
 
+    // Search backend abstraction
     searchBackend: parseSearchBackend(cfg.searchBackend),
     remoteSearchBaseUrl: typeof cfg.remoteSearchBaseUrl === "string" ? cfg.remoteSearchBaseUrl : undefined,
     remoteSearchApiKey: typeof cfg.remoteSearchApiKey === "string" ? cfg.remoteSearchApiKey : undefined,
     remoteSearchTimeoutMs: typeof cfg.remoteSearchTimeoutMs === "number" ? cfg.remoteSearchTimeoutMs : 30_000,
 
+    // LanceDB backend
     lancedbEnabled: cfg.lancedbEnabled === true,
     lanceDbPath: typeof cfg.lanceDbPath === "string" ? cfg.lanceDbPath : path.join(memoryDir, "lancedb"),
     lanceEmbeddingDimension: typeof cfg.lanceEmbeddingDimension === "number" ? cfg.lanceEmbeddingDimension : 1536,
@@ -2799,8 +2855,10 @@ export function parseConfig(
     oramaEnabled: cfg.oramaEnabled === true,
     oramaDbPath: typeof cfg.oramaDbPath === "string" ? cfg.oramaDbPath : path.join(memoryDir, "orama"),
     oramaEmbeddingDimension: typeof cfg.oramaEmbeddingDimension === "number" ? cfg.oramaEmbeddingDimension : 1536,
+    // from CLI `--config` are coerced like neighboring boolean flags.
     oramaCjkSegmentation: coerceBooleanLike(cfg.oramaCjkSegmentation) ?? true,
 
+    // QMD daemon mode
     qmdDaemonEnabled: cfg.qmdDaemonEnabled !== false,
     qmdDaemonUrl:
       typeof cfg.qmdDaemonUrl === "string" && cfg.qmdDaemonUrl.length > 0
@@ -2824,6 +2882,7 @@ export function parseConfig(
     factArchivalProtectedCategories: Array.isArray(cfg.factArchivalProtectedCategories)
       ? (cfg.factArchivalProtectedCategories as any[]).filter((c) => typeof c === "string")
       : ["commitment", "preference", "decision", "principle", "procedure"],
+    // `tier-migration.ts`, separate cold QMD collection) has shipped
     lifecyclePolicyEnabled: dreamsLightSleep.enabled,
     lifecycleFilterStaleEnabled: dreamsLightSleep.filterStaleEnabled,
     lifecyclePromoteHeatThreshold: dreamsLightSleep.promoteHeatThreshold,
@@ -2835,6 +2894,8 @@ export function parseConfig(
             typeof c === "string" && VALID_MEMORY_CATEGORIES.has(c),
         )
       : ["decision", "principle", "commitment", "preference", "procedure"],
+    // Mirror the *resolved* lifecyclePolicyEnabled default (not the
+    // metrics even though the policy is enabled by default since
     lifecycleMetricsEnabled:
       coerceBooleanLike(cfg.lifecycleMetricsEnabled) ?? dreamsLightSleep.enabled,
     // v8.3 proactive + policy learning (default off)
@@ -2903,6 +2964,8 @@ export function parseConfig(
           .filter((param): param is string => typeof param === "string" && param.trim().length > 0)
       : [...DEFAULT_BEHAVIOR_LOOP_PROTECTED_PARAMS],
     // v8.0 phase 1
+    // surfaces (`--config recallPlanner*=true|false`) behave correctly — the
+    // shadow-mode/telemetry/enable flags are documented rollout switches and
     recallPlannerEnabled: coerceBooleanLike(cfg.recallPlannerEnabled) ?? true,
     recallPlannerLlmEnabled: coerceBooleanLike(cfg.recallPlannerLlmEnabled) ?? false,
     recallPlannerModel:
@@ -3088,6 +3151,7 @@ export function parseConfig(
     memoryReconstructionMaxExpansions:
       typeof cfg.memoryReconstructionMaxExpansions === "number" ? Math.max(0, Math.round(cfg.memoryReconstructionMaxExpansions)) : 3,
     graphLateralInhibitionEnabled: cfg.graphLateralInhibitionEnabled !== false,
+    // edge appends are pushed into the warm cache in place (size-revalidated for
     graphEdgeCacheIncrementalEnabled: coerceBool(cfg.graphEdgeCacheIncrementalEnabled) ?? true,
     graphLateralInhibitionBeta:
       typeof cfg.graphLateralInhibitionBeta === "number"
@@ -3097,6 +3161,7 @@ export function parseConfig(
       typeof cfg.graphLateralInhibitionTopM === "number"
         ? Math.max(0, Math.round(cfg.graphLateralInhibitionTopM))
         : 7,
+    // Issue #681 PR 2/3 — graph-edge confidence decay maintenance.
     graphEdgeDecayEnabled: coerceBooleanLike(cfg.graphEdgeDecayEnabled) ?? false,
     graphEdgeDecayCadenceMs:
       typeof cfg.graphEdgeDecayCadenceMs === "number" && Number.isFinite(cfg.graphEdgeDecayCadenceMs)
@@ -3121,6 +3186,7 @@ export function parseConfig(
         : 0.2,
     ...parseProjectionRebuildScheduleConfig(cfg, parseIntegerAtLeast),
     ...parseBoundedJsonlStateConfig(cfg, parseIntegerAtLeast),
+    // Issue #681 PR 3/3 — confidence-aware traversal. Floor clamps to [0,1]; a
     graphTraversalConfidenceFloor:
       typeof cfg.graphTraversalConfidenceFloor === "number" &&
       Number.isFinite(cfg.graphTraversalConfidenceFloor)
@@ -3231,11 +3297,14 @@ export function parseConfig(
 
     briefing: parseBriefingConfig(cfg.briefing),
 
+    // Codex CLI connector settings (install-time)
     codex: (() => {
       const raw =
         cfg.codex && typeof cfg.codex === "object" && !Array.isArray(cfg.codex)
           ? (cfg.codex as Record<string, unknown>)
           : {};
+      // Missing / undefined defaults to true (coerceInstallExtension returns
+      // undefined for unknown values, so ?? true applies the default).
       const installExtension = coerceInstallExtension(raw.installExtension) ?? true;
       const codexHome =
         typeof raw.codexHome === "string" && raw.codexHome.trim().length > 0
@@ -3245,6 +3314,7 @@ export function parseConfig(
     })(),
 
     //
+    // disabled-by-default and the parser MUST reject malformed top-level
     //
     connectors: (() => {
       if (
@@ -3433,6 +3503,7 @@ export function parseConfig(
       const gmailPollCoerced = coerceNumber(rawGmail.pollIntervalMs);
       let gmailPollIntervalMs = 300_000;
       if (rawGmail.pollIntervalMs !== undefined) {
+        // silently coercing to a default. Non-numeric strings, NaN, and
         if (gmailPollCoerced === undefined) {
           throw new Error(
             `connectors.gmail.pollIntervalMs must be a finite number; got ${JSON.stringify(rawGmail.pollIntervalMs)}`,
@@ -3597,6 +3668,9 @@ export function parseConfig(
         ? cfg.binaryLifecycleBackendPath.trim()
         : "",
 
+    // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
+    // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
+    // Malformed values fail fast rather than silently defaulting (gotcha #51).
     emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig, runtimeSet),
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,
@@ -3883,6 +3957,7 @@ function buildDefaultRecallPipeline(cfg: Record<string, unknown>): RecallSection
     { id: "verbatim-artifacts", enabled: cfg.verbatimArtifactsEnabled === true },
     {
       id: "procedure-recall",
+      // gate now defaults to `true` when the key is omitted, so the recall
       //
       enabled: (() => {
         const proceduralRaw =
@@ -4039,6 +4114,7 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
       : 2000;
   const recallBudgetCharsRaw = clampNonNegativeNumber(cfg.recallBudgetChars);
   // Keep four characters per token as Latin-script headroom. Assemblers enforce
+  // maxMemoryTokens with the shared script-aware estimator.
   const recallBudgetChars = recallBudgetCharsRaw ?? maxMemoryTokens * 4;
 
   const rawPipeline = cfg.recallPipeline;

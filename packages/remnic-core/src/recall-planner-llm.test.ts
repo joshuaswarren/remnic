@@ -27,6 +27,7 @@ function stubLlm(opts: {
       opts.capturedOptions?.push(options);
       if (opts.throwError) throw new Error(opts.throwError);
       if (opts.result === null || opts.result === undefined) return null;
+      // Exercise the real schema so malformed scripted output is caught too.
       const parsed = schema.parse(opts.result);
       return { result: parsed, modelUsed: opts.modelUsed ?? "test/model" };
     },

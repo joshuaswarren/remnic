@@ -1258,6 +1258,39 @@ export class NamespaceCatalog {
     return { dryRun, records, skipped, applied: canMutate };
   }
 
+  /**
+   * Run `fn` while HOLDING the shared cross-process advisory lock (round 5, codex
+   * P2; generalized round 7 — NEZkA). This is the SINGLE mutex shared by BOTH the
+   * touch read→merge→append window AND the rebuild final load→merge→rename window,
+   * so a touch and a rebuild in different processes are mutually exclusive over
+   * their respective critical sections — closing the check-then-append gap where a
+   * polled-only touch could append into a rebuild's load→rename window.
+   *
+   * Issue #1524 adoption: this is now a thin delegation to the shared
+   * `withHeldFileLock` utility. The acquire loop, mtime heartbeat, stale-break
+   * (NG7Bg replacement-safe), and ownership-checked release (NCzT6) all live in
+   * ONE place — the util — so this module no longer re-implements them. The
+   * catalog's `REBUILD_LOCK_*` constants and the `onBeforeBreakStaleUnlinkForTest`
+   * seam flow straight through. The util generates a per-CALL owner uuid, which
+   * is stricter than the previous per-instance `lockOwnerId` (two calls on the
+   * same instance get different ids, so neither mistakes the other's lock as
+   * self-held — the NBsGP invariant, preserved and tightened).
+   *
+   * IN-PROCESS SAFETY: every caller invokes this from inside (or wrapping) the
+   * per-process `queueCritical` chain, which serializes all catalog mutations in
+   * THIS process (now via `MutationSerializer`). So within one process only one
+   * logical holder attempts OS-lock acquisition at a time — the file lock is never
+   * self-contended in-process, and the lock is acquired and released within a
+   * single in-process turn. The file lock adds only the missing CROSS-process
+   * exclusion.
+   *
+   * ACQUISITION RESULT (round 6, codex P2 — NBPmY): `fn` receives whether WE
+   * actually hold the lock. When acquisition TIMED OUT (another holder is active),
+   * a MUTATING rebuild must NOT perform its load/rename window unlocked, and a
+   * touch must NOT append unlocked — both would recreate the lost-append race. The
+   * caller uses `acquired` to run compute-only (rebuild) or DROP the append
+   * (touch) when unlocked.
+   */
 
   private withHeldCatalogLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
     return withHeldFileLock(

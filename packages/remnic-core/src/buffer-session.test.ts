@@ -440,6 +440,7 @@ test("SmartBuffer prunes stale logical session buffers to a bounded entry set", 
   assert.ok(!persistedKeys.includes("thread-0"));
 });
 
+// ---------------------------------------------------------------------------
 
 test("retainDeferredTurns preserves turns across clearAfterExtraction", async () => {
   const storage = new FakeStorage({
@@ -892,6 +893,7 @@ test("debounce on: sustained activity forces an inline save at the 5x staleness 
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
+  // Add a turn every 80ms (< window) so the trailing-edge timer never fires —
   await buffer.addTurn("thread-a", makeTurn("thread-a", "turn 0")); // firstPendingAt = 0
   for (let elapsed = 80; elapsed <= 480; elapsed += 80) {
     t.mock.timers.tick(80);
@@ -990,6 +992,7 @@ test("debounce cap: the buffer never arms setTimeout above the 32-bit limit", as
   const fakeHandle = { unref() {}, ref() {} } as unknown as NodeJS.Timeout;
   timerGlobal.setTimeout = ((_fn: (...a: unknown[]) => void, delay?: number) => {
     if (typeof delay === "number") armedDelays.push(delay);
+    // Do not schedule the real callback — we only assert on the delay argument.
     return fakeHandle;
   }) as typeof setTimeout;
   try {
@@ -1014,12 +1017,14 @@ test("debounce on: a failed clearAfterExtraction save keeps pending so other ses
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
+  // Session A buffers a turn — only a debounced save is pending (nothing on disk).
   await buffer.addTurn("session-a", makeTurn("session-a", "A only lives in the pending save"));
   await buffer.addTurn("session-b", makeTurn("session-b", "B is about to be extracted"));
   assert.equal(storage.saveCount, 0, "both turns are still only in the debounced pending save");
 
   const internals = buffer as unknown as DebouncedBufferInternals;
 
+  // Extract + clear session B. The post-clear save FAILS (FailOnce). The global
   await assert.rejects(
     () => buffer.clearAfterExtraction("session-b"),
     /simulated buffer write failure/,
@@ -1106,6 +1111,7 @@ test("debounce on: a turn recorded around a forced flush is not dropped by the f
     storage as unknown as ConstructorParameters<typeof SmartBuffer>[1],
   );
 
+  // Pre-flush turn: schedules a debounced save (pendingSave = true, timer armed).
   assert.equal(
     await buffer.addTurn("thread-a", makeTurn("thread-a", "pre-flush")),
     "keep_buffering",

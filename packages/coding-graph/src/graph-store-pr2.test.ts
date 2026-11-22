@@ -14,6 +14,7 @@ import {
   type SymbolIR,
 } from "./graph-store.js";
 
+// ──────────────────────────────────────────────────────────────────────────
 
 function sym(
   qualifiedName: string,
@@ -877,6 +878,7 @@ test("traversePaths: rejects a null/undefined query object with 'invalid_query'"
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// searchGraph(): label / name / file patterns + degree filters + limit.
 // ──────────────────────────────────────────────────────────────────────────
 
 test("searchGraph: empty query returns every node up to the default limit", async () => {

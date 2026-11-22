@@ -310,6 +310,8 @@ export class BacklogScheduler {
       await this.drainClaimedKey(key, controller.signal, this.options.ownerId);
     } catch (err) {
       this.counters.failed += 1;
+      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
+      // optional chain reads the hint off Error throws only.
       const message = err instanceof Error ? err.message : String(err);
       this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} submission failed: ${message}`);
@@ -350,6 +352,8 @@ export class BacklogScheduler {
       this.applyOutcome(key, outcome);
     } catch (err) {
       this.counters.failed += 1;
+      // SAFETY: a thrown non-Error (incl. null) carries no retry hint; the
+      // optional chain reads the hint off Error throws only.
       const message = err instanceof Error ? err.message : String(err);
       this.setBackoff(key, (err as { turnsRemaining?: number } | null | undefined)?.turnsRemaining ?? 0, message);
       log.warn(`backlog drain: ${key} threw: ${message}`);

@@ -15,6 +15,7 @@ const PRONOUN_MAP: Record<string, { types: string[]; possessive: boolean; group:
   "him": { types: ["person"], possessive: false, group: "masc" },
   "his": { types: ["person"], possessive: true, group: "masc" },
   "she": { types: ["person"], possessive: false, group: "fem" },
+  // "her" omitted — ambiguous between object ("saw her") and possessive ("her stack")
   "they": { types: ["company", "project", "other"], possessive: false, group: "they" },
   "them": { types: ["company", "project", "other"], possessive: false, group: "they" },
   "their": { types: ["company", "project", "other"], possessive: true, group: "they" },

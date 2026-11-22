@@ -32,6 +32,7 @@ import type { ConnectorCursor } from "./framework.js";
  * no real email addresses. All inputs are obviously-synthetic strings.
  */
 
+// ---------------------------------------------------------------------------
 
 const SYNTHETIC_CREDS = Object.freeze({
   clientId: "synthetic-gmail-client-id.apps.googleusercontent.com",
@@ -150,6 +151,7 @@ function getHandler(
   return {
     match: (url) => /\/messages\/[^?]+/.test(url) && url.includes("format=full"),
     respond: (url) => {
+      // Extract message id from URL path.
       const m = url.match(/\/messages\/([^?]+)/);
       const id = m ? decodeURIComponent(m[1]) : "";
       const statusCode = statusOverride?.[id] ?? 200;
@@ -401,6 +403,7 @@ test("watermark advances when list is fully drained (no nextPageToken)", async (
   const result = await connector.syncIncremental({ cursor, config });
 
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
+  // Watermark should advance to T3 (the highest), stored as epoch-ms string.
   assert.equal(Number(payload.watermarkMs), Number(T3));
 });
 
@@ -424,9 +427,11 @@ test("watermark does NOT advance when all messages are inaccessible (404)", asyn
 
   const result = (await connector.syncIncremental({ cursor, config })) as GmailSyncResult;
 
+  // No docs, watermark unchanged.
   assert.equal(result.newDocs.length, 0);
   assert.equal(result.skippedInaccessible, 2);
   const payload = JSON.parse(result.nextCursor.value) as { watermarkMs: string };
+  // Watermark must remain at T1 (epoch ms).
   assert.equal(Number(payload.watermarkMs), Number(T1));
 });
 
@@ -670,6 +675,7 @@ test("watermark advances past empty messages on full drain (immutable skip)", as
 
   const fetchFn = makeFetch([
     tokenHandler(),
+    // No nextPageToken — fully drained.
     listHandler([makeMessageRef("msg-good-adv"), makeMessageRef("msg-empty-adv")]),
     getHandler({ "msg-good-adv": goodMsg, "msg-empty-adv": emptyMsg }),
   ]);
@@ -931,6 +937,7 @@ test("cursor stores watermarkMs as epoch-ms string, not ISO (Thread 1 precision)
   const result = await connector.syncIncremental({ cursor, config });
 
   const payload = JSON.parse(result.nextCursor.value) as Record<string, unknown>;
+  // Must store exact ms, not an ISO string.
   assert.ok(typeof payload.watermarkMs === "string", "cursor must use watermarkMs");
   assert.equal(payload.watermarkIso, undefined, "cursor must NOT use watermarkIso");
   assert.equal(
@@ -1156,6 +1163,7 @@ test("skippedIds messages are not re-fetched on subsequent polls (Thread 2 stall
 
   const result = (await connector.syncIncremental({ cursor, config })) as GmailSyncResult;
 
+  // Only the new good message is imported.
   assert.equal(result.newDocs.length, 1, "only the new good message should be imported");
   assert.equal(result.newDocs[0].source.externalId, "msg-good-skip-bypass");
   assert.equal(result.skippedEmpty, 0, "skipped-id messages must not count toward skippedEmpty again");
@@ -1287,6 +1295,7 @@ test("cursor's pageToken is cleared when the after: window is fully drained (Thr
 // ---------------------------------------------------------------------------
 
 test("isTransientHttpError classifies transient and terminal HTTP errors (Thread 3)", () => {
+  // Transient — re-throw.
   assert.equal(isTransientHttpError({ status: 429 }), true);
   assert.equal(isTransientHttpError({ status: 500 }), true);
   assert.equal(isTransientHttpError({ status: 503 }), true);
@@ -1299,11 +1308,13 @@ test("isTransientHttpError classifies transient and terminal HTTP errors (Thread
   assert.equal(isTransientHttpError({ code: "EAI_AGAIN" }), true);
   assert.equal(isTransientHttpError(new Error("plain network error")), true);
 
+  // Terminal — skip-and-continue.
   assert.equal(isTransientHttpError({ status: 404 }), false);
   assert.equal(isTransientHttpError({ response: { status: 403 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 400 } }), false);
   assert.equal(isTransientHttpError({ response: { status: 410 } }), false);
 
+  // Non-objects.
   assert.equal(isTransientHttpError(null), false);
   assert.equal(isTransientHttpError(undefined), false);
   assert.equal(isTransientHttpError("error string"), false);

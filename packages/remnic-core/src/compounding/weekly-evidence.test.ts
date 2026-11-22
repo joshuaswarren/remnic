@@ -166,6 +166,7 @@ Fix the pricing table.
       `${"x".repeat(CORRECTION_FILE_BYTE_LIMIT + 1)}`,
       "utf8",
     );
+    // SAFETY: rememberRawFrontmatter reads only path, content and frontmatter; this literal sets all three.
 
     const smallMemory = rememberRawFrontmatter(
       {

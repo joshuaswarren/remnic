@@ -29,6 +29,8 @@ async function startModelBoundary(): Promise<ModelBoundary> {
     });
     req.on("end", () => {
       if (req.method === "POST") {
+          // SAFETY: the loopback model posts OpenAI-compatible JSON; the shape
+          // named here is the only part the probe reads.
         try {
           const parsed = JSON.parse(raw) as { messages?: { role?: string; content?: string }[] };
           const user =
@@ -124,7 +126,14 @@ async function hasFactFile(dir: string, needle: string): Promise<boolean> {
   }
   return false;
 }
+/**
+ * SAFETY: test seams bridge to orchestrator-private internals whose shape is
+ * locally declared and exercised by the test itself; this is the single
+ * trusted cast point for those seams.
+ */
 
+  // SAFETY: the caller supplies the locally-declared seam contract; the cast
+  // re-labels the orchestrator-private instance to that contract.
 function asTestSeam<T>(cause: unknown): T {
   return cause as T;
 }
@@ -401,6 +410,8 @@ test("a malformed extraction result keeps the canonical claim turns above the fa
       drainExtraction: { extract: () => Promise<ExtractionRunResult | null> } | undefined;
     }
     const extractionSeam = asTestSeam<DrainSeam>(orchestrator);
+      // SAFETY: the queue re-drives malformed/null extractor output through
+      // the boundary; the stub result is cast to the named verdict shape.
     extractionSeam.extraction = {
       extract: async () => extractorResults.shift() as ExtractionRunResult | null,
     };

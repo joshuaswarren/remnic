@@ -601,6 +601,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     return { authenticatedPrincipal: this.resolveRequestPrincipal(req), namespace: this.resolveNamespace(req, namespace), ...(sessionKey ? { sessionKey } : {}) };
   }
 
+  /** Resolve namespace: only use the explicit body value. Adapter-inferred namespace
+   *  is intentionally NOT used as a fallback for REST requests — omitting namespace
+   *  should default to the server's global namespace, not silently scope to an adapter. */
   protected resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
     const namespace = bodyNamespace || undefined;
     enforceNamespaceAllowList(tokenCapabilityStore.getStore(), namespace, this.service.configRef?.defaultNamespace);
@@ -617,11 +620,21 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         `namespace must be a string or null (got: ${typeof requested})`,
       );
     }
+    // Trim BEFORE the allow-list gate: the operation schemas normalize
     const trimmed = typeof requested === "string" ? requested.trim() : undefined;
     const namespace = this.resolveNamespace(req, trimmed || undefined);
     return { ...body, namespace };
   }
 
+  /**
+   * Resolve the recall disclosure depth from the request (issue #677 PR
+   * 2/4).  Explicit body value wins; otherwise we accept a
+   * `?disclosure=...` query parameter so curl/browser tooling can use the
+   * three-tier surface without rewriting JSON.  Invalid query values
+   * throw `EngramAccessInputError` (CLAUDE.md rule 51 — no silent
+   * fallback).  An absent body field AND an absent query param yields
+   * `undefined`, which the service maps to `DEFAULT_RECALL_DISCLOSURE`.
+   */
   private resolveRecallDisclosure(
     bodyDisclosure: RecallDisclosure | undefined,
     parsed: URL,
@@ -1468,6 +1481,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
+      // Boundary dispatch (issue #2482): same registry path as memory_store.
       const op = getOperation("observe");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: observe");
@@ -1478,9 +1492,12 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
           service: this.service,
           authenticatedPrincipal: this.resolveRequestPrincipal(req),
           hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
+          // Phase 1 provenance: server-resolved connector identity from the
+          // bearer token (REST path, mirroring the MCP tools/call dispatch).
           sourceConnector: this.resolveConnector(req),
         },
       )) as { result: { dryRun?: boolean; idempotencyReplay?: boolean } };
+      // A replayed (deduplicated) observe must not consume a second write-quota
       if (this.shouldCountWriteRateLimit(output.result)) {
         this.recordWriteRateLimitHit(req);
       }
@@ -1622,6 +1639,8 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(req) },
+        // Phase 1 provenance: server-resolved connector identity from the
+        // bearer token (REST path, mirroring the MCP tools/call dispatch).
         sourceConnector: this.resolveConnector(req),
       })) as { result: EngramAccessWriteResponse };
       const response = output.result;
@@ -1823,6 +1842,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         ?? parsed.searchParams.get("session")
         ?? parsed.searchParams.get("sessionKey")
         ?? undefined;
+      // Migrated through the access boundary (issue #1525): the registry
       const op = getOperation("memory_get");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_get");
@@ -2136,6 +2156,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
       }
+      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
       const targetPair = readPair(this.service.memoryDir, pairId);
       if (targetPair) {
         enforceNamespaceAllowList(
@@ -2232,6 +2253,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
         );
         this.respondJson(res, 200, snapshot);
       } catch (err) {
+        // As with recallXray above: surface only the deliberately-prefixed
         if (err instanceof Error && err.message.startsWith("graphSnapshot:")) {
           this.respondJson(res, 400, {
             error: "invalid_request",
@@ -2266,6 +2288,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     // ── Graph mutation event stream (issue #691 PR 5/5) ──────────────────────
+    //
     // GET /engram/v1/graph/events
     //
     // Server-Sent Events stream that emits graph mutation events in real time.
@@ -2296,6 +2319,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       if (resumeChatSessionId) {
         await enforceChatSessionNamespace(this.service, resumeChatSessionId);
       } else {
+        // fresh session under the effective namespace. The HTTP chat handler
         enforceNamespaceAllowList(
           tokenCapabilityStore.getStore(),
           undefined,
@@ -2531,6 +2555,9 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     }
 
     //
+    // All five routes live under /engram/v1/admin/* which the access-surface
+    // static-completeness fitness test excludes this prefix). They still
+    // require bearer auth (enforced above) and delegate to core APIs via the
     if (pathname.startsWith("/engram/v1/admin/scope/inspect")) {
       if (req.method !== "GET" && req.method !== "POST") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
@@ -2833,6 +2860,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     const codingArchitectureWrite =
       (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
       toolArgsSubcommand === "refresh";
+    // codegraph parity tools (issue #1554): only mutating tools count as
     const CODEGRAPH_WRITE_TOOLS = new Set([
       "engram.codegraph_index", "remnic.codegraph_index",
       "engram.codegraph_delete_project", "remnic.codegraph_delete_project",
@@ -2917,6 +2945,7 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
     })();
     const mcpCorrelationId = currentCorrelationId() ?? randomUUID();
     const requestIdentity = this.resolveRequestIdentity(req);
+    // namespace chokepoint the REST surface runs. The effective namespace is
     if (request.method === "tools/call" && this.mcpServer.toolAcceptsNamespace(toolName)) {
       const mcpExplicitNamespace =
         toolArgs !== null && typeof toolArgs === "object" && !Array.isArray(toolArgs)
@@ -2953,7 +2982,11 @@ export class EngramAccessHttpServer extends ReviewDeckAccessHttpBase {
       const structured = result?.structuredContent as
         | { dryRun?: boolean; idempotencyReplay?: boolean; ok?: boolean }
         | undefined;
+      // would consume the write quota despite no mutation occurring
+      // (issue #1554 review thread: don't bill rejected calls as writes).
       const isRejectedCodegraph = structured?.ok === false;
+      // A write tool that succeeded without structuredContent (e.g.
+      // memory_correct_apply, which returns a CorrectionOutcome) still
       const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
       if (!writeRateLimitRecorded && !isError && !isRejectedCodegraph && counts) {
         if (supportPassportQuota) {

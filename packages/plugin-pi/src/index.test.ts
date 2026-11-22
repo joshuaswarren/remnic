@@ -322,6 +322,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   });
 
   const harness = makePiHarness();
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",
@@ -329,6 +330,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   };
   await harness.emit("session_start", {}, ctx);
 
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const firstResult = await Promise.race([
     harness
       .emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx)
@@ -346,6 +348,7 @@ test("first turn is not blocked by a slow recall; context lands on a later turn 
   await waitFor(() => recallLanded, "background recall to land");
   await flushBackgroundChains();
 
+  // SAFETY: the before_agent_start handler returns { systemPrompt } when it injects context.
   const secondResult = (await harness.emit(
     "before_agent_start",
     { prompt: "next", systemPrompt: "" },
@@ -403,6 +406,7 @@ test("a recall that outlives its session_start epoch cannot overwrite the next e
   });
 
   const harness = makePiHarness();
+  // SAFETY: makePiHarness implements every PiApi method the extension uses (on, registerCommand, registerTool, appendEntry).
   await remnicPiExtension(harness.pi as any);
   const ctx = {
     cwd: "/tmp/remnic-pi",
@@ -1894,6 +1898,7 @@ async function startStubDaemon(
   const listening = Promise.withResolvers<void>();
   server.listen(0, "127.0.0.1", () => listening.resolve());
   await listening.promise;
+  // SAFETY: listen(0, host) binds a TCP socket, so address() is an AddressInfo, never a pipe-path string.
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
@@ -2412,6 +2417,7 @@ test("before_agent_start recall failure notification survives stale Pi ctx after
   });
   await extension(pi as any);
 
+  // session_start does not fire recall
   await assert.doesNotReject(() =>
     emit("session_start", {}, stale.ctx)
   );
@@ -2972,6 +2978,13 @@ function makePiHarness(): {
   };
 }
 
+/**
+ * Poll until `predicate` returns true, failing after `timeoutMs`. Since #3273
+ * phase 1 the session_start startup probe (health -> version -> preflight) runs
+ * in the BACKGROUND, so tests that assert on its side effects (status label,
+ * breaker state, remnic_state entry, notification) must wait for the effect to
+ * appear instead of reading it immediately after emitting session_start.
+ */
 async function waitFor(predicate: () => boolean, label: string, timeoutMs = 5000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -3583,6 +3596,7 @@ test("before_agent_start awaits the in-flight startup probe before a first-turn 
   await emit("session_start", {}, ctx);
   assert.equal(probeResolvedAt, null, "the startup probe is still in flight right after session_start returns");
 
+  // SAFETY: before_agent_start returns { systemPrompt } when recall injects context; assertion below reads only that field.
   const result = await emit("before_agent_start", { prompt: "hi", systemPrompt: "" }, ctx) as { systemPrompt?: string };
 
   assert.ok(probeResolvedAt !== null, "the startup probe resolved");

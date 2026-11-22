@@ -46,7 +46,10 @@ import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 
 function fixtureConfig(overrides: Record<string, unknown>): PluginConfig {
   return {
+    // Arm the debounced QMD maintenance gate the way the orchestrator does.
     qmdMaintenanceEnabled: true,
+    // Keep the debounce timer from firing during the synchronous test pass;
+    // dispose() clears it in finally.
     qmdMaintenanceDebounceMs: 60_000,
     ...overrides,
   } as unknown as PluginConfig;
@@ -69,6 +72,7 @@ function buildScheduler(opts: {
   });
 }
 
+// ───────────────────────────────────────────────────────────────────────────
 
 test("runQmdMaintenance updates and embeds cataloged dynamic namespaces (NGnei)", async () => {
   const updateArgs: string[] = [];
@@ -190,6 +194,8 @@ test("runQmdMaintenance tracks namespace embed cadence across budget rotation", 
   try {
     scheduler.requestQmdMaintenanceForTool("test");
     await scheduler.runQmdMaintenance();
+    // Re-arm pending for the second budget rotation (the debounce timer is
+    // already armed from the first call, so this just re-sets the flag).
     scheduler.requestQmdMaintenanceForTool("test");
     await scheduler.runQmdMaintenance();
 
@@ -708,6 +714,7 @@ test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regre
   });
 
   try {
+    // Sanity: arming + running while the live backend is present invokes it.
     scheduler.requestQmdMaintenanceForTool("test");
     await scheduler.runQmdMaintenance();
     assert.deepEqual(calls, ["live.update"]);
@@ -872,6 +879,7 @@ alpha
       rebuilt.some((r) => r.eventId === "capture-1" && r.eventType === "explicit_capture_accepted"),
       "append-only capture event must survive background compaction",
     );
+    // Junk padding rows are still discarded — compaction shrank the ledger.
     assert.ok(!rebuilt.some((r) => r.legacy === true), "junk rows discarded");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -969,8 +977,14 @@ test("auto-compaction singleflight: two requests racing through the over-cap pro
       ) => Promise<"skipped" | "compacted" | "failed" | "deferred">;
     };
     try {
+      // await between the singleflight guard and claiming it — is exercised.
       scheduler.lastLifecycleCompactionAtMs = Date.now();
 
+      // Deterministically open the race window the reviewer flagged: gate the
+      // over-cap probe so BOTH callers pass the early `lifecycleCompactionInFlight`
+      // guard and park inside the same await, then release them together. An
+      // over-cap encrypted ledger (probe => true) bypasses the throttle, so both
+      // fall through toward claiming the guard.
       const { promise: probeGate, resolve: releaseProbe } = Promise.withResolvers<void>();
       const { promise: bothArrived, resolve: signalBothArrived } =
         Promise.withResolvers<void>();
@@ -1033,6 +1047,8 @@ test("auto-compaction leaves the throttle un-advanced after a failed run so it r
   const { memoryDir, ledgerPath } = await seedMemoryDirWithOversizedLedger(4096);
   try {
     const beforeSize = (await stat(ledgerPath)).size;
+    // A required-but-locked secure store makes the rewrite throw
+    // SecureStoreLockedError, so the first compaction fails.
     const storage = new StorageManager(memoryDir);
     storage.setSecureStoreRequired(true);
     const scheduler = buildCompactionSchedulerWithStorage(
@@ -1505,6 +1521,7 @@ test("catalog-disabled fallback compacts an encrypted over-cap namespace ledger 
         "fallback target storage is unlocked so the encrypted ledger can be rewritten",
       );
 
+      // The core proof: the encrypted over-cap ledger COMPACTS, it does not defer.
       const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
       assert.equal(
         outcome,
@@ -1611,6 +1628,7 @@ test("catalog-disabled fallback decodes a long tokenized namespace dir so an enc
         "keyed target is unlocked so the encrypted ledger can be rewritten",
       );
 
+      // The core proof: the encrypted over-cap ledger COMPACTS, it does not defer.
       const outcome = await seam.compactLifecycleLedgerTarget(nsTarget, 1024);
       assert.equal(
         outcome,
@@ -1739,6 +1757,7 @@ test("catalog-disabled fallback resolves a LEGACY RAW namespace dir (not a ns- t
 test("catalog-disabled fallback routes a LEGACY RAW namespace dir through the PRODUCTION resolver (resolveNamespaceStorageRoot) so its encrypted over-cap ledger compacts, not defers (#2033)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-ns-legacyraw-prod-"));
   try {
+    // A legacy deployment wrote per-namespace data under the RAW namespace name
     const nsName = "legacy-raw-prod-ns";
     assert.equal(namespaceIdentityFromToken(nsName), null, "precondition: dir name is NOT a ns- identity token");
     assert.ok(isSafeRouteNamespace(nsName), "precondition: dir name is a safe route namespace");
@@ -2141,6 +2160,8 @@ test("filesystem-fallback compaction drains a pending lifecycle append even when
 test("filesystem-fallback compaction recovers a crash-orphaned *.claimed spill when no live spill remains (#2033)", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-autocompact-fallback-claimed-"));
   try {
+    // Namespaces enabled but NO catalog storage wired: only the filesystem
+    // fallback finds this per-namespace ledger, so target.storage is absent.
     const token = namespaceIdentityToken("project-fallback-claimed");
     const nsDir = path.join(root, "namespaces", token);
     const nsLedger = path.join(nsDir, "state", "memory-lifecycle-ledger.jsonl");
@@ -2694,8 +2715,16 @@ test("maintenance tool request invokes the scheduled projection rebuild wiring (
 });
 
 // ───────────────────────────────────────────────────────────────────────────
+// re-index actually ran (the entity-migration pending marker) cannot rely on
+// requestQmdMaintenanceForTool, which only arms a debounced timer.
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * Non-namespace scheduler over a scriptable QMD backend. Like QmdClient, plain
+ * `update()` is fail-open: it resolves even when the min-interval gate or the
+ * failure backoff suppressed it or it errored, so only `updateStrict()` says
+ * whether an update actually ran.
+ */
 function completionScheduler(
   backend: {
     available?: boolean;

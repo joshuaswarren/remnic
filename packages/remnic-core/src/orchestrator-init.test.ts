@@ -1590,6 +1590,7 @@ for (const namespace of ["default", "shared"]) {
       assert.equal(existsSync(journalPath), false, "startup must not run the migration");
       await rm(lockPath);
       await storage.ensureDirectories();
+      // SAFETY: the journal is written by the migration under test and carries an optional boolean `complete`.
       const state = JSON.parse(await readFile(journalPath, "utf8")) as { complete?: boolean };
       assert.equal(state.complete, true, "default setup must still run migration");
     } finally {
@@ -1636,6 +1637,7 @@ test("daemon start builds the fact-hash index once in the background and a save 
     };
 
     assert.notEqual(await withTestDeadline(orchestrator.initialize()), "deadline", "initialize must not wait on the held rebuild");
+    // SAFETY: test reads the private deferredReady gate, as the neighbouring tests do.
     assert.notEqual(
       await withTestDeadline((orchestrator as any).deferredReady),
       "deadline",
@@ -1750,6 +1752,7 @@ test("an unverified collection ensure does not complete the maintenance-off sync
       knowledgeIndexEnabled: false,
     }),
   );
+  // SAFETY: the test stubs the same private orchestrator seams the neighbouring
   const orch = orchestrator as any;
   try {
     orch.qmd = {

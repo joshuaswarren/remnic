@@ -106,6 +106,8 @@ async function runMixedSequence(memoryDir: string, countIngress: boolean): Promi
     getStorage: async () => unreachable("getStorage"),
     heartbeatObserverChains: new Map(),
     lcmEngine: null,
+    // SAFETY: the fixture never drains or corrects, so a call here would mean the
+    // fixture itself changed shape; fail loud rather than silently stub.
     passiveCorrectionDedup: new Set(),
     passiveCorrectionService: () => unreachable("passiveCorrectionService"),
     passiveCorrectionTelemetry: { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} },
@@ -220,6 +222,8 @@ test("partition: accepted + filtered + refused equals turns offered; duplicates 
 
 test("duplicate digests are memory-bounded (FIFO cap) and never retain content", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ingress-cap-"));
+    // No-save storage: this test only observes counting, not persistence.
+    // SAFETY: FakeStorage implements BufferStorage; nothing is saved because saveBuffer writes only to memory here.
   try {
     const buffer = new SmartBuffer(makeConfig(memoryDir, { bufferMaxTurnsPerSession: 10_000 }), new FakeStorage());
     const unique = (i: number) => turn(`unique-${i}`);

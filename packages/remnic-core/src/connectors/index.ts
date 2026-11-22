@@ -119,6 +119,7 @@ export interface ConnectorInstance {
   config: Record<string, unknown>;
   status: "installed" | "running" | "error" | "disabled";
   installedAt?: string;
+  /** Error message if erro */
   error?: string;
 }
 
@@ -135,7 +136,9 @@ export interface InstallOptions {
 }
 
 export interface InstallResult {
+  /** Connector ID */
   connectorId: string;
+  /** Status */
   status: "installed" | "already_installed" | "config_required" | "error";
   configPath?: string;
   message: string;
@@ -145,6 +148,7 @@ export interface RemoveResult {
   /** Connector ID */
   connectorId: string;
   configPath: string;
+  /** Message */
   message: string;
   /** Status: "removed" on success, "error" if the removal failed partway, "not_found" if the connector was not installed, "skipped" if removal was aborted (e.g. malformed config). */
   status: "removed" | "error" | "not_found" | "skipped";
@@ -551,6 +555,7 @@ export function loadRegistry(): ConnectorRegistry {
   const regPath = getRegistryPath();
 
   if (!fs.existsSync(regPath)) {
+    // First time — bootstrap with built-in connectors
     const registry: ConnectorRegistry = {
       connectors: BUILTIN_CONNECTORS,
       registryPath: regPath,
@@ -569,6 +574,8 @@ export function loadRegistry(): ConnectorRegistry {
     ) {
       throw new Error("invalid registry schema");
     }
+    // Only connectors whose IDs are NOT in BUILTIN_CONNECTORS are preserved from
+    // the persisted file — those are genuine user-added custom connectors.
     const builtinIds = new Set(BUILTIN_CONNECTORS.map((b) => b.id));
     const customOnly = (parsed as { connectors: unknown[] }).connectors.filter(
       (c): c is ConnectorManifest => isConnectorManifest(c) && !builtinIds.has(c.id),
@@ -694,6 +701,7 @@ function compactConnectorConfigOverrides(rawUserConfig: Record<string, unknown>)
   return safeUserConfig;
 }
 
+// ── Install connector ───────────────────────────────────────────────────────
 
 export function installConnector(options: InstallOptions): InstallResult {
   if (!isValidConnectorId(options.connectorId)) {
@@ -982,6 +990,7 @@ export function installConnector(options: InstallOptions): InstallResult {
   //
   //
   //
+  //
   const nonHermesPriorTokenStore = (options.connectorId !== "hermes" && manifest.requiresToken)
     ? loadTokenStore()
     : null;
@@ -1036,7 +1045,19 @@ export function installConnector(options: InstallOptions): InstallResult {
     } : {}),
   };
 
+  // The Hermes install sequence must be atomic: connector.json must only be
+  // written if and only if both the YAML write AND the token-store commit
+  // succeed. Partial failures must leave the prior state intact so the daemon
+  // keeps working with the old token.
   //
+  // Step order (all-or-nothing):
+  //   a. Generate token candidate (buildTokenEntry, no store write yet).
+  //   b. Validate profile (fail-fast).
+  //   c. Write config.yaml via upsertHermesConfig — if skipped (missing dir)
+  //      or throws, abort with status "error". Old token is NOT revoked.
+  //   d. Commit new token to tokens.json — if this throws, rollback the YAML
+  //      write (restore prior content or delete new file) and abort.
+  //   e. Write connector.json only after both (c) and (d) succeed.
   //
 
   if (options.connectorId === "hermes") {
@@ -1212,6 +1233,7 @@ export function installConnector(options: InstallOptions): InstallResult {
       }
     }
 
+    // Persist the config.yaml location used at install time (it honors the
     resolvedConfig.hermesConfigPath = yamlResult.configPath;
 
     const hermesPriorNotes: string[] = [];
@@ -1222,6 +1244,7 @@ export function installConnector(options: InstallOptions): InstallResult {
       priorConfigPath !== null && !sameHermesConfigTarget(priorConfigPath, yamlResult.configPath);
     const hermesPriorConfigMutations: Array<{ mutatedPath: string; priorContent: string }> = [];
     if (priorConfigDiffers && priorConfigPath !== null && shimOutcome.materializedAt === null) {
+      // file's other remnic: sub-keys.
       let fallbackDetail = "";
       if (isPlausibleHermesConfigPath(priorConfigPath)) {
         try {
@@ -1537,7 +1560,13 @@ export function installConnector(options: InstallOptions): InstallResult {
         extensionHandle = extResult;
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : "unknown error";
+        // tokens.json before reaching this point. The extension threw, so no
+        // connector.json was written — roll back the token store to the
+        // pre-install snapshot so tokens.json and the absent connector.json
         //
+        // For connectors without requiresToken the rollback block is skipped
+        // entirely, so the suffix must remain absent — not "Token has been
+        // rolled back." (which would be factually incorrect).
         let extensionErrTokenRolledBack = false;
         let extensionErrTokenRollbackMsg = "";
         if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {
@@ -1596,6 +1625,8 @@ export function installConnector(options: InstallOptions): InstallResult {
         authToken: tokenEntry?.token,
       });
       fs.mkdirSync(path.dirname(proxyConfigPath), { recursive: true });
+      // we can always restore prior content (or delete a newly-created file)
+      // even if the write itself throws.
       weCloneProxyHandleRollback = () => {
         try {
           if (prior === null) {
@@ -1687,6 +1718,7 @@ export function installConnector(options: InstallOptions): InstallResult {
     writeSecretFileSync(configPath, JSON.stringify(resolvedConfig, null, 2));
   } catch (writeErr) {
     //
+    // Initialize to false: only set true once saveTokenStore() succeeds.
     let configWriteTokenRolledBack = false;
     let configWriteTokenRollbackMsg = "";
     if (tokenEntry !== null && nonHermesPriorTokenStore !== null) {
@@ -1825,6 +1857,7 @@ export function removeConnector(connectorId: string): RemoveResult {
         savedPriorHermesConfigPaths.push(parsed.priorHermesConfigPath);
       }
     } catch {
+      // Fail closed, mirroring the codex-cli provenance guard: a malformed
       return {
         connectorId,
         configPath,
@@ -1839,6 +1872,8 @@ export function removeConnector(connectorId: string): RemoveResult {
   }
 
   if (!fs.existsSync(configPath)) {
+    // cleanup (e.g. connector JSON deleted manually or XDG_CONFIG_HOME change).
+    // the connector appears "not installed" to the caller.
     let staleTokenRevoked = false;
     try {
       staleTokenRevoked = revokeToken(connectorId);
@@ -2901,6 +2936,7 @@ export function locatePluginCodexExtensionSource(override?: string | null): stri
       return bundledCandidate;
     }
 
+    // When this module is bundled into dist/index.js or dist/chunk-*.js,
     const distConnectorsCandidate = path.join(moduleDir, "connectors", "codex");
     searched.push(distConnectorsCandidate);
     if (
@@ -3337,7 +3373,10 @@ export function buildWeCloneProxyConfig(args: {
   );
   const sessionStrategy = resolveSessionStrategy(userConfig, priorConfig);
 
+  // Memory injection: always start from defaults, then shallow-merge any
   //
+  // `typeof [] === "object"` so a bare `typeof ... === "object" && ... !==
+  // null` guard would let an array spread numeric-indexed properties into
   const memoryInjection = {
     ...WECLONE_DEFAULTS.memoryInjection,
     ...(priorConfig &&

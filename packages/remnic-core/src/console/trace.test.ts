@@ -602,6 +602,7 @@ test("flushWithTimeout cancels fallback timer when flush wins the race (Codex P1
     }
     handles.push(record);
     lastHandle = handle;
+    // Tag so clearTimeout spy can map handle → record.
     (handle as unknown as { __record: typeof record }).__record = record;
     return handle;
   }) as typeof setTimeout;
@@ -670,6 +671,7 @@ test("recorder close() aborts pending write-chain drain when signal fires (Codex
     const tracePath = path.join(dir, "trace.jsonl");
     const recorder = await openTraceRecorder(tracePath);
     const stalledWrite = new Promise<void>(() => undefined);
+    //
     await recorder.close();
 
     const recorder2 = await openTraceRecorder(tracePath, {

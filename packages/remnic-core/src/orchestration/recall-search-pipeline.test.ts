@@ -28,6 +28,7 @@ function makeHybridTopUpStubCoordinator(
     qmd,
     namespaceFromPath,
   };
+  // SAFETY: hybrid top-up tests call fetchQmdMemoryResultsWithArtifactTopUp only; other deps are never read.
   return new RecallSearchPipelineCoordinator(partial as RecallSearchPipelineDeps);
 }
 
@@ -396,6 +397,7 @@ function starvedPrimaryCoordinator(
     config: { memoryDir: "/mem", qmdSearchStrategy: "lex", searchBackend: "qmd" },
     qmd: {},
     searchScopedMemoryCandidates: scopedCandidatesStub(seed),
+    // Faithful to the QMD backend: cap the primary hits to the requested budget.
     searchAcrossNamespaces: async ({ maxResults }: { maxResults: number }) =>
       [...primary].sort((a, b) => b.score - a.score).slice(0, Math.max(0, maxResults)),
     namespaceFromPath: () => "default",

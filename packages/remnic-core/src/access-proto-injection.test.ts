@@ -18,6 +18,7 @@ import "./access-operations.js";
 import "./access-operations-batch.js";
 import "./recall-navigation-operations.js";
 
+  // SAFETY: the operations under test dispatch only through the handlers supplied here.
 function makeService(handlers: Partial<EngramAccessService>): EngramAccessService {
   return handlers as EngramAccessService;
 }

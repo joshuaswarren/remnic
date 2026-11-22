@@ -12,6 +12,7 @@ import {
 import type { LspLocation } from "./types.js";
 import type { LspClient } from "./client.js";
 
+// ──────────────────────────────────────────────────────────────────────────
 
 function makeCallSite(
   filePath: string,
@@ -217,6 +218,8 @@ test("executor: happy path — definition maps to node, upgrade applied", async 
     { maxRequests: 100 },
   ).requests;
 
+  // Mock: definition at position {0, 0} returns a location at byte 0
+  // in src/target.ts. The nodeLocator finds "mod.target" at byte 0.
   const mockClient = makeMockClient(new Map([
     ["file:///src/a.ts:0:0", {
       ok: true as const,
@@ -332,6 +335,7 @@ test("executor: warm-up retry — only ONE retry is paid; later empties are defi
     warmupRetryDelayMs: 5,
   });
 
+  // Site 1: initial + one warm-up retry = 2 calls; the server is then
   assert.equal(calls, 3, "one warm-up retry total, not one per site");
   assert.equal(result.upgraded, 0);
   assert.equal(result.unresolved, 2);
@@ -402,6 +406,7 @@ test("executor: mid-batch applyUpgrades failure → caught, counted as unresolve
     },
   });
 
+  // The upgrade was found but the apply failed → counted as unresolved.
   assert.equal(result.upgraded, 0);
   assert.equal(result.unresolved, 1);
 });

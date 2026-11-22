@@ -57,6 +57,8 @@ function mcpOk(docs: Array<{ path: string }>): McpToolResult {
 }
 
 function makeClient(callTool: CallToolFn) {
+  // SAFETY: the stub drives private QmdClient fields by name; every member it
+  // sets is exercised by the assertions below.
   const client = new QmdClient("memories", 3, { daemonUrl: "stdio://qmd" });
   const internals: CongestionInternals = client as never;
   internals.available = true;
@@ -72,6 +74,8 @@ function makeClient(callTool: CallToolFn) {
     candidateLimit: false,
     chunkStrategy: false,
     mcpIndexSelection: false,
+  // SAFETY: the fake session stands in for a real QmdDaemonSession; tests
+  // only exercise callTool and use the object as a congestion-map key.
   };
   internals.daemonSession = { isActive: () => true, callTool } as never;
   return { client, internals };

@@ -150,6 +150,10 @@ function parseOutboxEntry(line: string): ObserveOutboxEntry | null {
   } catch {
     return null;
   }
+  // SAFETY: JSON.parse produced a non-null, non-array value; this class is the
+  // only writer of the outbox file, and the checks below reject every shape it
+  // cannot re-serialize and replay (messages/messageHashes arrays, identity
+  // fields present). Anything else is treated as a corrupt line and skipped.
   if (!parsed || Array.isArray(parsed)) return null;
   const entry = parsed as ObserveOutboxEntry;
   if (!Array.isArray(entry.messages) || !Array.isArray(entry.messageHashes)) return null;

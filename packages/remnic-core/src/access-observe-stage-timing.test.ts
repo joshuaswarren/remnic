@@ -16,7 +16,9 @@ interface OrchestratorInternals {
   _codingContextBySession: Map<string, CodingContext>;
 }
 
+  // SAFETY: the probe drives only the observe scope path on this orchestrator.
 function makeService(memoryDir: string): EngramAccessService {
+  // SAFETY: the probe sets exactly these two internal fields.
   const orch = Object.create(Orchestrator.prototype) as Orchestrator;
   const internals: OrchestratorInternals = {
     config: parseConfig({
@@ -50,6 +52,7 @@ test("a rejected observe logs phase attribution with stage durations and still t
   };
   initLogger(backend, false, { timestamps: false });
   try {
+    // SAFETY: the literal sets the request fields the scope path reads.
     const service = makeService(dir);
     const rejectedRequest = {
       sessionKey: "sess-timing-1",
@@ -103,6 +106,8 @@ function makeProbe(options: {
     recallCrossNamespaceBudgetHardLimit: 30,
   });
   const contexts = new Map<string, CodingContext>();
+  // SAFETY: the probe exercises the observe surface; the rest of Orchestrator
+  // is unused on this path.
   const extractionCalls: string[][] = [];
   const orch = {
     config,
@@ -147,6 +152,7 @@ test("a slow successful observe logs access-observe-slow with per-stage duration
     const { orch } = makeProbe({
       enqueueObserveMessages: (_sessionKey) => {},
     });
+    // SAFETY: the literal sets the request fields the observe path reads.
     const service = new EngramAccessService(orch);
     const slowRequest = {
       sessionKey: "alice:sess-slow",
@@ -195,6 +201,7 @@ test("a failed awaited LCM archival records the lcm-accept phase and still throw
         throw new Error("lcm archival append failed");
       },
     });
+    // SAFETY: the literal sets the request fields the observe path reads.
     const service = new EngramAccessService(orch);
     const failedLcmRequest = {
       sessionKey: "alice:sess-lcmfail",

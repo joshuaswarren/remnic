@@ -69,9 +69,13 @@ function makeParityProbe(overrides: Partial<PluginConfig> = {}): ParityProbe {
     defaultNamespace: "default",
     sharedNamespace: "shared",
     namespacePolicies: [],
+    // Production default. The #1505 round-3 read-authorization gate consults
+    // `recallNamespacesForPrincipal`, which reads `defaultRecallNamespaces`;
+    // omitting it would throw. Per-test overrides can still narrow it.
     defaultRecallNamespaces: ["self", "shared"],
     codingMode: { projectScope: true },
     memoryDir: "/synthetic/remnic-observe-lcm-parity",
+    // LCM-only test: keep objective-state off so the storage router is not hit.
     objectiveStateMemoryEnabled: false,
     objectiveStateSnapshotWritesEnabled: false,
     principalFromSessionKeyMode: "prefix",
@@ -170,6 +174,7 @@ function observeRequest(
 ): EngramAccessObserveRequest {
   return {
     sessionKey: "pi-geek:abc123",
+    // skipExtraction keeps this an LCM-only round-trip.
     skipExtraction: true,
     messages: [
       { role: "user", content: "what database are we using?" },
@@ -906,6 +911,7 @@ test("#2128: post-flush retained cleanup stops on abort or deadline", async (t) 
     options: {
       abortSignal: undefined,
       deadlineMs: 5,
+      // #3252: cleanup targets the pinned accepted-capture storage target.
       writeNamespaceOverride: "default",
       codingContext: undefined,
       scopeProfileWritePlan: undefined,
@@ -1059,6 +1065,7 @@ test("#2206: scope-resolution deadline cancels preparations by raw projectTag an
       releaseObserveScope();
     }
     const response = await observe;
+    // Cancelled preparation aborts only the extraction; the durable capture
     assert.equal(response.extractionQueued, false);
     assert.equal(probe.extractionCalls.length, 1);
   }
@@ -1435,6 +1442,7 @@ test("#1505 thread 2: LCM read namespace honors authenticatedPrincipal (write-un
     principalOverride?: string,
   ) => string;
 
+  // Without the override, the base derives from resolvePrincipal("sess-1") →
   const withoutOverride = lcmReadNamespaceForSession.call(probe.orch, "sess-1");
   assert.ok(
     !withoutOverride.startsWith("alice-"),
@@ -1617,6 +1625,7 @@ test("#1505 round 3: lcmSearch on a single-store / no-overlay session keeps the 
 test("#1505 round 3: extraction is pinned to the resolved writeNamespace even when it equals the default store", async () => {
   const probe = makeParityProbe({
     ...withSelfPolicyPrefix("pi-geek"),
+    // No overlay so writeNamespace collapses to config.defaultNamespace.
     codingMode: { projectScope: false },
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
@@ -1641,6 +1650,7 @@ test("#1505 round 3: extraction is pinned to the resolved writeNamespace even wh
   assert.equal(probe.extractionCalls[0].principalOverride, "pi-geek");
 });
 
+// ──────────────────────────────────────────────────────────────────────────
 
 test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default when the principal can WRITE but not READ its self namespace", async () => {
   const probe = makeParityProbe({
@@ -1652,6 +1662,7 @@ test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default wh
     defaultRecallNamespaces: ["self", "shared"],
   } as Partial<PluginConfig>);
 
+  // Bind a coding context to sess-1 so the overlay would apply on alice's base.
   probe.contexts.set("sess-1", {
     projectId: "acme-webshop",
     projectName: "Acme/Webshop",
@@ -1665,6 +1676,9 @@ test("#1505 round 3 thread 1: orchestrator LCM read key falls back to default wh
     principalOverride?: string,
   ) => string;
 
+  // With the authenticated principal = alice (NOT encoded in sess-1), the
+  // overlay base is `alice`. alice cannot READ `alice`, so the read namespace
+  // MUST fall back to the default store (NOT `alice-project-*`).
   const readNs = lcmReadNamespaceForSession.call(probe.orch, "sess-1", "alice");
   assert.equal(
     readNs,
@@ -1778,14 +1792,18 @@ test("#1505 round 3 thread 2: lcmSearch returns NO overlay rows when the princip
 test("#1505 round 4 thread (codex P2): compaction flush/record target the OVERLAY key even when the principal can WRITE but not READ its self base", async () => {
   const probe = makeParityProbe({
     namespacePolicies: [
+      // Write-only self policy: alice can write `alice` but cannot read it.
       { name: "alice", readPrincipals: [], writePrincipals: ["alice"] },
     ],
     principalFromSessionKeyMode: "prefix",
     principalFromSessionKeyRules: [],
+    // back, but the WRITE gate must still honour the overlay.
     defaultRecallNamespaces: ["shared"],
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // WRITE: alice observes sess-1 with a project tag → overlay applies on alice's
+  // write-authorized self base.
   await service.observe(
     observeRequest({
       sessionKey: "sess-1",
@@ -1859,6 +1877,7 @@ test("#1505 round 3 thread 2: lcmSearch still routes through the overlay key whe
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // Archive under alice's overlay (binds the coding context to the session).
   const writeRes = await service.observe(
     observeRequest({
       sessionKey: "sess-1",
@@ -1900,6 +1919,8 @@ test("#1505 thread NBHWs (codex P2): restrictive `default` WRITE policy + writab
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // observe succeeds under alice's writable self/project overlay even though
+  // `default` is not writable.
   const observeRes = await service.observe(
     observeRequest({
       sessionKey: "sess-1",
@@ -1951,6 +1972,7 @@ test("#1505 thread NBHWz (sweep): restrictive `default` READ policy + readable s
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // observe archives under pi-geek's readable+writable project overlay.
   await service.observe(
     observeRequest({ sessionKey: "pi-geek:abc123", projectTag: "Acme/Webshop" }),
   );
@@ -1978,10 +2000,12 @@ test("#1505 codex P1 'Don't treat any readable namespace as default LCM access':
     ],
     principalFromSessionKeyMode: "prefix",
     principalFromSessionKeyRules: [],
+    // `shared` is readable + in the recall set; `self` is omitted.
     defaultRecallNamespaces: ["shared"],
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // Bind a coding context so the overlay WOULD apply on alice's base.
   probe.contexts.set("sess-1", {
     projectId: "acme-webshop",
     projectName: "Acme/Webshop",
@@ -1995,6 +2019,8 @@ test("#1505 codex P1 'Don't treat any readable namespace as default LCM access':
 
   assert.equal(res.lcmEnabled, true);
   assert.equal(res.count, 0, "no authorized LCM target ⇒ empty results");
+  // SUPPRESS: self unreadable-in-recall AND default denied ⇒ no authorized LCM
+  // target. `searchContextFull` must NEVER run — not against the denied default
   assert.equal(
     probe.searchSessionIds.length,
     0,
@@ -2005,15 +2031,18 @@ test("#1505 codex P1 'Don't treat any readable namespace as default LCM access':
 test("#1505 cursor 'LCM read gate wrong fallback' (positive): self READABLE-in-recall but overlay-self gate denies ⇒ lcmSearch uses the raw sessionKey (default store), never `shared:`", async () => {
   const probe = makeParityProbe({
     namespacePolicies: [
+      // Restrictive default: alice may NOT read `default`.
       { name: "default", readPrincipals: [], writePrincipals: [] },
       { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
     ],
     principalFromSessionKeyMode: "prefix",
     principalFromSessionKeyRules: [],
+    // self IS readable + in the recall set, so PROCEED is authorized.
     defaultRecallNamespaces: ["self", "shared"],
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // No coding context bound ⇒ no overlay ⇒ the LCM key is the raw sessionKey.
   const res = await service.lcmSearch({
     query: "what database are we using?",
     sessionKey: "sess-1",
@@ -2072,6 +2101,7 @@ test("#1505 codex P1 (sessionless archive-scan guard): restrictive `default` REA
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // NO sessionKey, NO sessionPrefix → would otherwise scan the whole archive.
   const res = await service.lcmSearch({
     query: "what database are we using?",
     authenticatedPrincipal: "alice",
@@ -2119,6 +2149,9 @@ test("#1505 thread NBHWs regression: restrictive `default` WRITE policy + no ove
   } as Partial<PluginConfig>);
   const service = new EngramAccessService(probe.orch);
 
+  // No overlay ⇒ implicit write collapses to the (unwritable) default store, so
+  // observe itself rejects. Compaction must reject identically (parity), NOT
+  // succeed against a phantom queue.
   await assert.rejects(
     () =>
       service.observe(

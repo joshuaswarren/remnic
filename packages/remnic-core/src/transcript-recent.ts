@@ -108,6 +108,7 @@ export async function readNewestFromFiles(
       const lines = await readLinesSince(filePath, floorMs - RECENT_SKEW_MS, cap).catch(() => []);
       found = [];
       for (const line of lines) {
+          // SAFETY: the same cast the full-window read made here; `timestamp` is validated on the next line.
         try {
           const entry = JSON.parse(line) as TranscriptEntry;
           const entryTime = new Date(entry.timestamp);

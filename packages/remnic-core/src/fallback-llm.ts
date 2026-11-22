@@ -121,6 +121,7 @@ const LEGACY_PROVIDER_IDS = new Set(["openai-codex", "claude-cli"]);
 const MANAGED_SECRETREF_MARKER = ["secretref", "managed"].join("-");
 const PROVIDER_API_KEY_FIELD = ["api", "Key"].join("") as keyof ModelProviderConfig;
 
+/** Built-in OAuth/managed-auth providers so resolveProviderConfig reaches runtime auth. */
 const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
   anthropic: {
     baseUrl: "https://api.anthropic.com/v1",
@@ -134,9 +135,18 @@ const BUILT_IN_PROVIDER_FALLBACKS: Record<string, ModelProviderConfig> = {
     models: [],
     [PROVIDER_API_KEY_FIELD]: MANAGED_SECRETREF_MARKER,
   },
+  // Subscription-OAuth extraction provider (issue #2784): no apiKey — the
+  // codex CLI login authenticates, via the runner the codex-subscription
+  // module registers on this same seam.
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: codexSubscriptionBuiltinProviderConfig(),
 };
 
+/**
+ * Gateway/task LLM client. In `modelSource: "gateway"` this is the primary
+ * configured path (taskModelChain / agent persona), not a secondary recovery
+ * client. The class name stays `FallbackLlmClient` because it is imported
+ * widely; prefer the `TaskLlmClient` alias in new code. Issue #2967.
+ */
 export class FallbackLlmClient {
   private gatewayConfig: GatewayConfig | undefined;
   private runtimeContext: FallbackLlmRuntimeContext;

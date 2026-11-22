@@ -5,6 +5,7 @@ import { normalizeTags } from "./recall-tag-filter.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 import { assemblePersistedBody } from "./structured-attributes.js";
 
+// ---------------------------------------------------------------------------
 
 export interface MemoryWriteInput {
   /** Raw memory content. Must be non-empty after trimming. */
@@ -383,10 +384,12 @@ export function composeMemoryEnvelope(
   return envelope;
 }
 
+// The runtime seal registry. The declared `sealed` unique symbol exists only
 const SEALED_ENVELOPES = new WeakSet<object>();
 
 function hasOnlyFrozenDataProperties(value: object): boolean {
   if (!Object.isFrozen(value)) return false;
+  // Inherited accessors are as dangerous as own ones (round 5): a frozen
   const proto = Object.getPrototypeOf(value);
   if (Array.isArray(value)) {
     if (proto !== Array.prototype) return false;
@@ -460,6 +463,7 @@ export function isSealedMemoryEnvelope(value: unknown): value is SealedMemoryEnv
       { source: v.source, now: () => new Date(v.composedAt as string) },
     );
   } catch {
+    // Strict re-composition rejected an input — the candidate carries a
     return false;
   }
   const sameArray = (a: readonly string[], b: readonly string[]): boolean =>
@@ -508,9 +512,15 @@ export function sealedWriteToLegacyArgs(
       source: envelope.source,
       expiresAt: envelope.ttl,
       validAt: envelope.validAt,
+      // RAW map for frontmatter byte-parity with the legacy path; the body
+      // suffix canonicalizes identically from either form.
       structuredAttributes: envelope.rawStructuredAttributes
         ? { ...envelope.rawStructuredAttributes }
         : undefined,
+      // Unconditional (round 3): envelope-owned fields must ALWAYS overwrite
+      // extras — a conditional spread let extras.sourceConnector smuggle
+      // unvalidated connector provenance past the sealed envelope when the
+      // envelope had none.
       origin: envelope.origin,
       sourceConnector: envelope.sourceConnector,
       subject: envelope.subject,
@@ -519,6 +529,7 @@ export function sealedWriteToLegacyArgs(
 }
 
 // ---------------------------------------------------------------------------
+// Idempotency field registry
 // ---------------------------------------------------------------------------
 
 export const WRITE_FINGERPRINT_FIELDS = [
@@ -612,6 +623,7 @@ export function buildWriteIdempotencyPayload(
 }
 
 // ---------------------------------------------------------------------------
+// Access-surface request fingerprints (issue #1989 PR3)
 // ---------------------------------------------------------------------------
 //
 //

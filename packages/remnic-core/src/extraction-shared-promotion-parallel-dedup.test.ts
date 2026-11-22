@@ -25,6 +25,8 @@ interface OrchestratorInternals {
   persistExtraction: PersistExtractionFn;
 }
 
+  // SAFETY: the fixture provides the members the persist path reads; the
+  // remaining contract members are unused by these tests.
 function asInternals<T extends object>(value: OrchestratorFixture): T {
   return value as T;
 }
@@ -78,6 +80,8 @@ function factResult(content: string): ExtractionResult {
     relationships: [],
     questions: [],
     profileUpdates: [],
+  // SAFETY: literal carries the full extraction-result shape persistExtraction
+  // consumes for a single fact candidate.
   };
   return result as ExtractionResult;
 }

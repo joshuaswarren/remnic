@@ -36,6 +36,7 @@ interface ModelStub {
 
 function stubModel(onChat: (init?: RequestInit) => Promise<Response>): ModelStub {
   const original = globalThis.fetch;
+  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
   let chat = 0;
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (String(url).endsWith("/chat/completions")) {
@@ -137,6 +138,7 @@ test("a drain extraction starts while a live extraction holds the shared client"
   let liveSettled = false;
   let liveSettledWhenDrainStarted: boolean | undefined;
   const original = globalThis.fetch;
+  // SAFETY: the client only calls fetch(url, init); the stub keeps that call shape and returns a Response.
   let chat = 0;
   globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
     if (!String(url).endsWith("/chat/completions")) {

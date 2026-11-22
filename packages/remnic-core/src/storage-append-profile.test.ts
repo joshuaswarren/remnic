@@ -17,6 +17,8 @@ test("concurrent appendToProfile bullets both survive the shared profile read-mo
     const realWrite = storage.writeProfile.bind(storage);
     const firstWriteEntered = Promise.withResolvers<void>();
     const firstWriteGate = Promise.withResolvers<void>();
+    // SAFETY: the test drives only readProfile/writeProfile on the real manager;
+    // instance overrides keep the RMW interception local to this test.
     let writes = 0;
     storage.writeProfile = async (content: string) => {
       writes += 1;

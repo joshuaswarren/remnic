@@ -53,6 +53,7 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   graphRecall: "graphRecallEnabled",
   graphAssistInFullMode: "graphAssistInFullModeEnabled",
   graphExpandedIntent: "graphExpandedIntentEnabled",
+  // Issue #1566 Cluster C: mixed-operation flags.
   rerank: "rerankEnabled",
   harmonicRetrieval: "harmonicRetrievalEnabled",
   parallelRetrieval: "parallelRetrievalEnabled",
@@ -137,6 +138,7 @@ test("resolveCapabilities is deterministic — same config always yields identic
 });
 
 
+//
 //
 // ---------------------------------------------------------------------------
 
@@ -289,6 +291,7 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
 // ---------------------------------------------------------------------------
 //
 //
+// Parity contract: a caps-resolved run and a config-derived run MUST produce
 // ---------------------------------------------------------------------------
 
 const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
@@ -425,8 +428,10 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
 
 // ---------------------------------------------------------------------------
 //
+// Same invariant as the sets above: every caps field must project from its
 //
 // Parity contract: a caps-resolved run and a config-derived run MUST produce
+// identical boolean values for every gate — on AND off.
 // ---------------------------------------------------------------------------
 
 import {
@@ -990,17 +995,18 @@ test("resolvePresentationCapabilities returns a frozen object", () => {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-const CONSOLIDATION_FIELD_TO_FLAG: Record<keyof ConsolidationCapabilitySet, string> = {
+const CONSOLIDATION_FIELD_TO_FLAG = {
   compoundingSemantic: "compoundingSemanticEnabled",
   abstractionAnchors: "abstractionAnchorsEnabled",
   compounding: "compoundingEnabled",
   compoundingWeeklyCron: "compoundingWeeklyCronEnabled",
+  irc: "ircEnabled",
   calibration: "calibrationEnabled",
   semanticConsolidation: "semanticConsolidationEnabled",
   patternReinforcement: "patternReinforcementEnabled",
   continuityAudit: "continuityAuditEnabled",
   graphEdgeDecay: "graphEdgeDecayEnabled",
-};
+} satisfies Record<keyof ConsolidationCapabilitySet, string>;
 
 const CONSOLIDATION_FIELDS = Object.keys(CONSOLIDATION_FIELD_TO_FLAG) as Array<keyof ConsolidationCapabilitySet>;
 
@@ -1192,7 +1198,7 @@ test("resolvePipelineProcessingCapabilities returns a frozen object", () => {
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 
-const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, string> = {
+const CONV_CTX_FIELD_TO_FLAG = {
   sharedContext: "sharedContextEnabled",
   intentRouting: "intentRoutingEnabled",
   crossSignalsSemantic: "crossSignalsSemanticEnabled",
@@ -1200,11 +1206,12 @@ const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, str
   operatorAwareConsolidation: "operatorAwareConsolidationEnabled",
   peerProfileReasoner: "peerProfileReasonerEnabled",
   cmcConsolidation: "cmcConsolidationEnabled",
+  cmcBehaviorLearning: "cmcBehaviorLearningEnabled",
   maintenanceNamespaceFanout: "maintenanceNamespaceFanoutEnabled",
   citations: "citationsEnabled",
   semanticRulePromotion: "semanticRulePromotionEnabled",
   codexMarketplace: "codexMarketplaceEnabled",
-};
+} satisfies Record<keyof ConversationContextCapabilitySet, string>;
 
 const CONV_CTX_FIELDS = Object.keys(CONV_CTX_FIELD_TO_FLAG) as Array<keyof ConversationContextCapabilitySet>;
 

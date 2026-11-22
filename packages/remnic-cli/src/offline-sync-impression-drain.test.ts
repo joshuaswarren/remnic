@@ -525,6 +525,7 @@ test("offline sync refreshes generation deferrals after content hydration", asyn
       }
       if (url.pathname.endsWith("/offline-sync/files")) {
         hydrated = true;
+        // The daemon indexes while an unrelated content request is in flight.
         await writeFile(path.join(root, shardPath), indexedDuringHydration);
         return json({ ...EMPTY_REMOTE_SNAPSHOT, files: [{
           ...newFact, contentBase64: Buffer.from("remote fact").toString("base64"),

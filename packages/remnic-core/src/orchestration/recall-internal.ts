@@ -39,6 +39,10 @@ import { canReadNamespace, resolvePrincipal } from "../namespaces/principal.js";
 import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativeKnowledge } from "../native-knowledge.js";
 import { objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
 import { type GraphRecallRankedResult, type GraphRecallShadowComparison, mergeGraphExpandedResults } from "./graph-recall-coordinator.js";
+import {
+  buildCompoundingRecallSection,
+  buildIrcPreferencesRecallSection,
+} from "./compounding-recall-sections.js";
 import { buildProcedureRecallSection, mergeProcedureInjections } from "../procedural/procedure-recall.js";
 import { canRecallToolScopedMemory } from "../tool-scoped-memory.js";
 import { buildQmdRecallCacheKey, getCachedQmdRecall, setCachedQmdRecall } from "../qmd-recall-cache.js";
@@ -224,6 +228,7 @@ export class RecallInternalCoordinator {
       cold_fallback: 0,
       recent_scan: 0,
     };
+    // Sink the cold-fallback pipeline (four call sites) writes its
     const xrayColdPoolSink = { size: 0 };
     let selectedResultPartition: RecallResultPartition | null = null;
     let identityInjectionModeUsed: IdentityInjectionMode | "none" = "none";
@@ -449,6 +454,7 @@ export class RecallInternalCoordinator {
         recallPlan: timings.recallPlan,
         queryPolicy: timings.queryPolicy,
       });
+      //
       if (
         options.xrayCapture === true &&
         !options.abortSignal?.aborted
@@ -820,6 +826,7 @@ export class RecallInternalCoordinator {
         "entityRetrieval",
         null as string | null,
         async (sectionSignal) => {
+          // The transcript store is shared and takes no signal of its own, so the
           const transcriptEntries = sessionKey
             ? await raceAbort(
                 readRecentEntityTranscriptEntries(
@@ -2471,54 +2478,23 @@ export class RecallInternalCoordinator {
 
     const compoundingStartedMs = performance.now();
     const compoundingPromise = observeEnrichmentPromise(
-      (async (): Promise<string | null> => {
-        const t0 = Date.now();
-        if (
-          !this.deps.compounding ||
-          !resolveRecallEnhancementCapabilities(this.deps.config).compoundingInject ||
-          !this.deps.isRecallSectionEnabled("compounding", true)
-        ) {
-          recordRecallSectionMetric({
-            section: "compounding",
-            priority: "enrichment",
-            durationMs: 0,
-            deadlineMs: enrichmentSectionDeadlineMs,
-            source: "skip",
-            success: true,
-            timing: "skip",
-          });
-          return null;
-        }
-        const maxPatterns =
-          this.deps.getRecallSectionNumber("compounding", "maxPatterns") ?? 40;
-        const maxRubrics =
-          this.deps.getRecallSectionNumber("compounding", "maxRubrics") ?? 4;
-        if (maxPatterns === 0 && maxRubrics === 0) {
-          recordRecallSectionMetric({
-            section: "compounding",
-            priority: "enrichment",
-            durationMs: 0,
-            deadlineMs: enrichmentSectionDeadlineMs,
-            source: "skip",
-            success: true,
-            timing: "skip(limit=0)",
-          });
-          return null;
-        }
-        const section = await this.deps.compounding.buildRecallSection(
-          retrievalQuery,
-          { maxPatterns, maxRubrics },
-        );
-        recordRecallSectionMetric({
-          section: "compounding",
-          priority: "enrichment",
-          durationMs: Date.now() - t0,
-          deadlineMs: enrichmentSectionDeadlineMs,
-          source: "fresh",
-          success: true,
-        });
-        return section;
-      })(),
+      buildCompoundingRecallSection({
+        deps: this.deps,
+        record: recordRecallSectionMetric,
+        retrievalQuery,
+        deadlineMs: enrichmentSectionDeadlineMs,
+      }),
+    );
+
+    const preferencesStartedMs = performance.now();
+    const preferencesPromise = observeEnrichmentPromise(
+      buildIrcPreferencesRecallSection({
+        deps: this.deps,
+        record: recordRecallSectionMetric,
+        retrievalQuery,
+        profileStorages,
+        deadlineMs: enrichmentSectionDeadlineMs,
+      }),
     );
 
     const recentBoxesPromise = observeEnrichmentPromise(
@@ -2554,6 +2530,7 @@ export class RecallInternalCoordinator {
         : Promise.resolve([] as BoxFrontmatter[]),
     );
 
+    // --- Wait for core sections first, then bounded enrichment ---
     this.deps.profiler.startSpan("phase-1-parallel", profileTraceId);
     const phase1Start = Date.now();
     log.info(
@@ -2917,6 +2894,7 @@ export class RecallInternalCoordinator {
       try {
         const focusedListSection = await buildFocusedListRecallSection({
           engine: this.deps.lcmEngine,
+          // #1495 thread 3 + #1505 fallback unification: read across the ordered
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: focusedListMaxChars,
@@ -2963,6 +2941,9 @@ export class RecallInternalCoordinator {
         const responseGuidanceSection = await buildResponseGuidanceRecallSection({
           engine: this.deps.lcmEngine,
           // #1495 thread 3 + #1505 fallback unification: read across the ordered
+          // LCM read key set so a branch-scoped session reads its own
+          // #1505 codex P2: the builder MERGES candidates across every key under
+          // its single budget.
           sessionIds: lcmReadSessionIds,
           query: retrievalQuery,
           maxChars: responseGuidanceMaxChars,
@@ -3082,6 +3063,7 @@ export class RecallInternalCoordinator {
       }
     }
 
+    // 1. Profile
     if (profile)
       this.deps.appendRecallSection(
         sectionBuckets,
@@ -3227,6 +3209,7 @@ export class RecallInternalCoordinator {
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
       try {
+        // #1495 + #1505 fallback unification: read across the ordered LCM read
         const structuredSettled = await Promise.allSettled(
           lcmReadSessionIds.map((lcmSessionId) =>
             this.deps.lcmEngine!.searchStructuredParts(lcmSessionId ?? "", retrievalQuery),
@@ -3744,6 +3727,7 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           const trustT0 = Date.now();
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
@@ -3847,6 +3831,7 @@ export class RecallInternalCoordinator {
             searchOptions: qmdSearchOptions,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
+          // #1577: read cold trust map back for X-ray/epistemic (rule 41).
           recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
@@ -3951,6 +3936,8 @@ export class RecallInternalCoordinator {
           },
           [] as QmdSearchResult[],
         );
+        // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+        // Feature gate is consistent across ALL recall paths (rule 41 parity).
         {
           const trustT0 = Date.now();
           const trustFallback = { results: scoped, trustByPath: recallTrustByPath };
@@ -4081,6 +4068,7 @@ export class RecallInternalCoordinator {
               searchOptions: qmdSearchOptions,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
+            // #1577: cold trust map back.
             recallTrustByPath = trustByPathSink.trustByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
@@ -4148,6 +4136,7 @@ export class RecallInternalCoordinator {
               [] as QmdSearchResult[],
             );
             // Issue #1577 — trust filter before packet cap (AGENTS.md order).
+            // Feature gate is consistent across ALL recall paths (rule 41).
             {
               const trustT0 = Date.now();
               const recentPreloaded = new Map<string, MemoryFile>(
@@ -4254,6 +4243,7 @@ export class RecallInternalCoordinator {
                 searchOptions: qmdSearchOptions,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
+              // #1577: cold trust map back.
               recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
@@ -4471,6 +4461,19 @@ export class RecallInternalCoordinator {
         compoundingSection,
       );
     }
+    const preferencesSection = await phase2Timer.enrichment(
+      "Preferences",
+      preferencesStartedMs,
+      () => timings.preferences?.startsWith("skip") === true,
+      (onStatus) => awaitEnrichmentSection("preferences", preferencesPromise, onStatus),
+    );
+    if (preferencesSection) {
+      this.deps.appendRecallSection(
+        sectionBuckets,
+        "preferences",
+        preferencesSection,
+      );
+    }
     let curiosityFooter: string | undefined, curiosityQuestionSelected = false, curiosityFooterTruncated = false;
     const questionsEnabled = this.deps.config.injectQuestions &&
       this.deps.isRecallSectionEnabled("questions", true);
@@ -4596,6 +4599,9 @@ export class RecallInternalCoordinator {
       omittedMemoryIds: assembledRecall.omittedMemoryIds,
     });
     //
+    // Skip capture when the caller has already aborted this recall —
+    // otherwise a canceled call could clobber a prior successful
+    // (issue #570 PR 1 review follow-up).
     if (
       options.xrayCapture === true &&
       !options.abortSignal?.aborted
@@ -4693,9 +4699,12 @@ export class RecallInternalCoordinator {
               : {}),
             ...(provenance ? { provenance } : {}),
             ...(sourceSpan ? { sourceSpan } : {}),
+            // Issue #1577 — per-result trust projection for X-ray visibility.
             ...(trustItem ? { trust: projectTrustForXray(trustItem) } : {}),
           });
         }
+        // Issue #1577 — surface quarantined items in X-ray with their exclusion
+        // reason so operators see WHY a memory was dropped (rule 34 — exclusion
         if (recallTrustByPath) {
           for (const qItem of recallTrustByPath.values()) {
             if (!qItem.quarantined || recalledMemoryPaths.includes(qItem.path)) continue;
@@ -4768,9 +4777,12 @@ export class RecallInternalCoordinator {
           sessionKey,
           namespace: selfNamespace,
           traceId,
+          // Issue #679 completion: record peer-profile injection in the
           peerProfileInjection: peerProfileXrayAnnotation,
         });
       } catch (err) {
+        // Capture is a best-effort side channel: a capture failure
+        // must NEVER propagate into the primary recall path.
         log.debug(`x-ray capture failed: ${err}`);
       }
     }

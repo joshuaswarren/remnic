@@ -74,6 +74,9 @@ function makeStub(options: StubOptions): Stub {
     ) {
       stub.recallCalls += 1;
       stub.sinkSupplied = Array.isArray(invocation?.degradationSink);
+      // Stand in for the real pipeline: it fills the SAME array it was
+      // handed, which is exactly what `options.degradationSink ?? []` in
+      // recall-internal.ts makes possible.
       for (const degradation of options.degradations ?? []) {
         invocation?.degradationSink?.push(degradation);
       }

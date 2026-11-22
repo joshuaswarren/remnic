@@ -20,6 +20,7 @@ test("QmdClient rechecks daemon availability before returning unavailable", asyn
     daemonUrl: "stdio://qmd",
     daemonRecheckIntervalMs: 0,
   });
+  // SAFETY: the stub drives private QmdClient fields by name; every member
   const internals: DaemonCheckInternals = client as never;
   let probeCount = 0;
   internals.available = false;

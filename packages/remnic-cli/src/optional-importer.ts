@@ -1,3 +1,4 @@
+//
 // Adding a new importer:
 //   1. Append its name to `SUPPORTED_IMPORTERS`.
 //   2. Publish the package as `@remnic/import-<name>`.
@@ -55,6 +56,9 @@ export async function loadImporterModule(
   const specifier = "@remnic/" + "import-" + name;
   try {
     const mod = (await import(specifier)) as Partial<ImporterModule> & {
+      // Some packages export the adapter under a name-prefixed export; we
+      // accept either the canonical `adapter` export or a `<name>Adapter`
+      // alias to keep the contract flexible for slice-authoring ergonomics.
       [key: string]: unknown;
     };
     const resolved = resolveAdapterExport(mod, name);

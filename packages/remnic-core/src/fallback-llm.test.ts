@@ -2036,6 +2036,7 @@ test("fallback llm does not retry schema-stripping for unrelated unsupported err
   globalThis.fetch = (async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     bodies.push(body);
+    // Unrelated provider error: "unsupported" without schema/format context.
     return new Response(JSON.stringify({ error: { message: "'temperature' is unsupported with this model" } }), { status: 400 });
   }) as typeof fetch;
   try {
@@ -2066,6 +2067,7 @@ test("fallback llm retries without responsesJsonSchema when the Responses API re
     if ((body as { text?: { format?: unknown } }).text?.format) {
       return new Response('text.format json_schema is unsupported', { status: 400 });
     }
+    // Model 1 always fails content-wise; model 2 succeeds.
     const model = String(body.model ?? "");
     if (model.endsWith("test-model")) {
       return new Response(JSON.stringify({ output_text: "not json" }), { status: 200 });

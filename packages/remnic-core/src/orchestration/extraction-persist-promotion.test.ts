@@ -131,6 +131,7 @@ test("mergeTargetHasPromotedCopies: an unauthorized profile target's historical 
       profileId: "synthetic",
       profile: { autoPromote: { targets: ["team-project"] } },
       promotionTargets: [
+        // Authorized NOW: false — the copy was promoted under an older plan.
         { target: "team-project", namespace: "team", authorized: false, reason: "revoked" },
       ],
     } as unknown as ResolvedScopeProfilePlan,
@@ -203,6 +204,7 @@ test("createBatchPromotedCopyProbe: one scan per namespace per batch, not per fa
       ],
     } as unknown as ResolvedScopeProfilePlan,
   );
+  // Three judge-approved facts in one batch, each probing the same target:
   // every probe must see the historical copy, and the team corpus scan must
   // have run exactly once (the hit short-circuits before shared).
   for (let factIndex = 0; factIndex < 3; factIndex++) {
@@ -357,7 +359,9 @@ test("former promotion layers still resolvable are scanned: a copy on a layer re
   const plan = {
     profileId: "synthetic",
     profile: { autoPromote: { targets: [] } },
+    // The layer is GONE from today's promotion targets...
     promotionTargets: [],
+    // ...but still resolvable through the plan's resolved layers.
     layers: [{ id: "userGlobal", namespace: "global" }],
   } as unknown as ResolvedScopeProfilePlan;
   const config = parseConfig({ memoryDir: source.dir, sharedNamespace: "shared" });
@@ -592,6 +596,7 @@ test("buildMergedTargetPromotionPayload: an unreadable CAS receipt shard refuses
   assert.ok(shard.revision, "the merge commit minted a standing receipt");
   await writeFile(shardPath, "{corrupt", "utf8");
 
+  // A concurrent writer published the PRE-merge body after the initial
   // guard — reconciliation may retire it ONLY off a confirmed outcome.
   const staleCopy = await s.shared.writeMemory("fact", PRE_MERGE_BODY, {
     source: "writer-b",

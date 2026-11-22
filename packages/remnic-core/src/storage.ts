@@ -787,6 +787,7 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     const score = parseFloat(fm.importanceScore);
     const level = (fm.importanceLevel as ImportanceLevel) || "normal";
 
+    // Parse importance reasons array
     let reasons: string[] = [];
     const reasonsStr = fm.importanceReasons ?? "";
     if (reasonsStr.trim().startsWith("[") && reasonsStr.trim().endsWith("]")) {
@@ -829,7 +830,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
+      // Status management
       status: (fm.status as MemoryStatus) || "active",
+      // Tombstone block visibility (issue #1579) — read-through.
       blockedBy: fm.blockedBy || undefined,
       tombstoneBlockTier:
         fm.tombstoneBlockTier === "exact" ||
@@ -846,8 +849,10 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
           ? fm.supersessionCause
           : undefined,
       invalidatedBy: fm.invalidatedBy || undefined,
+      // Issue #680 — explicit fact lifecycle round-trip.
       valid_at: fm.validAt || undefined,
       invalid_at: fm.invalidAt || undefined,
+      // Issue #1578 — bi-temporal ingestion provenance round-trip.
       observedAt: fm.observedAt || undefined,
       eventTimeSource:
         fm.eventTimeSource === "extracted" || fm.eventTimeSource === "assumed" ? fm.eventTimeSource : undefined,
@@ -859,15 +864,20 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       lastValidatedAt: fm.lastValidatedAt || undefined,
       decayScore: Number.isFinite(decayScore) ? decayScore : undefined,
       heatScore: Number.isFinite(heatScore) ? heatScore : undefined,
+      // Access tracking
       accessCount: accessCount && accessCount > 0 ? accessCount : undefined,
       lastAccessed: fm.lastAccessed || undefined,
+      // Memory Worth counters (issue #560)
       mw_success,
       mw_fail,
       ...parseDriftProvenance(fm),
+      // Importance scoring
       importance,
+      // Chunking
       parentId: fm.parentId || undefined,
       chunkIndex: fm.chunkIndex ? parseInt(fm.chunkIndex, 10) : undefined,
       chunkTotal: fm.chunkTotal ? parseInt(fm.chunkTotal, 10) : undefined,
+      // Links are parsed separately below
       intentGoal: fm.intentGoal || undefined,
       intentActionType: fm.intentActionType || undefined,
       intentEntityTypes: intentEntityTypes && intentEntityTypes.length > 0 ? intentEntityTypes : undefined,
@@ -876,11 +886,15 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
       sourceTurnId: fm.sourceTurnId || undefined,
       // v8.0 Phase 2B: HiMem episode/note classification
       memoryKind: (fm.memoryKind as MemoryFrontmatter["memoryKind"]) || undefined,
+      // Structured attributes (JSON on a single line)
       structuredAttributes: parseStructuredAttributes(fm.structuredAttributes),
+      // Raw-content dedup hash (format-agnostic archive/consolidation cleanup)
       contentHash: fm.contentHash || undefined,
+      // Consolidation provenance (issue #561) — read-through only in this
       // PR; no code produces these fields yet.
       derived_from,
       derived_via,
+      // Pattern-reinforcement metadata (issue #687 PR 2/4) — drop corrupt values on read (rule 34).
       reinforcement_count: parseReinforcementCountField(fm.reinforcement_count),
       last_reinforced_at: fm.last_reinforced_at || undefined,
       sources: parseProvenanceSources(fm.sources),
@@ -987,6 +1001,7 @@ function dehyphenate(s: string): string {
 const FACT_HASH_INDEX_REBUILD_MAX_ATTEMPTS = 3;
 const FACT_HASH_INDEX_REBUILD_RETRY_BASE_MS = 50;
 
+// ---------------------------------------------------------------------------
 // Attribute normalization helper
 // ---------------------------------------------------------------------------
 
@@ -2137,6 +2152,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     if (ttlValid) {
       StorageManager.hotMemoriesCacheTtlByDir.set(memoryDir, ttlMs as number);
     }
+    // Seed the process-wide fallbacks (for UNregistered dirs) ONCE, from the
     // first registration only (issue #1902, Cursor Low). A later orchestrator
     // with a divergent config must not flip the fallback out from under the
     // first — that was a last-writer-wins race. First-writer is deterministic
@@ -3682,6 +3698,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     let tombstoneBlocked = false;
     let gateRef: string | undefined;
     let statusBeforeBlock: MemoryFrontmatter["status"];
+    // Re-run after journal moves that change the final entityRef.
     const applyTombstoneGate = async (): Promise<void> => {
       if (tombstoneBlocked) {
         if (fm.entityRef === gateRef) return;
@@ -5511,6 +5528,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
     }
 
     const nowIso = new Date().toISOString();
+    // Collect newly-seen keys in a SEPARATE set — never mutate `existingKeys`
     // (which may alias the cached set) before the append is durable. A failed
     // append must leave the cached dedup set matching what is actually on disk,
     // otherwise a retry would cache-hit a poisoned set and silently drop the
@@ -6531,6 +6549,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
   }
 
   // ---------------------------------------------------------------------------
+  // Chunking (Phase 2A)
   // ---------------------------------------------------------------------------
 
   /**

@@ -99,6 +99,8 @@ test("capture write lock acquire succeeds after a brief hold", async () => {
         assert.equal(options.maxWaitMs, 1);
         assert.equal(options.pollMs, 1);
         probes += 1;
+        // The second lock in the chain stays busy for one attempt, while the
+        // first lock is already held. Sleep must observe that hold released.
         if (probes % 2 === 0 && busy) {
           return await task(false, { failure: "timeout", refresh: async () => false });
         }
@@ -431,6 +433,7 @@ test("capture write lock deadline is checked right before the write", async () =
       }),
       now: () => now,
       withHeldFileLock: (async (_lockPath, _options, task) => {
+        // Waiting for the lock file consumed the whole deadline.
         now += 5_000;
         return await task(true, { refresh: async () => true });
       }) as typeof withHeldFileLock,

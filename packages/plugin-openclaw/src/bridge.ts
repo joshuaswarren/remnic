@@ -590,6 +590,7 @@ export function detectDaemonBridgeMode(options: {
     ...(primary.authTokenUnit === undefined ? {} : { daemonAuthUnit: primary.authTokenUnit }),
   };
 
+  // `bridgeHealthTimeoutMs` is documented as the TOTAL preflight budget, and
   if (options.memoryDir.trim() === "") {
     throw new Error("detectDaemonBridgeMode requires a non-empty memoryDir to verify the daemon corpus");
   }
@@ -695,9 +696,13 @@ export function detectDaemonBridgeMode(options: {
       daemonPort,
       healthVerified: true,
       ...(configPath === undefined ? {} : { daemonConfigPath: configPath }),
+      // A unit-supplied credential has no other source, so it is carried by
       ...(usedToken !== undefined && usedToken === authTokenOverride
         ? {
             daemonAuthTokenOverride: usedToken,
+            // The unit rides along so the credential can be re-read per
+            // request; the frozen value stays as the fallback for a unit that
+            // later becomes unreadable.
             ...(authTokenUnit === undefined ? {} : { daemonAuthUnit: authTokenUnit }),
           }
         : {}),
@@ -709,6 +714,13 @@ export function detectDaemonBridgeMode(options: {
   return embedded;
 }
 
+/**
+ * The mode the deployment ASKED for, without probing anything.
+ *
+ * Split out so a caller can tell "delegate was attempted and failed" from
+ * "this deployment is embedded and something unrelated is misconfigured" —
+ * only the former is a fallback worth recording.
+ */
 export function resolveRequestedBridgeMode(configBridgeMode: string): BridgeModeRequest {
   const envMode = readCompatEnv("REMNIC_BRIDGE_MODE", "ENGRAM_BRIDGE_MODE")?.toLowerCase();
   const isRequest = (value: string): value is BridgeModeRequest =>
@@ -783,6 +795,13 @@ export function resolveBridgeMode(
   };
 }
 
+/**
+ * The `server.authToken` a specific config file declares, read fresh.
+ *
+ * Delegate requests call this per request rather than reusing the value
+ * detection succeeded with, so rotating the daemon's token does not 401 every
+ * route until the gateway restarts.
+ */
 export function readDaemonConfigAuthToken(configPath: string): string | undefined {
   return readServerBlock(configPath)?.authToken;
 }

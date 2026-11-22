@@ -37,6 +37,8 @@ function makeObserveProbe(memoryDir: string, projectScope = true): ObserveProbe 
     ],
     codingMode: { projectScope },
     memoryDir,
+    // Disable objective-state snapshots so the probe doesn't need a writable
+    // storage backend — the idempotency contract under test is LCM + extraction.
     objectiveStateMemoryEnabled: false,
     objectiveStateSnapshotWritesEnabled: false,
     principalFromSessionKeyMode: "prefix",

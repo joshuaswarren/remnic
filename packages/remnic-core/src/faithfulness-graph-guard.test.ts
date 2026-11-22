@@ -25,6 +25,10 @@ function faithfulnessStubLocalLlm(
     ) => {
       if (options.operation !== "extraction-faithfulness") return null;
       const userMsg = messages.find((m) => m.role === "user");
+      // The batch prompt emits one `FACT: "<text>"` line per fact, each
+      // followed by `Respond with the JSON array entry for index <i>`. The
+      // gate maps verdicts back to facts by that index, so return one entry
+      // per fact in prompt order. (Single-fact callers still get one entry.)
       const factMatches = [...(userMsg?.content ?? "").matchAll(/FACT: "([^"]*)"/g)];
       const entries = factMatches.map((m, i) => ({
         index: i,

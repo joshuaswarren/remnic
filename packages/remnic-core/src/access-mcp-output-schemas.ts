@@ -133,8 +133,14 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     { ok: T_BOOLEAN, error: T_NULLABLE_STRING, entries: T_ARRAY, trace: T_ARRAY, rendered: T_STRING },
     ["entries", "trace"]
   ),
+  // RecallNavigationResult union (recall-navigation.ts): success carries
+  // items/budget/disclosureSpend; error carries error/message. ok/action/
+  // rendered are the fields every variant returns.
   memory_expand: navigationResultSchema(),
   memory_traverse: navigationResultSchema(),
+  // MemoryStoreBrowseResult union (memory-browse.ts): success carries
+  // entries/total/truncated; typed refusals carry error/message. ok/verb/
+  // rendered are the fields every variant returns.
   memory_ls: browseResultSchema(),
   memory_tree: browseResultSchema(),
   memory_find: browseResultSchema(),

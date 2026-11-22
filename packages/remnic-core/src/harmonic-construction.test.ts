@@ -1373,6 +1373,7 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       semanticMerge: { enabled: true },
     });
     const orchestratorUntyped: unknown = newHarmonicOrchestrator(config);
+    // SAFETY: the harness consumes only the private DI surface named below;
     // the test asserts every field it reads off it.
     const orchestrator = orchestratorUntyped as PersistenceHarness & {
       embeddingFallback: {
@@ -1429,6 +1430,7 @@ test("persistExtraction keeps a merged target in the thread episode set across e
       indexFile: async () => {},
       removeFromIndex: async () => {},
     };
+    // Deterministic judge: merge into the top candidate's current body.
     orchestrator.localLlm = {
       chatCompletion: async (messages) => {
         if (

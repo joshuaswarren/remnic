@@ -16,6 +16,7 @@ import {
   OFFLINE_SYNC_MAX_MTIME_MS,
 } from "./offline-sync.js";
 
+// ---------------------------------------------------------------------------
 
 export interface SchemaValidationError {
   error: string;
@@ -878,6 +879,7 @@ export function validateRequest<T = unknown>(
     throw error;
   }
   if (parseResult.success) {
+    // SAFETY: T is the type each caller associates with schemaName, and the
     return { success: true, data: parseResult.data as T };
   }
   return { success: false, error: formatZodError(parseResult.error) };

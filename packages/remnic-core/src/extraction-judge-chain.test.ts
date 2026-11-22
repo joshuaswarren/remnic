@@ -14,6 +14,7 @@ function captureLlm(captured: Array<Record<string, unknown>>): FallbackLlmClient
     isAvailable: () => true,
     chatCompletion: async (_messages: unknown, options: Record<string, unknown>) => {
       captured.push(options);
+      // A parseable batch verdict so the judge doesn't error after the call.
       return { content: JSON.stringify([{ index: 0, durable: true, reason: "ok" }]) };
     },
   } as unknown as FallbackLlmClient;
@@ -106,6 +107,7 @@ test("judge forwards the configured timeout to the local LLM call", async () => 
   assert.equal(captured[0]?.timeoutMs, 45_000);
 });
 
+// ---------------------------------------------------------------------------
 
 function captureLocal(captured: ChatOptions[], content?: string): LocalLlmClient {
   return new RecordingLocalLlm(captured, content ?? JSON.stringify([{ index: 0, kind: "reject" }]));

@@ -136,6 +136,8 @@ export function resolveUnavailableVerdict(args: {
   }
   return {
     cacheVerdict: true,
+    // Surfaced at warn, not debug: extraction stops silently when this flips,
+    // and the daemon emits no debug at all unless configured for it.
     warning: args.wasAvailable !== false ? `local LLM became unavailable at ${args.baseUrl}` : null,
   };
 }
