@@ -300,10 +300,10 @@ test("appendInteractionLog appends entries in order", async () => {
 test("appendInteractionLog serializes concurrent appends to one peer — #3564", async () => {
   // Concurrent callers may append to the same peer's log (the reasoner is
   // serial today, but the helper is a public export — nothing enforces
-  // submission order). A large entry is chunked across multiple writes
+  // enqueue order). A large entry is chunked across multiple writes
   // internally; without per-file serialization a concurrent small write
   // lands BETWEEN those chunks, corrupting the large entry or reordering
-  // the log. Contract: entries appear in submission order, each intact.
+  // the log. Contract: entries appear in enqueue order, each intact.
   const dir = await makeTempDir();
   const peerId = "agent.codex";
   const big = `BIG-${"x".repeat(4 << 20)}-BIG-END`;
