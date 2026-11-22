@@ -36,7 +36,7 @@ import {
 } from "./buffer-turn-helpers.js";
 import { BufferAdmissionRefusedError, BufferSessionTurnRefusedError, canAdmitNewEntryUnlocked } from "./buffer-admission.js";
 import { BufferIngressCounters } from "./buffer-ingress-counters.js";
-import { addTurnsBoundedWithAdmissionKey, type AddTurnsBoundedHost } from "./buffer-add-turns-bounded.js";
+import { addTurnsBoundedWithAdmissionKey, type AddTurnsBoundedHost, type BoundedRefusalListener } from "./buffer-add-turns-bounded.js";
 import { refuseOverCapSingle, resolveMaxTurnsPerSession, sessionTurnCapReached } from "./buffer-session-cap.js";
 export { BufferAdmissionRefusedError, BufferSessionTurnRefusedError } from "./buffer-admission.js";
 import type { AddTurnMutationResult, AddTurnOutcome, RetainedTurnCleanupOptions, TriggerDecision } from "./buffer-types.js";
@@ -541,18 +541,18 @@ export class SmartBuffer {
   }
 
   async addTurnsBounded(
-    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
+    batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[], onRefused?: BoundedRefusalListener,
   ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null> {
-    const result = await addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches);
+    const result = await addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches, undefined, onRefused);
     return result === "duplicate" ? null : result;
   }
 
   /** #3368 durable observe replay only; duplicate means the scoped client key already landed. */
   async addTurnsBoundedForObserveReplay(
     batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
-    admissionKey: string,
+    admissionKey: string, onRefused?: BoundedRefusalListener,
   ): Promise<Array<{ bufferKey: string; turn: BufferTurn; outcome: AddTurnOutcome }> | null | "duplicate"> {
-    return addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches, admissionKey.trim());
+    return addTurnsBoundedWithAdmissionKey(this.addTurnsBoundedHost(), batches, admissionKey.trim(), onRefused);
   }
 
   /** Free one slot only when an empty entry can be reclaimed. */

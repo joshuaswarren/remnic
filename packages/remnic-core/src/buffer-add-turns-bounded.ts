@@ -17,6 +17,13 @@ export type AddTurnsBoundedOutcome =
   | null
   | "duplicate";
 
+/** Why a bounded batch was refused; the batch itself still resolves to null. */
+export type BoundedAdmissionRefusal =
+  | { reason: "session_turn_cap"; bufferKey: string; maxTurnsPerSession: number }
+  | { reason: "session_entry_cap"; maxSessionEntries: number };
+
+export type BoundedRefusalListener = (refusal: BoundedAdmissionRefusal) => void;
+
 export interface AddTurnsBoundedHost {
   readonly config: PluginConfig;
   readonly maxSessionEntries: number;
@@ -38,6 +45,7 @@ export async function addTurnsBoundedWithAdmissionKey(
   host: AddTurnsBoundedHost,
   batches: readonly { bufferKey: string; turns: readonly BufferTurn[] }[],
   admissionKey?: string,
+  onRefused?: BoundedRefusalListener,
 ): Promise<AddTurnsBoundedOutcome> {
   const pending = await host.enqueueMutation(async () => {
     await host.loadUnlocked();
@@ -51,7 +59,10 @@ export async function addTurnsBoundedWithAdmissionKey(
       }
     }
 
-    if (refuseOverCapBatch((key) => host.peekEntry(key) ?? null, batches, resolveMaxTurnsPerSession(host.config.bufferMaxTurnsPerSession))) {
+    const maxTurnsPerSession = resolveMaxTurnsPerSession(host.config.bufferMaxTurnsPerSession);
+    const overCapKey = refuseOverCapBatch((key) => host.peekEntry(key) ?? null, batches, maxTurnsPerSession);
+    if (overCapKey !== null) {
+      onRefused?.({ reason: "session_turn_cap", bufferKey: overCapKey, maxTurnsPerSession });
       return host.ingress.refuseAll(additions);
     }
     const entries = host.state.entries ?? {};
@@ -67,7 +78,10 @@ export async function addTurnsBoundedWithAdmissionKey(
     if (requiredEvictions > 0) {
       const target = Math.max(0, host.maxSessionEntries - newKeys.length);
       const evicted = selectEvictedBufferKeys(entries, newKeys, target, EVICTION_HOOKS);
-      if (newKeys.length > 0 && evicted.length < requiredEvictions) return host.ingress.refuseAll(additions);
+      if (newKeys.length > 0 && evicted.length < requiredEvictions) {
+        onRefused?.({ reason: "session_entry_cap", maxSessionEntries: host.maxSessionEntries });
+        return host.ingress.refuseAll(additions);
+      }
       for (const key of evicted) delete entries[key];
       host.persistence.markEvicted(evicted);
     }
