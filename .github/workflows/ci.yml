@@ -322,6 +322,7 @@ jobs:
             || echo "::warning::test-selection-shadow produced no shadow-*.json report"
 
       - name: Tests
+        id: tests
         run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
         env:
           # CI rebuilds the native binding above; skipping native-dependent
@@ -332,6 +333,28 @@ jobs:
           # provenance — #1541). A missing tool or dirty tree fails the run
           # locally instead of counting a silent skip.
           REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
+
+      # Stamp the shard's actual outcome into the shadow JSONs so the
+      # report job can compare "would have skipped" against "did fail"
+      # without needing per-test results (issue #3471 measurement).
+      - name: Record shard outcome for shadow report
+        if: always()
+        continue-on-error: true
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const dir = process.env.SHADOW_DIR;
+            for (const f of fs.readdirSync(dir)) {
+              if (!f.startsWith("shadow-") || !f.endsWith(".json") || f === "shadow-report.json") continue;
+              const p = dir + "/" + f;
+              const j = JSON.parse(fs.readFileSync(p, "utf-8"));
+              j.outcome = process.env.TESTS_OUTCOME;
+              fs.writeFileSync(p, JSON.stringify(j, null, 2) + "\n");
+            }
+          ' || true
+        env:
+          SHADOW_DIR: ${{ runner.temp }}/test-selection-shadow
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
 
       - name: Upload shadow selection
         if: always()
@@ -536,3 +559,35 @@ jobs:
             exit 1
           fi
           echo "All CI jobs succeeded."
+
+  # Issue #3471: combine the three per-shard shadow reports with their
+  # actual outcomes. Telemetry only — never fails.
+  test-selection-shadow-report:
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download shadow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test-selection-shadow-*
+          path: shadow-in
+          merge-multiple: true
+
+      - name: Build combined shadow report
+        run: |
+          node scripts/test-selection-shadow-report.mjs || echo "::warning::shadow report failed; continuing"
+        env:
+          REMNIC_SHADOW_REPORT_IN: shadow-in
+          REMNIC_SHADOW_REPORT_OUT: shadow-report
+
+      - name: Upload combined report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-selection-shadow-report
+          path: shadow-report/shadow-report.*
+          if-no-files-found: ignore
+          retention-days: 30
