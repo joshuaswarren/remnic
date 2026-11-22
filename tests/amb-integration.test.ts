@@ -935,7 +935,6 @@ test("AMB runner verifies SOTA results from absolute output directories", async 
   await chmod(fakeUvPath, 0o755);
   await chmod(fakeOmbPath, 0o755);
   runGit(ambRoot, ["init"]);
-  runGit(ambRoot, ["config", "core.hooksPath", "/dev/null"]);
   runGit(ambRoot, ["add", "."]);
   runGit(ambRoot, [
     "-c",
@@ -3012,7 +3011,6 @@ test("AMB SOTA verifier compares Remnic result against external best", {
 async function initCleanGitRepo(repoDir: string): Promise<void> {
   await mkdir(repoDir, { recursive: true });
   runGit(repoDir, ["init"]);
-  runGit(repoDir, ["config", "core.hooksPath", "/dev/null"]);
   // Override `commit.gpgsign` so the temp repo does not inherit the host's
   // signing config (e.g. 1Password-backed GPG on developer machines). Without
   // this override, `git commit --allow-empty` exits 128 when the host's signing

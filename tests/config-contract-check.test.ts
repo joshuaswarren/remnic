@@ -271,7 +271,6 @@ function initGitRepo(root: string): void {
     );
   };
   git("init", "-q");
-  git("config", "core.hooksPath", "/dev/null");
   git("add", "-A");
   git("commit", "-qm", "fixture baseline");
 }

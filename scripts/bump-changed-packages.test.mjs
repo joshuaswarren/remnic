@@ -34,7 +34,6 @@ async function withRepo(fn) {
   const repo = await mkdtemp(path.join(os.tmpdir(), "remnic-bump-packages-"));
   try {
     git(repo, ["init", "-q"]);
-    git(repo, ["config", "core.hooksPath", "/dev/null"]);
     git(repo, ["config", "user.name", "Test User"]);
     git(repo, ["config", "user.email", "test@example.com"]);
 

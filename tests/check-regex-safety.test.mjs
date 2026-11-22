@@ -164,7 +164,6 @@ test("scans only lines added since the base commit, including uncommitted edits"
     const repo = path.join(dir, "repo");
     mkdirSync(repo, { recursive: true });
     git(repo, ["init", "-q"]);
-    git(repo, ["config", "core.hooksPath", "/dev/null"]);
     const target = path.join(repo, "scan.ts");
     // Commit 1: a ReDoS shape that predates the scan base.
     writeFileSync(target, "export const stale = /[\\s\\S]*?x/;\n");

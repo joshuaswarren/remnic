@@ -90,7 +90,6 @@ test("seeds worktree discipline when the source napkin is absent", () => {
   copyFileSync(scriptPath, isolatedScript);
   chmodSync(isolatedScript, 0o755);
   execFileSync("git", ["-C", isolatedRoot, "init", "--initial-branch=main"], { stdio: "ignore" });
-  execFileSync("git", ["-C", isolatedRoot, "config", "core.hooksPath", "/dev/null"]);
   writeFileSync(path.join(isolatedRoot, "README.md"), "test repository\n");
   execFileSync("git", ["-C", isolatedRoot, "add", "README.md"]);
   execFileSync(

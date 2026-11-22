@@ -67,7 +67,6 @@ async function writeFileIn(root, relativePath, contents) {
 async function fixture(head) {
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-release-discipline-"));
   git(root, ["init", "--quiet", "-b", "main"]);
-  git(root, ["config", "core.hooksPath", "/dev/null"]);
   git(root, ["config", "user.email", "test@example.invalid"]);
   git(root, ["config", "user.name", "Release Discipline Test"]);
   git(root, ["config", "commit.gpgsign", "false"]);
