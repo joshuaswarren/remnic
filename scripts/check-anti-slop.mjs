@@ -148,7 +148,9 @@ function baseFindingKeys(repoRoot, baseRef, files) {
       staged.push(file);
     }
     if (staged.length === 0) return keysByFile;
-    for (const diagnostic of lintChangedFiles(repoRoot, staged.map((file) => join(".git", "anti-slop-base", file)))) {
+    const baseDiagnostics = lintChangedFiles(repoRoot, staged.map((file) => join(".git", "anti-slop-base", file)));
+    if (baseDiagnostics === null) return keysByFile; // unusable baseline: line-scoped check still applies
+    for (const diagnostic of baseDiagnostics) {
       if (!isAntiSlopDiagnostic(diagnostic) || !Array.isArray(diagnostic.labels) || diagnostic.labels.length === 0) continue;
       // oxlint reports paths relative to the cwd (the repo root), not the stage root.
       const stagedPath = isNonEmptyText(diagnostic.filename)
@@ -230,6 +232,10 @@ function addedLinesForTrackedFile(repoRoot, baseRef, file) {
   return parseHunkAddedLines(diff);
 }
 
+// Returns the diagnostics, or null when the tool itself failed (spawn error,
+// non-0/1 exit, unusable JSON). The caller decides whether null fails closed;
+// baseFindingKeys treats null as "no baseline" so a base revision that cannot
+// be linted falls back to the line-scoped check instead of killing the gate.
 function lintChangedFiles(repoRoot, files) {
   const result = spawnSync(
     process.execPath,
@@ -246,18 +252,16 @@ function lintChangedFiles(repoRoot, files) {
     ],
     { cwd: repoRoot, encoding: "utf8", timeout: OXLINT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
   );
-  if (result.error) fail(`oxlint failed to run: ${result.error.message}`);
-  if (result.status !== 0 && result.status !== 1) {
-    fail(`oxlint exited with status ${result.status ?? "null"} (${result.signal ?? "no signal"}): ${result.stderr.trim()}`);
-  }
+  if (result.error) return null;
+  if (result.status !== 0 && result.status !== 1) return null;
   try {
     const diagnostics = parseOxlintJson(result.stdout);
     if (result.status === 1 && diagnostics.length === 0) {
-      throw new Error("oxlint failed without diagnostics");
+      return null;
     }
     return diagnostics;
-  } catch (error) {
-    return fail(`could not use oxlint output: ${error.message}`);
+  } catch {
+    return null;
   }
 }
 
@@ -314,7 +318,11 @@ function main() {
   const sources = new Map();
   const violations = [];
   const internalErrors = [];
-  for (const diagnostic of lintChangedFiles(repoRoot, changedFiles)) {
+  const headDiagnostics = lintChangedFiles(repoRoot, changedFiles);
+  if (headDiagnostics === null) {
+    fail("oxlint failed to run or produced unusable output; failing closed");
+  }
+  for (const diagnostic of headDiagnostics) {
     const file = isNonEmptyText(diagnostic.filename) ? relative(repoRoot, resolve(repoRoot, diagnostic.filename)).split(sep).join("/") : null;
     if (file === null || !scannedFiles.has(file)) {
       internalErrors.push(`diagnostic for unscanned path ${JSON.stringify(diagnostic.filename)}: ${diagnostic.message}`);
