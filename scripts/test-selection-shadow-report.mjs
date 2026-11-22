@@ -15,8 +15,9 @@
  * (the workflow merges `steps.tests.outcome` in before upload).
  */
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 /**
  * Combine shard shadow payloads + outcomes into the comparison record.
@@ -103,9 +104,12 @@ function main() {
   console.log(`[shadow-report] verdict=${report.summary.verdict} skipped=${report.summary.testsWouldHaveSkipped} suspect=${report.summary.suspectShards.join(",") || "none"}`);
 }
 
-try {
-  main();
-} catch (error) {
-  console.log(`[shadow-report] ERROR (ignored): ${error instanceof Error ? error.message : String(error)}`);
+// Only run when invoked directly — importing this module (e.g. the test
+// file) must not touch the filesystem or exit the process.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
+  try {
+    main();
+  } catch (error) {
+    console.log(`[shadow-report] ERROR (ignored): ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
-process.exit(0);
