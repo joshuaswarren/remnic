@@ -79,7 +79,7 @@ export interface EntityStoreDeps {
   getEntityMutationVersion(): number;
   getMemoryStatusVersion(): number;
   invalidateKnowledgeIndexCache(): void;
-  knowledgeIndexCache: { result: string; builtAt: number } | null;
+  knowledgeIndexCache: Map<string, { result: string; builtAt: number }>;
   okfConformanceEnabled(): boolean;
   normalizeEntityName(raw: string, type: string): string;
   readAllEntityFiles(): Promise<EntityFile[]>;
@@ -773,21 +773,30 @@ export class EntityStore {
     config: PluginConfig,
     overrides?: { maxEntities?: number; maxChars?: number },
   ): Promise<{ result: string; cached: boolean }> {
-    const useDefaultLimits =
-      overrides?.maxEntities === undefined &&
-      overrides?.maxChars === undefined;
-    // Return cached index if still fresh
+    // Cache key is the RESOLVED limits, not "overrides absent" (#3529): recall
+    // always passes explicit maxEntities/maxChars, so absence-keying made every
+    // warm recall rebuild the full corpus table. Same resolved limits inside
+    // the TTL reuse; a mutation still invalidates; other limits rebuild. The
+    // cap bounds entries per storage (recall's scope fanout and single-storage
+    // calls use different limit pairs).
+    const maxEntities = typeof overrides?.maxEntities === "number"
+      ? Math.max(0, Math.floor(overrides.maxEntities))
+      : config.knowledgeIndexMaxEntities;
+    const maxChars = typeof overrides?.maxChars === "number"
+      ? Math.max(0, Math.floor(overrides.maxChars))
+      : config.knowledgeIndexMaxChars;
+    const cacheKey = `${maxEntities}|${maxChars}`;
+    const cache = this.deps.knowledgeIndexCache.get(cacheKey);
     if (
-      useDefaultLimits &&
-      this.deps.knowledgeIndexCache &&
-      Date.now() - this.deps.knowledgeIndexCache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
+      cache &&
+      Date.now() - cache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
     ) {
-      return { result: this.deps.knowledgeIndexCache.result, cached: true };
+      return { result: cache.result, cached: true };
     }
 
     const entities = await this.deps.readAllEntityFiles();
     if (entities.length === 0) {
-      if (useDefaultLimits) this.deps.knowledgeIndexCache = { result: "", builtAt: Date.now() };
+      this.cacheKnowledgeIndex(cacheKey, "");
       return { result: "", cached: false };
     }
 
@@ -803,13 +812,10 @@ export class EntityStore {
 
     // Sort by score descending, take top N
     scored.sort((a, b) => b.score - a.score);
-    const maxEntities = typeof overrides?.maxEntities === "number"
-      ? Math.max(0, Math.floor(overrides.maxEntities))
-      : config.knowledgeIndexMaxEntities;
     const topN = scored.slice(0, maxEntities);
 
     if (topN.length === 0) {
-      if (useDefaultLimits) this.deps.knowledgeIndexCache = { result: "", builtAt: Date.now() };
+      this.cacheKnowledgeIndex(cacheKey, "");
       return { result: "", cached: false };
     }
 
@@ -817,9 +823,6 @@ export class EntityStore {
     const header = "## Knowledge Index\n\n| Entity | Type | Summary | Connected to |\n|--------|------|---------|-------------|";
     const rows: string[] = [];
     let totalChars = header.length;
-    const maxChars = typeof overrides?.maxChars === "number"
-      ? Math.max(0, Math.floor(overrides.maxChars))
-      : config.knowledgeIndexMaxChars;
 
     for (const entity of topN) {
       const summary = entity.summary || `${entity.factCount} facts`;
@@ -834,8 +837,20 @@ export class EntityStore {
     }
 
     const result = rows.length === 0 ? "" : `${header}\n${rows.join("\n")}\n`;
-    if (useDefaultLimits) this.deps.knowledgeIndexCache = { result, builtAt: Date.now() };
+    this.cacheKnowledgeIndex(cacheKey, result);
     return { result, cached: false };
+  }
+
+  /** Store one resolved-limits entry, evicting the oldest past the cap. */
+  private cacheKnowledgeIndex(cacheKey: string, result: string): void {
+    const cache = this.deps.knowledgeIndexCache;
+    cache.set(cacheKey, { result, builtAt: Date.now() });
+    const KNOWLEDGE_INDEX_CACHE_MAX_ENTRIES = 8;
+    while (cache.size > KNOWLEDGE_INDEX_CACHE_MAX_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
   }
 
   /**

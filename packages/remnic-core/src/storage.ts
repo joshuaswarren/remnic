@@ -1757,7 +1757,7 @@ export type SealedWriteExtras = Omit<
 >;
 
 export class StorageManager extends TombstoneBlockedCaptureIndexHost {
-  private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
+  private knowledgeIndexCache = new Map<string, { result: string; builtAt: number }>();
   private readonly deletionRevisionStore: DeletionRevisionStore;
   private readonly casRevisions: CasRevisionHost;
   private artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null = null;
@@ -6463,7 +6463,7 @@ export class StorageManager extends TombstoneBlockedCaptureIndexHost {
 
   /** Invalidate the Knowledge Index cache (call after entity mutations). */
   invalidateKnowledgeIndexCache(): void {
-    this.knowledgeIndexCache = null;
+    this.knowledgeIndexCache.clear();
   }
 
   // ---------------------------------------------------------------------------
