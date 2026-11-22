@@ -6,6 +6,8 @@
  * Reduces memory store bloat while preserving all unique information.
  */
 
+import { z } from "zod";
+
 import type { MemoryFile, PluginConfig } from "./types.js";
 import { normalizeRecallTokens, countRecallTokenOverlap } from "./recall-tokenization.js";
 import { runPostConsolidationMaterialize } from "./connectors/codex-materialize-runner.js";
@@ -179,15 +181,16 @@ export function parseConsolidationResponse(response: string): string {
  *   Falls back to the heuristic default when the LLM omits or returns an
  *   unknown value (the parser never surfaces an invalid operator; see
  *   `parseOperatorAwareConsolidationResponse`).
- * - `output` — the canonical content (same format the legacy prompt
- *   returns).  Callers persist this as the body of the new memory.
+ * - `outputs` — the canonical memory bodies to persist, never empty.
+ *   MERGE and UPDATE always carry exactly one; SPLIT carries one body per
+ *   separated fact (#3566).
  */
 export interface OperatorAwareConsolidationResult {
   // Restricted to the LLM-allowed subset (Cursor Bugbot, PR #730):
   // `pattern-reinforcement` is reserved for the maintenance job and
   // must never reach this struct from a consolidation LLM response.
   operator: _SemanticConsolidationLlmOperator;
-  output: string;
+  outputs: string[];
 }
 
 /**
@@ -203,11 +206,9 @@ export interface OperatorAwareConsolidationResult {
  *   - A cluster of size 1 that still reaches consolidation (future path,
  *     e.g. supersession of a single older memory by a newer value) is an
  *     UPDATE.
- *   - SPLIT is never selected by the heuristic because the current write
- *     path emits exactly one canonical memory per cluster.  The prompt
- *     reserves SPLIT for future cluster shapes where the LLM decides one
- *     logical source actually encodes several distinct facts — at which
- *     point the orchestrator would need to write multiple outputs.
+ *   - SPLIT is never selected by the heuristic: only the LLM can decide
+ *     that one logical source encodes several distinct facts.  When it
+ *     does, the coordinator writes one canonical memory per output.
  */
 export function chooseConsolidationOperator(
   cluster: ConsolidationCluster,
@@ -217,14 +218,9 @@ export function chooseConsolidationOperator(
 }
 
 /**
- * Build the operator-aware LLM prompt.  The LLM is asked to return a
- * JSON object `{ "operator": <split|merge|update>, "output": <content> }`.
- *
- * The prompt is additive: it still asks for a single canonical blob under
- * `output`, so the upstream write path does not change.  Future expansions
- * (SPLIT emitting multiple outputs) are explicitly documented as
- * out-of-scope for the parser — `parseOperatorAwareConsolidationResponse`
- * collapses any SPLIT response into a single canonical output for now.
+ * Build the operator-aware LLM prompt.  MERGE and UPDATE return
+ * `{ "operator", "output" }`; SPLIT returns `{ "operator": "split",
+ * "outputs": [...] }` with one canonical body per separated fact (#3566).
  */
 export function buildOperatorAwareConsolidationPrompt(
   cluster: ConsolidationCluster,
@@ -243,20 +239,26 @@ Pick exactly ONE consolidation operator for this cluster and return a JSON objec
 Operator vocabulary:
   - "merge"  — multiple distinct source memories overlap and should be collapsed into one canonical memory (most common).
   - "update" — one source memory carries a stale value that a newer source supersedes within the same logical fact.
-  - "split"  — a single logical source really encodes multiple distinct facts that should be separated (rare; if you pick split, still emit ONE canonical body — the write path will chunk it later).
+  - "split"  — a single logical source really encodes multiple distinct facts that should be separated (rare). For split, replace "output" with "outputs": an array holding one canonical memory text per separated fact.
 
 Output JSON ONLY, no prose before or after.  The "operator" key MUST be set to exactly one of the three strings "merge", "update", or "split" — never a pipe-separated placeholder like "merge|update|split".  Example shape:
   {
     "operator": "merge",
     "output": "<the canonical memory text>"
   }
+Split shape:
+  {
+    "operator": "split",
+    "outputs": ["<first fact>", "<second fact>"]
+  }
 
-The "output" value must:
+Each canonical memory text must:
 1. Preserve ALL unique information from every source memory
 2. Remove redundancy and repetition
 3. Use clear, concise language
 4. Match the "${cluster.category}" category and tone
 5. NOT add information that isn't in the sources
+For split, the outputs together must hold all of the source information, and each output holds one fact.
 
 ${memoryTexts}
 
@@ -283,7 +285,7 @@ export function parseOperatorAwareConsolidationResponse(
 ): OperatorAwareConsolidationResult {
   const fallback: OperatorAwareConsolidationResult = {
     operator: chooseConsolidationOperator(cluster),
-    output: response.trim(),
+    outputs: [response.trim()],
   };
 
   const trimmed = response.trim();
@@ -302,13 +304,10 @@ export function parseOperatorAwareConsolidationResponse(
   // `Example: {"note":"..."} ... {"operator":"merge",...}`).  Walk the
   // payload tracking nesting + string/escape state and skip past
   // objects that don't look like our target shape.
-  const parsed = findLastJsonObjectWithOperator(payload);
-  if (parsed === undefined) return fallback;
-  if (typeof parsed !== "object" || parsed === null) return fallback;
-
-  const obj = parsed as Record<string, unknown>;
-  const rawOperator = typeof obj.operator === "string" ? obj.operator.trim().toLowerCase() : "";
-  const rawOutput = typeof obj.output === "string" ? obj.output : "";
+  const reply = CONSOLIDATION_LLM_REPLY.safeParse(findLastJsonObjectWithOperator(payload));
+  if (!reply.success) return fallback;
+  const rawOperator = reply.data.operator?.trim().toLowerCase() ?? "";
+  const rawOutput = reply.data.output ?? "";
 
   // Narrow gate (Cursor Bugbot review on PR #730 head `aa1c2a8`):
   // accept ONLY the legacy split/merge/update LLM vocabulary here.
@@ -320,9 +319,18 @@ export function parseOperatorAwareConsolidationResponse(
     ? rawOperator
     : chooseConsolidationOperator(cluster);
   const output = rawOutput.trim().length > 0 ? rawOutput.trim() : response.trim();
+  const splitOutputs = (reply.data.outputs ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
+  if (operator === "split" && splitOutputs.length > 0) return { operator, outputs: splitOutputs };
 
-  return { operator, output };
+  return { operator, outputs: [output] };
 }
+
+// Fields read from the model's JSON object; a wrong-typed field reads as absent.
+const CONSOLIDATION_LLM_REPLY = z.object({
+  operator: z.string().optional().catch(undefined),
+  output: z.string().optional().catch(undefined),
+  outputs: z.array(z.string()).optional().catch(undefined),
+});
 
 /**
  * Walk `text`, find all balanced top-level `{ ... }` blocks whose
