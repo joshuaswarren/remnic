@@ -895,7 +895,7 @@
       "cmcLifecycleCausalImpactWeight": {
         "type": "number",
         "default": 0.05,
-        "description": "Weight of causal impact score in CMC lifecycle scoring."
+        "description": "Deprecated: no effect (#3667). Kept so configs load."
       },
       "cmcRetrievalCounterfactualBoost": {
         "type": "number",
