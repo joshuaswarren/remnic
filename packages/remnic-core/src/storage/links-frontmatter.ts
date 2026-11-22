@@ -42,7 +42,7 @@ export function parseFrontmatterLinks(
 
   const links: MemoryLink[] = [];
   for (const item of items) {
-    const strength = Number(item.strength);
+    const strength = item.strength ? Number(item.strength) : NaN;
     if (
       !item.targetId ||
       !["follows", "references", "contradicts", "supports", "related"].includes(item.linkType ?? "") ||

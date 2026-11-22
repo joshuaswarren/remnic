@@ -103,6 +103,23 @@ ${BODY}`;
   ]);
 });
 
+test("links: an empty strength drops the item, strength 0 stays valid", () => {
+  const raw = `---
+links:
+  - targetId: mem-a
+    linkType: related
+    strength:
+  - targetId: mem-b
+    linkType: supports
+    strength: 0
+---
+${BODY}`;
+  const links = parseFrontmatter(raw)?.frontmatter.links;
+  assert.deepEqual(links, [
+    { targetId: "mem-b", linkType: "supports", strength: 0, reason: undefined },
+  ]);
+});
+
 test("links: unknown keys on an item do not drop the link", () => {
   const raw = `---
 links:
